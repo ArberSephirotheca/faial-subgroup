@@ -4,8 +4,6 @@ open Protocols
 [@@@warning "-unused-type-declaration"]
 
 
-let (||>) (x, y) f = f x y
-
 module Expr : sig
   type t
   module Var : sig
@@ -24,9 +22,12 @@ module Expr : sig
     (* val one : t *)
     val ( * ) : t -> t -> t
 
+    val try_div : t -> t -> t option
+
     val coeff : t -> int
     val factors : t -> (Var.t * int) list
     val fold : (Var.t -> int -> 'a -> 'a) -> 'a -> t -> 'a
+    val filter : (Var.t -> int -> bool) -> t -> t
     val is_const : t -> bool
     val nfactors: t -> int
     val to_nexp : t -> Exp.nexp
@@ -62,6 +63,7 @@ end = struct
   module VarMap = Map.Make(Var)
   module TermInner = struct
     type t = int VarMap.t
+
     let compare = VarMap.compare Int.compare
     let to_string t = 
       if VarMap.is_empty t
@@ -73,21 +75,23 @@ end = struct
         | k, 1 -> k
         | k, v -> Printf.sprintf "%s^%d" k v)
         |> String.concat " * "
-    let ( * ) (t1: t) (t2: t): t = (t1, t2) ||> VarMap.merge (fun _ v1 v2 -> match v1, v2 with
-      | Some v1, Some v2 -> Some (v1 + v2)
-      | Some v, None | None, Some v -> Some v
-      | None, None -> None)
+
+    let normalize = VarMap.filter (fun _ v -> v != 0)
+    let (||>) (x, y) f = f x y
+    let ( * ) (t1: t) (t2: t): t = (t1, t2)
+      ||> VarMap.merge (fun _ v1 v2 -> match v1, v2 with
+        | Some v1, Some v2 -> Some (v1 + v2)
+        | Some v, None | None, Some v -> Some v
+        | None, None -> None
+      )
+      |> normalize
     let fold f acc t = VarMap.fold f t acc
     let to_list t = VarMap.bindings t
-    let nfactors t = 
-      t
+    let nfactors t = t
       |> VarMap.to_list
-      |> List.map (function
-        | (_, 0) -> 0
-        | _ -> 1
-      )
-      |> List.fold_left (+) 0
+      |> List.length
       let is_const t = nfactors t = 0
+
   end
 
   module Term = struct
@@ -107,6 +111,7 @@ end = struct
     let ( * ) (c1, t1) (c2, t2) = (c1 * c2, TermInner.( * ) t1 t2)
     let coeff (c, _) = c
     let fold f acc (_, t) = TermInner.fold f acc t
+    let filter f (c, t) = c, VarMap.filter f t
     let factors (_, t): (Var.t * int) list = TermInner.to_list t
     let is_const (_, t) = TermInner.is_const t
     let nfactors (_, t) = TermInner.nfactors t
@@ -121,6 +126,14 @@ end = struct
       | _, [] -> Num coeff
       | 1, x :: xs -> xs |> List.fold_left (fun r x -> Exp.Binary (N_binary.Mult, r, factor_to_nexp x)) (factor_to_nexp x)
       | n, xs -> xs |> List.fold_left (fun r x -> Exp.Binary (N_binary.Mult, r, factor_to_nexp x)) (Exp.Num n)
+
+
+    let try_div ((c1, f1) : t) ((c2, f2) : t) : t option = match c1 mod c2 with
+    | 0 -> let d = TermInner.(f1 * (VarMap.map (~-) f2))
+      in if (VarMap.exists (fun _ e -> e < 0) d)
+        then None
+        else Some (c1 / c2, d)
+    | _ -> None
   end
 
   module TermMap = Map.Make(TermInner)
@@ -217,12 +230,34 @@ let size_params (t: Expr.t): Term.t list =
   |> List.filter (fun t ->
     t
     |> Term.factors
-    |> List.exists (function
-      | (_, 0) -> false
+    |> (fun f -> f |> List.exists (function
+      | (_, 0) -> failwith "coefficient shouldn't be 0"
       | (Var.Induction _, _) -> true
       | _ -> false
-    )
+    ) && f |> List.exists (function
+      | (_, 0) -> failwith "coefficient shouldn't be 0"
+      | (Var.Param _, _) -> true
+      | _ -> false
+    ))
   )
+
+let dims (t: Term.t list): Term.t list option = 
+  let rec loop: Term.t list -> Term.t list option = function
+  | [] -> Some []
+  | [x] -> Some [x]
+  | x :: y :: xs -> 
+    let ( let* ) x f = Option.bind x f in
+    let* dim = Term.try_div x y in
+    let* r = loop (y :: xs) in
+    Some (dim :: r)
+  in
+  t 
+  |> List.sort (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
+  |> List.map (Term.filter (fun v _ -> match v with
+    | Induction _ -> false
+    | _ -> true
+  ))
+  |> loop
 
 let n1 = Expr.param "n1"
 let n2 = Expr.param "n2"
@@ -283,7 +318,7 @@ module Build = struct
   let ( * ) a b = Exp.Binary (Mult, a, b) 
 end
 
-let () =
+(* let () =
   match from_nexp Build.( var "x" ) with
   | Some r -> r |> to_string |> print_endline
-  | None -> print_endline "error"
+  | None -> print_endline "error" *)
