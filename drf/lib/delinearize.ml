@@ -251,31 +251,28 @@ end
 module Term = Expr.Term
 module Var = Expr.Var
 
-(* Extracts all terms with both a induction and param variable (from which we will extract size params) *)
+(* Extracts all size parameters *)
 let size_params (t: Expr.t): Term.t list =
   t
   |> Expr.to_list
   |> List.filter (fun t ->
     Term.has_inductive t && Term.has_parameter t
   )
-
-(* Sorts and divides out each size param (without induction variable) *)
-let dims (ts: Term.t list): Term.t list option = 
-  let ( let* ) = Option.bind in
-  let rec loop: Term.t list -> Term.t list option = function
-  | [] -> Some []
-  | [x] -> Some [x]
-  | x :: y :: ys -> 
-    let* dim = Term.try_div x y in
-    let* r = loop (y :: ys) in
-    Some (dim :: r)
-  in
-  ts |> List.map (Term.filter (fun v _ -> match v with
+  |> List.map (Term.filter (fun v _ -> match v with
     | Induction _ -> false
     | _ -> true
   ))
   |> List.sort_uniq (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
-  |> loop
+
+(* Divides out size params *)
+let rec dims: Term.t list -> Term.t list option = function
+  | [] -> Some []
+  | [x] -> Some [x]
+  | x :: y :: ys -> 
+    let ( let* ) = Option.bind in
+    let* dim = Term.try_div x y in
+    let* r = dims (y :: ys) in
+    Some (dim :: r)
 
 let accesses (dims : Term.t list) (t : Expr.t): Expr.t list = 
   let rec loop rdims t = match rdims with

@@ -28,11 +28,13 @@ let size_param_examples: (string * nexp * nexp list) list =
     "affine", x + num 1, []; 
     "constdim", num 10 * x + y, []; 
     "numdim", vN * x + y,
-      [vN * x];
-    "3dim", var "M" * vN * x + vN * y + z,
-      [vM * vN * x; vN * y]; 
+      [vN];
+    "3dim", vM * vN * x + vN * y + z,
+      [vM * vN; vN]; 
     "3dim+dist", vN * (vM * x + y) + z,
-      [vM * vN * x; vN * y]; 
+      [vM * vN; vN]; 
+    "duplicate", vN * (x + y) + z,
+      [vN];
   ] |> List.map (fun (l, b, a) -> l, b, List.map normalize a)
 
 let dim_examples: (string * nexp * nexp list) list = 
@@ -48,6 +50,8 @@ let dim_examples: (string * nexp * nexp list) list =
       [vM; vN]; 
     "3dim+dist", vN * (vM * x + y) + z,
       [vM; vN]; 
+    "duplicate", vN * (x + y) + z,
+      [vN];
   ] |> List.map (fun (l, b, a) -> l, b, List.map normalize a)
 
 
@@ -66,6 +70,8 @@ let positive_examples: (string * nexp * (Delinearize.t option)) list =
       [x; y; z], [vM; vN]; 
     "3dim+dist", vN * (vM * x + y) + z,
       [x; y; z], [vM; vN]; 
+    "duplicate", vN * (x + y) + z,
+      [x + y; z], [vN];
   ] |> List.map (fun (name, before, indices, dims) -> name, before, Some {
     indices = List.map normalize indices;
     dims = List.map normalize dims;
