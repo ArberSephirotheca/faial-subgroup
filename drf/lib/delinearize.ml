@@ -11,6 +11,9 @@ module Expr : sig
     val compare : t -> t -> int
     val to_string : t -> string
     val to_nexp : t -> Exp.nexp
+
+    val is_inductive : t -> bool
+    val is_parameter : t -> bool
   end
   module Term : sig
     type t
@@ -26,8 +29,13 @@ module Expr : sig
 
     val coeff : t -> int
     val factors : t -> (Var.t * int) list
+    (* val from_factors : (Var.t * int) list *)
+    
     val fold : (Var.t -> int -> 'a -> 'a) -> 'a -> t -> 'a
     val filter : (Var.t -> int -> bool) -> t -> t
+
+    val has_inductive : t -> bool
+    val has_parameter : t -> bool
     val is_const : t -> bool
     val nfactors: t -> int
     val to_nexp : t -> Exp.nexp
@@ -40,8 +48,12 @@ module Expr : sig
   val ( + ) : t -> t -> t
   val ( - ) : t -> t -> t
   val ( * ) : t -> t -> t
+
+  val div_mod : t -> Term.t -> t * t
+
   val fold : (Term.t -> 'a -> 'a) -> 'a -> t -> 'a
   val to_list : t -> Term.t list
+  val of_list : Term.t list -> t
   val compare : t -> t -> int
   val from_nexp : Exp.nexp -> t
   val to_nexp : t -> Exp.nexp
@@ -59,6 +71,13 @@ end = struct
 
     let to_nexp : t -> Exp.nexp = function
       | Param s | Induction s -> Var (Variable.from_name s)
+
+    let is_inductive = function
+      | Induction _ -> true
+      | _ -> false
+    let is_parameter = function
+      | Param _ -> true
+      | _ -> false
   end
   module VarMap = Map.Make(Var)
   module TermInner = struct
@@ -86,7 +105,7 @@ end = struct
       )
       |> normalize
     let fold f acc t = VarMap.fold f t acc
-    let to_list t = VarMap.bindings t
+    let to_list = VarMap.bindings
     let nfactors t = t
       |> VarMap.to_list
       |> List.length
@@ -113,8 +132,15 @@ end = struct
     let fold f acc (_, t) = TermInner.fold f acc t
     let filter f (c, t) = c, VarMap.filter f t
     let factors (_, t): (Var.t * int) list = TermInner.to_list t
+
     let is_const (_, t) = TermInner.is_const t
     let nfactors (_, t) = TermInner.nfactors t
+    let has_inductive t = t
+      |> factors
+      |> List.exists (fun (v, _) -> Var.is_inductive v)
+    let has_parameter t = t
+      |> factors
+      |> List.exists (fun (v, _) -> Var.is_parameter v)
 
     let rec factor_to_nexp ((factor, exp): Var.t * int): Exp.nexp = match exp with
       | 0 -> failwith "exponent shouldn't be 0"
@@ -183,8 +209,22 @@ end = struct
         in let coeff = v1 * v2
         in TermMap.singleton product coeff + acc) t2 acc) t1 zero
   let fold f acc t = TermMap.fold (fun t c acc -> f (c, t) acc) t acc
-  let to_list t: Term.t list = TermMap.bindings t
+  let to_list t: Term.t list = t
+        |> TermMap.bindings
         |> List.map (fun (t, c) -> (c, t))
+  let of_list (t : Term.t list): t = t
+    |>  List.map (fun (c, t) -> (t, c))
+    |> TermMap.of_list
+        
+
+  let div_mod (n : t) (d : Term.t) : t * t = 
+    let q, r = n
+    |> to_list
+    |> List.partition_map (fun t -> match Term.try_div t d with
+      | Some q -> Left q
+      | None -> Right t
+    ) in
+    of_list q, of_list r
 
   let rec from_nexp (e: Exp.nexp): t =
     match e with
@@ -211,78 +251,41 @@ end
 module Term = Expr.Term
 module Var = Expr.Var
 
-let group (l : 'a list) (f: 'a -> 'a -> bool) : 'a list list =
-  let rec group' (l: 'a list) (acc: 'a list list) : 'a list list = match l with
-    | [] -> acc
-    | x :: xs -> match acc with
-      | [] -> group' xs [[x]]
-      | y :: ys -> if f x (List.hd y) then group' xs ((x :: y) :: ys) else group' xs ([x] :: acc)
-  in group' l []
-
-(* let () = group [1; 1; 2; 3; 1; 1; 4; 4; 5] (fun x y -> x = y)
-  |> List.map (fun l -> l |> List.map string_of_int |> String.concat ", ")
-  |> String.concat "\n"
-  |> print_endline *)
-
+(* Extracts all terms with both a induction and param variable (from which we will extract size params) *)
 let size_params (t: Expr.t): Term.t list =
   t
   |> Expr.to_list
   |> List.filter (fun t ->
-    t
-    |> Term.factors
-    |> (fun f -> f |> List.exists (function
-      | (_, 0) -> failwith "coefficient shouldn't be 0"
-      | (Var.Induction _, _) -> true
-      | _ -> false
-    ) && f |> List.exists (function
-      | (_, 0) -> failwith "coefficient shouldn't be 0"
-      | (Var.Param _, _) -> true
-      | _ -> false
-    ))
+    Term.has_inductive t && Term.has_parameter t
   )
 
-let dims (t: Term.t list): Term.t list option = 
+(* Sorts and divides out each size param (without induction variable) *)
+let dims (ts: Term.t list): Term.t list option = 
+  let ( let* ) = Option.bind in
   let rec loop: Term.t list -> Term.t list option = function
   | [] -> Some []
   | [x] -> Some [x]
-  | x :: y :: xs -> 
-    let ( let* ) x f = Option.bind x f in
+  | x :: y :: ys -> 
     let* dim = Term.try_div x y in
-    let* r = loop (y :: xs) in
+    let* r = loop (y :: ys) in
     Some (dim :: r)
   in
-  t 
-  |> List.sort (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
-  |> List.map (Term.filter (fun v _ -> match v with
+  ts |> List.map (Term.filter (fun v _ -> match v with
     | Induction _ -> false
     | _ -> true
   ))
+  |> List.sort_uniq (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
   |> loop
 
-let n1 = Expr.param "n1"
-let n2 = Expr.param "n2"
-let o0 = Expr.param "o0"
-let o1 = Expr.param "o1"
-let o2 = Expr.param "o2"
-let c = Expr.param "c"
-let i = Expr.ind "i"
-let j = Expr.ind "j"
-let k = Expr.ind "k"
-
-let expr = Expr.(
-  n2 * (n1 * o0 + o1) + o2 + n1 * n2 * i + n2 * j + k
-)
-
-(* let () = expr
-  |> size_params
-  |> List.map Expr.Term.to_string
-  |> String.concat ", "
-  |> print_endline *)
-
-(* let () = Expr.(derive (
-    a * i + j
-)) |> result_to_string |> print_endline *)
-
+let accesses (dims : Term.t list) (t : Expr.t): Expr.t list = 
+  let rec loop rdims t = match rdims with
+  | [] -> [t]
+  | d :: ds -> let q, r = Expr.div_mod t d in
+    r :: loop ds q
+  in
+  t |> loop (List.rev dims)
+  |> List.rev
+  (*turn this into a fold later*)
 
 type t = {
   indices: Exp.nexp list;
@@ -297,19 +300,16 @@ let to_string: t -> string = function
       (dims |> List.map Exp.n_to_string |> String.concat "; ")
 
 let from_nexp (expr: Exp.nexp): t option = 
-  let res = expr
-    |> Expr.from_nexp
+  let ( let* ) = Option.bind in
+  let expr' = Expr.from_nexp expr in
+  let* ds = expr'
     |> size_params
-    |> List.map Expr.Term.to_nexp
-  (* |> List.map Expr.Term.to_string
-  |> String.concat ", "
-  |> print_endline *)
-  in
-    Some {
-      indices = res;
-      dims = [];
-    }
-
+    |> dims in
+  let is = accesses ds expr' in
+  Some {
+    indices = List.map Expr.to_nexp is;
+    dims = List.map Expr.Term.to_nexp ds;
+  }
 
 (* debug code *)
 module Build = struct

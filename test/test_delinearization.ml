@@ -40,9 +40,10 @@ let dim_examples: (string * nexp * nexp list) list =
     "constant", num 1, []; 
     "linear", x, []; 
     "affine", x + num 1, []; 
-    (* "constdim", num 10 * x + y, [num 10];  *)
-    "numdim", vN * x + y,
-      [vN];
+    "constdim", num 10 * x + y, []; (* we may want to make this a dimension? *)
+    "numdim", vN * x + y, [vN];
+    "numdim_scaled", num 10 * vN * x + y, [num 10 * vN];
+    "numdim_nested", num 10 * (vM * x + y) + z, [num 10 * vM];
     "3dim", var "M" * vN * x + vN * y + z,
       [vM; vN]; 
     "3dim+dist", vN * (vM * x + y) + z,
@@ -53,17 +54,24 @@ let dim_examples: (string * nexp * nexp list) list =
 let positive_examples: (string * nexp * (Delinearize.t option)) list = 
   let open Build in
   let open Delinearize in [
-    "constant", num 1, [num 1], [];
-    "linear", var "x", [var "x"], [];
-    "affine", var "x" + num 1, [var "x" + num 1], [];
-    "constdim", num 10 * var "x" + var "y", [var "x"; var "y"], [num 10];
-    "numdim", var "N" * var "x" + var "y", [var "x"; var "y"], [var "N"];
-  ] |> List.map (fun (name, before, after, dims) -> name, before, Some {
-    indices = after;
-    dims;
+    "constant", num 1, [num 1], []; 
+    "linear", x, [x], []; 
+    "affine", x + num 1, [x + num 1], []; 
+    "constdim", num 10 * x + y, [num 10 * x + y], []; (* we may want to make this a dimension? *)
+    "numdim", vN * x + y, [x; y], [vN];
+    "numdim_scaled", num 10 * vN * x + y, [x; y], [num 10 * vN];
+    "numdim_nested", num 10 * (vM * x + y) + z,
+      [x; num 10 * y +  z], [num 10 * vM];
+    "3dim", vM * vN * x + vN * y + z,
+      [x; y; z], [vM; vN]; 
+    "3dim+dist", vN * (vM * x + y) + z,
+      [x; y; z], [vM; vN]; 
+  ] |> List.map (fun (name, before, indices, dims) -> name, before, Some {
+    indices = List.map normalize indices;
+    dims = List.map normalize dims;
   })
 
-let string_of_option f o =
+let string_of_option (f : 'a -> string) (o : 'a option) =
   match o with
   | Some x -> f x
   | None -> "null"
@@ -75,9 +83,9 @@ let string_of_list (f : 'a -> string) (l : 'a list) : string = l
 
 let tests = "examples" >::: [
   "collect parameters (stage1)" >:: (fun _ -> 
-    size_param_examples |> List.iter (fun (name, exp, params) ->
+    size_param_examples |> List.iter (fun (msg, exp, params) ->
       assert_equal
-        ~msg:name
+        ~msg
         ~printer:(string_of_list Exp.n_to_string)
         params
         Delinearize.(exp
