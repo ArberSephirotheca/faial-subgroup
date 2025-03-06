@@ -7,12 +7,16 @@ open Protocols
 module Expr : sig
   type t
   module Var : sig
-    type t = Param of string | Induction of string
+    type t
     val compare : t -> t -> int
     val to_string : t -> string
     val to_nexp : t -> Exp.nexp
+    val of_nexp : Exp.nexp -> t
 
-    val is_inductive : t -> bool
+    val induction : string -> t
+    val parameter : string -> t
+
+    val is_induction : t -> bool
     val is_parameter : t -> bool
   end
   module Term : sig
@@ -20,8 +24,8 @@ module Expr : sig
     val compare : t -> t -> int
     val to_string : t -> string
     (* val of_int : int -> t *)
-    val param : string -> t
-    val ind : string -> t
+    val parameter : string -> t
+    val induction : string -> t
     (* val one : t *)
     val ( * ) : t -> t -> t
 
@@ -34,7 +38,7 @@ module Expr : sig
     val fold : (Var.t -> int -> 'a -> 'a) -> 'a -> t -> 'a
     val filter : (Var.t -> int -> bool) -> t -> t
 
-    val has_inductive : t -> bool
+    val has_induction : t -> bool
     val has_parameter : t -> bool
     val is_const : t -> bool
     val nfactors: t -> int
@@ -44,6 +48,7 @@ module Expr : sig
   val param : string -> t
   val ind : string -> t
   val of_int : int -> t
+  val of_var : Var.t -> t
   val zero : t
   val ( + ) : t -> t -> t
   val ( - ) : t -> t -> t
@@ -60,6 +65,10 @@ module Expr : sig
 end = struct
   module Var = struct
     type t = Param of string | Induction of string
+
+    let induction s = Induction s
+    let parameter s = Param s
+
     let compare x y = match x, y with
       | Param s1, Param s2 -> String.compare s1 s2
       | Induction s1, Induction s2 -> String.compare s1 s2
@@ -69,10 +78,18 @@ end = struct
       | Param s -> s
       | Induction s -> Printf.sprintf "i_%s" s
 
+    let of_nexp = function 
+      | Exp.Var v -> let first = String.get v.name 0
+          in if first == Char.uppercase_ascii first
+            then parameter v.name (* ??? *)
+            else induction v.name
+      | _ -> failwith "Unsupported operation"
+      
+
     let to_nexp : t -> Exp.nexp = function
       | Param s | Induction s -> Var (Variable.from_name s)
 
-    let is_inductive = function
+    let is_induction = function
       | Induction _ -> true
       | _ -> false
     let is_parameter = function
@@ -122,8 +139,8 @@ end = struct
       | 0 -> "0"
       | 1 -> TermInner.to_string t
       | _ -> Printf.sprintf "%d * %s" c (TermInner.to_string t)
-    let param s = (1, VarMap.singleton (Var.Param s) 1)
-    let ind s = (1, VarMap.singleton (Var.Induction s) 1)
+    let parameter s = (1, VarMap.singleton (Var.Param s) 1)
+    let induction s = (1, VarMap.singleton (Var.Induction s) 1)
     let of_int i = (i, VarMap.empty)
     let one = of_int 1
 
@@ -135,9 +152,9 @@ end = struct
 
     let is_const (_, t) = TermInner.is_const t
     let nfactors (_, t) = TermInner.nfactors t
-    let has_inductive t = t
+    let has_induction t = t
       |> factors
-      |> List.exists (fun (v, _) -> Var.is_inductive v)
+      |> List.exists (fun (v, _) -> Var.is_induction v)
     let has_parameter t = t
       |> factors
       |> List.exists (fun (v, _) -> Var.is_parameter v)
@@ -179,6 +196,9 @@ end = struct
   let of_int i = match i with
     | 0 -> TermMap.empty
     | _ -> TermMap.singleton (VarMap.empty) i
+
+  let of_var (v : Var.t): t = TermMap.singleton (VarMap.singleton v 1) 1
+
 
   let param v = TermMap.singleton (VarMap.singleton (Var.Param v) 1) 1
   let ind v = TermMap.singleton (VarMap.singleton (Var.Induction v) 1) 1
@@ -228,16 +248,11 @@ end = struct
 
   let rec from_nexp (e: Exp.nexp): t =
     match e with
-    | Exp.Var v -> 
-      let first = String.get v.name 0
-      in if first == Char.uppercase_ascii first
-        then param v.name
-        else ind v.name
     | Exp.Num n -> of_int n
     | Exp.Binary (N_binary.Plus, a, b) -> from_nexp a + from_nexp b
     | Exp.Binary (N_binary.Mult, a, b) -> from_nexp a * from_nexp b
     | Exp.Binary (N_binary.Minus, a, b) -> from_nexp a - from_nexp b
-    | _ -> failwith "unsupported expression"
+    | v -> of_var (Var.of_nexp v)
 
   let to_nexp (e: t): Exp.nexp = 
     match to_list e with
@@ -256,12 +271,9 @@ let size_params (t: Expr.t): Term.t list =
   t
   |> Expr.to_list
   |> List.filter (fun t ->
-    Term.has_inductive t && Term.has_parameter t
+    Term.has_induction t && Term.has_parameter t
   )
-  |> List.map (Term.filter (fun v _ -> match v with
-    | Induction _ -> false
-    | _ -> true
-  ))
+  |> List.map (Term.filter (fun v _ -> Var.is_parameter v))
   |> List.sort_uniq (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
 
 (* Divides out size params *)
