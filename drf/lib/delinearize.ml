@@ -328,49 +328,34 @@ let loption_bind (x : 'a list option) (f : 'a -> 'b list option) : 'b list optio
 
 
 (* Throwing out conditions for now. eventually will use t as a sort of rewrite template *)
-let rewrite_access (acc : Access.t) : Access.t option =
+let rewrite_access (acc : Access.t) : Access.t =
   let (let*) = Option.bind in
-  match acc with
+  let rewritten = match acc with
   | { index = [a]; _ } ->
     let* result = from_nexp a in
     Some { acc with index = result.indices }
   | _ -> None
+  in
+  Option.value ~default:acc rewritten
+(* TODO: this should simply not rewrite if there is a failure *)
 
 
 (* Global analysis not there yet. will need to collect all accesses in a block *)
-let rec rewrite_unsync (code : Unsync.t) : Unsync.t option =
+let rec rewrite_unsync (code : Unsync.t) : Unsync.t =
   let open Unsync in
-  let (let*) = Option.bind in
   match code with
-  | Access a ->
-    let* a' = rewrite_access a in
-    Some (Access a')
-  | Cond (p, b) -> 
-    let* b' = rewrite_unsync b in
-    Some (Cond (p, b'))
-  | Loop (r, b) ->
-    let* b' = rewrite_unsync b in
-    Some (Loop (r, b'))
-  | Seq (a, b) ->
-    let* a' = rewrite_unsync a in
-    let* b' = rewrite_unsync b in
-    Some (Seq (a', b'))
-  | _ -> Some code
+  | Access a -> Access (rewrite_access a)
+  | Cond (p, b) -> Cond (p, rewrite_unsync b)
+  | Loop (r, b) -> Loop (r, rewrite_unsync b)
+  | Seq (a, b) -> Seq (rewrite_unsync a, rewrite_unsync b)
+  | _ -> code
 
-let rec rewrite_aligned (code : Aligned.Code.t) : Aligned.Code.t option =
+let rec rewrite_aligned (code : Aligned.Code.t) : Aligned.Code.t =
   let open Aligned.Code in
-  let (let*) = Option.bind in
   match code with
-  | Sync c ->
-    let* c' = rewrite_unsync c in
-    Some (Sync c')
-  | Loop ({ body; _ } as loop) -> 
-    let* body' = rewrite_aligned body in
-    Some (Loop { loop with body = body' })
-  | Seq (a, b) ->
-    let* a' = rewrite_aligned a in
-    let* b' = rewrite_aligned b in
-    Some (Seq (a', b'))
+  | Sync c -> Sync (rewrite_unsync c)
+  | Loop ({ body; _ } as loop) -> Loop { loop with body = rewrite_aligned body }
+  | Seq (a, b) -> Seq (rewrite_aligned a, rewrite_aligned b)
 
 (* add function mapping aligned.code to proto *)
 (* analysis on each unsync block - some sort of set/map of variable status *)
