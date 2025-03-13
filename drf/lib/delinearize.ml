@@ -6,14 +6,14 @@ open Protocols
 
 module Expr : sig
   type t
-  module Var : sig
+  module Var : sig (* make wrapper around nexp, handle arbitrary expressions. rename to atom *)
     type t
     val compare : t -> t -> int
     val to_string : t -> string
     val to_nexp : t -> Exp.nexp
-    val of_nexp : Exp.nexp -> t
+    val from_nexp : Exp.nexp -> t
 
-    val induction : string -> t
+    val induction : string -> t (* should take nexp *)
     val parameter : string -> t
 
     val is_induction : t -> bool
@@ -34,7 +34,7 @@ module Expr : sig
     val coeff : t -> int
     val factors : t -> (Var.t * int) list
     (* val from_factors : (Var.t * int) list *)
-    
+
     val fold : (Var.t -> int -> 'a -> 'a) -> 'a -> t -> 'a
     val filter : (Var.t -> int -> bool) -> t -> t
 
@@ -78,13 +78,13 @@ end = struct
       | Param s -> s
       | Induction s -> Printf.sprintf "i_%s" s
 
-    let of_nexp = function 
+    let from_nexp = function
       | Exp.Var v -> let first = String.get v.name 0
           in if first == Char.uppercase_ascii first
             then parameter v.name (* ??? *)
             else induction v.name
       | _ -> failwith "Unsupported operation"
-      
+
 
     let to_nexp : t -> Exp.nexp = function
       | Param s | Induction s -> Var (Variable.from_name s)
@@ -101,7 +101,7 @@ end = struct
     type t = int VarMap.t
 
     let compare = VarMap.compare Int.compare
-    let to_string t = 
+    let to_string t =
       if VarMap.is_empty t
       then "1"
       else
@@ -182,7 +182,7 @@ end = struct
   module TermMap = Map.Make(TermInner)
   type t = int TermMap.t
 
-  let to_string t = 
+  let to_string t =
     if TermMap.is_empty t then "0"
     else TermMap.bindings t
       |> List.map (function
@@ -204,7 +204,7 @@ end = struct
   let ind v = TermMap.singleton (VarMap.singleton (Var.Induction v) 1) 1
   let zero = TermMap.empty
 
-  let ( + ) t1 t2 = 
+  let ( + ) t1 t2 =
     TermMap.merge (fun _ v1 v2 -> match v1, v2 with
     | Some v1, Some v2 ->
         (let sum = v1 + v2
@@ -213,7 +213,7 @@ end = struct
         | _ -> Some sum)
     | Some v, None | None, Some v -> Some v
     | None, None -> None) t1 t2
-  let ( - ) t1 t2 = 
+  let ( - ) t1 t2 =
     TermMap.merge (fun _ v1 v2 -> match v1, v2 with
     | Some v1, Some v2 ->
         (let diff = v1 - v2
@@ -235,9 +235,9 @@ end = struct
   let of_list (t : Term.t list): t = t
     |>  List.map (fun (c, t) -> (t, c))
     |> TermMap.of_list
-        
 
-  let div_mod (n : t) (d : Term.t) : t * t = 
+
+  let div_mod (n : t) (d : Term.t) : t * t =
     let q, r = n
     |> to_list
     |> List.partition_map (fun t -> match Term.try_div t d with
@@ -252,14 +252,14 @@ end = struct
     | Exp.Binary (N_binary.Plus, a, b) -> from_nexp a + from_nexp b
     | Exp.Binary (N_binary.Mult, a, b) -> from_nexp a * from_nexp b
     | Exp.Binary (N_binary.Minus, a, b) -> from_nexp a - from_nexp b
-    | v -> of_var (Var.of_nexp v)
+    | v -> of_var (Var.from_nexp v)
 
-  let to_nexp (e: t): Exp.nexp = 
+  let to_nexp (e: t): Exp.nexp =
     match to_list e with
     | [] -> Num 0
-    | x :: xs -> xs |> List.fold_left (fun r x -> 
+    | x :: xs -> xs |> List.fold_left (fun r x ->
         Exp.Binary(N_binary.Plus, r, Term.to_nexp x)
-      ) (Term.to_nexp x) 
+      ) (Term.to_nexp x)
 end
 
 (* module StringSet = Set.Make(String) *)
@@ -280,13 +280,13 @@ let size_params (t: Expr.t): Term.t list =
 let rec dims: Term.t list -> Term.t list option = function
   | [] -> Some []
   | [x] -> Some [x]
-  | x :: y :: ys -> 
+  | x :: y :: ys ->
     let ( let* ) = Option.bind in
     let* dim = Term.try_div x y in
     let* r = dims (y :: ys) in
     Some (dim :: r)
 
-let accesses (dims : Term.t list) (t : Expr.t): Expr.t list = 
+let accesses (dims : Term.t list) (t : Expr.t): Expr.t list =
   let rec loop rdims t = match rdims with
   | [] -> [t]
   | d :: ds -> let q, r = Expr.div_mod t d in
@@ -303,12 +303,12 @@ type t = {
 }
 
 let to_string: t -> string = function
-  | { indices; dims; } -> 
+  | { indices; dims; } ->
     Printf.sprintf "{indices = [%s]; dims = [%s]}"
       (indices |> List.map Exp.n_to_string |> String.concat "; ")
       (dims |> List.map Exp.n_to_string |> String.concat "; ")
 
-let from_nexp (expr: Exp.nexp): t option = 
+let from_nexp (expr: Exp.nexp): t option =
   let ( let* ) = Option.bind in
   let expr' = Expr.from_nexp expr in
   let* ds = expr'
@@ -320,14 +320,58 @@ let from_nexp (expr: Exp.nexp): t option =
     dims = List.map Expr.Term.to_nexp ds;
   }
 
-(* debug code *)
-module Build = struct
-  let var x = Exp.Var (Variable.from_name x)
-  let ( + ) a b = Exp.Binary (Plus, a, b)
-  let ( * ) a b = Exp.Binary (Mult, a, b) 
-end
+(* let list_bind (x : 'a list) (f : 'a -> 'b list) : 'b list =
+  x |> List.map f |> List.flatten
 
-(* let () =
-  match from_nexp Build.( var "x" ) with
-  | Some r -> r |> to_string |> print_endline
-  | None -> print_endline "error" *)
+let loption_bind (x : 'a list option) (f : 'a -> 'b list option) : 'b list option =
+  match x with  *)
+
+
+(* Throwing out conditions for now. eventually will use t as a sort of rewrite template *)
+let rewrite_access (acc : Access.t) : Access.t option =
+  let (let*) = Option.bind in
+  match acc with
+  | { index = [a]; _ } ->
+    let* result = from_nexp a in
+    Some { acc with index = result.indices }
+  | _ -> None
+
+
+(* Global analysis not there yet. will need to collect all accesses in a block *)
+let rec rewrite_unsync (code : Unsync.t) : Unsync.t option =
+  let open Unsync in
+  let (let*) = Option.bind in
+  match code with
+  | Access a ->
+    let* a' = rewrite_access a in
+    Some (Access a')
+  | Cond (p, b) -> 
+    let* b' = rewrite_unsync b in
+    Some (Cond (p, b'))
+  | Loop (r, b) ->
+    let* b' = rewrite_unsync b in
+    Some (Loop (r, b'))
+  | Seq (a, b) ->
+    let* a' = rewrite_unsync a in
+    let* b' = rewrite_unsync b in
+    Some (Seq (a', b'))
+  | _ -> Some code
+
+let rec rewrite_aligned (code : Aligned.Code.t) : Aligned.Code.t option =
+  let open Aligned.Code in
+  let (let*) = Option.bind in
+  match code with
+  | Sync c ->
+    let* c' = rewrite_unsync c in
+    Some (Sync c')
+  | Loop ({ body; _ } as loop) -> 
+    let* body' = rewrite_aligned body in
+    Some (Loop { loop with body = body' })
+  | Seq (a, b) ->
+    let* a' = rewrite_aligned a in
+    let* b' = rewrite_aligned b in
+    Some (Seq (a', b'))
+
+(* add function mapping aligned.code to proto *)
+(* analysis on each unsync block - some sort of set/map of variable status *)
+(* loop bounds are uniform in aligned *)
