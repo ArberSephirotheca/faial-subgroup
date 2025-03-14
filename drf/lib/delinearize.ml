@@ -353,14 +353,18 @@ let rewrite_unsync (_globals : Variable.Set.t) : Unsync.t -> Unsync.t =
   in
   rewrite_unsync
 
-let rec rewrite_aligned (globals : Variable.Set.t) (code : Aligned.Code.t) : Aligned.Code.t =
+let rec rewrite_aligned (globals : Variable.Set.t) : Aligned.Code.t -> Aligned.Code.t =
   let open Aligned.Code in
-  match code with
+  function
   | Sync c -> Sync (rewrite_unsync globals c)
   | Loop ({ range = {var=x; _}; body; _ } as loop) ->
     Loop { loop with body = rewrite_aligned (Variable.Set.add x globals) body }
   | Seq (a, b) -> Seq (rewrite_aligned globals a, rewrite_aligned globals b)
 
+let rewrite_kernel (kernel : Aligned.Kernel.t) : Aligned.Kernel.t =
+  let globals = Params.to_set kernel.global_variables in
+  { kernel with code = rewrite_aligned globals kernel.code }
+  
 (* add function mapping aligned.code to proto *)
 (* analysis on each unsync block - some sort of set/map of variable status *)
 (* loop bounds are uniform in aligned *)
