@@ -330,32 +330,36 @@ let loption_bind (x : 'a list option) (f : 'a -> 'b list option) : 'b list optio
 (* Throwing out conditions for now. eventually will use t as a sort of rewrite template *)
 let rewrite_access (acc : Access.t) : Access.t =
   let (let*) = Option.bind in
-  let rewritten = match acc with
+  (match acc with
   | { index = [a]; _ } ->
     let* result = from_nexp a in
     Some { acc with index = result.indices }
   | _ -> None
-  in
-  Option.value ~default:acc rewritten
+  ) |>
+  Option.value ~default:acc
 (* TODO: this should simply not rewrite if there is a failure *)
 
 
 (* Global analysis not there yet. will need to collect all accesses in a block *)
-let rec rewrite_unsync (code : Unsync.t) : Unsync.t =
+let rewrite_unsync (_globals : Variable.Set.t) : Unsync.t -> Unsync.t =
   let open Unsync in
-  match code with
+  let rec rewrite_unsync : Unsync.t -> Unsync.t =
+  function
   | Access a -> Access (rewrite_access a)
   | Cond (p, b) -> Cond (p, rewrite_unsync b)
   | Loop (r, b) -> Loop (r, rewrite_unsync b)
   | Seq (a, b) -> Seq (rewrite_unsync a, rewrite_unsync b)
-  | _ -> code
+  | code -> code
+  in
+  rewrite_unsync
 
-let rec rewrite_aligned (code : Aligned.Code.t) : Aligned.Code.t =
+let rec rewrite_aligned (globals : Variable.Set.t) (code : Aligned.Code.t) : Aligned.Code.t =
   let open Aligned.Code in
   match code with
-  | Sync c -> Sync (rewrite_unsync c)
-  | Loop ({ body; _ } as loop) -> Loop { loop with body = rewrite_aligned body }
-  | Seq (a, b) -> Seq (rewrite_aligned a, rewrite_aligned b)
+  | Sync c -> Sync (rewrite_unsync globals c)
+  | Loop ({ range = {var=x; _}; body; _ } as loop) ->
+    Loop { loop with body = rewrite_aligned (Variable.Set.add x globals) body }
+  | Seq (a, b) -> Seq (rewrite_aligned globals a, rewrite_aligned globals b)
 
 (* add function mapping aligned.code to proto *)
 (* analysis on each unsync block - some sort of set/map of variable status *)
