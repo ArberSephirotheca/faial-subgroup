@@ -42,13 +42,10 @@ module UA = struct
   let bin : N_binary.t -> (Exp.nexp * t) -> (Exp.nexp * t) -> (Exp.nexp * t) =
     fun o (e1, x1) (e2, x2) ->
       let both : Exp.nexp = Binary (o, e1, e2) in
-      if x1 = x2 then both, x1
-      else if max x1 x2 = Uniform then
-        both, max x1 x2
-      else if (o = Plus || o = Minus) && (x1 = Uniform || x2 = Uniform) then
-        (if x1 = Uniform then e2 else e1), Inc
-      else
-        both, max x1 x2
+      match o, x1, x2 with
+      | (Plus | Minus), Uniform, (AnyAccurate | Inc) -> e2, Inc
+      | (Plus | Minus), (AnyAccurate | Inc), Uniform -> e1, Inc
+      | _, _, _ -> both, max x1 x2
 
   let map (f:Exp.nexp -> Exp.nexp) ((e,x): Exp.nexp * t) : Exp.nexp * t =
     f e, x
