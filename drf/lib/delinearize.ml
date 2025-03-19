@@ -6,7 +6,7 @@ open Protocols
 
 module Expr : sig
   type t
-  module Var : sig (* make wrapper around nexp, handle arbitrary expressions. rename to atom *)
+  module Atom : sig (* make wrapper around nexp, handle arbitrary expressions. rename to atom *)
     type t
     val compare : t -> t -> int
     val to_string : t -> string
@@ -32,11 +32,11 @@ module Expr : sig
     val try_div : t -> t -> t option
 
     val coeff : t -> int
-    val factors : t -> (Var.t * int) list
-    (* val from_factors : (Var.t * int) list *)
+    val factors : t -> (Atom.t * int) list
+    (* val from_factors : (Atom.t * int) list *)
 
-    val fold : (Var.t -> int -> 'a -> 'a) -> 'a -> t -> 'a
-    val filter : (Var.t -> int -> bool) -> t -> t
+    val fold : (Atom.t -> int -> 'a -> 'a) -> 'a -> t -> 'a
+    val filter : (Atom.t -> int -> bool) -> t -> t
 
     val has_induction : t -> bool
     val has_parameter : t -> bool
@@ -45,10 +45,10 @@ module Expr : sig
     val to_nexp : t -> Exp.nexp
   end
   val to_string : t -> string
-  val param : string -> t
-  val ind : string -> t
+  val parameter : string -> t
+  val induction : string -> t
   val of_int : int -> t
-  val of_var : Var.t -> t
+  val of_atom : Atom.t -> t
   val zero : t
   val ( + ) : t -> t -> t
   val ( - ) : t -> t -> t
@@ -63,20 +63,30 @@ module Expr : sig
   val from_nexp : Exp.nexp -> t
   val to_nexp : t -> Exp.nexp
 end = struct
-  module Var = struct
-    type t = Param of string | Induction of string
+  module Atom = struct
+    type t = {
+      value: Exp.nexp;
+      thread_global: bool;
+    }
 
-    let induction s = Induction s
-    let parameter s = Param s
+    let induction s = {
+      value = Exp.Var (Variable.from_name s);
+      thread_global = false;
+    }
+    let parameter s = {
+      value = Exp.Var (Variable.from_name s);
+      thread_global = true;
+    }
 
-    let compare x y = match x, y with
-      | Param s1, Param s2 -> String.compare s1 s2
-      | Induction s1, Induction s2 -> String.compare s1 s2
-      | Param _, Induction _ -> -1
-      | Induction _, Param _ -> 1
+    let compare { value = v1; thread_global = t1} { value = v2; thread_global = t2 } =
+      match compare t1 t2 with
+      | 0 -> compare v1 v2
+      | c -> c
+      
+
     let to_string = function
-      | Param s -> s
-      | Induction s -> Printf.sprintf "i_%s" s
+      | { value; thread_global = true } -> Exp.n_to_string value ^ " (global)"
+      | { value; thread_global = false} -> Exp.n_to_string value
 
     let from_nexp = function
       | Exp.Var v -> let first = String.get v.name 0
@@ -87,16 +97,12 @@ end = struct
 
 
     let to_nexp : t -> Exp.nexp = function
-      | Param s | Induction s -> Var (Variable.from_name s)
+      | { value; _ } -> value
 
-    let is_induction = function
-      | Induction _ -> true
-      | _ -> false
-    let is_parameter = function
-      | Param _ -> true
-      | _ -> false
+    let is_induction v = not v.thread_global
+    let is_parameter v = v.thread_global
   end
-  module VarMap = Map.Make(Var)
+  module VarMap = Map.Make(Atom)
   module TermInner = struct
     type t = int VarMap.t
 
@@ -106,7 +112,7 @@ end = struct
       then "1"
       else
         VarMap.bindings t
-        |> List.map (fun (a, i) -> (Var.to_string a, i))
+        |> List.map (fun (a, i) -> (Atom.to_string a, i))
         |> List.map (function
         | k, 1 -> k
         | k, v -> Printf.sprintf "%s^%d" k v)
@@ -139,8 +145,8 @@ end = struct
       | 0 -> "0"
       | 1 -> TermInner.to_string t
       | _ -> Printf.sprintf "%d * %s" c (TermInner.to_string t)
-    let parameter s = (1, VarMap.singleton (Var.Param s) 1)
-    let induction s = (1, VarMap.singleton (Var.Induction s) 1)
+    let parameter s = (1, VarMap.singleton (Atom.parameter s) 1)
+    let induction s = (1, VarMap.singleton (Atom.induction s) 1)
     let of_int i = (i, VarMap.empty)
     let one = of_int 1
 
@@ -148,21 +154,21 @@ end = struct
     let coeff (c, _) = c
     let fold f acc (_, t) = TermInner.fold f acc t
     let filter f (c, t) = c, VarMap.filter f t
-    let factors (_, t): (Var.t * int) list = TermInner.to_list t
+    let factors (_, t): (Atom.t * int) list = TermInner.to_list t
 
     let is_const (_, t) = TermInner.is_const t
     let nfactors (_, t) = TermInner.nfactors t
     let has_induction t = t
       |> factors
-      |> List.exists (fun (v, _) -> Var.is_induction v)
+      |> List.exists (fun (v, _) -> Atom.is_induction v)
     let has_parameter t = t
       |> factors
-      |> List.exists (fun (v, _) -> Var.is_parameter v)
+      |> List.exists (fun (v, _) -> Atom.is_parameter v)
 
-    let rec factor_to_nexp ((factor, exp): Var.t * int): Exp.nexp = match exp with
+    let rec factor_to_nexp ((factor, exp): Atom.t * int): Exp.nexp = match exp with
       | 0 -> failwith "exponent shouldn't be 0"
-      | 1 -> Var.to_nexp factor
-      | n -> Binary (N_binary.Mult, factor_to_nexp (factor, n-1), Var.to_nexp factor)
+      | 1 -> Atom.to_nexp factor
+      | n -> Binary (N_binary.Mult, factor_to_nexp (factor, n-1), Atom.to_nexp factor)
 
     let to_nexp ((coeff, factors): t): Exp.nexp = match coeff, TermInner.to_list factors with
       | 0, _ -> failwith "coefficient shouldn't be 0"
@@ -197,11 +203,11 @@ end = struct
     | 0 -> TermMap.empty
     | _ -> TermMap.singleton (VarMap.empty) i
 
-  let of_var (v : Var.t): t = TermMap.singleton (VarMap.singleton v 1) 1
+  let of_atom (v : Atom.t): t = TermMap.singleton (VarMap.singleton v 1) 1
 
 
-  let param v = TermMap.singleton (VarMap.singleton (Var.Param v) 1) 1
-  let ind v = TermMap.singleton (VarMap.singleton (Var.Induction v) 1) 1
+  let parameter v = TermMap.singleton (VarMap.singleton (Atom.parameter v) 1) 1
+  let induction v = TermMap.singleton (VarMap.singleton (Atom.induction v) 1) 1
   let zero = TermMap.empty
 
   let ( + ) t1 t2 =
@@ -252,7 +258,7 @@ end = struct
     | Exp.Binary (N_binary.Plus, a, b) -> from_nexp a + from_nexp b
     | Exp.Binary (N_binary.Mult, a, b) -> from_nexp a * from_nexp b
     | Exp.Binary (N_binary.Minus, a, b) -> from_nexp a - from_nexp b
-    | v -> of_var (Var.from_nexp v)
+    | v -> of_atom (Atom.from_nexp v)
 
   let to_nexp (e: t): Exp.nexp =
     match to_list e with
@@ -264,7 +270,7 @@ end
 
 (* module StringSet = Set.Make(String) *)
 module Term = Expr.Term
-module Var = Expr.Var
+module Atom = Expr.Atom
 
 (* Extracts all size parameters *)
 let size_params (t: Expr.t): Term.t list =
@@ -273,7 +279,7 @@ let size_params (t: Expr.t): Term.t list =
   |> List.filter (fun t ->
     Term.has_induction t && Term.has_parameter t
   )
-  |> List.map (Term.filter (fun v _ -> Var.is_parameter v))
+  |> List.map (Term.filter (fun v _ -> Atom.is_parameter v))
   |> List.sort_uniq (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
 
 (* Divides out size params *)
@@ -353,11 +359,11 @@ let rewrite_unsync (_globals : Variable.Set.t) : Unsync.t -> Unsync.t =
   in
   rewrite_unsync
 
-let rec rewrite_aligned (globals : Variable.Set.t) : Aligned.Code.t -> Aligned.Code.t =
+let rec rewrite_aligned (globals : Variable.Set.t): Aligned.Code.t -> Aligned.Code.t =
   let open Aligned.Code in
   function
   | Sync c -> Sync (rewrite_unsync globals c)
-  | Loop ({ range = {var=x; _}; body; _ } as loop) ->
+  | Loop ({ range = { var = x; _ }; body; _ } as loop) ->
     Loop { loop with body = rewrite_aligned (Variable.Set.add x globals) body }
   | Seq (a, b) -> Seq (rewrite_aligned globals a, rewrite_aligned globals b)
 
