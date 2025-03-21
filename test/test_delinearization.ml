@@ -14,11 +14,16 @@ module Build = struct
   let x = var "x"
   let y = var "y"
   let z = var "z"
+  let m = var "m"
+  let n = var "n"
   let vM = var "M"
   let vN = var "N"
+  let aA = Variable.from_name "A" 
 end
 
-let normalize (e : nexp): nexp = e |> Delinearize.Expr.from_nexp |> Delinearize.Expr.to_nexp
+let globals = Variable.Set.of_list (["M"; "N"] |> List.map Variable.from_name)
+
+let normalize (e : nexp): nexp = e |> Delinearize.Expr.from_nexp ~globals |> Delinearize.Expr.to_nexp
 
 
 let size_param_examples: (string * nexp * nexp list) list = 
@@ -77,6 +82,33 @@ let positive_examples: (string * nexp * (Delinearize.t option)) list =
     dims = List.map normalize dims;
   })
 
+let make_kernel ((name: string), (globals: string list), (before: Aligned.Code.t), (after: Aligned.Code.t)): string * Aligned.Kernel.t * Aligned.Kernel.t = 
+  let kernel: Aligned.Kernel.t = {
+    name = "";
+    global_variables = globals |> List.map (fun name -> (Variable.from_name name, C_type.int)) |> Params.from_list;
+    local_variables = Params.empty;
+    arrays = Variable.Map.empty;
+    pre = Exp.b_true;
+    code = before;
+    visibility = Visibility.Global;
+    grid_dim = None;
+    block_dim = None
+  } in
+  name, kernel, { kernel with code = after }
+
+let kernels: (string * Aligned.Kernel.t * Aligned.Kernel.t) list = 
+  let open Aligned.Code in
+  let open Build in 
+  let acc array index = Unsync.Access { array; index; mode = (Write None) } in
+  [
+    "trivial", [], Sync Skip, Sync Skip;
+    "3dim+param", ["m"; "n"],
+    Sync (acc aA [m * n * x + n * y + z]),
+    Sync (acc aA [x; y; z])
+  ] |> List.map make_kernel
+
+(* let  *)
+
 let string_of_option (f : 'a -> string) (o : 'a option) =
   match o with
   | Some x -> f x
@@ -95,7 +127,7 @@ let tests = "examples" >::: [
         ~printer:(string_of_list Exp.n_to_string)
         params
         Delinearize.(exp
-          |> Expr.from_nexp
+          |> Expr.from_nexp ~globals
           |> size_params
           |> List.map Delinearize.Term.to_nexp
         )
@@ -108,7 +140,7 @@ let tests = "examples" >::: [
         ~printer:(Exp.n_to_string |> string_of_list |> string_of_option)
         (Some dim)
         Delinearize.(exp
-          |> Expr.from_nexp
+          |> Expr.from_nexp ~globals
           |> size_params
           |> Delinearize.dims
           |> Option.map (List.map Delinearize.Term.to_nexp)
@@ -116,14 +148,23 @@ let tests = "examples" >::: [
     )
   );
   "positive examples (stage3)" >:: (fun _ ->
-    positive_examples |> List.iter (fun (name, before, res) -> 
+    positive_examples |> List.iter (fun (name, before, after) -> 
       assert_equal
         ~msg:name
         ~printer:(string_of_option Delinearize.to_string)
-        res 
-        (Delinearize.from_nexp before)
+        after 
+        (Delinearize.from_nexp ~globals before)
     )
-  )    
+  );
+  "full kernels" >:: (fun _ ->
+    kernels |> List.iter (fun (name, before, after) ->
+      assert_equal
+        ~msg:name
+        ~printer:Aligned.Kernel.to_string
+        after 
+        (Delinearize.rewrite_kernel before)
+    )
+  );
 ]
 
 let _ = run_test_tt_main tests

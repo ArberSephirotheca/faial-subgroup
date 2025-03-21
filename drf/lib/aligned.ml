@@ -215,6 +215,7 @@ module Kernel = struct
       Line "; end of code"
     ]
 
+  let to_string (k:t) : string = k |> to_s |> Indent.to_string
   let print (k:t) : unit =
     Indent.print (to_s k)
 

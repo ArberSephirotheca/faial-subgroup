@@ -11,7 +11,7 @@ module Expr : sig
     val compare : t -> t -> int
     val to_string : t -> string
     val to_nexp : t -> Exp.nexp
-    val from_nexp : Exp.nexp -> t
+    val from_nexp : globals:Variable.Set.t -> Exp.nexp -> t
 
     val induction : string -> t (* should take nexp *)
     val parameter : string -> t
@@ -60,7 +60,7 @@ module Expr : sig
   val to_list : t -> Term.t list
   val of_list : Term.t list -> t
   val compare : t -> t -> int
-  val from_nexp : Exp.nexp -> t
+  val from_nexp : globals:Variable.Set.t -> Exp.nexp -> t
   val to_nexp : t -> Exp.nexp
 end = struct
   module Atom = struct
@@ -83,17 +83,18 @@ end = struct
       | 0 -> compare v1 v2
       | c -> c
       
-
     let to_string = function
       | { value; thread_global = true } -> Exp.n_to_string value ^ " (global)"
       | { value; thread_global = false} -> Exp.n_to_string value
 
-    let from_nexp = function
-      | Exp.Var v -> let first = String.get v.name 0
-          in if first == Char.uppercase_ascii first
-            then parameter v.name (* ??? *)
-            else induction v.name
-      | _ -> failwith "Unsupported operation"
+    let from_nexp ~globals (value: Exp.nexp) : t =
+      let thread_global = match value with
+        | Exp.Var v -> Variable.Set.mem v globals
+        | _ -> failwith "Unsupported expression"
+      in
+      {
+        value; thread_global
+      }
 
 
     let to_nexp : t -> Exp.nexp = function
@@ -252,13 +253,13 @@ end = struct
     ) in
     of_list q, of_list r
 
-  let rec from_nexp (e: Exp.nexp): t =
+  let rec from_nexp ~(globals) (e: Exp.nexp): t =
     match e with
     | Exp.Num n -> of_int n
-    | Exp.Binary (N_binary.Plus, a, b) -> from_nexp a + from_nexp b
-    | Exp.Binary (N_binary.Mult, a, b) -> from_nexp a * from_nexp b
-    | Exp.Binary (N_binary.Minus, a, b) -> from_nexp a - from_nexp b
-    | v -> of_atom (Atom.from_nexp v)
+    | Exp.Binary (N_binary.Plus, a, b) -> from_nexp ~globals a + from_nexp ~globals b
+    | Exp.Binary (N_binary.Mult, a, b) -> from_nexp ~globals a * from_nexp ~globals b
+    | Exp.Binary (N_binary.Minus, a, b) -> from_nexp ~globals a - from_nexp ~globals b
+    | v -> of_atom (Atom.from_nexp ~globals v)
 
   let to_nexp (e: t): Exp.nexp =
     match to_list e with
@@ -314,9 +315,9 @@ let to_string: t -> string = function
       (indices |> List.map Exp.n_to_string |> String.concat "; ")
       (dims |> List.map Exp.n_to_string |> String.concat "; ")
 
-let from_nexp (expr: Exp.nexp): t option =
+let from_nexp ~globals (expr: Exp.nexp): t option =
   let ( let* ) = Option.bind in
-  let expr' = Expr.from_nexp expr in
+  let expr' = Expr.from_nexp ~globals expr in
   let* ds = expr'
     |> size_params
     |> dims in
@@ -334,11 +335,11 @@ let loption_bind (x : 'a list option) (f : 'a -> 'b list option) : 'b list optio
 
 
 (* Throwing out conditions for now. eventually will use t as a sort of rewrite template *)
-let rewrite_access (acc : Access.t) : Access.t =
+let rewrite_access ~globals (acc : Access.t) : Access.t =
   let (let*) = Option.bind in
   (match acc with
   | { index = [a]; _ } ->
-    let* result = from_nexp a in
+    let* result = from_nexp ~globals a in
     Some { acc with index = result.indices }
   | _ -> None
   ) |>
@@ -347,11 +348,11 @@ let rewrite_access (acc : Access.t) : Access.t =
 
 
 (* Global analysis not there yet. will need to collect all accesses in a block *)
-let rewrite_unsync (_globals : Variable.Set.t) : Unsync.t -> Unsync.t =
+let rewrite_unsync ~(globals : Variable.Set.t) : Unsync.t -> Unsync.t =
   let open Unsync in
   let rec rewrite_unsync : Unsync.t -> Unsync.t =
   function
-  | Access a -> Access (rewrite_access a)
+  | Access a -> Access (rewrite_access ~globals a)
   | Cond (p, b) -> Cond (p, rewrite_unsync b)
   | Loop (r, b) -> Loop (r, rewrite_unsync b)
   | Seq (a, b) -> Seq (rewrite_unsync a, rewrite_unsync b)
@@ -359,17 +360,17 @@ let rewrite_unsync (_globals : Variable.Set.t) : Unsync.t -> Unsync.t =
   in
   rewrite_unsync
 
-let rec rewrite_aligned (globals : Variable.Set.t): Aligned.Code.t -> Aligned.Code.t =
+let rec rewrite_aligned ~(globals : Variable.Set.t): Aligned.Code.t -> Aligned.Code.t =
   let open Aligned.Code in
   function
-  | Sync c -> Sync (rewrite_unsync globals c)
+  | Sync c -> Sync (rewrite_unsync ~globals c)
   | Loop ({ range = { var = x; _ }; body; _ } as loop) ->
-    Loop { loop with body = rewrite_aligned (Variable.Set.add x globals) body }
-  | Seq (a, b) -> Seq (rewrite_aligned globals a, rewrite_aligned globals b)
+    Loop { loop with body = rewrite_aligned ~globals:(Variable.Set.add x globals) body }
+  | Seq (a, b) -> Seq (rewrite_aligned ~globals a, rewrite_aligned ~globals b)
 
 let rewrite_kernel (kernel : Aligned.Kernel.t) : Aligned.Kernel.t =
   let globals = Params.to_set kernel.global_variables in
-  { kernel with code = rewrite_aligned globals kernel.code }
+  { kernel with code = rewrite_aligned ~globals kernel.code }
   
 (* add function mapping aligned.code to proto *)
 (* analysis on each unsync block - some sort of set/map of variable status *)
