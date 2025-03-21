@@ -4,6 +4,59 @@ module UniformCond = struct
   type t = Exact | Approximate
 end
 
+module Metrics = struct
+  type statistics = { approximate: int; exact : int ; total: int}
+  type t = {index: statistics; loop: statistics; condition: statistics}
+  let empty : t = {
+    index = {approximate=0; exact=0; total=0};
+    loop = {approximate=0; exact=0; total=0};
+    condition={approximate=0; exact=0; total=0}
+  }
+  let count_as (exact: bool) =
+    {
+      approximate=(if exact then 0 else 1);
+      exact=if exact then 1 else 0;
+      total=1
+    }
+
+  let (>>) f g x = g(f(x))
+
+  let isExact : Divergence.t -> bool = function
+    | Uniform -> true
+    | Divergent -> false
+  let div_to_stat = isExact >> count_as
+
+  let loop = div_to_stat >> fun stat -> { empty with loop=stat }
+  let index = div_to_stat >> fun stat -> { empty with index=stat }
+  let condition = div_to_stat >> fun stat -> { empty with condition=stat }
+
+  let add (l:statistics) (r:statistics) : statistics =
+    {
+      approximate = l.approximate + r.approximate;
+      exact = l.exact + r.exact;
+      total= l.total + r.total
+    }
+  let add (l:t) (r:t) : t =
+    {
+      index = add l.index r.index;
+      loop = add l.loop r.loop;
+      condition=add l.condition r.condition
+    }
+  let to_string (a:t) : string =
+    let inner (e:statistics) : string =
+      Printf.sprintf
+        "{exact=%d, approximate=%d, total=%d}"
+        e.exact
+        e.approximate
+        e.total
+    in
+    Printf.sprintf
+      "{index=%s, loop=%s, cond=%s}"
+      (inner a.index)
+      (inner a.loop)
+      (inner a.condition)
+end
+
 module Approx = struct
   type t = {exact_index: bool; exact_loop: bool; exact_condition: bool}
 
@@ -43,7 +96,6 @@ module Approx = struct
 
   let set_unexact_loop (e:t) : t =
     { e with exact_loop = false }
-
 end
 
 let to_optimize : Analysis_strategy.t -> Uniform_range.t =
@@ -89,16 +141,17 @@ module Make (L:Logger.Logger) = struct
     let set_unexact_loop (ctx:t) : t =
       { ctx with approx = Approx.set_unexact_loop ctx.approx }
 
-    let rec add_condition (cond:Exp.bexp) (ctx:t) : t * Divergence.t =
+    let rec add_condition (cond:Exp.bexp) (ctx:t) : t * Divergence.t * Metrics.t =
       (*
         When we find an and, we try to each sub-expression so that we can
         be as precise as possible and possibly miss some sub-conditions.
       *)
       match cond with
       | BRel (BAnd, cond1, cond2) ->
-        let (ctx, div1) = add_condition cond1 ctx in
-        let (ctx, div2) = add_condition cond2 ctx in
-        (ctx, Divergence.add div1 div2)
+        let (ctx, div1, metrics1) = add_condition cond1 ctx in
+        let (ctx, div2, metrics2) = add_condition cond2 ctx in
+        let div = Divergence.add div1 div2 in
+        (ctx, div, Metrics.add (Metrics.condition div) (Metrics.add metrics1 metrics2))
       | _ ->
         let fns =
           Variable.Set.inter
@@ -109,23 +162,27 @@ module Make (L:Logger.Logger) = struct
           Variable.Set.diff fns Variable.tid_set
           |> Variable.Set.is_empty
         in
+
         if Variable.Set.is_empty fns then
-          (* warp-uniform *)
-          (ctx, Divergence.Uniform)
+          (* warp-uniform  -> exact*)
+          (ctx, Divergence.Uniform, Metrics.condition Divergence.Uniform)
         else
-          (* warp-divergent *)
-          (if only_tid_in_locals then
-            { ctx with divergence = Exp.b_and cond ctx.divergence }
+          (* warp-divergent -*)
+          let (approxi, divergence): t * Divergence.t = (if only_tid_in_locals then
+             (* exact *)
+            ({ ctx with divergence = Exp.b_and cond ctx.divergence }, Divergence.Uniform)
           else
-            set_unexact_cond ctx
-          ), Divergence.Divergent
+            (* approximate *)
+            (set_unexact_cond ctx, Divergence.Divergent))
+          in
+          (approxi, divergence, Metrics.condition divergence)
 
-    let add_if (cond:Exp.bexp) (ctx:t) : t * t * Divergence.t =
-      let (ctx1, div) = add_condition cond ctx in
-      let (ctx2, _) = add_condition (Exp.b_not cond) ctx in
-      (ctx1, ctx2, div)
+    let add_if (cond:Exp.bexp) (ctx:t) : t * t * Divergence.t * Metrics.t =
+      let (ctx1, div, metrics) = add_condition cond ctx in
+      let (ctx2, _, _) = add_condition (Exp.b_not cond) ctx in
+      (ctx1, ctx2, div, metrics)
 
-    let add_range (uniform_loop:Range.t -> Range.t option) (range:Range.t) (ctx:t) : (Range.t * t) option =
+    let add_range (uniform_loop:Range.t -> Range.t option) (range:Range.t) (ctx:t) : (Range.t * Divergence.t * t) option =
       let free_locals =
         Range.free_names range Variable.Set.empty
         |> Variable.Set.inter ctx.locals
@@ -136,7 +193,7 @@ module Make (L:Logger.Logger) = struct
       in
       (* Warp-uniform loop *)
       if Variable.Set.is_empty free_locals then
-        Some (range, ctx)
+        Some (range, Divergence.Uniform, ctx)
       (* Warp-divergent loop *)
       else if only_tid_in_locals then (
         (* get the first number *)
@@ -156,7 +213,7 @@ module Make (L:Logger.Logger) = struct
               ctx
           in
           (* In either case we must mark the loop as inexact *)
-          Some (range, set_unexact_loop ctx)
+          Some (range, Divergence.Divergent, set_unexact_loop ctx)
         | None ->
           None
       ) else
@@ -171,7 +228,7 @@ module Make (L:Logger.Logger) = struct
     (cfg:Config.t)
     (k:Kernel.t)
   :
-    (Ra.Stmt.t * Approx.t, string) Result.t
+    (Ra.Stmt.t * Approx.t * Metrics.t, string) Result.t
   =
     let ( let* ) = Result.bind in
     let if_ : Exp.bexp -> Ra.Stmt.t -> Ra.Stmt.t -> Ra.Stmt.t =
@@ -184,15 +241,15 @@ module Make (L:Logger.Logger) = struct
     let idx_analysis = I.run m cfg ~strategy in
     let uniform_loop = R.uniform (to_optimize strategy) params cfg.block_dim in
     let rec from_p (ctx:Context.t) :
-      Code.t -> (Ra.Stmt.t * Approx.t, string) Result.t
+      Code.t -> (Ra.Stmt.t * Approx.t * Metrics.t, string) Result.t
     =
       let open Ra.Stmt in
       function
-      | Skip -> Ok (Skip, Approx.exact)
+      | Skip -> Ok (Skip, Approx.exact, Metrics.empty)
       | Seq (p, q) ->
-        let* (p, approx1) = from_p ctx p in
-        let* (q, approx2) = from_p ctx q in
-        Ok (Seq (p, q), Approx.add approx1 approx2)
+        let* (p, approx1, metric1) = from_p ctx p in
+        let* (q, approx2, metric2) = from_p ctx q in
+        Ok (Seq (p, q), Approx.add approx1 approx2, Metrics.add metric1 metric2)
       | Access {array=x; index=l; _} ->
         Ok (
           l
@@ -206,35 +263,38 @@ module Make (L:Logger.Logger) = struct
               in
               (
                 cost.code,
-                Approx.set_exact_index cost.exact ctx.approx
+                Approx.set_exact_index cost.exact ctx.approx,
+                { Metrics.empty with index=Metrics.count_as cost.exact}
               )
             )
             (* When the array is ignored, return Skip *)
-          |> Option.value ~default:(Ra.Stmt.Skip, Approx.exact)
+          |> Option.value ~default:(Ra.Stmt.Skip, Approx.exact, Metrics.empty)
         )
-      | Sync _ -> Ok (Skip, Approx.exact)
+      | Sync _ -> Ok (Skip, Approx.exact, Metrics.empty)
       | Decl {body=p; var; _} ->
         from_p (Context.add_local var ctx) p
       | If (b, p, q) ->
-        let (ctx1, ctx2, div) = Context.add_if b ctx in
-        let* (p, approx1) = from_p ctx1 p in
-        let* (q, approx2) = from_p ctx2 q in
+        let (ctx1, ctx2, div, metrics) = Context.add_if b ctx in
+        let* (p, approx1, metric1) = from_p ctx1 p in
+        let* (q, approx2, metric2) = from_p ctx2 q in
         let code =
           match div, strategy with
           | Uniform, _ -> if_ b p q
           | Divergent, OverApproximation -> Seq (p, q)
           | Divergent, UnderApproximation -> Skip
         in
-        Ok (code, Approx.add approx1 approx2)
+        Ok (code, Approx.add approx1 approx2, Metrics.add metrics (Metrics.add metric1 metric2))
       | Loop {range; body} ->
         (match Context.add_range uniform_loop range ctx with
-        | Some (range, ctx) ->
-          let* (body, approx) = from_p ctx body in
-          Ok (Loop {range; body;}, approx)
-        | None ->
-          let* (body, _) = from_p ctx body in
+         | Some (range, div, ctx) ->
+           let* (body, approx, metric) = from_p ctx body in
+           Ok (Loop {range; body;},
+               approx,
+               Metrics.add (Metrics.loop div) metric)
+         | None ->
+           let* (body, _, metric) = from_p ctx body in
           if Ra.Stmt.is_zero body then
-            Ok (Skip, Approx.exact)
+            Ok (Skip, Approx.exact, Metrics.add (Metrics.loop Divergence.Uniform) metric)
           else
             (* Finally, we get to a point where the loop bounds are
                 thread-local and we know nothing about them. *)

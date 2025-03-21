@@ -2,6 +2,7 @@
   (public_name faial-cost)
   (name main)
   (modules main)
+  (modes exe byte)
   (libraries
     ; 1st-party
     cmdliner z3 printbox printbox-text
@@ -11,19 +12,21 @@
 )
 
 (executable
-  (public_name faial-cost-diff)
-  (name diff)
-  (modules diff)
-  (libraries
-    ; 1st-party
-    cmdliner z3 printbox printbox-text
-    ; 1st-pary
-    bank_conflicts ra inference analyze_cost
-  )
+ (public_name faial-cost-diff)
+ (name diff)
+ (modules diff)
+ (modes exe byte)
+ (libraries
+   ; 1st-party
+   cmdliner z3 printbox printbox-text
+   ; 1st-pary
+   bank_conflicts ra inference analyze_cost
+ )
 )
 
 (executable
  (public_name faial-cost-dyn)
  (name dyn)
  (modules dyn)
+ (modes exe byte)
  (libraries inference cmdliner z3 bank_conflicts ra))

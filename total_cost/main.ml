@@ -21,19 +21,29 @@ module Analysis_cost = struct
   type t = {
     amount: string;
     analysis_duration: float;
-    exact_index: bool;
-    exact_loop: bool;
-    exact_condition: bool;
+    exact_index: int;
+    exact_loop: int;
+    exact_condition: int;
+    approximate_index: int;
+    approximate_loop: int;
+    approximate_condition: int;
+    total_index: int;
+    total_loop: int;
+    total_condition: int;
   }
   let make
-    ~amount
-    ~analysis_duration
-    ~approx:{Ra_compiler.Approx.exact_index; exact_loop; exact_condition}
-    ()
-  :
-    t
-  =
-    { amount; analysis_duration; exact_index; exact_loop; exact_condition }
+      ~amount
+      ~analysis_duration
+      ~metrics:{Ra_compiler.Metrics.index; loop; condition}
+      ()
+    :
+      t
+    =
+    { amount; analysis_duration;
+      exact_index=index.exact; exact_loop=loop.exact; exact_condition=condition.exact;
+      approximate_index=index.approximate; approximate_loop=loop.approximate; approximate_condition=condition.approximate;
+      total_index=index.total; total_loop=loop.total; total_condition=condition.total;
+    }
 end
 
 module Solver = struct
@@ -133,7 +143,7 @@ module Solver = struct
       goal;
     }
 
-  let get_cost (app:t) ((r,approx):Ra.Stmt.t * Ra_compiler.Approx.t) : (Analysis_cost.t, string) Result.t =
+  let get_cost (app:t) ((r,_, metrics):Ra.Stmt.t * Ra_compiler.Approx.t * Ra_compiler.Metrics.t) : (Analysis_cost.t, string) Result.t =
     (if app.show_ra then (Ra.Stmt.to_string r |> print_endline) else ());
     let start = Unix.gettimeofday () in
     (if app.use_absynth then
@@ -152,7 +162,8 @@ module Solver = struct
         Analysis_cost.make
           ~amount
           ~analysis_duration:(Unix.gettimeofday () -. start)
-          ~approx
+          (* ~approx *)
+          ~metrics
           ()
       )
     |> Result.map_error Errors.to_string
@@ -161,7 +172,7 @@ module Solver = struct
     (a:t)
     (k:kernel)
   :
-    (Ra.Stmt.t * Ra_compiler.Approx.t, string) Result.t
+    (Ra.Stmt.t * Ra_compiler.Approx.t * Ra_compiler.Metrics.t, string) Result.t
   =
     let ( let* ) = Result.bind in
     let unif_cond =
@@ -170,17 +181,18 @@ module Solver = struct
       else
         Ra_compiler.UniformCond.Exact
     in
-    let* (r, approx) =
+    let* (r, approx, metric) =
       Ra_compiler.Default.from_kernel
         ~unif_cond ~strategy:a.strategy a.metric a.config k
     in
     Ok (
       (if a.skip_simpl_ra then
-        r
-      else
-        Ra.Stmt.simplify r
+         r
+       else
+         Ra.Stmt.simplify r
       ),
-      approx
+      approx,
+      metric
     )
 
   type r_cost = (Analysis_cost.t, string) Result.t
@@ -188,10 +200,11 @@ module Solver = struct
   let approx_cost (a:t) (k:kernel) : r_cost =
     let ( let* ) = Result.bind in
     let to_sum strategy =
-      let* (ra, approx) = get_ra { a with strategy } k in
+      let* (ra, approx, metric) = get_ra { a with strategy } k in
       if a.show_ra then (
         Ra.Stmt.to_string ra |> print_endline;
         Ra_compiler.Approx.to_string approx |> print_endline;
+        Ra_compiler.Metrics.to_string metric |> print_endline;
       );
       let strategy =
         match strategy with
@@ -201,7 +214,7 @@ module Solver = struct
       Ok (Summation.from_stmt ~strategy ra, approx)
     in
     let start = Unix.gettimeofday () in
-    let* (s, approx) : Summation.t * Ra_compiler.Approx.t =
+    let* (s, _) : Summation.t * Ra_compiler.Approx.t =
       let open Summation in
       let* (over, approx1) = to_sum OverApproximation in
       let* (under, approx2) = to_sum UnderApproximation in
@@ -223,7 +236,7 @@ module Solver = struct
         Analysis_cost.make
           ~amount
           ~analysis_duration:(Unix.gettimeofday () -. start)
-          ~approx
+          ~metrics:Ra_compiler.Metrics.empty
           ()
       )
     |> Result.map_error Errors.to_string
@@ -335,9 +348,15 @@ module JUI = struct
           name, `String e.amount;
           "kernel_name", `String k.name;
           "analysis_duration_seconds", `Float e.analysis_duration;
-          "exact_index", `Bool e.exact_index;
-          "exact_loop", `Bool e.exact_loop;
-          "exact_condition", `Bool e.exact_condition;
+          "exact_index", `Int e.exact_index;
+          "exact_loop", `Int e.exact_loop;
+          "exact_condition", `Int e.exact_condition;
+          "approximate_index", `Int e.approximate_index;
+          "approximate_loop", `Int e.approximate_loop;
+          "approximate_condition", `Int e.approximate_condition;
+          "total_index", `Int e.total_index;
+          "total_loop", `Int e.total_loop;
+          "total_condition", `Int e.total_condition;
         ]
       | Error e ->
         `Assoc [
