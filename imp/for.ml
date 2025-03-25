@@ -143,6 +143,19 @@ module Infer = struct
           | Some x -> Some x
           | None -> parse ~accum:(Exp.b_and e1 accum) e2
         )
+      (* x - e R arg ~~~> x R arg + e *)
+      | NRel (o, Binary (Minus, Var var, e), arg) when Variable.equal var x ->
+        let* op = Comparator.parse o in
+        Some ({var; op; arg=Exp.n_plus e arg}, accum)
+      (* e + x R arg ~~~> x R arg - e *)
+      | NRel (o, Binary (Plus, e, Var var), arg) when Variable.equal var x ->
+        let* op = Comparator.parse o in
+        Some ({var; op; arg=Exp.n_minus arg e}, accum)
+      (* x + e R arg ~~~> x R arg - e *)
+      | NRel (o, Binary (Plus, Var var, e), arg) when Variable.equal var x ->
+        let* op = Comparator.parse o in
+        Some ({var; op; arg=Exp.n_minus arg e}, accum)
+      (* Default upper bound: x R o ~~~> x R o *)
       | NRel (o, Var var, arg) when Variable.equal var x ->
         let* op = Comparator.parse o in
         Some ({var; op; arg}, accum)
