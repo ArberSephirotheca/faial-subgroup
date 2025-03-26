@@ -278,10 +278,9 @@ module Make (L:Logger.Logger) = struct
         let* (p, approx1, metric1) = from_p ctx1 p in
         let* (q, approx2, metric2) = from_p ctx2 q in
         let code =
-          match div, strategy with
-          | Uniform, _ -> if_ b p q
-          | Divergent, OverApproximation -> Seq (p, q)
-          | Divergent, UnderApproximation -> Skip
+          match div with
+          | Uniform -> if_ b p q
+          | Divergent -> Seq (p, q)
         in
         Ok (code, Approx.add approx1 approx2, Metrics.add metrics (Metrics.add metric1 metric2))
       | Loop {range; body} ->
