@@ -34,15 +34,26 @@ module Analysis_cost = struct
   let make
       ~amount
       ~analysis_duration
-      ~metrics:{Ra_compiler.Metrics.index; loop; condition}
+      ~metrics:(m:Ra_compiler.Stats.t)
       ()
     :
       t
     =
-    { amount; analysis_duration;
-      exact_index=index.exact; exact_loop=loop.exact; exact_condition=condition.exact;
-      approximate_index=index.approximate; approximate_loop=loop.approximate; approximate_condition=condition.approximate;
-      total_index=index.total; total_loop=loop.total; total_condition=condition.total;
+    let open Ra_compiler in
+    let indices = Stats.indices m in
+    let loops = Stats.loops m in
+    let conditions = Stats.conditions m in
+    {
+      amount; analysis_duration;
+      exact_index=Counter.exact indices;
+      exact_loop=Counter.exact loops;
+      exact_condition=Counter.exact conditions;
+      approximate_index=Counter.approximate indices;
+      approximate_loop=Counter.approximate loops;
+      approximate_condition=Counter.approximate conditions;
+      total_index=Counter.total indices;
+      total_loop=Counter.total loops;
+      total_condition=Counter.total conditions;
     }
 end
 
@@ -143,7 +154,7 @@ module Solver = struct
       goal;
     }
 
-  let get_cost (app:t) ((r, metrics):Ra.Stmt.t * Ra_compiler.Metrics.t) : (Analysis_cost.t, string) Result.t =
+  let get_cost (app:t) ((r, metrics):Ra.Stmt.t * Ra_compiler.Stats.t) : (Analysis_cost.t, string) Result.t =
     (if app.show_ra then (Ra.Stmt.to_string r |> print_endline) else ());
     let start = Unix.gettimeofday () in
     (if app.use_absynth then
@@ -172,7 +183,7 @@ module Solver = struct
     (a:t)
     (k:kernel)
   :
-    (Ra.Stmt.t * Ra_compiler.Metrics.t, string) Result.t
+    (Ra.Stmt.t * Ra_compiler.Stats.t, string) Result.t
   =
     let ( let* ) = Result.bind in
     let unif_cond =
@@ -202,7 +213,7 @@ module Solver = struct
       let* (ra, metric) = get_ra { a with strategy } k in
       if a.show_ra then (
         Ra.Stmt.to_string ra |> print_endline;
-        Ra_compiler.Metrics.to_string metric |> print_endline;
+        Ra_compiler.Stats.to_string metric |> print_endline;
       );
       let strategy =
         match strategy with
@@ -234,7 +245,7 @@ module Solver = struct
         Analysis_cost.make
           ~amount
           ~analysis_duration:(Unix.gettimeofday () -. start)
-          ~metrics:Ra_compiler.Metrics.empty
+          ~metrics:Ra_compiler.Stats.empty
           ()
       )
     |> Result.map_error Errors.to_string
