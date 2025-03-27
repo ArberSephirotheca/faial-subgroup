@@ -96,47 +96,6 @@ end = struct
       (Counter.to_string a.conditions)
 end
 
-module Approx = struct
-  type t = {exact_index: bool; exact_loop: bool; exact_condition: bool}
-
-  let exact : t =
-    { exact_index = true; exact_loop = true; exact_condition = true}
-
-  let to_string (e:t) : string =
-    let f =
-      function
-      | true -> "exact"
-      | false -> "inexact"
-    in
-    Printf.sprintf
-      "{index=%s, loop=%s, cond=%s}"
-      (f e.exact_index)
-      (f e.exact_loop)
-      (f e.exact_condition)
-
-  let set_exact_index (e:bool) (a:t) : t =
-    { a with exact_index = e }
-
-  let add (lhs:t) (rhs:t) : t =
-    {
-      exact_index = lhs.exact_index && rhs.exact_index;
-      exact_loop = lhs.exact_loop && rhs.exact_loop;
-      exact_condition = lhs.exact_condition && rhs.exact_condition;
-    }
-
-  let is_thread_uniform (e:t) : bool =
-    e.exact_loop && e.exact_condition
-
-  let is_thread_divergent (e:t) : bool =
-    not (is_thread_uniform e)
-
-  let set_unexact_cond (e:t) : t =
-    { e with exact_condition = false }
-
-  let set_unexact_loop (e:t) : t =
-    { e with exact_loop = false }
-end
-
 let to_optimize : Analysis_strategy.t -> Uniform_range.t =
   function
   | OverApproximation -> Uniform_range.Maximize
@@ -164,21 +123,14 @@ module Make (L:Logger.Logger) = struct
   module Context = struct
     type t = {
       divergence: Exp.bexp;
-      approx: Approx.t;
       locals: Variable.Set.t;
     }
 
     let make (locals:Variable.Set.t) : t =
-      { divergence = Bool true; approx = Approx.exact; locals}
+      { divergence = Bool true; locals}
 
     let add_local (var:Variable.t) (ctx:t) : t =
       { ctx with locals = Variable.Set.add var ctx.locals }
-
-    let set_unexact_cond (ctx:t) : t =
-      { ctx with approx = Approx.set_unexact_cond ctx.approx }
-
-    let set_unexact_loop (ctx:t) : t =
-      { ctx with approx = Approx.set_unexact_loop ctx.approx }
 
     let rec add_condition (cond:Exp.bexp) (ctx:t) : t * Divergence.t * Stats.t =
       (*
@@ -217,7 +169,13 @@ module Make (L:Logger.Logger) = struct
       let (ctx2, _, _) = add_condition (Exp.b_not cond) ctx in
       (ctx1, ctx2, div, metrics)
 
-    let add_range (uniform_loop:Range.t -> Range.t option) (range:Range.t) (ctx:t) : (Range.t * Divergence.t * t) option =
+    let add_range
+      (uniform_loop:Range.t -> Range.t option)
+      (range:Range.t)
+      (ctx:t)
+    :
+      (Range.t * Divergence.t * t) option
+    =
       let free_locals =
         Range.free_names range Variable.Set.empty
         |> Variable.Set.inter ctx.locals
@@ -248,7 +206,7 @@ module Make (L:Logger.Logger) = struct
               ctx
           in
           (* In either case we must mark the loop as inexact *)
-          Some (range, Divergence.Divergent, set_unexact_loop ctx)
+          Some (range, Divergence.Divergent, ctx)
         | None ->
           None
       ) else
