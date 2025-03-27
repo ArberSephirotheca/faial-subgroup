@@ -62,8 +62,40 @@ let bc_tests = [
   "loops-nested-2-ind.cu", [], "Σ_{i | 0 ≤ i ≤ (n - 1)} Σ_{j | 0 ≤ j ≤ (n - 1)} 1";
   "loops-nested-2-pow.cu", [], "Σ_{i | 0 ≤ i ≤ (n - 1)} Σ_{j | 1 ≤ j ≤ ⌊log₂((n - 1))⌋} 1";
   "loops-nested-2-ind-step.cu", [], "Σ_{i | 0 ≤ i ≤ ⌊(n - 1) / step1⌋} Σ_{j | 0 ≤ j ≤ ⌊((m - 1) - (i * step1)) / step2⌋} 1";
+  (*
+    Condition: (threadIdx.x <= 16)
+    - exact condition: none
+    - exact non-uniform condition: (threadIdx.x <= 16)
+    - approx non-uniform condition: none
+
+    The exact non-uniform condition should yield 1 + 1 on both branches.
+   *)
   "ifs-1.cu", [], "2";
+  (* (n < 4) uniform condition that needs to be preserved *)
   "ifs-2.cu", [], "if ((n < 4)) then 1 else 3";
+  (*
+    Condition: (threadIdx.x <= 16 && n < 4)
+    - exact uniform condition: (n < 4)
+    - exact non-uniform condition (threadIdx.x <= 16),
+    - approx non-uniform condition: none
+
+    The uniform condition must be preserved, and cost of 1 should appear in
+    both branches.
+   *)
+  "ifs-3.cu", [], "if ((n < 4)) then 1 else 1";
+  (*
+    Condition: (threadIdx.x <= 16 && f() < 4)
+    - exact uniform condition: none
+    - exact non-uniform conditions: threadIdx.x <= 16
+    - approx non-uniform conditions: f() < 4
+
+    No uniform condition, thus equivalent to
+      if (threadIdx.x <= 16) { tick 1} else {tick 1}
+
+    Exact non-uniform condition (threadIdx.x <= 16): yields a cost of 1 in
+    both branches, thus total cost of 2.
+   *)
+  "ifs-4.cu", [], "2";
 ]
 
 let ua_tests = [
