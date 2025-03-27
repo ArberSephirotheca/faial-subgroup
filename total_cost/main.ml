@@ -143,7 +143,7 @@ module Solver = struct
       goal;
     }
 
-  let get_cost (app:t) ((r,_, metrics):Ra.Stmt.t * Ra_compiler.Approx.t * Ra_compiler.Metrics.t) : (Analysis_cost.t, string) Result.t =
+  let get_cost (app:t) ((r, metrics):Ra.Stmt.t * Ra_compiler.Metrics.t) : (Analysis_cost.t, string) Result.t =
     (if app.show_ra then (Ra.Stmt.to_string r |> print_endline) else ());
     let start = Unix.gettimeofday () in
     (if app.use_absynth then
@@ -172,7 +172,7 @@ module Solver = struct
     (a:t)
     (k:kernel)
   :
-    (Ra.Stmt.t * Ra_compiler.Approx.t * Ra_compiler.Metrics.t, string) Result.t
+    (Ra.Stmt.t * Ra_compiler.Metrics.t, string) Result.t
   =
     let ( let* ) = Result.bind in
     let unif_cond =
@@ -181,7 +181,7 @@ module Solver = struct
       else
         Ra_compiler.UniformCond.Exact
     in
-    let* (r, approx, metric) =
+    let* (r, metric) =
       Ra_compiler.Default.from_kernel
         ~unif_cond ~strategy:a.strategy a.metric a.config k
     in
@@ -191,7 +191,6 @@ module Solver = struct
        else
          Ra.Stmt.simplify r
       ),
-      approx,
       metric
     )
 
@@ -200,10 +199,9 @@ module Solver = struct
   let approx_cost (a:t) (k:kernel) : r_cost =
     let ( let* ) = Result.bind in
     let to_sum strategy =
-      let* (ra, approx, metric) = get_ra { a with strategy } k in
+      let* (ra, metric) = get_ra { a with strategy } k in
       if a.show_ra then (
         Ra.Stmt.to_string ra |> print_endline;
-        Ra_compiler.Approx.to_string approx |> print_endline;
         Ra_compiler.Metrics.to_string metric |> print_endline;
       );
       let strategy =
@@ -211,14 +209,14 @@ module Solver = struct
         | OverApproximation -> Summation.Strategy.Max
         | UnderApproximation -> Summation.Strategy.Min
       in
-      Ok (Summation.from_stmt ~strategy ra, approx)
+      Ok (Summation.from_stmt ~strategy ra)
     in
     let start = Unix.gettimeofday () in
-    let* (s, _) : Summation.t * Ra_compiler.Approx.t =
+    let* s : Summation.t =
       let open Summation in
-      let* (over, approx1) = to_sum OverApproximation in
-      let* (under, approx2) = to_sum UnderApproximation in
-      Ok (minus over under, Ra_compiler.Approx.add approx1 approx2)
+      let* over = to_sum OverApproximation in
+      let* under = to_sum UnderApproximation in
+      Ok (minus over under)
     in
     (if a.use_maxima then (
       s

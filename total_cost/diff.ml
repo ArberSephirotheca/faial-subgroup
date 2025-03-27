@@ -127,7 +127,7 @@ module Solver = struct
       else
         Ra_compiler.UniformCond.Exact
     in
-    let* (r, _, _) =
+    let* (r, _) =
       Ra_compiler.Default.from_kernel
         ~unif_cond ~strategy:a.strategy a.metric a.config k
     in

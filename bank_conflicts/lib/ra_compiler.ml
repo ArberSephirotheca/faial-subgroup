@@ -228,7 +228,7 @@ module Make (L:Logger.Logger) = struct
     (cfg:Config.t)
     (k:Kernel.t)
   :
-    (Ra.Stmt.t * Approx.t * Metrics.t, string) Result.t
+    (Ra.Stmt.t * Metrics.t, string) Result.t
   =
     let ( let* ) = Result.bind in
     let if_ : Exp.bexp -> Ra.Stmt.t -> Ra.Stmt.t -> Ra.Stmt.t =
@@ -241,15 +241,15 @@ module Make (L:Logger.Logger) = struct
     let idx_analysis = I.run m cfg ~strategy in
     let uniform_loop = R.uniform (to_optimize strategy) params cfg.block_dim in
     let rec from_p (ctx:Context.t) :
-      Code.t -> (Ra.Stmt.t * Approx.t * Metrics.t, string) Result.t
+      Code.t -> (Ra.Stmt.t * Metrics.t, string) Result.t
     =
       let open Ra.Stmt in
       function
-      | Skip -> Ok (Skip, Approx.exact, Metrics.empty)
+      | Skip -> Ok (Skip, Metrics.empty)
       | Seq (p, q) ->
-        let* (p, approx1, metric1) = from_p ctx p in
-        let* (q, approx2, metric2) = from_p ctx q in
-        Ok (Seq (p, q), Approx.add approx1 approx2, Metrics.add metric1 metric2)
+        let* (p, metric1) = from_p ctx p in
+        let* (q, metric2) = from_p ctx q in
+        Ok (Seq (p, q), Metrics.add metric1 metric2)
       | Access {array=x; index=l; _} ->
         Ok (
           l
@@ -263,37 +263,35 @@ module Make (L:Logger.Logger) = struct
               in
               (
                 cost.code,
-                Approx.set_exact_index cost.exact ctx.approx,
                 { Metrics.empty with index=Metrics.count_as cost.exact}
               )
             )
             (* When the array is ignored, return Skip *)
-          |> Option.value ~default:(Ra.Stmt.Skip, Approx.exact, Metrics.empty)
+          |> Option.value ~default:(Ra.Stmt.Skip, Metrics.empty)
         )
-      | Sync _ -> Ok (Skip, Approx.exact, Metrics.empty)
+      | Sync _ -> Ok (Skip, Metrics.empty)
       | Decl {body=p; var; _} ->
         from_p (Context.add_local var ctx) p
       | If (b, p, q) ->
         let (ctx1, ctx2, div, metrics) = Context.add_if b ctx in
-        let* (p, approx1, metric1) = from_p ctx1 p in
-        let* (q, approx2, metric2) = from_p ctx2 q in
+        let* (p, metric1) = from_p ctx1 p in
+        let* (q, metric2) = from_p ctx2 q in
         let code =
           match div with
           | Uniform -> if_ b p q
           | Divergent -> Seq (p, q)
         in
-        Ok (code, Approx.add approx1 approx2, Metrics.add metrics (Metrics.add metric1 metric2))
+        Ok (code, Metrics.add metrics (Metrics.add metric1 metric2))
       | Loop {range; body} ->
         (match Context.add_range uniform_loop range ctx with
          | Some (range, div, ctx) ->
-           let* (body, approx, metric) = from_p ctx body in
+           let* (body, metric) = from_p ctx body in
            Ok (Loop {range; body;},
-               approx,
                Metrics.add (Metrics.loop div) metric)
          | None ->
-           let* (body, _, metric) = from_p ctx body in
+           let* (body, metric) = from_p ctx body in
           if Ra.Stmt.is_zero body then
-            Ok (Skip, Approx.exact, Metrics.add (Metrics.loop Divergence.Uniform) metric)
+            Ok (Skip, Metrics.add (Metrics.loop Divergence.Uniform) metric)
           else
             (* Finally, we get to a point where the loop bounds are
                 thread-local and we know nothing about them. *)
