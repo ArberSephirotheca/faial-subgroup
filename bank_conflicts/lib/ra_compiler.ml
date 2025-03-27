@@ -209,10 +209,10 @@ end = struct
       (to_s e.unif) (to_s e.exact_non_unif) (to_s e.approx_non_unif)
 end
 
-module Make (L:Logger.Logger) = struct
-  module R = Uniform_range.Make(L)
-  module I = Index_analysis.Make(L)
-  module L = Linearize_index.Make(L)
+module Make (LOG:Logger.Logger) = struct
+  module R = Uniform_range.Make(LOG)
+  module I = Index_analysis.Make(LOG)
+  module L = Linearize_index.Make(LOG)
 
   let from_access_context
     (idx_analysis : Variable.Set.t -> Exp.nexp -> int)
@@ -246,6 +246,14 @@ module Make (L:Logger.Logger) = struct
 
     let add_if (cond:Exp.bexp) (ctx:t) : Exp.bexp option * t * t * Stats.t =
       let unif = UnifAnalysis.from_bexp ~locals:ctx.locals cond in
+      (match UnifAnalysis.approx_non_unif unif with
+      | Some b ->
+        LOG.info (
+          Printf.sprintf
+            "RA: approximate conditional: %s" (Exp.b_to_string b)
+        )
+      | None -> ()
+      );
       let stats = Stats.make ~conditions:(UnifAnalysis.to_counter unif) () in
       let ctx1, ctx2 =
         match UnifAnalysis.exact_non_unif unif with
