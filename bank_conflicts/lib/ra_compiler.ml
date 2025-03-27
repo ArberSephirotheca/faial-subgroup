@@ -10,6 +10,7 @@ end
 
 module Counter : sig
   type t
+  val make: exact:int -> approximate:int -> t
   val total : t -> int
   val approximate : t -> int
   val exact:  t -> int
@@ -18,33 +19,36 @@ module Counter : sig
   val add : t -> t -> t
   val to_string : t -> string
 end = struct
-    type t = { approximate: int; exact : int}
 
-    let empty = {approximate=0; exact=0}
+  type t = { approximate: int; exact : int }
 
-    let exact (e:t) = e.exact
+  let make ~exact ~approximate = { approximate; exact }
 
-    let approximate (e:t) = e.approximate
+  let empty = { approximate = 0; exact = 0 }
 
-    let total (e:t) = e.exact + e.approximate
+  let exact (e:t) = e.exact
 
-    let from_accuracy : Accuracy.t -> t =
-      function
-      | Exact -> {approximate=0; exact=1}
-      | Approximate -> {approximate=1; exact=0}
+  let approximate (e:t) = e.approximate
 
-    let add (l:t) (r:t) : t =
-      {
-        approximate = l.approximate + r.approximate;
-        exact = l.exact + r.exact;
-      }
+  let total (e:t) = e.exact + e.approximate
 
-    let to_string (e:t) : string =
-      Printf.sprintf
-        "{exact=%d, approximate=%d}"
-        e.exact
-        e.approximate
-  end
+  let from_accuracy : Accuracy.t -> t =
+    function
+    | Exact -> {approximate=0; exact=1}
+    | Approximate -> {approximate=1; exact=0}
+
+  let add (l:t) (r:t) : t =
+    {
+      approximate = l.approximate + r.approximate;
+      exact = l.exact + r.exact;
+    }
+
+  let to_string (e:t) : string =
+    Printf.sprintf
+      "{exact=%d, approximate=%d}"
+      e.exact
+      e.approximate
+end
 
 
 module Stats : sig
