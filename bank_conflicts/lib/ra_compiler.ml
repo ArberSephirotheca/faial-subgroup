@@ -210,7 +210,6 @@ end = struct
 end
 
 module Make (LOG:Logger.Logger) = struct
-  module R = Uniform_range.Make(LOG)
   module I = Index_analysis.Make(LOG)
   module L = Linearize_index.Make(LOG)
 
@@ -267,7 +266,7 @@ module Make (LOG:Logger.Logger) = struct
       (range:Range.t)
       (ctx:t)
     :
-      (Range.t * Divergence.t * t) option
+      (Range.t * Accuracy.t * t) option
     =
       let free_locals =
         Range.free_names range Variable.Set.empty
@@ -279,13 +278,18 @@ module Make (LOG:Logger.Logger) = struct
       in
       (* Warp-uniform loop *)
       if Variable.Set.is_empty free_locals then
-        Some (range, Divergence.Uniform, ctx)
+        Some (range, Accuracy.Exact, ctx)
       (* Warp-divergent loop *)
       else if only_tid_in_locals then (
         (* get the first number *)
         let init = Range.first range in
         match uniform_loop range with
-        | Some range ->
+        | Some new_range ->
+          LOG.info (
+            "RA: approximating range: " ^
+            "for (" ^ Range.to_string range ^ ") 🡆 " ^
+            "for (" ^ Range.to_string new_range ^ ")"
+          );
           let ctx =
             (*
               If the first element of the range has a tid, then
@@ -294,12 +298,12 @@ module Make (LOG:Logger.Logger) = struct
               thread-global.
             *)
             if Exp.n_exists Variable.is_tid init then
-              add_local (Range.var range) ctx
+              add_local (Range.var new_range) ctx
             else
               ctx
           in
           (* In either case we must mark the loop as inexact *)
-          Some (range, Divergence.Divergent, ctx)
+          Some (new_range, Accuracy.Approximate, ctx)
         | None ->
           None
       ) else
@@ -325,7 +329,7 @@ module Make (LOG:Logger.Logger) = struct
     let lin = L.linearize cfg k.arrays in
     let params = k.global_variables in
     let idx_analysis = I.run m cfg ~strategy in
-    let uniform_loop = R.uniform (to_optimize strategy) params cfg.block_dim in
+    let uniform_loop = Uniform_range.uniform (to_optimize strategy) params cfg.block_dim in
     let rec from_p (ctx:Context.t) :
       Code.t -> (Ra.Stmt.t * Stats.t, string) Result.t
     =
@@ -370,13 +374,8 @@ module Make (LOG:Logger.Logger) = struct
         Ok (code, Stats.add metrics (Stats.add metric1 metric2))
       | Loop {range; body} ->
         (match Context.add_range uniform_loop range ctx with
-         | Some (range, div, ctx) ->
+         | Some (range, accu, ctx) ->
            let* (body, metric) = from_p ctx body in
-           let accu : Accuracy.t =
-            match div with
-            | Uniform -> Exact
-            | Divergent -> Approximate
-           in
            Ok (Loop {range; body;},
                Stats.add (Stats.make_loop accu) metric)
          | None ->

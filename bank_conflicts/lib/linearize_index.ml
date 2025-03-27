@@ -8,7 +8,7 @@ open Protocols
 type array_size = { byte_count: int; dim: int list}
 
 module Make (L:Logger.Logger) = struct
-  module R = Uniform_range.Make(L)
+
   (* Given an n-dimensional array access apply type modifiers *)
   let shared_multiplier ~bytes_per_word ~byte_count (l:Exp.nexp list) : Exp.nexp list =
     if byte_count/bytes_per_word = 1 then

@@ -304,7 +304,6 @@ let trim_decls (k:t) : t =
   { k with code = Code.trim_decls k.code; }
 
 module Make (L:Logger.Logger) = struct
-  module R = Uniform_range.Make(L)
   module L = Linearize_index.Make(L)
   (*
   Given a kernel return a sequence of slices.

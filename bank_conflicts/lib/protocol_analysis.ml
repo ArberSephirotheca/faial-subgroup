@@ -22,7 +22,6 @@ module Memory = Protocols.Memory
 type array_size = { byte_count: int; dim: int list}
 
 module Make (L:Logger.Logger) = struct
-  module R = Uniform_range.Make(L)
   module L = Linearize_index.Make(L)
 
   (*
@@ -52,7 +51,7 @@ module Make (L:Logger.Logger) = struct
       | Decl d -> Decl {d with body= simpl d.body}
       | Loop {range=r; body=p} ->
         let p = simpl p in
-        (match R.uniform Maximize k.global_variables cfg.block_dim r with
+        (match Uniform_range.uniform Maximize k.global_variables cfg.block_dim r with
         | Some r' ->
           let cnd =
             let open Protocols.Exp in
