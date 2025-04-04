@@ -28,7 +28,8 @@ let rec i_to_string : Reals.integer -> string =
   | Var x ->
     let x =
       Variable.name x
-      |> Common.replace ~substring:"."  ~by:"__" in
+      |> Common.replace ~substring:"."  ~by:"__"
+      |> Common.replace ~substring:"@"  ~by:"__" in
     if x = "step" then
       "__step__"
     else
