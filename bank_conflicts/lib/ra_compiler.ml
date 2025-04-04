@@ -1,5 +1,14 @@
 open Stage0
 open Protocols
+
+let pretty_location (x:Variable.t) : string =
+  x
+  |> Variable.location_opt
+  |> Option.map (fun x ->
+      Location.to_string ~f:(fun x -> Fpath.(v x |> basename)) x ^ ": "
+    )
+  |> Option.value ~default:""
+
 module UniformCond = struct
   type t = Exact | Approximate
 end
@@ -285,7 +294,9 @@ module Make (LOG:Logger.Logger) = struct
         let init = Range.first range in
         match uniform_loop range with
         | Some new_range ->
+          let loc = range |> Range.var |> pretty_location in
           LOG.info (
+            loc ^
             "RA: approximating range: " ^
             "for (" ^ Range.to_string range ^ ") 🡆 " ^
             "for (" ^ Range.to_string new_range ^ ")"

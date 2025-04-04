@@ -35,9 +35,9 @@ let repr (l:t) : string =
   "line=" ^ (Index.repr l.line) ^ ", " ^
   "interval=" ^ (Interval.repr l.interval) ^ "}"
 
-let to_string (l:t) : string =
+let to_string ?(f=fun x ->x) (l:t) : string =
   Printf.sprintf "%s:%d:%d"
-    l.filename
+    (f l.filename)
     (l.line |> Index.to_base1)
     (l.interval |> Interval.start |> Index.to_base1)
 
