@@ -88,9 +88,9 @@ end = struct
       | { value; thread_global = false} -> Exp.n_to_string value
 
     let from_nexp ~globals (value: Exp.nexp) : t =
-      let thread_global = match value with
-        | Exp.Var v -> Variable.Set.mem v globals
-        | _ -> failwith "Unsupported expression"
+      let thread_global = 
+        let free = Exp.n_free_names value Variable.Set.empty in
+        Variable.Set.diff free globals |> Variable.Set.is_empty
       in
       {
         value; thread_global
@@ -292,6 +292,7 @@ let rec dims: Term.t list -> Term.t list option = function
     let* dim = Term.try_div x y in
     let* r = dims (y :: ys) in
     Some (dim :: r)
+  (* don't consider numbers params? or do *)
 
 let accesses (dims : Term.t list) (t : Expr.t): Expr.t list =
   let rec loop rdims t = match rdims with
@@ -340,8 +341,15 @@ let rewrite_access ~globals (acc : Access.t) : Access.t =
   (match acc with
   | { index = [a]; _ } ->
     let* result = from_nexp ~globals a in
-    Some { acc with index = result.indices }
-  | _ -> None
+    let out = { acc with index = result.indices } in
+    Printf.printf "rewriting\n  %s\nwith\n  %s\nas\n  %s\n"
+      (Access.to_string acc)
+      (to_string result)
+      (Access.to_string out);
+    Some out
+  | _ -> 
+    Printf.printf "not rewriting\n  %s\n" (Access.to_string acc);
+    None
   ) |>
   Option.value ~default:acc
 (* TODO: this should simply not rewrite if there is a failure *)
@@ -371,7 +379,8 @@ let rec rewrite_aligned ~(globals : Variable.Set.t): Aligned.Code.t -> Aligned.C
 let rewrite_kernel (kernel : Aligned.Kernel.t) : Aligned.Kernel.t =
   let globals = Params.to_set kernel.global_variables in
   { kernel with code = rewrite_aligned ~globals kernel.code }
-  
+(* currently this thinks blockIdx is global *)
+
 (* add function mapping aligned.code to proto *)
 (* analysis on each unsync block - some sort of set/map of variable status *)
 (* loop bounds are uniform in aligned *)

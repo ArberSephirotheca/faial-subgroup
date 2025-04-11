@@ -220,6 +220,7 @@ let translate (arch:Architecture.t) (a:t) (k:Kernel.t) : Flatacc.Kernel.t Stream
   |> show a.show_wf Wellformed.print_kernels
   (* 5. align protocol *)
   |> Aligned.translate
+  |> Streamutil.map Delinearize.rewrite_kernel
   |> show a.show_align Aligned.print_kernels
   (* 6. split per sync *)
   |> Phasesplit.translate
