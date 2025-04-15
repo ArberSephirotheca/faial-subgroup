@@ -307,14 +307,15 @@ let accesses (dims : Term.t list) (t : Expr.t): Expr.t list =
 type t = {
   indices: Exp.nexp list;
   dims: Exp.nexp list;
-  (* conditions *)
+  conditions: Exp.bexp list;
 }
 
 let to_string: t -> string = function
-  | { indices; dims; } ->
-    Printf.sprintf "{indices = [%s]; dims = [%s]}"
+  | { indices; dims; conditions } ->
+    Printf.sprintf "{ indices = [%s]; dims = [%s]; conditions = [%s] }"
       (indices |> List.map Exp.n_to_string |> String.concat "; ")
       (dims |> List.map Exp.n_to_string |> String.concat "; ")
+      (conditions |> List.map Exp.b_to_string |> String.concat "; ")
 
 let from_nexp ~globals (expr: Exp.nexp): t option =
   let ( let* ) = Option.bind in
@@ -323,9 +324,17 @@ let from_nexp ~globals (expr: Exp.nexp): t option =
     |> size_params
     |> dims in
   let is = accesses ds expr' in
+  let conditions ds is = match ds, is with
+  | ds, _ :: is -> List.map2 (fun d i -> 
+      let open Exp in
+      NRel (Lt, Expr.to_nexp i, Expr.Term.to_nexp d)
+    ) ds is 
+  | _ -> failwith "unreachable?"
+  in
   Some {
     indices = List.map Expr.to_nexp is;
     dims = List.map Expr.Term.to_nexp ds;
+    conditions = conditions ds is
   }
 
 (* let list_bind (x : 'a list) (f : 'a -> 'b list) : 'b list =
