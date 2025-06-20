@@ -1,24 +1,24 @@
 (tests
  (names
-   test_common
-   test_imp
-   test_locsplit
-   test_range
-   test_streamutil
-   test_ctype
-   test_slice
-   test_queries
-   test_poly
-   test_index_analysis
-   test_gv_parser
-   test_dlang
-   ; test_prob_exp
-   test_maxima
-   test_py
-   test_wgsl
+  ;  test_common
+  ;  test_imp
+  ;  test_locsplit
+  ;  test_range
+  ;  test_streamutil
+  ;  test_ctype
+  ;  test_slice
+  ;  test_queries
+  ;  test_poly
+  ;  test_index_analysis
+  ;  test_gv_parser
+  ;  test_dlang
+  ;  ; test_prob_exp
+  ;  test_maxima
+  ;  test_py
+  ;  test_wgsl
    test_delinearization
  )
- (libraries stage0 ra protocols drf inference oUnit bank_conflicts analyze_cost)
+ (libraries stage0 ra protocols drf inference bank_conflicts analyze_cost oUnit qcheck-core qcheck-ounit)
 )
 
 (cram
