@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Faial DRF - Web Interface</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/mode/clike/clike.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.0/theme/default.min.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Faial DRF Analysis</h1>
+            <p>Data-Race Freedom analysis for CUDA kernels</p>
+        </header>
+
+        <div class="main-content">
+            <div class="editor-section">
+                <div class="controls">
+                    <label for="examples-select">Load Example:</label>
+                    <select id="examples-select">
+                        <option value="">Select an example...</option>
+                    </select>
+                    <button id="analyze-btn">Analyze Code</button>
+                </div>
+                
+                <div class="editor-container">
+                    <textarea id="code-editor" placeholder="Enter your CUDA kernel code here...">__global__
+void saxpy(int n, float a, float *x, float *y)
+{
+  int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if (i < n) y[i] = a*x[i] + y[i];
+}</textarea>
+                </div>
+            </div>
+
+            <div class="results-section">
+                <h3>Analysis Results</h3>
+                <div id="loading" class="hidden">
+                    <p>Analyzing code...</p>
+                </div>
+                <div id="results" class="results-container">
+                    <p class="placeholder">Click "Analyze Code" to see results</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
