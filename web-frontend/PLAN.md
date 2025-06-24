@@ -49,8 +49,9 @@ python3 server.py -p 8080  # or any available port
 - **Responsive**: Works on desktop and mobile browsers
 
 ### Future Enhancements (Potential)
-- JSON output parsing for better error visualization
-- Line highlighting for data race locations
+- Handle reports with more than one data-race
+- Expose more options from faial-drf
+- The test examples should use the options listed in `../examples/drf/test.ml`
 - File upload functionality
 - Integration with other faial tools (faial-bc, faial-sync)
 - Docker containerization
