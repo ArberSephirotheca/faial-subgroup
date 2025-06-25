@@ -94,3 +94,12 @@ Test a specific kernel:
 3. Test changes with `make test` 
 4. For specific analysis development, focus on the relevant module (drf/, bank_conflicts/, etc.)
 5. Add test cases to appropriate examples/ subdirectory
+
+## Git Commit Guidelines
+
+When creating commits, do NOT include:
+- Co-Authored-By tags
+- "Generated with Claude Code" footers
+- Any AI attribution in commit messages
+
+Use clear, descriptive commit messages that focus on the actual changes made.

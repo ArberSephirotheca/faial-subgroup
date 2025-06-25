@@ -61,6 +61,104 @@ header p {
     flex-wrap: wrap;
 }
 
+.options-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.option-label {
+    font-weight: 500;
+    margin-bottom: 5px;
+}
+
+.checkboxes {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+    margin-top: 2px;
+}
+
+.checkbox-label span {
+    font-weight: 500;
+    color: #2c3e50;
+}
+
+.checkbox-label small {
+    color: #6c757d;
+    font-size: 12px;
+    margin-left: 4px;
+}
+
+.dimension-inputs {
+    margin-top: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.input-group label {
+    font-weight: 500;
+    color: #2c3e50;
+    font-size: 14px;
+}
+
+.input-group input[type="text"] {
+    padding: 6px 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+    width: 100px;
+    font-family: monospace;
+}
+
+.input-group input[type="text"]:focus {
+    outline: none;
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+}
+
+.input-group small {
+    color: #6c757d;
+    font-size: 12px;
+}
+
+.input-group.disabled {
+    opacity: 0.5;
+}
+
+.input-group.disabled label {
+    color: #adb5bd;
+}
+
+.input-group.disabled input[type="text"]:disabled {
+    background-color: #f8f9fa;
+    color: #6c757d;
+    cursor: not-allowed;
+    border-color: #e9ecef;
+}
+
+.input-group.disabled small {
+    color: #adb5bd;
+}
+
 .controls label {
     font-weight: 500;
 }
@@ -154,6 +252,43 @@ header p {
     text-align: center;
     padding: 20px;
     color: #3498db;
+}
+
+.globals-info {
+    margin-top: 10px;
+    padding: 10px;
+    background: #e9ecef;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.globals-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 8px;
+    font-size: 12px;
+}
+
+.globals-table th,
+.globals-table td {
+    padding: 6px 10px;
+    text-align: left;
+    border: 1px solid #ced4da;
+}
+
+.globals-table th {
+    background-color: #f8f9fa;
+    font-weight: 600;
+    color: #495057;
+}
+
+.globals-table td {
+    background-color: white;
+    font-family: monospace;
+}
+
+.globals-table tr:nth-child(even) td {
+    background-color: #f8f9fa;
 }
 
 @media (max-width: 768px) {

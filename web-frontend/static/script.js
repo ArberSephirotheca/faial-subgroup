@@ -88,6 +88,26 @@ function setupEventListeners() {
     editor.setOption('extraKeys', {
         'Ctrl-Enter': analyzeCode
     });
+    
+    // Handle all-dims checkbox conflict with dimension inputs
+    document.getElementById('all-dims-checkbox').addEventListener('change', function(e) {
+        const isAllDims = e.target.checked;
+        const gridInput = document.getElementById('grid-dim-input');
+        const blockInput = document.getElementById('block-dim-input');
+        
+        // Disable/enable dimension inputs based on all-dims state
+        gridInput.disabled = isAllDims;
+        blockInput.disabled = isAllDims;
+        
+        // Add visual indication
+        if (isAllDims) {
+            gridInput.parentElement.classList.add('disabled');
+            blockInput.parentElement.classList.add('disabled');
+        } else {
+            gridInput.parentElement.classList.remove('disabled');
+            blockInput.parentElement.classList.remove('disabled');
+        }
+    });
 }
 
 // Analyze the code
@@ -98,6 +118,14 @@ async function analyzeCode() {
         showResults('Please enter some CUDA code to analyze.', 'error');
         return;
     }
+    
+    // Collect options from checkboxes
+    const allDims = document.getElementById('all-dims-checkbox').checked;
+    const allLevels = document.getElementById('all-levels-checkbox').checked;
+    
+    // Collect dimension values
+    const gridDim = document.getElementById('grid-dim-input').value.trim();
+    const blockDim = document.getElementById('block-dim-input').value.trim();
     
     const analyzeBtn = document.getElementById('analyze-btn');
     const loading = document.getElementById('loading');
@@ -115,7 +143,15 @@ async function analyzeCode() {
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ code: code })
+            body: JSON.stringify({ 
+                code: code,
+                options: {
+                    allDims: allDims,
+                    allLevels: allLevels,
+                    gridDim: gridDim,
+                    blockDim: blockDim
+                }
+            })
         });
         
         if (response.ok) {
@@ -145,6 +181,37 @@ function parseFaialOutput(jsonData) {
             z3_version: jsonData.z3_version || ''
         }
     };
+}
+
+// Group parameters by their prefix (e.g., "foo.x", "foo.y" -> "foo": {x: val1, y: val2})
+function groupParametersByPrefix(params) {
+    const grouped = {};
+    const ungrouped = {};
+    
+    for (const [key, value] of Object.entries(params)) {
+        const dotIndex = key.indexOf('.');
+        if (dotIndex !== -1) {
+            const prefix = key.substring(0, dotIndex);
+            const suffix = key.substring(dotIndex + 1);
+            
+            if (!grouped[prefix]) {
+                grouped[prefix] = {};
+            }
+            grouped[prefix][suffix] = value;
+        } else {
+            ungrouped[key] = value;
+        }
+    }
+    
+    return { grouped, ungrouped };
+}
+
+// Format grouped parameters for display
+function formatGroupedValue(groupedObj) {
+    const pairs = Object.entries(groupedObj)
+        .map(([key, value]) => `${key}: ${value}`)
+        .join(', ');
+    return `{${pairs}}`;
 }
 
 // Display analysis results
@@ -289,12 +356,59 @@ function createErrorCard(error, index) {
         
         card += '</div>';
         
-        // Globals
-        if (counterExample.globals) {
+        // Block Configuration - only show centralized info for block-level analysis
+        if (counterExample.globals && counterExample.globals['blockIdx.x'] !== undefined) {
+            // Block-level analysis: all threads in same block
+            const blockIdxX = counterExample.globals['blockIdx.x'];
+            const blockIdxY = counterExample.globals['blockIdx.y'];
+            const blockIdxZ = counterExample.globals['blockIdx.z'];
+            
             card += `<div class="globals-info">
                 <strong>Block Configuration:</strong>
-                <span class="coord">blockIdx(${counterExample.globals['blockIdx.x']}, ${counterExample.globals['blockIdx.y']}, ${counterExample.globals['blockIdx.z']})</span>
+                <span class="coord">blockIdx(${blockIdxX}, ${blockIdxY}, ${blockIdxZ})</span>
             </div>`;
+        }
+        
+        // Show other globals if present
+        if (counterExample.globals && Object.keys(counterExample.globals).some(key => !key.startsWith('blockIdx'))) {
+            const otherGlobalsEntries = Object.entries(counterExample.globals)
+                .filter(([key]) => !key.startsWith('blockIdx'));
+            
+            if (otherGlobalsEntries.length > 0) {
+                const otherGlobals = Object.fromEntries(otherGlobalsEntries);
+                const { grouped, ungrouped } = groupParametersByPrefix(otherGlobals);
+                
+                card += `<div class="globals-info">
+                    <strong>Global Parameters:</strong>
+                    <table class="globals-table">
+                        <thead>
+                            <tr>
+                                <th>Parameter</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+                
+                // Add grouped parameters
+                Object.entries(grouped).forEach(([prefix, groupedObj]) => {
+                    card += `<tr>
+                        <td>${prefix}</td>
+                        <td>${formatGroupedValue(groupedObj)}</td>
+                    </tr>`;
+                });
+                
+                // Add ungrouped parameters
+                Object.entries(ungrouped).forEach(([key, value]) => {
+                    card += `<tr>
+                        <td>${key}</td>
+                        <td>${value}</td>
+                    </tr>`;
+                });
+                
+                card += `</tbody>
+                    </table>
+                </div>`;
+            }
         }
         
         card += '</div>';
@@ -315,10 +429,22 @@ function createThreadCard(title, task, threadNum) {
             <span class="access-mode ${modeClass}">${modeText}</span>
         </div>`;
     
-    // Thread coordinates
-    card += `<div class="thread-coords">
-        threadIdx(${task.locals['threadIdx.x']}, ${task.locals['threadIdx.y']}, ${task.locals['threadIdx.z']})
-    </div>`;
+    // Group and display thread local parameters
+    const { grouped, ungrouped } = groupParametersByPrefix(task.locals);
+    
+    // Display grouped parameters (like threadIdx, blockIdx)
+    Object.entries(grouped).forEach(([prefix, groupedObj]) => {
+        card += `<div class="thread-coords">
+            ${prefix}${formatGroupedValue(groupedObj)}
+        </div>`;
+    });
+    
+    // Display ungrouped parameters
+    Object.entries(ungrouped).forEach(([key, value]) => {
+        card += `<div class="thread-coords">
+            ${key}: ${value}
+        </div>`;
+    });
     
     card += '</div>';
     return card;

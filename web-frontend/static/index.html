@@ -24,6 +24,32 @@
                     <select id="examples-select">
                         <option value="">Select an example...</option>
                     </select>
+                    
+                    <div class="options-section">
+                        <label class="option-label">Analysis Options:</label>
+                        <div class="checkboxes">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="all-dims-checkbox">
+                                <span>Range over all possible dimensions</span>
+                            </label>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="all-levels-checkbox">
+                                <span>Block-level AND grid-level verification</span>
+                            </label>
+                        </div>
+                        
+                        <div class="dimension-inputs">
+                            <div class="input-group">
+                                <label for="grid-dim-input">Grid Dimension:</label>
+                                <input type="text" id="grid-dim-input" placeholder="1" value="1">
+                            </div>
+                            <div class="input-group">
+                                <label for="block-dim-input">Block Dimension:</label>
+                                <input type="text" id="block-dim-input" placeholder="1024" value="1024">
+                            </div>
+                        </div>
+                    </div>
+                    
                     <button id="analyze-btn">Analyze Code</button>
                 </div>
                 

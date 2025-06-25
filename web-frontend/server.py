@@ -39,6 +39,7 @@ class FaialRequestHandler(http.server.SimpleHTTPRequestHandler):
             data = json.loads(post_data.decode('utf-8'))
             
             cuda_code = data.get('code', '')
+            options = data.get('options', {})
             
             # Create temporary file
             with tempfile.NamedTemporaryFile(mode='w', suffix='.cu', delete=False) as f:
@@ -46,9 +47,28 @@ class FaialRequestHandler(http.server.SimpleHTTPRequestHandler):
                 temp_file = f.name
             
             try:
-                # Run faial-drf with JSON output
+                # Build command with options
+                cmd = [FAIAL_DRF_PATH, temp_file, '--json']
+                
+                # Add optional flags
+                if options.get('allDims'):
+                    cmd.append('--all-dims')
+                if options.get('allLevels'):
+                    cmd.append('--all-levels')
+                
+                # Add dimension options (only if --all-dims is not enabled)
+                if not options.get('allDims'):
+                    grid_dim = options.get('gridDim', '').strip()
+                    if grid_dim:
+                        cmd.extend(['-g', grid_dim])
+                    
+                    block_dim = options.get('blockDim', '').strip()
+                    if block_dim:
+                        cmd.extend(['-b', block_dim])
+
+                # Run faial-drf with JSON output and options
                 result = subprocess.run(
-                    [FAIAL_DRF_PATH, temp_file, '--json'],
+                    cmd,
                     capture_output=True,
                     text=True,
                     timeout=30
