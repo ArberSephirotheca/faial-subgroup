@@ -90,7 +90,7 @@ module UA = struct
         let (e1, ty1) = from_nexp e1 in
         let (e2, ty2) = from_nexp e2 in
       (* Any divisor of 32 can be elided when it's being multiplies by
-         a unfiorm/constant/inc *)
+         a uniform/constant/inc *)
         if is_aligned e1 ty2 || is_aligned e2 ty1 then
           (Num word, Constant)
         else
