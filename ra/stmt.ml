@@ -21,6 +21,9 @@ let rec is_zero : t -> bool =
   | Seq (p, q) | Choice (p, q) -> is_zero p && is_zero q
   | If (_, p, q) -> is_zero p && is_zero q
 
+(* We try to generate unique names for cost to not confuse backends like Absynth *)
+let cost_id : int ref = ref 0
+
 let tick (e:Exp.nexp) : t =
   match e with
   | Num n -> Tick n
@@ -28,7 +31,10 @@ let tick (e:Exp.nexp) : t =
     let range =
       (* Make sure we generate a fresh loop variable *)
       let fns = Exp.n_free_names e Variable.Set.empty in
-      let x = Variable.fresh fns (Variable.from_name "cost") in
+      let c_id = ! cost_id in
+      cost_id := c_id + 1;
+      let c_id = "__cost" ^ string_of_int c_id in
+      let x = Variable.fresh fns (Variable.from_name c_id) in
       Range.make
         ~lower_bound:(Num 1)
         x
