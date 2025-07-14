@@ -1,5 +1,8 @@
 # Faial: finds bugs in CUDA kernels
 
+Faial is a static analysis tool for finding bugs in CUDA kernels, featuring **data-race freedom (DRF) analysis** and **performance analysis**.
+
+
 # Binary distribution
 
 ### [Download `faial` for Linux x86-64bits](https://gitlab.com/umb-svl/faial/-/jobs/artifacts/main/raw/bundle/faial.tar.bz2?job=bundle-lin&inline=false)
@@ -43,59 +46,34 @@ Next, feel free to access the [`tutorial/`](tutorial/) directory!
 $ make
 ```
 
----
+# Citing our research
 
-# Building from scratch (Ubuntu 22.04)
+If you use Faial in your research, please cite our paper:
 
-These instructions are also available as a dockerfile: [`docker/dev.Dockerfile`](docker/dev.Dockerfile)
+> Tiago Cogumbreiro, Julien Lange, Dennis Liew, and Hannah Zicarelli. "Memory access protocols: certified data-race freedom for GPU kernels." *Formal Methods in System Design* 63, no. 1 (2024): 134-171. DOI: [10.1007/s10703-023-00415-0](https://doi.org/10.1007/s10703-023-00415-0)
 
-Install the following system packages:
+**BibTeX:**
+```bibtex
+@article{faial:fmsd23,
+  title={Memory access protocols: certified data-race freedom for GPU kernels},
+  author={Cogumbreiro, Tiago and Lange, Julien and Liew, Dennis and Zicarelli, Hannah},
+  journal={Formal Methods in System Design},
+  volume={63},
+  number={1},
+  pages={134--171},
+  year={2024},
+  publisher={Springer},
+  doi={10.1007/s10703-023-00415-0},
+}
 ```
-$ sudo apt-get install \
-        llvm-dev \
-        libclang-dev \
-        lld \
-        zlib1g-dev \
-        ninja-build \
-        cmake \
-        upx-ucl \
-        python2 \
-        git \
-        wget \
-        unzip \
-        build-essential \
-        libssl-dev \
-        pkg-config \
-        python3-distutils \
-        libgmp-dev
-```
+# Publications
 
-Install `c-to-json`:
-```
-$ git clone https://gitlab.com/umb-svl/c-to-json
-$ cd c-to-json
-$ make
-$ sudo make install # installs to /usr/local/bin
-$ cd ..
-```
+- [Hidden assumptions in static verification of data-race free GPU programs](https://dx.doi.org/10.1007/978-3-031-97492-2_6). In Principles and Practices of Building Parallel Software. LNCS, vol 14564. Tiago Cogumbreiro, Julien Lange. 2025
 
-Install `ocaml 5.1.1`:
-```
-$ # Install OCaml's package manager:
-$ sudo wget https://github.com/ocaml/opam/releases/download/2.1.4/opam-2.1.4-x86_64-linux -O /usr/bin/opam
-$ sudo chmod a+x /usr/bin/opam
-$ # Install OCaml 5.1.1
-$ opam init --compiler=5.1.1
-$ # Set environment variables
-$ eval $(opam env)
-```
+- [Sound and partially-complete static analysis of data-races in GPU programs](https://dx.doi.org/10.1145/3689797). Dennis Liew, Tiago Cogumbreiro, Julien Lange. PACMPL, 8(OOPSLA2), 2024. 
 
-Install `faial`:
-```
-$ cd faial
-$ ./configure.sh
-$ make
-$ sudo cp /home/faial/faial/faial-drf /usr/local/bin/
-$ sudo cp /home/faial/faial/faial-bc /usr/local/bin/
-$ sudo cp /home/faial/faial/c-ast /usr/local/bin/
-```
+- [Memory Access Protocols: Certified Data-Race Freedom for GPU Kernels](https://dx.doi.org/10.1007/s10703-023-00415-0). Tiago Cogumbreiro, Julien Lange, Dennis Liew, Hannah Zicarelli. FMSD, 2023.
+
+- [Provable GPU Data-Races in Static Race Detection](https://dx.doi.org/10.4204/EPTCS.356.4). Dennis Liew, Tiago Cogumbreiro, Julien Lange. In PLACES, volume 356 of EPTCS, page 36–45. 2022. 
+
+- [Checking Data-Race Freedom of GPU Kernels, Compositionally](https://dx.doi.org/10.1007/978-3-030-81685-8_19). Tiago Cogumbreiro, Julien Lange, Dennis Lew, Hannah Zicarelli. In CAV, volume 12759, page 403–426. Springer, 2021.
