@@ -106,3 +106,20 @@ AssignStmt {var=result; data=temp1 + temp2}
 - **Address space annotations** explicitly map to memory hierarchy
 - **Structured types** enable straightforward field access flattening
 
+## Future work
+
+### Parsing C/CUDA with FrontC
+
+We considered implementing a C/CUDA parser based on [FrontC](https://github.com/BinaryAnalysisPlatform/FrontC/).
+
+Motivation:
+
+- *simplifies building Faial:* would make parsing C/CUDA self-contained (no external dependencies)
+- *gives a fallback alternative to c-to-json,* which is infamously difficult to build
+- *faster parsing times:* obviates the need for spawning a process for parsing, and marshaling JSON
+- *enables Faial running in browser:* allows JS and have it run browser-side
+- *significant overlap with `c_lang.ml`*, as both LLVM and FrontC are parsing C, we would expect a significant overlap of both ASTs
+
+Current limitations:
+- *AST has no typing information,* which means that we would need to type-check it, introducing a stage before `c_lang.ml`; incorrect typing information would need to conservatively assume that types are integers (thus reducing the efficacy of our code slicing) and introduce false alarms (as larger ranges for integers would be incorrectly assumed)
+- *AST has no provenance information,* so we would lose the ability to pin-point errors, thus breaking the UI
