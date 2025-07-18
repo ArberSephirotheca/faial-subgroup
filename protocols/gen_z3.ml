@@ -156,6 +156,28 @@ let decl_to_variable (d:Z3.FuncDecl.func_decl) : Variable.t =
   |> Variable.from_name
 
 
+module Solver = struct
+  open Z3
+
+  type t =
+    | Sat of Model.model
+    | Unsat
+    | Unknown of string
+
+  let run (solver:Solver.solver) : t =
+    match Solver.check solver [] with
+    | SATISFIABLE ->
+        (match Solver.get_model solver with
+        | Some model ->
+            Sat model
+        | None ->
+            raise (Invalid_argument "Satisfiable result but no model available - check solver configuration"))
+    | UNSATISFIABLE ->
+        Unsat
+    | UNKNOWN ->
+        Unknown (Solver.get_reason_unknown solver)
+end
+
 module Optimizer = struct
   open Z3
 
@@ -322,6 +344,21 @@ module CodeGen (N:NUMERIC_OPS) = struct
     | Unsat -> Error "unsat"
     | Unknown m -> Error m
 
+  let solve
+    ?(timeout=0) (* By default no timeout is given *)
+    (pre:Exp.bexp)
+  :
+    Solver.t
+  =
+    let args =
+      if timeout > 0 then ["timeout", string_of_int timeout] else []
+    in
+    let ctx = Z3.mk_context args in
+    let solver = Z3.Solver.mk_solver ctx None in
+    Z3.Solver.add solver [
+      b_to_expr ctx pre;
+    ];
+    Solver.run solver
 
 end
 

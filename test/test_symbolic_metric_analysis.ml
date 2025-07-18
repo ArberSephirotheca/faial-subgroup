@@ -8,7 +8,7 @@ open Bank_conflicts.Symbolic_metric_analysis
 let make_config (threads_per_warp: int) : Config.t =
   Config.make 
     ~threads_per_warp
-    ~block_dim:(Dim3.make ~x:1 ())
+    ~block_dim:(Dim3.make ~x:threads_per_warp ()) (* Allow enough space for all threads *)
     ~grid_dim:(Dim3.make ~x:1 ())
     ()
 
@@ -51,20 +51,29 @@ let assert_encode_ua
 
 (* Utility function that wraps ua and provides better error messages *)
 let assert_ua
+  ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
   ~expected:(expected: int option)
   ~threads_per_warp:(threads_per_warp: int)
   ~locals:(locals: Variable.Set.t)
   ~cond:(cond: bexp)
   ~index:(index: nexp)
+  ()
   : unit =
   let cfg = make_config threads_per_warp in
-  let result = ua cfg locals cond index in
+  let result = ua ~strategy cfg locals cond index in
+  let formula = encode_ua cfg locals cond index in
   let printer = function
     | Some x -> string_of_int x
     | None -> "none"
   in
+  let debug_msg = Printf.sprintf 
+    "Warp constraints: %s\nFormula: %s"
+    (b_to_string (warp_constraints cfg))
+    (n_to_string formula)
+  in
   assert_equal 
     ~printer
+    ~msg:debug_msg
     expected result
 
 let tests = "test_symbolic_metric_analysis" >::: [
@@ -84,8 +93,8 @@ let tests = "test_symbolic_metric_analysis" >::: [
     let locals = Variable.Set.singleton x in
     assert_replicate
       ~expected:[
-        (b_true, var_ "x$1");
-        (b_true, var_ "x$2")
+        (b_true, var_ "x$0");
+        (b_true, var_ "x$1")
       ]
       ~threads_per_warp:2
       ~locals:locals
@@ -107,7 +116,7 @@ let tests = "test_symbolic_metric_analysis" >::: [
     (* Test encode_ua with local variable x *)
     let x = Variable.from_name "x" in
     let locals = Variable.Set.singleton x in
-    let expected = n_plus (Num 1) (NIf (n_neq (var_ "x$2") (var_ "x$1"), Num 1, Num 0)) in
+    let expected = n_plus (Num 1) (NIf (n_neq (var_ "x$1") (var_ "x$0"), Num 1, Num 0)) in
     assert_encode_ua
       ~expected
       ~threads_per_warp:2
@@ -124,6 +133,7 @@ let tests = "test_symbolic_metric_analysis" >::: [
       ~locals:Variable.Set.empty
       ~cond:b_true
       ~index:(Num 0)
+      ()
   );
   
   "ua_with_local_variable" >:: (fun _ ->
@@ -136,6 +146,60 @@ let tests = "test_symbolic_metric_analysis" >::: [
       ~locals:locals
       ~cond:b_true
       ~index:(var_ "x")
+      ()
+  );
+  
+  "ua_minimize_threadIdx_x" >:: (fun _ ->
+    (* Test ua with minimize strategy on threadIdx.x *)
+    assert_ua
+      ~strategy:Gen_z3.Optimizer.Strategy.Minimize
+      ~expected:(Some 2)
+      ~threads_per_warp:2
+      ~locals:Variable.tid_set
+      ~cond:b_true
+      ~index:(Var Variable.tid_x)
+      ()
+  );
+  
+  "warp_constraints_enforces_bounds_and_uniqueness" >:: (fun _ ->
+    (* Test that warp_constraints prevents threads from having same coordinates within bounds *)
+    let cfg = make_config 2 in
+    let c = warp_constraints cfg in
+    (* Is it possible for 2 tids to be equal? *)
+    let contradiction = b_and c (n_eq (var_ "threadIdx.x$0") (var_ "threadIdx.x$1")) in
+    let open Gen_z3.IntGen in
+    let result = solve contradiction in
+    assert_equal 
+      ~msg:"warp_constraints should make threadIdx.x$0 = threadIdx.x$1 unsatisfiable when considering block bounds"
+      Gen_z3.Solver.Unsat
+      result
+  );
+  
+  "cross_warp_unsoundness_test" >:: (fun _ ->
+    (* Test to expose unsoundness: threads from different warps should not be allowed *)
+    let cfg = Config.make 
+      ~threads_per_warp:32
+      ~block_dim:(Dim3.make ~x:64 ()) (* 2 warps: 0-31 and 32-63 *)
+      ~grid_dim:(Dim3.make ~x:1 ())
+      () in
+    let c = warp_constraints cfg in
+    (* Try to assign threads from different warps *)
+    let cross_warp = b_and_ex [
+      c;
+      n_eq (var_ "threadIdx.x$0") (Num 0);   (* thread 0 = warp 0 *)
+      n_eq (var_ "threadIdx.x$1") (Num 32);  (* thread 32 = warp 1 *)
+      n_eq (var_ "threadIdx.y$0") (Num 0);
+      n_eq (var_ "threadIdx.y$1") (Num 0);
+      n_eq (var_ "threadIdx.z$0") (Num 0);
+      n_eq (var_ "threadIdx.z$1") (Num 0);
+    ] in
+    let open Gen_z3.IntGen in
+    let result = solve cross_warp in
+    (* This test SHOULD fail (return Sat) with current constraints, exposing the bug *)
+    assert_equal 
+      ~msg:"EXPECTED TO FAIL: Current constraints allow threads from different warps (this exposes unsoundness)"
+      Gen_z3.Solver.Unsat
+      result
   );
 ]
 
