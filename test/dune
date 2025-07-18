@@ -16,6 +16,7 @@
    test_maxima
    test_py
    test_wgsl
+   test_gen_z3
  )
  (libraries stage0 ra protocols drf inference oUnit bank_conflicts analyze_cost)
 )

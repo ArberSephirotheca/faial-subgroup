@@ -11,8 +11,9 @@ module BitVector = Z3.BitVector
 exception Not_implemented of string
 
 module type GEN = sig
-	val n_to_expr: Z3.context -> nexp -> Expr.expr
-	val b_to_expr: Z3.context -> bexp -> Expr.expr
+  val n_to_expr: Z3.context -> nexp -> Expr.expr
+  val b_to_expr: Z3.context -> bexp -> Expr.expr
+  val parse_num: string -> int
 end
 
 type binop = Z3.context -> Expr.expr -> Expr.expr -> Expr.expr
@@ -107,63 +108,104 @@ module W8 = struct
 end
 
 module BitVectorOps (W:WordSize) = struct
-	let mk_var ctx x = BitVector.mk_const_s ctx x W.word_size
-	let mk_num ctx n = BitVector.mk_numeral ctx (string_of_int n) W.word_size
-	let mk_bit_and = BitVector.mk_and
-	let mk_bit_or = BitVector.mk_or
-	let mk_bit_xor =  BitVector.mk_xor
-	let mk_left_shift = BitVector.mk_shl
-	let mk_right_shift = BitVector.mk_ashr
-	let mk_minus = BitVector.mk_sub
-	let mk_plus = BitVector.mk_add
-	let mk_mult = BitVector.mk_mul
-	let mk_div = BitVector.mk_sdiv
-	let mk_mod = BitVector.mk_smod
-	let mk_le = BitVector.mk_sle
-	let mk_ge = BitVector.mk_sge
-	let mk_gt = BitVector.mk_sgt
-	let mk_lt = BitVector.mk_slt
-	let mk_not = BitVector.mk_not
-	let mk_unary_minus = BitVector.mk_neg
-	let parse_num x =
-		(* Input is: #x0000004000000000 *)
-		let offset n x = String.sub x n (String.length x - n) in
-		(* We need to remove the prefix #x *)
-		let x = offset 2 x in (* Removes the prefix: #x *)
-		(* Then we need to remove the prefix 0s,
-		   otherwise Int32.of_string doesn't like it *)
-		let rec trim_0 x =
-			if String.length x > 0 && String.get x 0 = '0'
-			then trim_0 (offset 1 x)
-			else x
-		in
-		(* Prefix it with a 0x so that Int64.of_string knows it's an hex *)
+  let mk_var ctx x = BitVector.mk_const_s ctx x W.word_size
+  let mk_num ctx n = BitVector.mk_numeral ctx (string_of_int n) W.word_size
+  let mk_bit_and = BitVector.mk_and
+  let mk_bit_or = BitVector.mk_or
+  let mk_bit_xor =  BitVector.mk_xor
+  let mk_left_shift = BitVector.mk_shl
+  let mk_right_shift = BitVector.mk_ashr
+  let mk_minus = BitVector.mk_sub
+  let mk_plus = BitVector.mk_add
+  let mk_mult = BitVector.mk_mul
+  let mk_div = BitVector.mk_sdiv
+  let mk_mod = BitVector.mk_smod
+  let mk_le = BitVector.mk_sle
+  let mk_ge = BitVector.mk_sge
+  let mk_gt = BitVector.mk_sgt
+  let mk_lt = BitVector.mk_slt
+  let mk_not = BitVector.mk_not
+  let mk_unary_minus = BitVector.mk_neg
+  let parse_num (x:string) =
+    (* Input is: #x0000004000000000 *)
+    let offset n x = String.sub x n (String.length x - n) in
+    (* We need to remove the prefix #x *)
+    let x = offset 2 x in (* Removes the prefix: #x *)
+    (* Then we need to remove the prefix 0s,
+        otherwise Int32.of_string doesn't like it *)
+    let rec trim_0 x =
+      if String.length x > 0 && String.get x 0 = '0'
+      then trim_0 (offset 1 x)
+      else x
+    in
+    (* Prefix it with a 0x so that Int64.of_string knows it's an hex *)
     let x = "0x" ^ trim_0 x in
-		(* Finally, convert it into an int64 (signed),
-	     and then render it back to a string, as this is for display only *)
-    if x = "0x"
-    then "0"
-    else W.decode_hex x
+    (* Finally, convert it into an int64 (signed),
+      and then render it back to a string, as this is for display only *)
+    if x = "0x" then
+      "0"
+    else
+      W.decode_hex x
 end
 
+(* Convert a declaration to a variable *)
+let decl_to_variable (d:Z3.FuncDecl.func_decl) : Variable.t =
+  d
+  |> Z3.FuncDecl.get_name
+  |> Z3.Symbol.get_string
+  |> Variable.from_name
+
+
+module Optimizer = struct
+  open Z3
+
+  module Strategy = struct
+    type t =
+      | Maximize
+      | Minimize
+  end
+
+  type t =
+    | Sat of { model: Model.model; optimal: Expr.expr }
+    | Unsat
+    | Unknown of string
+
+  let run (opt:Optimize.optimize) (strategy:Strategy.t) (n:Expr.expr) : t =
+    let handle =
+      match strategy with
+      | Maximize -> Optimize.maximize opt n
+      | Minimize -> Optimize.minimize opt n
+    in
+    match Optimize.check opt with
+    | SATISFIABLE ->
+        (match Optimize.get_model opt with
+        | Some model ->
+            let optimal = Optimize.get_lower handle in
+            Sat { model; optimal }
+        | None ->
+            raise (Invalid_argument "Satisfiable result but no model available - check optimizer configuration"))
+    | UNSATISFIABLE ->
+        Unsat
+    | UNKNOWN ->
+        Unknown (Optimize.get_reason_unknown opt)
+end
 
 module CodeGen (N:NUMERIC_OPS) = struct
-	let parse_num = N.parse_num
-
-	let nbin_to_expr : N_binary.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr =
+  let parse_num = N.parse_num
+  let nbin_to_expr : N_binary.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr =
     function
-		| BitAnd -> N.mk_bit_and
-		| BitOr -> N.mk_bit_or
-		| BitXOr -> N.mk_bit_xor
-		| LeftShift -> N.mk_left_shift
-		| RightShift -> N.mk_right_shift
-		| Plus -> N.mk_plus
-		| Minus -> N.mk_minus
-		| Mult -> N.mk_mult
-		| Div -> N.mk_div
-		| Mod -> N.mk_mod
+    | BitAnd -> N.mk_bit_and
+    | BitOr -> N.mk_bit_or
+    | BitXOr -> N.mk_bit_xor
+    | LeftShift -> N.mk_left_shift
+    | RightShift -> N.mk_right_shift
+    | Plus -> N.mk_plus
+    | Minus -> N.mk_minus
+    | Mult -> N.mk_mult
+    | Div -> N.mk_div
+    | Mod -> N.mk_mod
 
-	let nrel_to_expr : N_rel.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr =
+  let nrel_to_expr : N_rel.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr =
     function
     | Eq -> Boolean.mk_eq
     | Neq -> fun ctx n1 n2 -> Boolean.mk_not ctx (Boolean.mk_eq ctx n1 n2)
@@ -172,13 +214,13 @@ module CodeGen (N:NUMERIC_OPS) = struct
     | Lt -> N.mk_lt
     | Gt -> N.mk_gt
 
-	let brel_to_expr : B_rel.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr =
+  let brel_to_expr : B_rel.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr =
     function
-		| BOr -> fun ctx b1 b2 -> Boolean.mk_or ctx [b1; b2]
-		| BAnd -> fun ctx b1 b2 -> Boolean.mk_and ctx [b1; b2]
+    | BOr -> fun ctx b1 b2 -> Boolean.mk_or ctx [b1; b2]
+    | BAnd -> fun ctx b1 b2 -> Boolean.mk_and ctx [b1; b2]
 
-	let rec n_to_expr (ctx:Z3.context) (n:nexp) : Expr.expr =
-    match n with
+  let rec n_to_expr (ctx:Z3.context) : nexp -> Expr.expr =
+    function
     | Var x -> Variable.name x |> N.mk_var ctx
     | CastInt b ->
       n_to_expr ctx (n_if b (Num 1) (Num 0))
@@ -197,8 +239,8 @@ module CodeGen (N:NUMERIC_OPS) = struct
     | NIf (b, n1, n2) -> Boolean.mk_ite ctx
         (b_to_expr ctx b) (n_to_expr ctx n1) (n_to_expr ctx n2)
 
-	and b_to_expr (ctx:Z3.context) (b:bexp) : Expr.expr =
-    match b with
+  and b_to_expr (ctx:Z3.context) : bexp -> Expr.expr =
+    function
     | Bool (b:bool) -> Boolean.mk_val ctx b
     | CastBool n -> b_to_expr ctx (n_neq n (Num 0))
     | NRel (op, n1, n2) ->
@@ -207,6 +249,80 @@ module CodeGen (N:NUMERIC_OPS) = struct
         (brel_to_expr op) ctx (b_to_expr ctx b1) (b_to_expr ctx b2)
     | BNot (b:bexp) -> Boolean.mk_not ctx (b_to_expr ctx b)
     | Pred _ -> failwith "b_to_expr: invoke Predicates.inline to remove predicates"
+
+  let ( let* ) = Option.bind
+
+
+  (* Get's the value of a symbolic (integer) expression *)
+  let get_int (m:Z3.Model.model) (e:Z3.Expr.expr) : int option =
+    (* Evaluate the expression in the model *)
+    let* v = Z3.Model.eval m e true in
+    (* Try to cast the result to an integer, returning none upon failure *)
+    try
+      Some (Expr.to_string v |> parse_num |> int_of_string)
+    with
+      Failure _ -> None
+
+  let get_int_decl (m:Z3.Model.model) (d:Z3.FuncDecl.func_decl) : int option =
+    (* Variables in the model are actually functions with
+      0 args, so we create a function call *)
+    (* We then evaluate the function call *)
+    get_int m (Z3.FuncDecl.apply d [])
+
+
+  (* Tries to get all variables in the set.
+     Missed variable are skipped. *)
+  let get_all (m:Z3.Model.model) (vars:Variable.Set.t) : (Variable.t * int) list =
+     (* Go through all declarations of the model *)
+    Z3.Model.get_const_decls m
+    |> List.filter_map (fun d ->
+        let x = decl_to_variable d in
+        if Variable.Set.mem x vars then
+          let* v = get_int_decl m d in
+          Some (x, v)
+        else
+          None
+      )
+  (*
+    Optimizes a numeric expression given a boolean expression.
+    *)
+  let optimize
+    ?(timeout=0) (* By default no timeout is given *)
+    (strategy:Optimizer.Strategy.t)
+    (pre:Exp.bexp)
+    (n:Exp.nexp)
+  :
+    Optimizer.t
+  =
+    let open Z3 in
+    let args =
+      if timeout > 0 then ["timeout", string_of_int timeout] else []
+    in
+    let ctx = mk_context args in
+    let opt = Optimize.mk_opt ctx in
+    Optimize.add opt [
+      b_to_expr ctx pre;
+    ]
+    ;
+    let n = n_to_expr ctx n in
+    Optimizer.run opt strategy n
+
+  let optimize_expr
+    ?(timeout=0) (* By default no timeout is given *)
+    ?(pre=Bool true)
+    (strategy:Optimizer.Strategy.t)
+    (n:Exp.nexp)
+  :
+    (int, string) Result.t
+  =
+    let res = optimize ~timeout strategy pre n in
+    match res with
+    | Sat {optimal; model} ->
+      Ok (get_int model optimal |> Option.get)
+    | Unsat -> Error "unsat"
+    | Unknown m -> Error m
+
+
 end
 
 module SignedBitVectorOps (W:WordSize) = struct
@@ -219,6 +335,7 @@ module SignedBitVectorOps (W:WordSize) = struct
   *)
   let offset = Common.pow ~base:2 (W.word_size - 1)
   let mk_var ctx x = BitVector.mk_const_s ctx x W.word_size
+  let mk_sort ctx = BitVector.mk_sort ctx W.word_size
   let mk_num ctx n =
     let n = n + offset in
     BitVector.mk_numeral ctx (string_of_int n) W.word_size
@@ -241,14 +358,16 @@ module SignedBitVectorOps (W:WordSize) = struct
   let parse_num x =
     (* Input is: #x0000004000000000 *)
     let offset n x = String.sub x n (String.length x - n) in
-    (* We need to remove the prefix #x *)
+    (* We need to remove the prefix #x; input becomes: 0000004000000000 *)
     let x = offset 2 x in (* Removes the prefix: #x *)
     (* Then we need to remove the prefix 0s,
-        otherwise Int32.of_string doesn't like it *)
+        otherwise Int32.of_string doesn't like it.
+      Input becomes: 4000000000 *)
     let rec trim_0 x =
-      if String.length x > 0 && String.get x 0 = '0'
-      then trim_0 (offset 1 x)
-      else x
+      if String.length x > 0 && String.get x 0 = '0' then
+        trim_0 (offset 1 x)
+      else
+        x
     in
     (* Prefix it with a 0x so that Int64.of_string knows it's an hex *)
     let x = "0x" ^ trim_0 x in
@@ -263,3 +382,7 @@ module IntGen = CodeGen (ArithmeticOps)
 module Bv32Gen = CodeGen (BitVectorOps(W32))
 module Bv64Gen = CodeGen (BitVectorOps(W64))
 module SignedBv32Gen = CodeGen (SignedBitVectorOps(SIGNED_32))
+
+
+
+
