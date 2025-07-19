@@ -222,3 +222,32 @@ When writing conceptual documentation for this project, follow these principles 
 - This grounds the work in existing knowledge and shows appropriate use of established methods
 
 The overarching goal is **conceptual clarity**: writing that helps someone understand the system's analytical reasoning and approach to solving problems, enabling them to mentally model how the system works rather than just describing its structure or features.
+
+## Z3 SMT Solver Performance Notes
+
+### Timeout Behavior
+- Z3 appears to have a default timeout of 600 seconds when no explicit timeout is specified in optimization queries
+- This can cause tests to hang for 10 minutes before failing, making development feedback slow
+
+### Performance Scaling for Symbolic Metric Analysis
+The `unique_tid_constraint` function using `Distinct` constructor shows exponential time complexity scaling:
+
+**Performance measurements for `tidx % 2 == 0` condition with maximize strategy:**
+- `threads_per_warp: 2` → 0.17 seconds
+- `threads_per_warp: 4` → 0.20 seconds  
+- `threads_per_warp: 8` → 3.01 seconds
+- `threads_per_warp: 16` → timeout after 600 seconds
+- `threads_per_warp: 32` with `unique_tid_constraint` commented out → 0.13 seconds
+
+**Key observations:**
+- Doubling thread count from 2→4 has minimal impact (0.17s → 0.20s)
+- Doubling from 4→8 shows significant increase (0.20s → 3.01s, ~15x slower)
+- Doubling from 8→16 causes timeout (>600s, likely >200x slower)
+- **Crucially**: Removing `unique_tid_constraint` allows 32 threads to solve in just 0.13 seconds, demonstrating that the `Distinct` constraint is the primary performance bottleneck
+
+**Implications:**
+- The `Distinct` constraint with thread-local conditions creates complex SMT formulas that dominate solve time
+- The rest of the constraint system (`tid_bounds_constraint` + `same_warp_constraint`) scales well even to 32 threads
+- Consider limiting `threads_per_warp` in tests to ≤8 for reasonable test execution times when using `unique_tid_constraint`
+- For larger warp sizes, may need timeout parameters or alternative constraint formulations
+- The exponential scaling is specifically due to the interaction between `Distinct` and thread-local conditions, not the overall constraint system

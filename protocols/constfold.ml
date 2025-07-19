@@ -7,7 +7,9 @@ let rec norm (b:bexp) : bexp list =
   | BRel (BOr, _, _)
   | Bool _
   | BNot (CastBool _)
-  | NRel _ -> [b]
+  | NRel _
+  | Distinct _
+  | BNot (Distinct _) -> [b]
   | BRel (BAnd, b1, b2) -> List.append (norm b1) (norm b2)
   | BNot (Bool b) -> [Bool (not b)]
   | BNot (BRel (BAnd, b1, b2)) -> norm (b_or (b_not b1) (b_not b2))
@@ -71,6 +73,7 @@ and b_opt (e : bexp) : bexp =
   | BRel (b, b1, b2) -> b_rel b (b_opt b1) (b_opt b2)
   | NRel (o, a1, a2) -> n_rel o (n_opt a1) (n_opt a2)
   | BNot b -> b_not (b_opt b)
+  | Distinct exprs -> Distinct (List.map n_opt exprs)
 
 let r_opt (r:Range.t) : Range.t =
   {

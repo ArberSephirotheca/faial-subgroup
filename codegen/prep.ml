@@ -43,6 +43,7 @@ and b_to_vars : bexp -> Variable.t list =
   | BRel (_, b1, b2) -> b_to_vars b1 @ b_to_vars b2
   | BNot b -> b_to_vars b
   | Pred (_, e) -> n_to_vars e
+  | Distinct exprs -> List.concat_map n_to_vars exprs
 and r_to_vars (r : Range.t) : Variable.t list =
   let step_variables = match r.step with
     | Plus e -> n_to_vars e

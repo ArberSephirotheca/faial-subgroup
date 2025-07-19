@@ -60,6 +60,7 @@ let get_predicates (b:bexp) : t list =
     | NRel (_, n1, n2) -> get_names_n n1 preds |> get_names_n n2
     | Bool _ -> preds
     | CastBool e -> get_names_n e preds
+    | Distinct exprs -> List.fold_left (fun acc expr -> get_names_n expr acc) preds exprs
   and get_names_n (n:nexp) (ns:StringSet.t) : StringSet.t =
     match n with
     | Var _ | Num _ -> ns
@@ -94,5 +95,6 @@ let inline: bexp -> bexp =
     | BNot b -> BNot (inline_b b)
     | NRel (o, n1, n2) -> NRel (o, inline_n n1, inline_n n2)
     | BRel (o, b1, b2) -> BRel (o, inline_b b1, inline_b b2)
+    | Distinct exprs -> Distinct (List.map inline_n exprs)
   in
   inline_b

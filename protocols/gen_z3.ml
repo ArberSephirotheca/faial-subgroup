@@ -271,6 +271,9 @@ module CodeGen (N:NUMERIC_OPS) = struct
         (brel_to_expr op) ctx (b_to_expr ctx b1) (b_to_expr ctx b2)
     | BNot (b:bexp) -> Boolean.mk_not ctx (b_to_expr ctx b)
     | Pred _ -> failwith "b_to_expr: invoke Predicates.inline to remove predicates"
+    | Distinct exprs ->
+        let z3_exprs = List.map (n_to_expr ctx) exprs in
+        Boolean.mk_distinct ctx z3_exprs
 
   let ( let* ) = Option.bind
 

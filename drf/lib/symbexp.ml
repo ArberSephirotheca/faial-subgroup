@@ -136,6 +136,7 @@ let project_access (locals:Variable.Set.t) (t:Task.t) (ca:CondAccess.t) : CondAc
     | BNot b -> BNot (inline_proj_b t b)
     | BRel (o, b1, b2) -> BRel (o, inline_proj_b t b1, inline_proj_b t b2)
     | NRel (o, n1, n2) -> NRel (o, inline_proj_n t n1, inline_proj_n t n2)
+    | Distinct exprs -> Distinct (List.map (inline_proj_n t) exprs)
   in
   let inline_acc (a:Access.t) = Access.map (inline_proj_n t) a in
   {

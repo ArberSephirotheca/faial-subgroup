@@ -68,6 +68,8 @@ and b_eval_res ?(env=default_env) (b: Exp.bexp) : (bool, string) Result.t =
     Ok (not b)
   | Pred (x, _) ->
     Error ("b_eval: pred " ^ x)
+  | Distinct _ ->
+    Error "Distinct evaluation not implemented yet"
 
 (* Standard int32 bounds *)
 let int32_range : Int32.t * Int32.t = (Int32.min_int, Int32.max_int)

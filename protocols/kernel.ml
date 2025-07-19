@@ -81,7 +81,8 @@ let constants (k:t) =
     | BNot _
     | Pred _
     | NRel _
-    | BRel _ -> kvs
+    | BRel _
+    | Distinct _ -> kvs
   in
   constants k.pre []
 

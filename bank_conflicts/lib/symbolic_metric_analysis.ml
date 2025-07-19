@@ -40,6 +40,7 @@ and proj_b (b: bexp) (ctx:t) : bexp =
   | BNot b -> BNot (proj_b b ctx)
   | BRel (o, b1, b2) -> BRel (o, proj_b b1 ctx, proj_b b2 ctx)
   | NRel (o, n1, n2) -> NRel (o, proj_n n1 ctx, proj_n n2 ctx)
+  | Distinct exprs -> Distinct (List.map (fun expr -> proj_n expr ctx) exprs)
 
 (*
   General algorithm to replicate an element as a list of elements
@@ -105,26 +106,6 @@ let generate_thread_tids (cfg:Config.t) : (nexp * nexp * nexp) list =
 let clamp ~lower ~value ~upper : bexp =
   b_and (n_ge value lower) (n_lt value upper)
 
-let unique_tid_constraint (cfg:Config.t) : bexp =
-  let thread_tids = generate_thread_tids cfg in
-
-  (* For each pair of threads, ensure their tid tuples are different *)
-  let rec loop tids acc =
-    match tids with
-    | [] -> acc
-    | (tx1, ty1, tz1) :: rest ->
-        let constraints_for_this_thread =
-          List.map (fun (tx2, ty2, tz2) ->
-            (* NOT((tx1, ty1, tz1) == (tx2, ty2, tz2)) *)
-            b_not (b_and_ex [n_eq tx1 tx2; n_eq ty1 ty2; n_eq tz1 tz2])
-          ) rest
-        in
-        let combined = List.fold_left b_and b_true constraints_for_this_thread in
-        loop rest (b_and acc combined)
-  in
-
-  loop thread_tids b_true
-
 let gen_tid (x:string) (suffix:string) : nexp =
   Var (Variable.from_name ("threadIdx." ^ x ^ "$" ^ suffix))
 
@@ -149,32 +130,52 @@ let tid_bounds_constraint (cfg:Config.t) : bexp =
   in
   b_and_ex thread_constraints
 
+(* Compute linear thread ID from (x,y,z) coordinates; omit warp-uniform fragments *)
+let thread_id (suffix:string) (cfg:Config.t) : nexp =
+  let tid_x, tid_y, tid_z = gen_tids suffix in
+  let tid_x =
+    if Config.is_warp_uniform Variable.tid_x cfg then
+      Num 0
+    else
+      tid_x
+  in
+  let tid_y =
+    if Config.is_warp_uniform Variable.tid_y cfg then
+      Num 0
+    else
+      n_mult tid_y (Num cfg.block_dim.x)
+  in
+  let tid_z =
+    if Config.is_warp_uniform Variable.tid_z cfg then
+      Num 0
+    else
+      n_mult tid_z (Num (cfg.block_dim.x * cfg.block_dim.y))
+  in
+  n_plus tid_x (n_plus tid_y tid_z)
+
+(* Compute warp ID for each thread *)
+let warp_id (suffix:string) (cfg:Config.t) : nexp =
+  n_div (thread_id suffix cfg) (Num cfg.threads_per_warp)
+
+(* All threads must belong to the same warp *)
 let same_warp_constraint (cfg:Config.t) : bexp =
-  (* Compute linear thread ID from (x,y,z) coordinates *)
-  let linear_tid_for_thread suffix =
-    let tid_x, tid_y, tid_z = gen_tids suffix in
-    n_plus tid_x
-      (n_plus 
-        (n_mult tid_y (Num cfg.block_dim.x))
-        (n_mult tid_z (Num (cfg.block_dim.x * cfg.block_dim.y))))
-  in
-  
-  (* Compute warp ID for each thread *)
-  let warp_id_for_thread suffix =
-    let linear_tid = linear_tid_for_thread suffix in
-    n_div linear_tid (Num cfg.threads_per_warp)
-  in
-  
-  (* All threads must belong to the same warp *)
-  let warp_equalities = 
-    List.init (cfg.threads_per_warp - 1) (fun i ->
-      let wid_i = warp_id_for_thread (string_of_int i) in
-      let wid_next = warp_id_for_thread (string_of_int (i + 1)) in
-      n_eq wid_i wid_next
+  List.init (cfg.threads_per_warp - 1) (fun i ->
+    let wid_i = warp_id (string_of_int i) cfg in
+    let wid_next = warp_id (string_of_int (i + 1)) cfg in
+    n_eq wid_i wid_next
+  )
+  |> b_and_ex
+
+
+let unique_tid_constraint (cfg:Config.t) : bexp =
+  (* Generate thread IDs for each thread in the warp *)
+  let thread_ids = 
+    List.init cfg.threads_per_warp (fun i -> 
+      thread_id (string_of_int i) cfg
     )
   in
-  
-  b_and_ex warp_equalities
+  (* Use the built-in distinct primitive to ensure all thread IDs are unique *)
+  Distinct thread_ids
 
 let warp_constraints (cfg:Config.t) : bexp =
   b_and_ex [

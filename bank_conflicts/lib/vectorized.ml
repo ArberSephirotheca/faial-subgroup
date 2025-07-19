@@ -290,6 +290,9 @@ and b_eval_res (b: Exp.bexp) (ctx:t) : (BMap.t, string) Result.t =
   | Pred (x, _) ->
     Error ("cannot evaluate predicate: " ^ x)
 
+  | Distinct _ ->
+    Error "cannot evaluate distinct"
+
 let n_eval (e:Exp.nexp) (ctx:t) : NMap.t =
   n_eval_res e ctx |> Result.get_ok
 

@@ -52,6 +52,7 @@ module Make (S:SUBST) = struct
     | NRel (o, n1, n2) -> NRel (o, n_subst s n1, n_subst s n2)
     | BRel (o, b1, b2) -> BRel (o, b_subst s b1, b_subst s b2)
     | BNot b -> BNot (b_subst s b)
+    | Distinct exprs -> Distinct (List.map (n_subst s) exprs)
 
   let a_subst (s:S.t) (a:Access.t) : Access.t =
     { a with

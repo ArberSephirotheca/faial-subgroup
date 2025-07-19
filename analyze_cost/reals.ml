@@ -273,6 +273,7 @@ and from_bexp : Exp.bexp -> boolean =
   | BNot e -> not_ (from_bexp e)
   | Pred _ -> failwith "Pred _"
   | CastBool e -> IntToBool (from_nexp e)
+  | Distinct _ -> failwith "Distinct _"
 
 let rec to_string : t -> string =
   function

@@ -19,6 +19,7 @@ and bexp =
   | BNot of bexp
   | Pred of string * nexp
   | CastBool of nexp
+  | Distinct of nexp list
 
 let rec n_eval_res (n: nexp) : (int, string) Result.t =
   let ( let* ) = Result.bind in
@@ -61,6 +62,9 @@ and b_eval_res (b: bexp) : (bool, string) Result.t =
     Ok (not b)
   | Pred (x, _) ->
     Error ("b_eval: pred " ^ x)
+  | Distinct _ ->
+    (* You'll implement this - placeholder for now *)
+    Error "Distinct evaluation not implemented yet"
 
 let n_eval_opt (n: nexp) : int option =
   n_eval_res n |> Result.to_option
@@ -278,7 +282,7 @@ let rec b_or_ex l =
 let thread_eq (e:nexp) : bexp =
   n_eq e (Other e)
 
-let distinct (idx:Variable.t list) : bexp =
+let thread_distinct (idx:Variable.t list) : bexp =
   b_or_ex (List.map (fun x -> b_not (thread_eq (Var x))) idx)
 
 let rec b_and_split : bexp -> bexp list =
@@ -310,6 +314,7 @@ and b_fold f e a =
   | NRel (_, n1, n2) -> n_fold f n1 a |> n_fold f n2
   | BRel (_, b1, b2) -> b_fold f b1 a |> b_fold f b2
   | BNot b -> b_fold f b a
+  | Distinct exprs -> List.fold_left (fun acc expr -> n_fold f expr acc) a exprs
 
 let n_free_names : nexp -> Variable.Set.t -> Variable.Set.t =
   n_fold Variable.Set.add
@@ -336,6 +341,7 @@ and b_exists (f:Variable.t -> bool) : bexp -> bool =
   | NRel (_, e1, e2) -> n_exists f e1 || n_exists f e2
   | BRel (_, e1, e2) -> b_exists f e1 || b_exists f e2
   | BNot e -> b_exists f e
+  | Distinct exprs -> List.exists (n_exists f) exprs
 
 (* Checks if variable [x] is in the given expression *)
 let n_mem (x:Variable.t) : nexp -> bool =
@@ -386,6 +392,8 @@ and b_to_string : bexp -> string = function
     b_par b1 ^ " " ^ B_rel.to_string b ^ " " ^ b_par b2
   | BNot b -> "!" ^ b_par b
   | Pred (x, v) -> x ^ "(" ^ n_to_string v ^ ")"
+  | Distinct exprs -> 
+    "distinct(" ^ String.concat ", " (List.map n_to_string exprs) ^ ")"
 
 and b_par (b:bexp) : string =
   match b with
@@ -393,6 +401,7 @@ and b_par (b:bexp) : string =
   | CastBool _
   | Bool _
   | BNot _
+  | Distinct _
     -> b_to_string b
   | BRel _
   | NRel _
@@ -407,6 +416,7 @@ let b_to_s : bexp -> Indent.t list =
     | BNot _
     | CastBool _
     | Pred _
+    | Distinct _
       -> [Line (b_to_string b)]
     | BRel (o, _, _) ->
       let op = B_rel.to_string o in
