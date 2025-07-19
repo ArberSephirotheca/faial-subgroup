@@ -82,14 +82,16 @@ let dissimilar (e:nexp) (l:nexp list) : bexp =
 *)
 let cond_dissimilar ((cnd,e):bexp * nexp) (l:(bexp * nexp) list) : bexp =
   List.fold_left
+    (* every index in `l` must differ from `e` *)
     (fun (accum:bexp) ((cnd', e'):bexp * nexp) ->
       let matches =
-        b_and (n_eq e e')
-          (b_and cnd cnd')
+        b_and
+          (n_eq e e')
+          cnd'
       in
       b_and accum (b_not matches)
     )
-    (Bool true)
+    cnd (* the condition `cnd` of `e` must be enabled *)
     l
 
 let generate_thread_tids (cfg:Config.t) : (nexp * nexp * nexp) list =

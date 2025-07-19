@@ -15,6 +15,9 @@ let make_config (threads_per_warp: int) : Config.t =
 (* Utility function to create variables *)
 let var_ (name: string) : nexp = Var (Variable.from_name name)
 
+(* Utility function to check if an expression is even *)
+let is_even (e: nexp) : bexp = n_eq (Binary (Mod, e, Num 2)) (Num 0)
+
 (* Pretty printer for (bexp * nexp) list *)
 let pp_replicate_result (result: (bexp * nexp) list) : string =
   let pp_pair (b, n) = 
@@ -124,7 +127,7 @@ let tests = "test_symbolic_metric_analysis" >::: [
       ~cond:b_true
       ~index:(var_ "x")
   );
-  
+
   "ua_empty_locals" >:: (fun _ ->
     (* Test ua with empty locals, 2 threads accessing same index *)
     assert_ua
@@ -149,14 +152,37 @@ let tests = "test_symbolic_metric_analysis" >::: [
       ()
   );
   
-  "ua_minimize_threadIdx_x" >:: (fun _ ->
-    (* Test ua with minimize strategy on threadIdx.x *)
+  "ua_threadIdx_x" >:: (fun _ ->
+    (* Test ua with both minimize and maximize strategies on threadIdx.x *)
+    (* Both should return Some 2 since threads must have different threadIdx.x values *)
+    
+    (* Test minimize strategy *)
     assert_ua
       ~strategy:Gen_z3.Optimizer.Strategy.Minimize
       ~expected:(Some 2)
       ~threads_per_warp:2
       ~locals:Variable.tid_set
       ~cond:b_true
+      ~index:(Var Variable.tid_x)
+      ();
+    
+    (* Test maximize strategy *)
+    assert_ua
+      ~strategy:Gen_z3.Optimizer.Strategy.Maximize
+      ~expected:(Some 2)
+      ~threads_per_warp:2
+      ~locals:Variable.tid_set
+      ~cond:b_true
+      ~index:(Var Variable.tid_x)
+      ();
+    
+    (* Test with condition tidx % 2 == 0 (only even thread IDs) *)
+    assert_ua
+      ~strategy:Gen_z3.Optimizer.Strategy.Maximize
+      ~expected:(Some 2)
+      ~threads_per_warp:4
+      ~locals:Variable.tid_set
+      ~cond:(is_even (Var Variable.tid_x))
       ~index:(Var Variable.tid_x)
       ()
   );
