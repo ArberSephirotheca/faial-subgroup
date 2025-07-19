@@ -69,10 +69,17 @@ let assert_ua
     | Some x -> string_of_int x
     | None -> "none"
   in
-  let debug_msg = Printf.sprintf 
-    "Warp constraints: %s\nFormula: %s"
-    (b_to_string (warp_constraints cfg))
-    (n_to_string formula)
+  let debug_msg = 
+    let warp_constraints_pretty = 
+      warp_constraints cfg
+      |> b_and_split
+      |> List.map (fun s -> "&& " ^ b_to_string s)
+      |> String.concat "\n"
+    in
+    Printf.sprintf 
+      "Warp constraints:\n%s\nFormula: %s"
+      warp_constraints_pretty
+      (n_to_string formula)
   in
   assert_equal 
     ~printer
@@ -155,7 +162,7 @@ let tests = "test_symbolic_metric_analysis" >::: [
   "ua_threadIdx_x" >:: (fun _ ->
     (* Test ua with both minimize and maximize strategies on threadIdx.x *)
     (* Both should return Some 2 since threads must have different threadIdx.x values *)
-    
+
     (* Test minimize strategy *)
     assert_ua
       ~strategy:Gen_z3.Optimizer.Strategy.Minimize
@@ -175,13 +182,14 @@ let tests = "test_symbolic_metric_analysis" >::: [
       ~cond:b_true
       ~index:(Var Variable.tid_x)
       ();
-    
+
     (* Test with condition tidx % 2 == 0 (only even thread IDs) *)
     assert_ua
       ~strategy:Gen_z3.Optimizer.Strategy.Maximize
       ~expected:(Some 2)
       ~threads_per_warp:4
-      ~locals:Variable.tid_set
+      (* Only threadIdx.x is a thread-local variable *)
+      ~locals:(Variable.Set.singleton Variable.tid_x)
       ~cond:(is_even (Var Variable.tid_x))
       ~index:(Var Variable.tid_x)
       ()

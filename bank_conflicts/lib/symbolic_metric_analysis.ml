@@ -59,21 +59,16 @@ let proj (count:int) (locals:Variable.Set.t) (f: t -> 'a) : 'a list =
   loop (count - 1) []
 
 
-let replicate (cfg:Config.t) (locals:Variable.Set.t) (cond:bexp) (index:nexp) : (bexp * nexp) list =
+let replicate
+  (cfg:Config.t)
+  (locals:Variable.Set.t)
+  (cond:bexp)
+  (index:nexp)
+:
+  (bexp * nexp) list
+=
   proj cfg.threads_per_warp locals
     (fun ctx -> proj_b cond ctx, proj_n index ctx)
-
-(*
-  Let us introduce a dissimilarity function `dissimilar e l` that
-  given an expression `e` and a list of expressions `l` returns a condition
-  that tests whether element `e` is dissimilar from every element of `l`,
-  that is, ∀e' ∈ l : e <> e', defined as follows.
-*)
-let dissimilar (e:nexp) (l:nexp list) : bexp =
-  List.fold_left
-    (fun (accum:bexp) (e':nexp) -> b_and accum (n_neq e e'))
-    (Bool true)
-    l
 
 (*
   Let us introduce a dissimilarity function `dissimilar e l` that
@@ -95,14 +90,6 @@ let cond_dissimilar ((cnd,e):bexp * nexp) (l:(bexp * nexp) list) : bexp =
     cnd (* the condition `cnd` of `e` must be enabled *)
     l
 
-let generate_thread_tids (cfg:Config.t) : (nexp * nexp * nexp) list =
-  proj cfg.threads_per_warp Variable.tid_set (fun ctx ->
-    let tidx = proj_var Variable.tid_x ctx in
-    let tidy = proj_var Variable.tid_y ctx in
-    let tidz = proj_var Variable.tid_z ctx in
-    (Var tidx, Var tidy, Var tidz)
-  )
-
 let clamp ~lower ~value ~upper : bexp =
   b_and (n_ge value lower) (n_lt value upper)
 
@@ -117,22 +104,27 @@ let gen_tids (suffix:string) : nexp * nexp * nexp =
   (gen_tid_x suffix, gen_tid_y suffix, gen_tid_z suffix)
 
 let tid_bounds_constraint (cfg:Config.t) : bexp =
+  (* only generate variables for warp divergent tid *)
   let bounds_for_thread (suffix:string) : bexp =
-    let tid_x, tid_y, tid_z = gen_tids suffix in
-    b_and_ex [
-      clamp ~lower:(Num 0) ~value:tid_x ~upper:(Num cfg.block_dim.x);
-      clamp ~lower:(Num 0) ~value:tid_y ~upper:(Num cfg.block_dim.y);
-      clamp ~lower:(Num 0) ~value:tid_z ~upper:(Num cfg.block_dim.z);
+    [
+      Variable.tid_x, cfg.block_dim.x;
+      Variable.tid_y, cfg.block_dim.y;
+      Variable.tid_z, cfg.block_dim.z
     ]
+    |> List.filter (fun (x, _) -> not (Config.is_warp_uniform x cfg))
+    |> List.map (fun (x, d) ->
+        let x = Variable.update_name (fun n -> n ^ "$" ^ suffix) x in
+        clamp ~lower:(Num 0) ~value:(Var x) ~upper:(Num d)
+      )
+    |> b_and_ex
   in
-  let thread_constraints = 
-    List.init cfg.threads_per_warp (fun i -> bounds_for_thread (string_of_int i))
-  in
-  b_and_ex thread_constraints
+  List.init cfg.threads_per_warp (fun i -> bounds_for_thread (string_of_int i))
+  |> b_and_ex
 
 (* Compute linear thread ID from (x,y,z) coordinates; omit warp-uniform fragments *)
 let thread_id (suffix:string) (cfg:Config.t) : nexp =
   let tid_x, tid_y, tid_z = gen_tids suffix in
+  (* only generate variables for warp divergent tid *)
   let tid_x =
     if Config.is_warp_uniform Variable.tid_x cfg then
       Num 0
