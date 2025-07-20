@@ -327,6 +327,19 @@ module Make (L:Logger.Logger) = struct
       index
       |> to_cost
 
+  let run_ua2 (ctx:t) : IndexCost.t =
+    let vec = to_vectorized ctx in
+    (
+    match
+      Symbolic_metric_analysis.ua
+        ctx.config ctx.locals (Bool true) ctx.index
+    with
+      | Some i -> Cost.from_int ~value:i ~exact:true ()
+      | None ->
+        Vectorized.max_cost Metric.UncoalescedAccesses vec
+    )
+    |> IndexCost.from_cost
+
   let run_count
     (_ctx:t)
   :

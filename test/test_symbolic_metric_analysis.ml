@@ -7,6 +7,7 @@ open Bank_conflicts.Symbolic_metric_analysis
 (* Factory function for Config objects *)
 let make_config (threads_per_warp: int) : Config.t =
   Config.make 
+    ~bank_count:1 (* to simplify let's assume that there's 1 bank *)
     ~threads_per_warp
     ~block_dim:(Dim3.make ~x:threads_per_warp ()) (* Allow enough space for all threads *)
     ~grid_dim:(Dim3.make ~x:1 ())
@@ -159,7 +160,7 @@ let tests = "test_symbolic_metric_analysis" >::: [
       ()
   );
   
-  "ua_threadIdx_x" >:: (fun _ ->
+  "ua_threadIdx.x" >:: (fun _ ->
     (* Test ua with both minimize and maximize strategies on threadIdx.x *)
     (* Both should return Some 2 since threads must have different threadIdx.x values *)
 

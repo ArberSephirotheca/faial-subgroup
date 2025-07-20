@@ -241,7 +241,11 @@ let ua
   int option
 =
   let open Gen_z3.IntGen in
-  let locals = Variable.Set.union locals (thread_locals_set cfg) in
-  let formula = encode_ua cfg locals cond index in
+  let locals =
+    Variable.Set.union
+      (Variable.Set.diff locals Variable.tid_set)
+      (thread_locals_set cfg)
+  in
+  let formula = encode_ua cfg locals cond (n_div index (Num cfg.bank_count)) in
   optimize_expr strategy ~pre:(warp_constraints cfg) formula
   |> Result.to_option
