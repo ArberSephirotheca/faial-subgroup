@@ -332,7 +332,7 @@ module Make (L:Logger.Logger) = struct
     (
     match
       Symbolic_metric_analysis.ua
-        ctx.config ctx.locals (Bool true) ctx.index
+        ctx.config ctx.locals ctx.divergence ctx.index
     with
       | Some i -> Cost.from_int ~value:i ~exact:true ()
       | None ->
