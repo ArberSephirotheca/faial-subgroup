@@ -342,6 +342,8 @@ let to_cost
           Warp.bank_conflicts ctx.bank_count idx enabled tids
         | UncoalescedAccesses ->
           Warp.uncoalesced idx enabled tids
+        | UncoalescedAccesses2 ->
+          Warp.uncoalesced idx enabled tids
         | CountAccesses -> Cost.from_int ~value:1 ~exact:true ()
       in
       if verbose then (

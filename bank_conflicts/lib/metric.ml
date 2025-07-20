@@ -1,16 +1,18 @@
 type t =
   | BankConflicts
   | UncoalescedAccesses
+  | UncoalescedAccesses2
   | CountAccesses
 
 let to_string : t -> string =
   function
   | BankConflicts -> "bc"
   | UncoalescedAccesses -> "ua"
+  | UncoalescedAccesses2 -> "ua2"
   | CountAccesses -> "count"
 
 let values : t list =
-  [ BankConflicts; UncoalescedAccesses; CountAccesses ]
+  [ BankConflicts; UncoalescedAccesses; UncoalescedAccesses2; CountAccesses ]
 
 let choices : (string * t) list =
   values
@@ -40,6 +42,8 @@ let max_cost ~thread_count ~bank_count : t -> int =
     max_bank_conflicts ~thread_count ~bank_count
   | UncoalescedAccesses ->
     max_uncoalesced_accesses ~thread_count
+  | UncoalescedAccesses2 ->
+    max_uncoalesced_accesses ~thread_count
   | CountAccesses -> max_count_accesses
 
 let max_cost_from (cfg:Config.t) : t -> int =
@@ -49,4 +53,5 @@ let min_cost (m:t) : int =
   (match m with
   | BankConflicts -> min_bank_conflicts
   | UncoalescedAccesses -> min_uncoalesced_accesses
+  | UncoalescedAccesses2 -> min_uncoalesced_accesses
   | CountAccesses -> 1)

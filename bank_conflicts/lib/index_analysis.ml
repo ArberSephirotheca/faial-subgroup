@@ -359,6 +359,7 @@ module Make (L:Logger.Logger) = struct
       match m with
       | BankConflicts -> run_bc
       | UncoalescedAccesses -> run_ua
+      | UncoalescedAccesses2 -> run_ua2
       | CountAccesses -> run_count
     in
     run {config; divergence; strategy; locals; index}
