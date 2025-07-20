@@ -251,3 +251,17 @@ The `unique_tid_constraint` function using `Distinct` constructor shows exponent
 - Consider limiting `threads_per_warp` in tests to ≤8 for reasonable test execution times when using `unique_tid_constraint`
 - For larger warp sizes, may need timeout parameters or alternative constraint formulations
 - The exponential scaling is specifically due to the interaction between `Distinct` and thread-local conditions, not the overall constraint system
+
+### Alternative Constraint Formulation: `unique_tid_constraint2`
+The `unique_tid_constraint2` function uses ordered chain constraints (`tid0 < tid1 < tid2 < ... < tid(n-1)`) instead of `Distinct`, which greatly improves performance:
+
+**Performance measurements for `tidx % 2 == 0` condition with maximize strategy using `unique_tid_constraint2`:**
+- `threads_per_warp: 4` → 0.17 seconds
+- `threads_per_warp: 8` → 0.20 seconds  
+- `threads_per_warp: 16` → 0.69 seconds
+- `threads_per_warp: 32` → 16 seconds
+
+**Key observations:**
+- Much better scaling compared to `Distinct`: 32 threads completes in 16 seconds vs timeout (>600s)
+- Still exhibits exponential growth but with a much lower constant factor
+- The ordered chain approach is significantly more efficient for SMT solvers than the `Distinct` primitive when combined with thread-local conditions

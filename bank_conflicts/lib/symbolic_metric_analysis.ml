@@ -161,7 +161,7 @@ let same_warp_constraint (cfg:Config.t) : bexp =
   |> b_and_ex
 
 
-let unique_tid_constraint (cfg:Config.t) : bexp =
+let unique_tid_constraint_1 (cfg:Config.t) : bexp =
   (* Generate thread IDs for each thread in the warp *)
   let thread_ids = 
     List.init cfg.threads_per_warp (fun i -> 
@@ -171,12 +171,20 @@ let unique_tid_constraint (cfg:Config.t) : bexp =
   (* Use the built-in distinct primitive to ensure all thread IDs are unique *)
   Distinct thread_ids
 
-let warp_constraints (cfg:Config.t) : bexp =
-  b_and_ex [
-    unique_tid_constraint cfg;
-    tid_bounds_constraint cfg;
-    same_warp_constraint cfg;
-  ]
+let unique_tid_constraint_2 (cfg:Config.t) : bexp =
+  (* Generate thread IDs for each thread in the warp *)
+  let thread_ids = 
+    List.init cfg.threads_per_warp (fun i -> 
+      thread_id (string_of_int i) cfg
+    )
+  in
+  (* Create chain of less-than constraints: tid0 < tid1 < tid2 < ... < tid(n-1) *)
+  let rec make_chain = function
+    | [] | [_] -> b_true
+    | tid1 :: tid2 :: rest ->
+        b_and (n_lt tid1 tid2) (make_chain (tid2 :: rest))
+  in
+  make_chain thread_ids
 
 let encode_ua
   (cfg:Config.t)
@@ -215,6 +223,13 @@ let thread_locals_set (cfg:Config.t) : Variable.Set.t =
   |> thread_locals_list
   |> Variable.Set.of_list
 
+
+let warp_constraints (cfg:Config.t) : bexp =
+  b_and_ex [
+    unique_tid_constraint_2 cfg;
+    tid_bounds_constraint cfg;
+    same_warp_constraint cfg;
+  ]
 
 let ua
   ?(strategy=Gen_z3.Optimizer.Strategy.Maximize)
