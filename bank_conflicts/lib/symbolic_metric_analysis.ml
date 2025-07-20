@@ -1,74 +1,76 @@
 open Protocols
 open Exp
 
-(*
-  The idea behind this algorithm is to take each local variable and
-  rename it so that each thread can refer to a distinct variable name.
-  For instance, say expression is `2 * x + k` and `x` is thread local
-  and `k` is thread global, then we want make `x` a different variable per
-  thread.
+module Proj = struct
+  (*
+    The idea behind this algorithm is to take each local variable and
+    rename it so that each thread can refer to a distinct variable name.
+    For instance, say expression is `2 * x + k` and `x` is thread local
+    and `k` is thread global, then we want make `x` a different variable per
+    thread.
 
-  2 * x + k -> [ 2 * x_1 + k, 2 * x_2 + k, ...]
-  *)
-type t = {
-  suffix: string;
-  locals: Variable.Set.t;
-}
+    2 * x + k -> [ 2 * x_1 + k, 2 * x_2 + k, ...]
+    *)
+  type t = {
+    suffix: string;
+    locals: Variable.Set.t;
+  }
 
-let proj_var (x:Variable.t) (ctx:t) : Variable.t =
-  if Variable.Set.mem x ctx.locals then
-    Variable.update_name (fun n -> n ^ "$" ^ ctx.suffix) x
-  else
-    x
-
-let rec proj_n (n: nexp) (ctx:t) : nexp =
-  match n with
-  | Num _ -> n
-  | CastInt e -> CastInt (proj_b e ctx)
-  | Var x -> Var (proj_var x ctx)
-  | Unary (o, e) -> Unary (o, proj_n e ctx)
-  | Other _ -> failwith "unsupported"
-  | Binary (o, n1, n2) -> Binary (o, proj_n n1 ctx, proj_n n2 ctx)
-  | NIf (b, n1, n2) -> NIf (proj_b b ctx, proj_n n1 ctx, proj_n n2 ctx)
-  | NCall (x, n) -> NCall (x, proj_n n ctx)
-
-and proj_b (b: bexp) (ctx:t) : bexp =
-  match b with
-  | CastBool e -> CastBool (proj_n e ctx)
-  | Pred (x, n) -> Pred (x, proj_n n ctx)
-  | Bool _ -> b
-  | BNot b -> BNot (proj_b b ctx)
-  | BRel (o, b1, b2) -> BRel (o, proj_b b1 ctx, proj_b b2 ctx)
-  | NRel (o, n1, n2) -> NRel (o, proj_n n1 ctx, proj_n n2 ctx)
-  | Distinct exprs -> Distinct (List.map (fun expr -> proj_n expr ctx) exprs)
-
-(*
-  General algorithm to replicate an element as a list of elements
-  *)
-let proj (count:int) (locals:Variable.Set.t) (f: t -> 'a) : 'a list =
-  let rec loop (idx:int) (accum:'a list) : 'a list =
-    if idx < 0 then
-      accum
+  let proj_var (x:Variable.t) (ctx:t) : Variable.t =
+    if Variable.Set.mem x ctx.locals then
+      Variable.update_name (fun n -> n ^ "$" ^ ctx.suffix) x
     else
-      let ctx = {
-        suffix = string_of_int idx;
-        locals = locals;
-      } in
-      loop (idx - 1) (f ctx :: accum)
-  in
-  loop (count - 1) []
+      x
 
+  let rec proj_n (n: nexp) (ctx:t) : nexp =
+    match n with
+    | Num _ -> n
+    | CastInt e -> CastInt (proj_b e ctx)
+    | Var x -> Var (proj_var x ctx)
+    | Unary (o, e) -> Unary (o, proj_n e ctx)
+    | Other _ -> failwith "unsupported"
+    | Binary (o, n1, n2) -> Binary (o, proj_n n1 ctx, proj_n n2 ctx)
+    | NIf (b, n1, n2) -> NIf (proj_b b ctx, proj_n n1 ctx, proj_n n2 ctx)
+    | NCall (x, n) -> NCall (x, proj_n n ctx)
 
-let replicate
-  (cfg:Config.t)
-  (locals:Variable.Set.t)
-  (cond:bexp)
-  (index:nexp)
-:
-  (bexp * nexp) list
-=
-  proj cfg.threads_per_warp locals
-    (fun ctx -> proj_b cond ctx, proj_n index ctx)
+  and proj_b (b: bexp) (ctx:t) : bexp =
+    match b with
+    | CastBool e -> CastBool (proj_n e ctx)
+    | Pred (x, n) -> Pred (x, proj_n n ctx)
+    | Bool _ -> b
+    | BNot b -> BNot (proj_b b ctx)
+    | BRel (o, b1, b2) -> BRel (o, proj_b b1 ctx, proj_b b2 ctx)
+    | NRel (o, n1, n2) -> NRel (o, proj_n n1 ctx, proj_n n2 ctx)
+    | Distinct exprs -> Distinct (List.map (fun expr -> proj_n expr ctx) exprs)
+
+  (*
+    General algorithm to replicate an element as a list of elements
+    *)
+  let run (count:int) (locals:Variable.Set.t) (f: t -> 'a) : 'a list =
+    let rec loop (idx:int) (accum:'a list) : 'a list =
+      if idx < 0 then
+        accum
+      else
+        let ctx = {
+          suffix = string_of_int idx;
+          locals = locals;
+        } in
+        loop (idx - 1) (f ctx :: accum)
+    in
+    loop (count - 1) []
+
+  (* Project a condition and an index *)
+  let run_pair
+    (cfg:Config.t)
+    (locals:Variable.Set.t)
+    (cond:bexp)
+    (index:nexp)
+  :
+    (bexp * nexp) list
+  =
+    run cfg.threads_per_warp locals
+      (fun ctx -> proj_b cond ctx, proj_n index ctx)
+end
 
 (*
   Let us introduce a dissimilarity function `dissimilar e l` that
@@ -186,9 +188,9 @@ let encode_ua
 =
   let index =
     (* replicate index per each thread *)
-    (proj cfg.threads_per_warp locals
+    (Proj.run cfg.threads_per_warp locals
       (fun ctx ->
-        (proj_b cond ctx, proj_n index ctx)
+        (Proj.proj_b cond ctx, Proj.proj_n index ctx)
       )
     )
     (* for each replciated index *)
@@ -204,6 +206,14 @@ let encode_ua
   in
   index
 
+let thread_locals_list (cfg:Config.t) : Variable.t list =
+  Variable.tid_list
+  |> List.filter (fun x -> not (Config.is_warp_uniform x cfg))
+
+let thread_locals_set (cfg:Config.t) : Variable.Set.t =
+  cfg
+  |> thread_locals_list
+  |> Variable.Set.of_list
 
 
 let ua
@@ -216,6 +226,7 @@ let ua
   int option
 =
   let open Gen_z3.IntGen in
+  let locals = Variable.Set.union locals (thread_locals_set cfg) in
   let formula = encode_ua cfg locals cond index in
   optimize_expr strategy ~pre:(warp_constraints cfg) formula
   |> Result.to_option

@@ -33,7 +33,7 @@ let assert_replicate
   ~index:(index: nexp)
   : unit =
   let cfg = make_config threads_per_warp in
-  let result = replicate cfg locals cond index in
+  let result = Proj.run_pair cfg locals cond index in
   assert_equal 
     ~printer:pp_replicate_result
     expected result
@@ -168,7 +168,7 @@ let tests = "test_symbolic_metric_analysis" >::: [
       ~strategy:Gen_z3.Optimizer.Strategy.Minimize
       ~expected:(Some 2)
       ~threads_per_warp:2
-      ~locals:Variable.tid_set
+      ~locals:Variable.Set.empty
       ~cond:b_true
       ~index:(Var Variable.tid_x)
       ();
@@ -178,7 +178,7 @@ let tests = "test_symbolic_metric_analysis" >::: [
       ~strategy:Gen_z3.Optimizer.Strategy.Maximize
       ~expected:(Some 2)
       ~threads_per_warp:2
-      ~locals:Variable.tid_set
+      ~locals:Variable.Set.empty
       ~cond:b_true
       ~index:(Var Variable.tid_x)
       ();
@@ -189,7 +189,7 @@ let tests = "test_symbolic_metric_analysis" >::: [
       ~expected:(Some 2)
       ~threads_per_warp:4
       (* Only threadIdx.x is a thread-local variable *)
-      ~locals:(Variable.Set.singleton Variable.tid_x)
+      ~locals:Variable.Set.empty
       ~cond:(is_even (Var Variable.tid_x))
       ~index:(Var Variable.tid_x)
       ()
