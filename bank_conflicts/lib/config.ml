@@ -43,6 +43,22 @@ let is_warp_uniform (x:Variable.t) (cfg:t) : bool =
       || (cfg.block_dim.x * cfg.block_dim.y >= cfg.threads_per_warp)
       ))
 
+(** Returns the memory segment size in bits used for memory transaction granularity.
+    
+    In GPU memory coalescing analysis, memory transactions occur at specific
+    granularities. For uncoalesced access analysis, we need to determine how
+    many distinct memory segments are accessed by a warp's memory transactions.
+    
+    The memory segment size represents the fundamental unit of memory transaction
+    granularity used in the analysis. This is computed as 8 * bytes_per_word
+    where bytes_per_word (default 4) represents the size of the basic data
+    type being accessed.
+    
+    @param cfg Configuration containing bytes_per_word field
+    @return Memory segment size in bits for memory transaction analysis *)
+let memory_segments_bits (cfg:t) : int =
+  8 * cfg.bytes_per_word (* 8 represents number of bits per byte *)
+
 let make
   ?(bank_count=32)
   ?(threads_per_warp=32)

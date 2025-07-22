@@ -52,7 +52,7 @@ module UA = struct
 
   let from_nexp (cfg:Config.t) (locals:Variable.Set.t) : Exp.nexp -> Exp.nexp * t =
     let locals = Variable.Set.union locals Variable.tid_set in
-    let word : int = 8 * cfg.bytes_per_word in
+    let word : int = Config.memory_segments_bits cfg in
     let is_aligned (e:Exp.nexp) (ty:t) : bool =
       ty <> AnyAccurate &&
       match e with

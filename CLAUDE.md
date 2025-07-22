@@ -223,6 +223,40 @@ When writing conceptual documentation for this project, follow these principles 
 
 The overarching goal is **conceptual clarity**: writing that helps someone understand the system's analytical reasoning and approach to solving problems, enabling them to mentally model how the system works rather than just describing its structure or features.
 
+## Work Log Writing Guidelines
+
+When documenting development work in logs, follow these principles:
+
+### Direct, Non-Exuberant Style
+- Write in a direct, factual manner without enthusiastic adjectives
+- Avoid subjective characterizations like "excellent", "amazing", "complex"
+- State what was done, not how impressive it was
+
+### Focus on High-Level Changes
+- Avoid listing specific file locations since files may be moved around
+- Include important code snippets to show actual implementation
+- Document the objective alongside important changes
+- When the objective is unclear, ask rather than speculating
+
+### Explicit Open Questions
+- Make unresolved issues explicit as "Open Questions" section
+- Treat side discoveries (like timeout behavior) as separate items to track
+- Don't include statements about not knowing something - ask for clarification instead
+
+### Structure for Technical Evolution
+- Lead with a summary showing the progression of approaches
+- Explain why each approach was tried and what was learned
+- Include performance measurements when relevant
+- Document both successes and limitations
+
+### Code Snippets Over File Lists
+- Include meaningful code snippets that show the implementation
+- Avoid exhaustive lists of modified files
+- Focus on the technical content and reasoning behind changes
+
+### Work Log vs Documentation
+Work logs capture the development process and evolution of thinking, while documentation explains the final system design. Work logs should help future developers understand how and why technical decisions were made.
+
 ## Z3 SMT Solver Performance Notes
 
 ### Timeout Behavior
@@ -265,3 +299,22 @@ The `unique_tid_constraint2` function uses ordered chain constraints (`tid0 < ti
 - Much better scaling compared to `Distinct`: 32 threads completes in 16 seconds vs timeout (>600s)
 - Still exhibits exponential growth but with a much lower constant factor
 - The ordered chain approach is significantly more efficient for SMT solvers than the `Distinct` primitive when combined with thread-local conditions
+
+## Symbolic Metric Analysis Work Log Reference
+
+**Location**: `documentation/symbolic-metric-analysis.md`
+
+This work log documents the major evolution of the unique access analysis system, including:
+- Implementation of `Distinct` constructor for Z3 SMT integration
+- Performance analysis revealing bottlenecks with SMT solving at scale
+- Development of alternative constraint formulations (`unique_tid_constraint2`)
+- Addition of `UncoalescedAccesses2` metric with SMT-based analysis
+- Key optimizations: warp-uniform variable detection and bank count normalization
+
+**Key functions and their purposes**:
+- `unique_tid_constraint_1`: Uses Z3 `Distinct` primitive (accurate but slow with thread-local conditions)  
+- `unique_tid_constraint_2`: Uses ordered chain constraints (better scaling)
+- `warp_constraints`: Combines thread uniqueness, bounds, and same-warp constraints
+- `ua`: Main SMT-based unique access analysis function with bank count normalization
+
+**Open issues**: Z3 timeout behavior, config field for array elements (should be separate from bank_count, initialized to 32)
