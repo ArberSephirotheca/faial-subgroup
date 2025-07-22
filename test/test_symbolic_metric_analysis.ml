@@ -64,8 +64,9 @@ let assert_ua
   ()
   : unit =
   let cfg = make_config threads_per_warp in
-  let result = ua ~strategy cfg locals cond index in
-  let formula = encode_ua cfg locals cond index in
+  let index_with_segments = n_mult index (Num (Config.memory_segments_bits cfg)) in
+  let result = ua ~strategy cfg locals cond index_with_segments in
+  let formula = encode_ua cfg locals cond index_with_segments in
   let printer = function
     | Some x -> string_of_int x
     | None -> "none"
@@ -162,7 +163,8 @@ let tests = "test_symbolic_metric_analysis" >::: [
   
   "ua_threadIdx.x" >:: (fun _ ->
     (* Test ua with both minimize and maximize strategies on threadIdx.x *)
-    (* Both should return Some 2 since threads must have different threadIdx.x values *)
+    (* assert_ua automatically multiplies by memory segment size *)
+    (* Expect 2 uncoalesced accesses since threads hit different memory segments *)
 
     (* Test minimize strategy *)
     assert_ua
