@@ -246,6 +246,7 @@ let ua
       (Variable.Set.diff locals Variable.tid_set)
       (thread_locals_set cfg)
   in
-  let formula = encode_ua cfg locals cond (n_div index (Num (Config.memory_segments_bits cfg))) in
+  let index = n_div index (Num (Config.memory_segments_bits cfg)) in
+  let formula = encode_ua cfg locals cond index in
   optimize_expr strategy ~pre:(warp_constraints cfg) formula
   |> Result.to_option
