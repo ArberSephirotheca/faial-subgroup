@@ -1,5 +1,5 @@
 (library
-  (name bank_conflicts)
+  (name rel_cost)
 
   (libraries
     ; 3rd-party

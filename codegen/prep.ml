@@ -1,5 +1,5 @@
 open Protocols
-open Bank_conflicts
+open Rel_cost
 open Exp
 
 module VarSet = Variable.Set

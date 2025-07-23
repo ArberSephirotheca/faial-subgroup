@@ -1,6 +1,6 @@
 open Stage0
 open Inference
-open Bank_conflicts
+open Rel_cost
 open Protocols
 open Ra
 open Analyze_cost

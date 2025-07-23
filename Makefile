@@ -42,7 +42,7 @@ faial-cost-dyn: build
 	cp -f $(BUILD)/total_cost/dyn.exe faial-cost-dyn
 
 faial-bc: build
-	cp -f $(BUILD)/bank_conflicts/bin/main.exe faial-bc
+	cp -f $(BUILD)/rel_cost/bin/main.exe faial-bc
 
 faial-cost: build
 	cp -f $(BUILD)/total_cost/main.exe faial-cost

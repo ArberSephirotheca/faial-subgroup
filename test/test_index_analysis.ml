@@ -1,4 +1,4 @@
-open Bank_conflicts
+open Rel_cost
 open OUnit2
 open Protocols
 

@@ -19,7 +19,7 @@
    test_gen_z3
    test_symbolic_metric_analysis
  )
- (libraries stage0 ra protocols drf inference oUnit bank_conflicts analyze_cost)
+ (libraries stage0 ra protocols drf inference oUnit rel_cost analyze_cost)
 )
 
 (cram

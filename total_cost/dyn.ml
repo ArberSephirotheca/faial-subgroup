@@ -1,7 +1,7 @@
 open Stage0
 open Protocols
 open Inference
-open Bank_conflicts
+open Rel_cost
 
 module Data = struct
   open Vectorized

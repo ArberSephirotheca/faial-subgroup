@@ -1,6 +1,6 @@
 open Stage0
 open Inference
-open Bank_conflicts
+open Rel_cost
 open Protocols
 
 let abort_when (b:bool) (msg:string) : unit =

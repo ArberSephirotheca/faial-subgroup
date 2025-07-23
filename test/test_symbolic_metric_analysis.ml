@@ -1,8 +1,8 @@
 open OUnit2
 open Protocols
 open Exp
-open Bank_conflicts
-open Bank_conflicts.Symbolic_metric_analysis
+open Rel_cost
+open Rel_cost.Symbolic_metric_analysis
 
 (* Factory function for Config objects *)
 let make_config (threads_per_warp: int) : Config.t =

@@ -7,7 +7,7 @@
     ; 1st-party
     cmdliner z3 printbox printbox-text
     ; 1st-pary
-    bank_conflicts ra inference analyze_cost
+    rel_cost ra inference analyze_cost
   )
 )
 
@@ -20,7 +20,7 @@
    ; 1st-party
    cmdliner z3 printbox printbox-text
    ; 1st-pary
-   bank_conflicts ra inference analyze_cost
+   rel_cost ra inference analyze_cost
  )
 )
 
@@ -29,4 +29,4 @@
  (name dyn)
  (modules dyn)
  (modes exe byte)
- (libraries inference cmdliner z3 bank_conflicts ra))
+ (libraries inference cmdliner z3 rel_cost ra))
