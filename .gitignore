@@ -12,3 +12,6 @@
 /faial-cost-dyn
 /faial-cost-diff
 /wgsl-ast
+
+# Local opam switch
+/_opam

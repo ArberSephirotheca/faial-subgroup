@@ -8,7 +8,7 @@ USER faial
 # Install Ocaml dependencies
 ADD configure.sh /
 RUN eval $(opam config env) && \
-    sh /configure.sh -y
+    sh /configure.sh --system -y
 USER root
 RUN cd /usr/local && \
     wget -nv --content-disposition \

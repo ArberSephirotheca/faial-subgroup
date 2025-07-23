@@ -13,7 +13,10 @@ Faial is a static analysis tool for finding bugs in CUDA kernels, particularly f
 make              # Build all binaries
 make build        # Build with dune
 make clean        # Clean build artifacts
-./configure.sh    # Install dependencies (run once)
+
+# Setup dependencies (choose one):
+./configure.sh --local   # Create local switch (recommended)
+./configure.sh --system  # Install in current switch
 ```
 
 ### Test Commands
@@ -89,11 +92,19 @@ Test a specific kernel:
 
 ## Development Workflow
 
-1. Run `./configure.sh` once to install dependencies
+1. Run `./configure.sh --local` once to install dependencies
 2. Use `make` to build all binaries
 3. Test changes with `make test` 
-4. For specific analysis development, focus on the relevant module (drf/, bank_conflicts/, etc.)
+4. For specific analysis development, focus on the relevant module (drf/, rel_cost/, etc.)
 5. Add test cases to appropriate examples/ subdirectory
+
+### Dependency Management
+
+Dependencies are managed through `dune-project` and the committed `faial.opam` file:
+
+- **Adding dependencies**: Update `dune-project`, then run `dune build faial.opam` to regenerate
+- **Local development**: Use `./configure.sh --local` for isolated environment
+- **CI/shared systems**: Use `./configure.sh --system` to install in current switch
 
 ## Git Commit Guidelines
 

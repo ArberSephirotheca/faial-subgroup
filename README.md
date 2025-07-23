@@ -77,3 +77,18 @@ If you use Faial in your research, please cite our paper:
 - [Provable GPU Data-Races in Static Race Detection](https://dx.doi.org/10.4204/EPTCS.356.4). Dennis Liew, Tiago Cogumbreiro, Julien Lange. In PLACES, volume 356 of EPTCS, page 36–45. 2022. 
 
 - [Checking Data-Race Freedom of GPU Kernels, Compositionally](https://dx.doi.org/10.1007/978-3-030-81685-8_19). Tiago Cogumbreiro, Julien Lange, Dennis Lew, Hannah Zicarelli. In CAV, volume 12759, page 403–426. Springer, 2021.
+
+# Contributors
+
+Thanks to all contributors who have helped improve Faial:
+
+- [Tiago Cogumbreiro](https://gitlab.com/cogumbreiro)
+- [Dennis Liew](https://gitlab.com/dennisliew11)
+- [Hannah Zicarelli](https://gitlab.com/hzicarelli)
+- [Gregory Blike](https://gitlab.com/gblike)
+- [Miguel Cardenas](https://gitlab.com/miguelecsx)
+- [Samyak Gangwal](https://gitlab.com/sam-gangwal)
+- [Paul Maynard](https://gitlab.com/pmaynard001)
+- [Ramsey Harrison](https://gitlab.com/rharrison)
+- Nandinii Yeleswarapu
+- Udaya Sathiyamoorthy
