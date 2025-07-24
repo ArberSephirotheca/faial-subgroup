@@ -120,7 +120,7 @@ let rec from_summation : Summation.t -> string = function
       in
       if is_infix then infix ~lhs ~op ~rhs else call op [ lhs; rhs ]
 
-let from_stmt ?(strategy = Summation.Strategy.Max) (r : Ra.Stmt.t) : string =
+let from_stmt ?(strategy = Summation.Strategy.Max) (r : Stmt.t) : string =
   Summation.from_stmt ~strategy r |> from_summation
 
 let parse_maxima (x : string) : string option =
@@ -156,7 +156,7 @@ let run_exe ?(verbose = false) ?(exe = "maxima") (expr : string) :
 
 let run_ratio ~verbose ~exe ~compact ~numerator ~denominator :
     (string, Errors.t) Result.t =
-  if Ra.Stmt.is_zero denominator then Ok "0"
+  if Stmt.is_zero denominator then Ok "0"
   else
     let open Summation in
     let s =
@@ -164,6 +164,6 @@ let run_ratio ~verbose ~exe ~compact ~numerator ~denominator :
     in
     s |> to_string |> compile ~compact |> run_exe ~verbose ~exe
 
-let run ?(verbose = false) ?(exe = "maxima") ?(compact = false) (x : Ra.Stmt.t)
+let run ?(verbose = false) ?(exe = "maxima") ?(compact = false) (x : Stmt.t)
     : (string, Errors.t) Result.t =
   x |> from_stmt |> compile ~compact |> run_exe ~verbose ~exe

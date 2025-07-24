@@ -2,7 +2,7 @@ open Stage0
 open Inference
 open Rel_cost
 open Protocols
-open Analyze_cost
+open Ra
 
 type kernel = Protocols.Kernel.t
 

@@ -1,6 +1,6 @@
 open Stage0
 open Protocols
-open Analyze_cost
+open Ra
 open Reals
 
 let compile (assigns : (string * int) list) (e : string) : string =

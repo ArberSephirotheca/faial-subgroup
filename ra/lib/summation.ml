@@ -104,9 +104,9 @@ module Strategy = struct
   let choice : t -> stmt -> stmt -> stmt = function Max -> max | Min -> min
 end
 
-let from_stmt ?(strategy = Strategy.Max) : Ra.Stmt.t -> t =
-  let rec from_stmt : Ra.Stmt.t -> t = function
-    | Ra.Stmt.Tick k -> Const k
+let from_stmt ?(strategy = Strategy.Max) : Stmt.t -> t =
+  let rec from_stmt : Stmt.t -> t = function
+    | Stmt.Tick k -> Const k
     | Clamp { value; upper_bound } ->
         Clamp { value = Reals.from_nexp value; upper_bound }
     | Skip -> Const 0
@@ -118,7 +118,7 @@ let from_stmt ?(strategy = Strategy.Max) : Ra.Stmt.t -> t =
   in
   from_stmt
 
-let run ~show_code (r : Ra.Stmt.t) : string =
+let run ~show_code (r : Stmt.t) : string =
   let s = from_stmt r in
   if show_code then to_string s |> print_endline else ();
   to_string s
