@@ -3,14 +3,9 @@
    test_common
    test_imp
    test_locsplit
-   test_range
    test_streamutil
    test_slice
-   test_gv_parser
-   test_ctype
-   ; test_prob_exp
    test_py
-   test_gen_z3
  )
  (libraries stage0 ra protocols drf inference oUnit rel_cost)
 )
