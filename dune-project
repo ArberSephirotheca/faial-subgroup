@@ -4,6 +4,10 @@
 ; Generate opam files automatically
 (generate_opam_files true)
 
+; Enable automatic code formatting
+(formatting
+ (enabled_for ocaml))
+
 (package
   (name faial)
   (synopsis "Static analysis tool for finding bugs in CUDA kernels")
@@ -33,5 +37,8 @@
     
     ; Documentation dependencies
     (odoc :with-doc)
+    
+    ; Development dependencies  
+    (ocamlformat :dev)
   )
 )

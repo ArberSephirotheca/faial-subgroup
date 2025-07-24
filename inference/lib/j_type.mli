@@ -6,7 +6,7 @@ type t
 (* Constructors *)
 val from_json : Yojson.Basic.t -> t
 val from_string : string -> t
-val from_c_type: C_type.t -> t
+val from_c_type : C_type.t -> t
 
 (* Common types *)
 val int : t

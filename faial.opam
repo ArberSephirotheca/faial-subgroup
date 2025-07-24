@@ -20,6 +20,7 @@ depends: [
   "dune" {>= "3.17" & >= "3.17"}
   "ounit" {>= "2.2.7" & with-test}
   "odoc" {with-doc}
+  "ocamlformat" {dev}
 ]
 build: [
   ["dune" "subst"] {dev}

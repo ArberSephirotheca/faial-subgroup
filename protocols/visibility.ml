@@ -3,7 +3,6 @@
   can only be invoked from the GPU code. *)
 type t = Global | Device
 
-let to_string : t -> string =
-  function
+let to_string : t -> string = function
   | Global -> "__global__"
   | Device -> "__device__"

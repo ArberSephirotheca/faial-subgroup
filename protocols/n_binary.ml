@@ -12,21 +12,19 @@ type t =
   | Div
   | Mod
 
-let eval : t -> int -> int -> int =
-  function
-  | BitAnd -> (land)
-  | BitXOr -> (lxor)
-  | BitOr -> (lor)
-  | Plus -> (+)
-  | Minus -> (-)
+let eval : t -> int -> int -> int = function
+  | BitAnd -> ( land )
+  | BitXOr -> ( lxor )
+  | BitOr -> ( lor )
+  | Plus -> ( + )
+  | Minus -> ( - )
   | Mult -> ( * )
-  | Div -> (/)
+  | Div -> ( / )
   | Mod -> Common.modulo
-  | LeftShift -> (lsl)
-  | RightShift -> (lsr)
+  | LeftShift -> ( lsl )
+  | RightShift -> ( lsr )
 
-let to_string : t -> string =
-  function
+let to_string : t -> string = function
   | Plus -> "+"
   | Minus -> "-"
   | Mult -> "*"
@@ -37,4 +35,3 @@ let to_string : t -> string =
   | BitXOr -> "^"
   | BitOr -> "|"
   | BitAnd -> "&"
-

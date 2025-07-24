@@ -1,4 +1,1 @@
-
-type t =
-  | OverApproximation
-  | UnderApproximation
+type t = OverApproximation | UnderApproximation
