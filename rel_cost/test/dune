@@ -1,0 +1,7 @@
+(tests
+ (names
+   test_index_analysis
+   test_symbolic_metric_analysis
+ )
+ (libraries stage0 protocols rel_cost oUnit alcotest)
+)
