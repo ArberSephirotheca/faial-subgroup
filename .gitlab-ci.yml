@@ -10,6 +10,7 @@ variables:
 .cache: &global_cache
   before_script:
     - export PATH="$PATH:$CI_PROJECT_DIR"
+    - chown -R faial:faial _build || true
 
   cache:
     key: "Ubuntu-$CI_COMMIT_REF_NAME-1"
