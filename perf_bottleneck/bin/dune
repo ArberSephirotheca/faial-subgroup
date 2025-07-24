@@ -6,6 +6,6 @@
     ; 1st-party
     cmdliner z3 printbox printbox-text
     ; 1st-pary
-    rel_cost ra inference
+    rel_cost ra inference perf_bottleneck
   )
 )

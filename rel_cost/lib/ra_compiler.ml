@@ -192,16 +192,6 @@ module Make (LOG : Logger.Logger) = struct
   module I = Metric_analysis.Make (LOG)
   module L = Linearize_index.Make (LOG)
 
-  let from_access_context (idx_analysis : Variable.Set.t -> Exp.nexp -> int) :
-      Bank.t -> Ra.Stmt.t =
-    let rec from (locals : Variable.Set.t) : Bank.Code.t -> Ra.Stmt.t = function
-      | Index a -> Tick (idx_analysis locals a)
-      | Cond (_, p) -> from locals p
-      | Decl (x, p) -> from (Variable.Set.add x locals) p
-      | Loop { range; body } -> Loop { range; body = from locals body }
-    in
-    fun k -> from k.local_variables k.code
-
   module Context = struct
     type t = { divergence : Exp.bexp; locals : Variable.Set.t }
 

@@ -2,6 +2,7 @@ open Stage0
 module IntMap = Common.IntMap
 module Variable = Protocols.Variable
 open Protocols
+open Rel_cost
 
 module Code = struct
   type t =
@@ -27,6 +28,17 @@ module Code = struct
   module S1 = SubstMake (Subst.SubstPair)
 
   let subst = S1.subst
+
+  let to_ra (idx_analysis : Variable.Set.t -> Exp.nexp -> int) :
+    Variable.Set.t ->
+      t -> Ra.Stmt.t =
+    let rec to_ra (locals : Variable.Set.t) : t -> Ra.Stmt.t = function
+      | Index a -> Tick (idx_analysis locals a)
+      | Cond (_, p) -> to_ra locals p
+      | Decl (x, p) -> to_ra (Variable.Set.add x locals) p
+      | Loop { range; body } -> Loop { range; body = to_ra locals body }
+    in
+    to_ra
 
   let rec to_string ?(array = "") : t -> string = function
     | Loop { range = r; body = acc } ->
@@ -273,6 +285,11 @@ let eval_res ?(max_cost = -1) (params : Config.t) (m : Metric.t) (k : t) :
 
 module Silent = Make (Logger.Silent)
 module Default = Make (Logger.Colors)
+
+let to_ra (idx_analysis : Variable.Set.t -> Exp.nexp -> int) :
+    t -> Ra.Stmt.t =
+  fun k -> Code.to_ra idx_analysis k.local_variables k.code
+
 
 let from_proto : Config.t -> Kernel.t -> t Seq.t = Default.from_proto
 let flatten (k : t) : t = { k with code = Code.flatten k.code }

@@ -2,6 +2,7 @@ open Stage0
 open Inference
 open Rel_cost
 open Protocols
+open Perf_bottleneck
 
 let abort_when (b : bool) (msg : string) : unit =
   if b then (
