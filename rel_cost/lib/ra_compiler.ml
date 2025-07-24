@@ -189,7 +189,7 @@ end = struct
 end
 
 module Make (LOG : Logger.Logger) = struct
-  module I = Index_analysis.Make (LOG)
+  module I = Metric_analysis.Make (LOG)
   module L = Linearize_index.Make (LOG)
 
   let from_access_context (idx_analysis : Variable.Set.t -> Exp.nexp -> int) :

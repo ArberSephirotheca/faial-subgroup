@@ -7,38 +7,38 @@ let cfg : Config.t =
   Config.make ~block_dim ~grid_dim ()
 
 (* Test-specific Alcotest testable types *)
-let bc_testable : (Exp.nexp * Index_analysis.BC.t) Alcotest.testable =
-  let pp : (Exp.nexp * Index_analysis.BC.t) Fmt.t =
+let bc_testable : (Exp.nexp * Metric_analysis.BC.t) Alcotest.testable =
+  let pp : (Exp.nexp * Metric_analysis.BC.t) Fmt.t =
    fun fmt bc_result ->
-    Format.fprintf fmt "%s" (Index_analysis.BC.to_string bc_result)
+    Format.fprintf fmt "%s" (Metric_analysis.BC.to_string bc_result)
   in
   let equal :
-      Exp.nexp * Index_analysis.BC.t -> Exp.nexp * Index_analysis.BC.t -> bool =
+      Exp.nexp * Metric_analysis.BC.t -> Exp.nexp * Metric_analysis.BC.t -> bool =
     ( = )
   in
   Alcotest.testable pp equal
 
-let ua_testable : (Exp.nexp * Index_analysis.UA.t) Alcotest.testable =
-  let pp : (Exp.nexp * Index_analysis.UA.t) Fmt.t =
+let ua_testable : (Exp.nexp * Metric_analysis.UA.t) Alcotest.testable =
+  let pp : (Exp.nexp * Metric_analysis.UA.t) Fmt.t =
    fun fmt ua_result ->
-    Format.fprintf fmt "%s" (Index_analysis.UA.to_string ua_result)
+    Format.fprintf fmt "%s" (Metric_analysis.UA.to_string ua_result)
   in
   let equal :
-      Exp.nexp * Index_analysis.UA.t -> Exp.nexp * Index_analysis.UA.t -> bool =
+      Exp.nexp * Metric_analysis.UA.t -> Exp.nexp * Metric_analysis.UA.t -> bool =
     ( = )
   in
   Alcotest.testable pp equal
 
 let assert_bc ?(cfg : Config.t = cfg)
     ?(locals : Variable.Set.t = Variable.Set.empty)
-    ~(expected : Exp.nexp * Index_analysis.BC.t) ~(given : Exp.nexp) () : unit =
-  let given = Index_analysis.BC.from_nexp cfg locals given in
+    ~(expected : Exp.nexp * Metric_analysis.BC.t) ~(given : Exp.nexp) () : unit =
+  let given = Metric_analysis.BC.from_nexp cfg locals given in
   Alcotest.check bc_testable "BC analysis" expected given
 
 let assert_ua ?(cfg : Config.t = cfg)
     ?(locals : Variable.Set.t = Variable.Set.empty)
-    ~(expected : Exp.nexp * Index_analysis.UA.t) ~(given : Exp.nexp) () : unit =
-  let given = Index_analysis.UA.from_nexp cfg locals given in
+    ~(expected : Exp.nexp * Metric_analysis.UA.t) ~(given : Exp.nexp) () : unit =
+  let given = Metric_analysis.UA.from_nexp cfg locals given in
   Alcotest.check ua_testable "UA analysis" expected given
 
 let bc_any ~expected ~given : unit =

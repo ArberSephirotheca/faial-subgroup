@@ -151,7 +151,7 @@ module Code = struct
       eval Cost.zero ctx
 
   module Make (L : Logger.Logger) = struct
-    module O = Index_analysis.Make (L)
+    module O = Metric_analysis.Make (L)
     module L = Linearize_index.Make (L)
 
     let from_proto (arrays : Memory.t Variable.Map.t) (cfg : Config.t) :
