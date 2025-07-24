@@ -1,5 +1,6 @@
 ---
 stages:
+- validate
 - build
 - test
 - deploy
@@ -16,6 +17,16 @@ variables:
     paths:
     - _build
 
+check-opam-consistency:
+  stage: validate
+  <<: *global_cache
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - eval $(opam config env)
+    - cp faial.opam faial.opam.backup
+    - dune build faial.opam
+    - diff faial.opam.backup faial.opam || (echo "ERROR: Generated faial.opam differs from committed version. Run 'dune build faial.opam' and commit the changes." && exit 1)
+    - echo "✅ faial.opam is consistent with dune-project"
 
 test:
   stage: test
