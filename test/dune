@@ -9,7 +9,6 @@
    test_slice
    test_queries
    test_poly
-   test_index_analysis
    test_gv_parser
    test_dlang
    ; test_prob_exp
@@ -17,7 +16,6 @@
    test_py
    test_wgsl
    test_gen_z3
-   test_symbolic_metric_analysis
  )
  (libraries stage0 ra protocols drf inference oUnit rel_cost analyze_cost)
 )

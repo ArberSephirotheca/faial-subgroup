@@ -19,6 +19,7 @@ depends: [
   "z3" {>= "4.15.2"}
   "dune" {>= "3.17" & >= "3.17"}
   "ounit" {>= "2.2.7" & with-test}
+  "alcotest" {>= "1.9.0" & with-test}
   "odoc" {with-doc}
   "ocamlformat" {dev}
 ]

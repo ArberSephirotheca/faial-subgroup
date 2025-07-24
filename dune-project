@@ -34,6 +34,7 @@
     
     ; Test dependencies
     (ounit (and (>= 2.2.7) :with-test))
+    (alcotest (and (>= 1.9.0) :with-test))
     
     ; Documentation dependencies
     (odoc :with-doc)
