@@ -80,7 +80,8 @@ fi
 
 # Install all dependencies from committed faial.opam file
 echo "Installing dependencies from faial.opam..."
-opam install --deps-only . $OPAM_ARGS
+echo opam install --deps-only ./faial.opam $OPAM_ARGS
+opam install --deps-only ./faial.opam $OPAM_ARGS
 
 echo "✅ Setup complete!"
 if [ "$USE_LOCAL" = true ]; then
