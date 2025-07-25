@@ -164,6 +164,6 @@ let run_ratio ~verbose ~exe ~compact ~numerator ~denominator :
     in
     s |> to_string |> compile ~compact |> run_exe ~verbose ~exe
 
-let run ?(verbose = false) ?(exe = "maxima") ?(compact = false) (x : Stmt.t)
-    : (string, Errors.t) Result.t =
+let run ?(verbose = false) ?(exe = "maxima") ?(compact = false) (x : Stmt.t) :
+    (string, Errors.t) Result.t =
   x |> from_stmt |> compile ~compact |> run_exe ~verbose ~exe

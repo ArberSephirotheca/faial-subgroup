@@ -55,105 +55,135 @@ let eval (e : Exp.nexp) : int =
 
 let assert_first r expected =
   let given = eval (Range.first r) in
-  let msg = Printf.sprintf "expected: %d but got: first(%s) = %d" 
-    expected (Range.to_string r) given in
+  let msg =
+    Printf.sprintf "expected: %d but got: first(%s) = %d" expected
+      (Range.to_string r) given
+  in
   Alcotest.check Alcotest.int msg expected given
 
 let assert_last r expected =
   let given = eval (Range.last r |> Option.get) in
-  let msg = Printf.sprintf "expected: %d but got: last(%s) = %d" 
-    expected (Range.to_string r) given in
+  let msg =
+    Printf.sprintf "expected: %d but got: last(%s) = %d" expected
+      (Range.to_string r) given
+  in
   Alcotest.check Alcotest.int msg expected given
 
 let test_plus_range () : unit =
-  let test_cases = [
-    ([0; 1; 2; 3], plus_range 0 3 1, "plus_range 0 3 1");
-    ([3; 6; 9; 12], plus_range 3 12 3, "plus_range 3 12 3");
-    ([0; 2], plus_range 0 3 2, "plus_range 0 3 2");
-  ] in
-  List.iter (fun (expected, given, desc) ->
-    Alcotest.check Alcotest.(list int) desc expected given
-  ) test_cases
+  let test_cases =
+    [
+      ([ 0; 1; 2; 3 ], plus_range 0 3 1, "plus_range 0 3 1");
+      ([ 3; 6; 9; 12 ], plus_range 3 12 3, "plus_range 3 12 3");
+      ([ 0; 2 ], plus_range 0 3 2, "plus_range 0 3 2");
+    ]
+  in
+  List.iter
+    (fun (expected, given, desc) ->
+      Alcotest.check Alcotest.(list int) desc expected given)
+    test_cases
 
 let test_minus_range () : unit =
-  let test_cases = [
-    ([3; 2; 1; 0], minus_range 0 3 1, "minus_range 0 3 1");
-    ([13; 10; 7; 4], minus_range 2 13 3, "minus_range 2 13 3");
-    ([3; 1], minus_range 0 3 2, "minus_range 0 3 2");
-  ] in
-  List.iter (fun (expected, given, desc) ->
-    Alcotest.check Alcotest.(list int) desc expected given
-  ) test_cases
+  let test_cases =
+    [
+      ([ 3; 2; 1; 0 ], minus_range 0 3 1, "minus_range 0 3 1");
+      ([ 13; 10; 7; 4 ], minus_range 2 13 3, "minus_range 2 13 3");
+      ([ 3; 1 ], minus_range 0 3 2, "minus_range 0 3 2");
+    ]
+  in
+  List.iter
+    (fun (expected, given, desc) ->
+      Alcotest.check Alcotest.(list int) desc expected given)
+    test_cases
 
 let test_mult_range () : unit =
-  let test_cases = [
-    ([1; 2; 4; 8], mult_range 1 10 2, "mult_range 1 10 2");
-    ([3; 15; 75], mult_range 3 76 5, "mult_range 3 76 5");
-    ([12], mult_range 12 12 2, "mult_range 12 12 2");
-    ([10; 20], mult_range 10 20 2, "mult_range 10 20 2");
-    ([1; 2; 4; 8; 16], mult_range 1 16 2, "mult_range 1 16 2");
-  ] in
-  List.iter (fun (expected, given, desc) ->
-    Alcotest.check Alcotest.(list int) desc expected given
-  ) test_cases
+  let test_cases =
+    [
+      ([ 1; 2; 4; 8 ], mult_range 1 10 2, "mult_range 1 10 2");
+      ([ 3; 15; 75 ], mult_range 3 76 5, "mult_range 3 76 5");
+      ([ 12 ], mult_range 12 12 2, "mult_range 12 12 2");
+      ([ 10; 20 ], mult_range 10 20 2, "mult_range 10 20 2");
+      ([ 1; 2; 4; 8; 16 ], mult_range 1 16 2, "mult_range 1 16 2");
+    ]
+  in
+  List.iter
+    (fun (expected, given, desc) ->
+      Alcotest.check Alcotest.(list int) desc expected given)
+    test_cases
 
 let test_div_range () : unit =
-  let test_cases = [
-    ([10; 5; 2; 1], div_range 1 10 2, "div_range 1 10 2");
-    ([12], div_range 12 12 2, "div_range 12 12 2");
-    ([15; 5], div_range 4 15 3, "div_range 4 15 3");
-  ] in
-  List.iter (fun (expected, given, desc) ->
-    Alcotest.check Alcotest.(list int) desc expected given
-  ) test_cases
+  let test_cases =
+    [
+      ([ 10; 5; 2; 1 ], div_range 1 10 2, "div_range 1 10 2");
+      ([ 12 ], div_range 12 12 2, "div_range 12 12 2");
+      ([ 15; 5 ], div_range 4 15 3, "div_range 4 15 3");
+    ]
+  in
+  List.iter
+    (fun (expected, given, desc) ->
+      Alcotest.check Alcotest.(list int) desc expected given)
+    test_cases
 
 let test_first () : unit =
   let open ForStep in
-  let test_cases = [
-    (range ~lb:0 ~ub:3 ~step:(Plus, 1), 0);
-    (range ~lb:0 ~ub:3 ~step:(Minus, 1), 3);
-    (range ~lb:0 ~ub:3 ~step:(Mult, 1), 0);
-    (range ~lb:0 ~ub:3 ~step:(Div, 1), 3);
-  ] in
+  let test_cases =
+    [
+      (range ~lb:0 ~ub:3 ~step:(Plus, 1), 0);
+      (range ~lb:0 ~ub:3 ~step:(Minus, 1), 3);
+      (range ~lb:0 ~ub:3 ~step:(Mult, 1), 0);
+      (range ~lb:0 ~ub:3 ~step:(Div, 1), 3);
+    ]
+  in
   List.iter (fun (r, n) -> assert_first r n) test_cases
 
 let test_last () : unit =
   let open ForStep in
-  let test_cases = [
-    (range ~lb:0 ~ub:3 ~step:(Plus, 1), 3);
-    (range ~lb:3 ~ub:13 ~step:(Plus, 3), 12);
-    (range ~lb:4 ~ub:15 ~step:(Plus, 3), 13);
-    (range ~lb:0 ~ub:3 ~step:(Minus, 1), 0);
-    (range ~lb:2 ~ub:13 ~step:(Minus, 3), 4);
-    (range ~lb:4 ~ub:15 ~step:(Minus, 3), 6);
-    (range ~lb:4 ~ub:15 ~step:(Div, 3), 5);
-    (range ~lb:3 ~ub:76 ~step:(Div, 5), 3);
-    (range ~lb:1 ~ub:10 ~step:(Mult, 2), 8);
-    (range ~lb:3 ~ub:10 ~step:(Mult, 4), 3);
-    (range ~lb:4 ~ub:15 ~step:(Mult, 3), 12);
-    (range ~lb:3 ~ub:76 ~step:(Mult, 5), 75);
-  ] in
+  let test_cases =
+    [
+      (range ~lb:0 ~ub:3 ~step:(Plus, 1), 3);
+      (range ~lb:3 ~ub:13 ~step:(Plus, 3), 12);
+      (range ~lb:4 ~ub:15 ~step:(Plus, 3), 13);
+      (range ~lb:0 ~ub:3 ~step:(Minus, 1), 0);
+      (range ~lb:2 ~ub:13 ~step:(Minus, 3), 4);
+      (range ~lb:4 ~ub:15 ~step:(Minus, 3), 6);
+      (range ~lb:4 ~ub:15 ~step:(Div, 3), 5);
+      (range ~lb:3 ~ub:76 ~step:(Div, 5), 3);
+      (range ~lb:1 ~ub:10 ~step:(Mult, 2), 8);
+      (range ~lb:3 ~ub:10 ~step:(Mult, 4), 3);
+      (range ~lb:4 ~ub:15 ~step:(Mult, 3), 12);
+      (range ~lb:3 ~ub:76 ~step:(Mult, 5), 75);
+    ]
+  in
   List.iter (fun (r, n) -> assert_last r n) test_cases
 
 let test_gen_highest_power () : unit =
-  let test_cases = [
-    (8, Range.gen_highest_power ~base:2 (Num 10), "gen_highest_power base:2 10");
-    (8, Range.gen_highest_power ~base:2 (Num 9), "gen_highest_power base:2 9");
-    (8, Range.gen_highest_power ~base:2 (Num 8), "gen_highest_power base:2 8");
-    (1, Range.gen_highest_power ~base:2 (Num 1), "gen_highest_power base:2 1");
-  ] in
-  List.iter (fun (expected, expr, desc) ->
-    Alcotest.check Alcotest.int desc expected (eval expr)
-  ) test_cases
+  let test_cases =
+    [
+      ( 8,
+        Range.gen_highest_power ~base:2 (Num 10),
+        "gen_highest_power base:2 10" );
+      (8, Range.gen_highest_power ~base:2 (Num 9), "gen_highest_power base:2 9");
+      (8, Range.gen_highest_power ~base:2 (Num 8), "gen_highest_power base:2 8");
+      (1, Range.gen_highest_power ~base:2 (Num 1), "gen_highest_power base:2 1");
+    ]
+  in
+  List.iter
+    (fun (expected, expr, desc) ->
+      Alcotest.check Alcotest.int desc expected (eval expr))
+    test_cases
 
 let test_highest_power () : unit =
-  let test_cases = [
-    (8, Range.highest_power ~base:2 (Num 10), "highest_power base:2 10");
-    (8, Range.highest_power ~base:2 (Binary (Plus, Num 5, Num 5)), "highest_power base:2 (5+5)");
-  ] in
-  List.iter (fun (expected, expr, desc) ->
-    Alcotest.check Alcotest.int desc expected (eval expr)
-  ) test_cases
+  let test_cases =
+    [
+      (8, Range.highest_power ~base:2 (Num 10), "highest_power base:2 10");
+      ( 8,
+        Range.highest_power ~base:2 (Binary (Plus, Num 5, Num 5)),
+        "highest_power base:2 (5+5)" );
+    ]
+  in
+  List.iter
+    (fun (expected, expr, desc) ->
+      Alcotest.check Alcotest.int desc expected (eval expr))
+    test_cases
 
 let test_all () : unit =
   let open ForStep in
@@ -164,8 +194,7 @@ let test_all () : unit =
         [ 10; 11; 12; 13; 74; 75; 76; 77; 100 ])
     [ 0; 1; 2; 3; 4; 5; 6; 7 ]
   |> List.concat_map (fun (lb, ub, s) ->
-         (if s > 1 then
-            [ (*range ~lb ~ub ~step:(Div, s), div_range lb ub s*) ]
+         (if s > 1 then [ (*range ~lb ~ub ~step:(Div, s), div_range lb ub s*) ]
           else [])
          @ (if s > 1 && lb > 0 then
               [ (range ~lb ~ub ~step:(Mult, s), mult_range lb ub s) ]

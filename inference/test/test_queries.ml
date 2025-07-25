@@ -8,7 +8,7 @@ let parm_var_decl ?(ty = J_type.int) (name : string) : Expr.t =
   Ident { name = Variable.from_name name; ty; kind = ParmVar }
 
 let var_set : VarSet.t Alcotest.testable =
-  let pp fmt x = 
+  let pp fmt x =
     let to_s (x : VarSet.t) =
       VarSet.elements x |> List.map Variable.name |> String.concat ", "
     in
@@ -19,15 +19,13 @@ let var_set : VarSet.t Alcotest.testable =
 
 let nested_loops : NestedLoops.t Alcotest.testable =
   let pp fmt x = Format.fprintf fmt "%s" (NestedLoops.to_string x) in
-  let equal = (=) in
+  let equal = ( = ) in
   Alcotest.testable pp equal
 
 let test_variables () : unit =
   let open C_lang.Expr in
   let assert_vars expected given =
-    let expected =
-      expected |> List.map Variable.from_name |> VarSet.of_list
-    in
+    let expected = expected |> List.map Variable.from_name |> VarSet.of_list in
     let given = Variables.from_expr given |> Variables.to_set in
     Alcotest.check var_set "variables match" expected given
   in
@@ -82,11 +80,7 @@ let test_nested_loops_make () : unit =
   in
   assert_make [ e_for 0 ] (g_for 0);
   assert_make
-    [
-      e_for 0
-        ~body:[ e_for 1 ]
-        ~data:[ ReturnStmt None; g_for 1 ~body:[] ];
-    ]
+    [ e_for 0 ~body:[ e_for 1 ] ~data:[ ReturnStmt None; g_for 1 ~body:[] ] ]
     (g_for ~body:[ ReturnStmt None; g_for 1 ~body:[] ] 0)
 
 let test_nested_loops_filter () : unit =

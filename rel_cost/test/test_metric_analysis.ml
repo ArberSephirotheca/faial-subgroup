@@ -13,7 +13,8 @@ let bc_testable : (Exp.nexp * Metric_analysis.BC.t) Alcotest.testable =
     Format.fprintf fmt "%s" (Metric_analysis.BC.to_string bc_result)
   in
   let equal :
-      Exp.nexp * Metric_analysis.BC.t -> Exp.nexp * Metric_analysis.BC.t -> bool =
+      Exp.nexp * Metric_analysis.BC.t -> Exp.nexp * Metric_analysis.BC.t -> bool
+      =
     ( = )
   in
   Alcotest.testable pp equal
@@ -24,20 +25,23 @@ let ua_testable : (Exp.nexp * Metric_analysis.UA.t) Alcotest.testable =
     Format.fprintf fmt "%s" (Metric_analysis.UA.to_string ua_result)
   in
   let equal :
-      Exp.nexp * Metric_analysis.UA.t -> Exp.nexp * Metric_analysis.UA.t -> bool =
+      Exp.nexp * Metric_analysis.UA.t -> Exp.nexp * Metric_analysis.UA.t -> bool
+      =
     ( = )
   in
   Alcotest.testable pp equal
 
 let assert_bc ?(cfg : Config.t = cfg)
     ?(locals : Variable.Set.t = Variable.Set.empty)
-    ~(expected : Exp.nexp * Metric_analysis.BC.t) ~(given : Exp.nexp) () : unit =
+    ~(expected : Exp.nexp * Metric_analysis.BC.t) ~(given : Exp.nexp) () : unit
+    =
   let given = Metric_analysis.BC.from_nexp cfg locals given in
   Alcotest.check bc_testable "BC analysis" expected given
 
 let assert_ua ?(cfg : Config.t = cfg)
     ?(locals : Variable.Set.t = Variable.Set.empty)
-    ~(expected : Exp.nexp * Metric_analysis.UA.t) ~(given : Exp.nexp) () : unit =
+    ~(expected : Exp.nexp * Metric_analysis.UA.t) ~(given : Exp.nexp) () : unit
+    =
   let given = Metric_analysis.UA.from_nexp cfg locals given in
   Alcotest.check ua_testable "UA analysis" expected given
 

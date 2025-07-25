@@ -30,8 +30,7 @@ module Code = struct
   let subst = S1.subst
 
   let to_ra (idx_analysis : Variable.Set.t -> Exp.nexp -> int) :
-    Variable.Set.t ->
-      t -> Ra.Stmt.t =
+      Variable.Set.t -> t -> Ra.Stmt.t =
     let rec to_ra (locals : Variable.Set.t) : t -> Ra.Stmt.t = function
       | Index a -> Tick (idx_analysis locals a)
       | Cond (_, p) -> to_ra locals p
@@ -286,10 +285,8 @@ let eval_res ?(max_cost = -1) (params : Config.t) (m : Metric.t) (k : t) :
 module Silent = Make (Logger.Silent)
 module Default = Make (Logger.Colors)
 
-let to_ra (idx_analysis : Variable.Set.t -> Exp.nexp -> int) :
-    t -> Ra.Stmt.t =
-  fun k -> Code.to_ra idx_analysis k.local_variables k.code
-
+let to_ra (idx_analysis : Variable.Set.t -> Exp.nexp -> int) : t -> Ra.Stmt.t =
+ fun k -> Code.to_ra idx_analysis k.local_variables k.code
 
 let from_proto : Config.t -> Kernel.t -> t Seq.t = Default.from_proto
 let flatten (k : t) : t = { k with code = Code.flatten k.code }

@@ -13,7 +13,7 @@ let i32 (i : int) : Expression.t = Expression.i32 i
 
 let expression : Expression.t Alcotest.testable =
   let pp fmt e = Format.fprintf fmt "%s" (Expression.to_string e) in
-  let equal = (=) in
+  let equal = ( = ) in
   Alcotest.testable pp equal
 
 let simplify ~expected ~given : unit =
@@ -22,12 +22,8 @@ let simplify ~expected ~given : unit =
 
 let test_compose_vec2 () : unit =
   simplify ~given:(vec 2 []) ~expected:(vec 2 [ i32 0; i32 0 ]);
-  simplify
-    ~given:(vec 2 [ i32 10 ])
-    ~expected:(vec 2 [ i32 10; i32 10 ]);
-  simplify
-    ~given:(vec 2 [ i32 1; i32 2 ])
-    ~expected:(vec 2 [ i32 1; i32 2 ]);
+  simplify ~given:(vec 2 [ i32 10 ]) ~expected:(vec 2 [ i32 10; i32 10 ]);
+  simplify ~given:(vec 2 [ i32 1; i32 2 ]) ~expected:(vec 2 [ i32 1; i32 2 ]);
   simplify
     ~given:(vec 2 [ vec 2 [ i32 1; i32 2 ] ])
     ~expected:(vec 2 [ i32 1; i32 2 ])
@@ -49,8 +45,7 @@ let test_compose_vec3 () : unit =
 
 let test_compose_vec4 () : unit =
   (* zero *)
-  simplify ~given:(vec 4 [])
-    ~expected:(vec 4 [ i32 0; i32 0; i32 0; i32 0 ]);
+  simplify ~given:(vec 4 []) ~expected:(vec 4 [ i32 0; i32 0; i32 0; i32 0 ]);
   (* component-wise *)
   simplify
     ~given:(vec 4 [ i32 10 ])
@@ -87,9 +82,7 @@ let test_compose_vec4 () : unit =
 
 let test_splat_vec () : unit =
   simplify ~given:(splat 2 (i32 1)) ~expected:(vec 2 [ i32 1; i32 1 ]);
-  simplify
-    ~given:(splat 3 (i32 1))
-    ~expected:(vec 3 [ i32 1; i32 1; i32 1 ]);
+  simplify ~given:(splat 3 (i32 1)) ~expected:(vec 3 [ i32 1; i32 1; i32 1 ]);
   simplify
     ~given:(splat 4 (i32 1))
     ~expected:(vec 4 [ i32 1; i32 1; i32 1; i32 1 ])
