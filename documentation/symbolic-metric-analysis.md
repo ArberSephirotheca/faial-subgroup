@@ -139,6 +139,124 @@ Updated both heuristic and SMT analyses to use consistent memory segment calcula
 
 This ensures both analysis approaches use the same memory transaction granularity definition based on the actual data type size rather than shared memory bank count.
 
+## Phase 6.5: Theorem Proving DSL Development
+
+### Objective
+Develop a theorem-proving domain-specific language (DSL) to formally verify exact cost properties instead of just finding optimization bounds.
+
+### Motivation
+The existing `ua` function using `optimize_expr` can only find maximum/minimum bounds for uncoalesced access costs. However, for rigorous analysis, we need to prove exact cost properties like "expression X has exactly cost Y under condition Z."
+
+### Implementation
+Added three new modules to `symbolic_metric_analysis.ml`:
+
+#### Comparison Module
+```ocaml
+module Comparison = struct
+  type t = Equal | LessEqual | GreaterEqual | Less | Greater
+  let to_relation : t -> (nexp -> nexp -> bexp) = function
+    | Equal -> n_eq | LessEqual -> n_le | (* ... *)
+end
+```
+
+#### ProofResult Module  
+```ocaml
+module ProofResult = struct
+  type t = 
+    | Proved 
+    | Counterexample of Z3.Model.model 
+    | Unknown of string
+end
+```
+
+#### Theorem Module
+```ocaml
+module Theorem = struct
+  type t = {
+    cfg: Config.t; locals: Variable.Set.t;
+    thread_context: bexp; global_context: bexp;
+    index: nexp; comparison: Comparison.t; expected_cost: nexp;
+  }
+  
+  let prove (thm : t) : ProofResult.t = (* Uses solve instead of optimize_expr *)
+end
+```
+
+### Key Innovation: Proof by Negation
+Instead of using `optimize_expr` to find bounds, `Theorem.prove` uses `solve` to check if the negation of the desired property is unsatisfiable:
+- **Goal**: Prove `cost(index) = expected_cost`
+- **Method**: Show that `NOT(cost(index) = expected_cost)` is UNSAT
+- **Result**: If UNSAT, the theorem is proven; if SAT, we get a counterexample
+
+### Testing
+Added comprehensive test suite in `test_symbolic_metric_analysis.ml` with theorem proving capabilities:
+```ocaml
+prove_theorem "2 * threadIdx.x should have exact cost 2" {
+  index = n_mult (Num 2) (Var Variable.tid_x);
+  comparison = Comparison.Equal;
+  expected_cost = Num 2;
+  (* ... *)
+}
+```
+
+### Performance Limitations Discovered
+Initial testing revealed that the theorem prover does not scale to interesting, complex theorems due to the underlying constraint system complexity. Simple theorems like "2 * threadIdx.x = 2" work, but more sophisticated properties involving symbolic variables and complex conditions face the same performance bottlenecks as the underlying `ua` analysis.
+
+### Impact on Project Direction
+This performance limitation motivated **Phase 7: Linear Thread ID Architecture**. The theorem proving DSL demonstrates the need for a fundamentally faster constraint system to enable formal verification of realistic cost properties.
+
+## Phase 7: Linear Thread ID Architecture (Planned)
+
+### Motivation
+The theorem proving DSL revealed that current constraint system performance prevents verification of interesting cost properties. The overarching goal is: **How can we make metric analysis fast enough to enable practical theorem proving?**
+
+### Objective
+Fundamentally redesign the thread modeling approach to use linear thread IDs instead of coordinate-based representations, eliminating the need for complex uniqueness and same-warp constraints.
+
+### Core Design Principles
+The current approach leaves thread coordinates with many degrees of freedom, requiring complex constraints to enforce uniqueness and warp membership. SAT solvers perform better with explicit, deterministic formulations.
+
+### Proposed Architecture
+
+#### Thread Identification Model
+- **uid (thread within warp)**: Ranges from `0` to `threads_per_warp - 1`, used as variable suffix
+- **warp_id**: Symbolic variable ranging from `0` to `total_warps - 1` 
+- **thread_id**: Computed as `warp_id * threads_per_warp + uid`
+
+This ensures global thread uniqueness by construction and makes warp membership explicit.
+
+#### Coordinate Conversion
+Convert from linear `thread_id` back to CUDA coordinates:
+```ocaml
+let threadIdx_x = thread_id mod block_dim.x in
+let threadIdx_y = (thread_id / block_dim.x) mod block_dim.y in  
+let threadIdx_z = thread_id / (block_dim.x * block_dim.y) in
+```
+
+#### Implementation Strategy
+1. **Common Context Structure**: Create shared struct for `(suffix, uid, cfg)` parameters to enable clean function signatures and refactoring opportunities
+2. **Function Replacement**: Replace current `thread_id(suffix, cfg)` with `thread_id(uid, warp_id, cfg)`
+3. **Constraint Elimination**: Remove `unique_tid_constraint_*` and `same_warp_constraint` functions entirely
+4. **Bounds Simplification**: Update `warp_constraints` to only include necessary bounds checking
+
+#### Unsupported Cases
+Block dimensions that don't align with warp boundaries (e.g., `block_dim.x = 17` with `threads_per_warp = 32`) will be flagged as unsupported with appropriate warnings. This is consistent with typical CUDA programming practices.
+
+#### Dual Encoding Strategy
+Maintain both the current constraint-based encoding and the new linear ID encoding for:
+- Performance comparison and validation
+- Future refactoring opportunities
+- Backward compatibility during transition
+
+### Expected Benefits
+- **Constraint Reduction**: Eliminates O(n²) uniqueness constraints and same-warp logic
+- **Performance Improvement**: More explicit thread model should improve SAT solver efficiency
+- **Correctness by Construction**: Thread uniqueness and warp membership emerge naturally from the linear ID formulation
+- **Cleaner Architecture**: Simpler constraint system with fewer degrees of freedom
+
+### Future Refactoring Considerations
+The dual encoding approach will enable systematic performance analysis and provide a foundation for future architectural improvements to the constraint generation system.
+
 ## Open Questions
 
 - **Z3 timeout behavior**: Z3 uses 600-second default timeout when no explicit timeout specified, causing 10-minute delays in development
