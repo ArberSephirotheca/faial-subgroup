@@ -156,7 +156,7 @@ let test_ua_threadIdx_x () : unit =
 let test_warp_constraints_enforces_bounds_and_uniqueness () : unit =
   (* Test that warp_constraints prevents threads from having same coordinates within bounds *)
   let cfg = make_config 2 in
-  let c = warp_constraints cfg in
+  let c = Constraints.to_bexp cfg in
   (* Is it possible for 2 tids to be equal? *)
   let contradiction =
     b_and c (n_eq (var_ "threadIdx.x$0") (var_ "threadIdx.x$1"))
@@ -175,7 +175,7 @@ let test_cross_warp_unsoundness_test () : unit =
       ~block_dim:(Dim3.make ~x:64 ()) (* 2 warps: 0-31 and 32-63 *)
       ~grid_dim:(Dim3.make ~x:1 ()) ()
   in
-  let c = warp_constraints cfg in
+  let c = Constraints.to_bexp cfg in
   (* Try to assign threads from different warps *)
   let cross_warp =
     b_and_ex
