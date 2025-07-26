@@ -18,6 +18,11 @@ let var_ (name : string) : nexp = Var (Variable.from_name name)
 let is_even (e : nexp) : bexp = n_eq (Binary (Mod, e, Num 2)) (Num 0)
 
 (* Test-specific Alcotest testable types *)
+let proof_result_testable : ProofResult.t Alcotest.testable =
+  let pp fmt result = Format.fprintf fmt "%s" (ProofResult.to_string result) in
+  let equal = ( = ) in
+  Alcotest.testable pp equal
+
 let replicate_result_testable : (bexp * nexp) list Alcotest.testable =
   let pp : (bexp * nexp) list Fmt.t =
    fun fmt result ->
@@ -56,7 +61,17 @@ let assert_encode_ua ~(expected : nexp) ~(threads_per_warp : int)
     ~(locals : Variable.Set.t) ~(cond : bexp) ~(index : nexp) : unit =
   let cfg = make_config threads_per_warp in
   let result = encode_ua cfg locals cond index in
-  Alcotest.check nexp_testable "encode_ua result" expected result
+  let detailed_msg =
+    Printf.sprintf
+      "encode_ua failed\n\
+      \  index: %s\n\
+      \  condition: %s\n\
+      \  threads_per_warp: %d\n\
+      \  locals: %s"
+      (n_to_string index) (b_to_string cond) threads_per_warp
+      (Variable.set_to_string locals)
+  in
+  Alcotest.check nexp_testable detailed_msg expected result
 
 (* Utility function that wraps ua and provides better error messages *)
 let assert_ua
@@ -87,15 +102,19 @@ let test_replicate_with_local_variable () : unit =
 
 let test_encode_ua_empty_locals () : unit =
   (* Test encode_ua with empty locals, 2 threads accessing same index *)
-  assert_encode_ua ~expected:(Num 1) ~threads_per_warp:2
-    ~locals:Variable.Set.empty ~cond:b_true ~index:(Num 0)
+  assert_encode_ua ~threads_per_warp:2 ~locals:Variable.Set.empty ~cond:b_true
+    ~index:(Num 0) ~expected:(Num 1)
 
 let test_encode_ua_with_local_variable () : unit =
   (* Test encode_ua with local variable x *)
   let x = Variable.from_name "x" in
   let locals = Variable.Set.singleton x in
   let expected =
-    n_plus (Num 1) (NIf (n_neq (var_ "x$1") (var_ "x$0"), Num 1, Num 0))
+    n_plus (Num 1)
+      (NIf
+         ( n_neq (n_div (var_ "x$1") (Num 32)) (n_div (var_ "x$0") (Num 32)),
+           Num 1,
+           Num 0 ))
   in
   assert_encode_ua ~expected ~threads_per_warp:2 ~locals ~cond:b_true
     ~index:(var_ "x")
@@ -180,6 +199,29 @@ let test_cross_warp_unsoundness_test () : unit =
      (this exposes unsoundness)"
     Gen_z3.Solver.Unsat result
 
+let prove_thorem (msg : string) (thm : Theorem.t) : unit =
+  print_endline (Theorem.to_string thm);
+  flush stdout;
+  Alcotest.check proof_result_testable msg ProofResult.Proved
+    (Theorem.prove thm)
+
+let test_theorem_prove_exact_cost () : unit =
+  let open Theorem in
+  let cfg = make_config 32 in
+  let k = 2 in
+  (* Test theorem: 2 * threadIdx.x should have exact cost 2 *)
+  prove_thorem "2 * threadIdx.x should have exact cost 2"
+    {
+      cfg;
+      locals = Variable.Set.empty;
+      thread_context = b_true;
+      global_context = b_true;
+      index = n_mult (Num k) (Var Variable.tid_x);
+      comparison = Comparison.Equal;
+      expected_cost = Num k;
+    };
+  ()
+
 let tests : unit Alcotest.test_case list =
   [
     ("replicate_empty_locals", `Quick, test_replicate_empty_locals);
@@ -193,6 +235,7 @@ let tests : unit Alcotest.test_case list =
       `Quick,
       test_warp_constraints_enforces_bounds_and_uniqueness );
     ("cross_warp_unsoundness_test", `Quick, test_cross_warp_unsoundness_test);
+    ("theorem_prove_exact_cost", `Quick, test_theorem_prove_exact_cost);
   ]
 
 let () =

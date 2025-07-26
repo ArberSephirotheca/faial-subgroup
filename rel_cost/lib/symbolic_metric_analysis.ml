@@ -154,6 +154,7 @@ let unique_tid_constraint_2 (cfg : Config.t) : bexp =
 
 let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (cond : bexp)
     (index : nexp) : nexp =
+  let index = n_div index (Num (Config.memory_segments_bits cfg)) in
   let index =
     (* replicate index per each thread *)
     Proj.run cfg.threads_per_warp locals (fun ctx ->
@@ -194,6 +195,89 @@ let ua ?(strategy = Gen_z3.Optimizer.Strategy.Maximize) (cfg : Config.t)
       (Variable.Set.diff locals Variable.tid_set)
       (thread_locals_set cfg)
   in
-  let index = n_div index (Num (Config.memory_segments_bits cfg)) in
   let formula = encode_ua cfg locals cond index in
   optimize_expr strategy ~pre:(warp_constraints cfg) formula |> Result.to_option
+
+module Comparison = struct
+  type t =
+    | Equal (* cost = expected *)
+    | LessEqual (* cost <= expected *)
+    | GreaterEqual (* cost >= expected *)
+    | Less (* cost < expected *)
+    | Greater (* cost > expected *)
+
+  let to_string : t -> string = function
+    | Equal -> "="
+    | LessEqual -> "<="
+    | GreaterEqual -> ">="
+    | Less -> "<"
+    | Greater -> ">"
+
+  let to_relation : t -> nexp -> nexp -> bexp = function
+    | Equal -> n_eq
+    | LessEqual -> n_le
+    | GreaterEqual -> n_ge
+    | Less -> n_lt
+    | Greater -> n_gt
+end
+
+module ProofResult = struct
+  type t =
+    | Proved (* Theorem successfully proven *)
+    | Counterexample of Z3.Model.model (* Found counterexample with model *)
+    | Unknown of string (* Solver couldn't determine *)
+
+  let to_string : t -> string = function
+    | Proved -> "Proved"
+    | Counterexample model -> "Counterexample: " ^ Z3.Model.to_string model
+    | Unknown msg -> "Unknown: " ^ msg
+
+  let is_success : t -> bool = function
+    | Proved -> true
+    | Counterexample _ | Unknown _ -> false
+end
+
+module Theorem = struct
+  type t = {
+    cfg : Config.t;
+    locals : Variable.Set.t;
+    thread_context : bexp;
+    global_context: bexp;
+    index : nexp;
+    comparison : Comparison.t;
+    expected_cost : nexp;
+  }
+
+  let to_string (thm : t) : string =
+    Printf.sprintf "thread=%s; global=%s |- cost(%s) %s %s"
+      (b_to_string thm.thread_context)
+      (b_to_string thm.global_context)
+      (n_to_string thm.index)
+      (Comparison.to_string thm.comparison)
+      (n_to_string thm.expected_cost)
+
+  let prove (thm : t) : ProofResult.t =
+    let open Gen_z3.IntGen in
+    let locals =
+      Variable.Set.union
+        (Variable.Set.diff thm.locals Variable.tid_set)
+        (thread_locals_set thm.cfg)
+    in
+    let index = thm.index in
+    let actual_cost = encode_ua thm.cfg locals thm.thread_context index in
+    let comparison_fn = Comparison.to_relation thm.comparison in
+    let goal = comparison_fn actual_cost thm.expected_cost in
+    (* Prove that NOT(actual_cost comparison expected_cost) is UNSAT *)
+    let constraint_system =
+      b_and_ex [
+        thm.global_context;
+        warp_constraints thm.cfg;
+        b_not goal;
+      ]
+    in
+    let open Gen_z3.Solver in
+    match solve constraint_system with
+    | Unsat -> ProofResult.Proved
+    | Sat model -> ProofResult.Counterexample model
+    | Unknown msg -> ProofResult.Unknown msg
+end
