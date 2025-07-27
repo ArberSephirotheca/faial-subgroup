@@ -130,4 +130,11 @@ When writing conceptual documentation for this project, follow these principles 
 - Example: "We apply loop index normalization, a standard compiler technique, to convert loops with arbitrary step sizes into unit-stride loops"
 - This grounds the work in existing knowledge and shows appropriate use of established methods
 
+## Document Measured Results Over Predictions
+- When performance or capability claims are made, include actual measurements when available
+- Update documentation status as work progresses from planned to implemented (e.g., "(Planned)" → "(Implemented)")
+- Let quantitative results speak for themselves rather than adding subjective qualifiers
+- Example: "V1: 1.578 seconds, V2: 0.014 seconds, 113x speedup" rather than "massive performance improvement"
+- Include benchmark methodologies and specific test conditions for reproducibility
+
 The overarching goal is **conceptual clarity**: writing that helps someone understand the system's analytical reasoning and approach to solving problems, enabling them to mentally model how the system works rather than just describing its structure or features.

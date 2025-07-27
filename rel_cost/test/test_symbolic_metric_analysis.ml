@@ -153,51 +153,62 @@ let test_ua_threadIdx_x () : unit =
     ~cond:(is_even (Var Variable.tid_x))
     ~index:(Var Variable.tid_x) ()
 
+let for_each_version (f : Constraints.t -> unit) : unit =
+  [ Constraints.V1; Constraints.V2 ] |> List.iter f
+
 let test_warp_constraints_enforces_bounds_and_uniqueness () : unit =
   (* Test that warp_constraints prevents threads from having same coordinates within bounds *)
-  let cfg = make_config 2 in
-  let c = Constraints.to_bexp cfg in
-  (* Is it possible for 2 tids to be equal? *)
-  let contradiction =
-    b_and c (n_eq (var_ "threadIdx.x$0") (var_ "threadIdx.x$1"))
-  in
-  let open Gen_z3.IntGen in
-  let result = solve contradiction in
-  Alcotest.check solver_result_testable
-    "warp_constraints should make threadIdx.x$0 = threadIdx.x$1 unsatisfiable \
-     when considering block bounds"
-    Gen_z3.Solver.Unsat result
+  for_each_version (fun gen ->
+      let cfg = make_config 2 in
+      let c = Constraints.to_bexp gen cfg in
+      (* Is it possible for 2 tids to be equal? *)
+      let contradiction =
+        b_and c (n_eq (var_ "threadIdx.x$0") (var_ "threadIdx.x$1"))
+      in
+      let open Gen_z3.IntGen in
+      let result = solve contradiction in
+      let test_msg =
+        Printf.sprintf
+          "warp_constraints should make threadIdx.x$0 = threadIdx.x$1 \
+           unsatisfiable when considering block bounds (%s)"
+          (Constraints.to_string gen)
+      in
+      Alcotest.check solver_result_testable test_msg Gen_z3.Solver.Unsat result)
 
 let test_cross_warp_unsoundness_test () : unit =
   (* Test to expose unsoundness: threads from different warps should not be allowed *)
-  let cfg =
-    Config.make ~threads_per_warp:32
-      ~block_dim:(Dim3.make ~x:64 ()) (* 2 warps: 0-31 and 32-63 *)
-      ~grid_dim:(Dim3.make ~x:1 ()) ()
-  in
-  let c = Constraints.to_bexp cfg in
-  (* Try to assign threads from different warps *)
-  let cross_warp =
-    b_and_ex
-      [
-        c;
-        n_eq (var_ "threadIdx.x$0") (Num 0);
-        (* thread 0 = warp 0 *)
-        n_eq (var_ "threadIdx.x$1") (Num 32);
-        (* thread 32 = warp 1 *)
-        n_eq (var_ "threadIdx.y$0") (Num 0);
-        n_eq (var_ "threadIdx.y$1") (Num 0);
-        n_eq (var_ "threadIdx.z$0") (Num 0);
-        n_eq (var_ "threadIdx.z$1") (Num 0);
-      ]
-  in
-  let open Gen_z3.IntGen in
-  let result = solve cross_warp in
-  (* This test SHOULD fail (return Sat) with current constraints, exposing the bug *)
-  Alcotest.check solver_result_testable
-    "EXPECTED TO FAIL: Current constraints allow threads from different warps \
-     (this exposes unsoundness)"
-    Gen_z3.Solver.Unsat result
+  for_each_version (fun gen ->
+      let cfg =
+        Config.make ~threads_per_warp:32
+          ~block_dim:(Dim3.make ~x:64 ()) (* 2 warps: 0-31 and 32-63 *)
+          ~grid_dim:(Dim3.make ~x:1 ()) ()
+      in
+      let c = Constraints.to_bexp gen cfg in
+      (* Try to assign threads from different warps *)
+      let cross_warp =
+        b_and_ex
+          [
+            c;
+            n_eq (var_ "threadIdx.x$0") (Num 0);
+            (* thread 0 = warp 0 *)
+            n_eq (var_ "threadIdx.x$1") (Num 32);
+            (* thread 32 = warp 1 *)
+            n_eq (var_ "threadIdx.y$0") (Num 0);
+            n_eq (var_ "threadIdx.y$1") (Num 0);
+            n_eq (var_ "threadIdx.z$0") (Num 0);
+            n_eq (var_ "threadIdx.z$1") (Num 0);
+          ]
+      in
+      let open Gen_z3.IntGen in
+      let result = solve cross_warp in
+      let test_msg =
+        Printf.sprintf
+          "EXPECTED TO FAIL: Current constraints allow threads from different \
+           warps (this exposes unsoundness) (%s)"
+          (Constraints.to_string gen)
+      in
+      (* This test SHOULD fail (return Sat) with current constraints, exposing the bug *)
+      Alcotest.check solver_result_testable test_msg Gen_z3.Solver.Unsat result)
 
 let prove_thorem (msg : string) (thm : Theorem.t) : unit =
   print_endline (Theorem.to_string thm);

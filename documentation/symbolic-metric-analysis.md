@@ -205,7 +205,7 @@ Initial testing revealed that the theorem prover does not scale to interesting, 
 ### Impact on Project Direction
 This performance limitation motivated **Phase 7: Linear Thread ID Architecture**. The theorem proving DSL demonstrates the need for a fundamentally faster constraint system to enable formal verification of realistic cost properties.
 
-## Phase 7: Linear Thread ID Architecture (Planned)
+## Phase 7: Linear Thread ID Architecture (Implemented)
 
 ### Motivation
 The theorem proving DSL revealed that current constraint system performance prevents verification of interesting cost properties. The overarching goal is: **How can we make metric analysis fast enough to enable practical theorem proving?**
@@ -216,7 +216,17 @@ Fundamentally redesign the thread modeling approach to use linear thread IDs ins
 ### Core Design Principles
 The current approach leaves thread coordinates with many degrees of freedom, requiring complex constraints to enforce uniqueness and warp membership. SAT solvers perform better with explicit, deterministic formulations.
 
-### Proposed Architecture
+### Implementation Results
+**Performance validation confirmed the architecture's effectiveness with dramatic speedup:**
+
+#### Benchmark Results (32 threads per warp, theorem proving)
+- **V1 (Coordinate-based)**: 1.578 seconds per theorem
+- **V2 (Linear Thread ID)**: 0.014 seconds per theorem
+- **Speedup**: **113x faster** (1.578 / 0.014 ≈ 113x)
+
+This represents a transformative improvement that makes practical theorem proving feasible for realistic CUDA kernels.
+
+### Architecture Implementation
 
 #### Thread Identification Model
 - **uid (thread within warp)**: Ranges from `0` to `threads_per_warp - 1`, used as variable suffix
@@ -234,28 +244,77 @@ let threadIdx_z = thread_id / (block_dim.x * block_dim.y) in
 ```
 
 #### Implementation Strategy
-1. **Common Context Structure**: Create shared struct for `(suffix, uid, cfg)` parameters to enable clean function signatures and refactoring opportunities
-2. **Function Replacement**: Replace current `thread_id(suffix, cfg)` with `thread_id(uid, warp_id, cfg)`
-3. **Constraint Elimination**: Remove `unique_tid_constraint_*` and `same_warp_constraint` functions entirely
-4. **Bounds Simplification**: Update `warp_constraints` to only include necessary bounds checking
+1. **Modular Constraint System**: Created `V1Gen` and `V2Gen` modules with `Config.t -> bexp` interfaces
+2. **Linear Thread ID Formulation**: V2 defines `thread_id = warp_id * threads_per_warp + uid`
+3. **Coordinate Redefinition**: CUDA coordinates computed from linear thread ID rather than being free variables
+4. **Strategy Selection**: Both `ua` and `Theorem.prove` functions accept `~generator` parameter for V1/V2 selection
 
 #### Unsupported Cases
 Block dimensions that don't align with warp boundaries (e.g., `block_dim.x = 17` with `threads_per_warp = 32`) will be flagged as unsupported with appropriate warnings. This is consistent with typical CUDA programming practices.
 
-#### Dual Encoding Strategy
-Maintain both the current constraint-based encoding and the new linear ID encoding for:
-- Performance comparison and validation
-- Future refactoring opportunities
-- Backward compatibility during transition
+#### Performance Comparison Infrastructure
+Implemented benchmark executable (`benchmark_constraints`) for systematic performance comparison:
+```bash
+# Compare both strategies
+./benchmark_constraints --both --iterations=10
 
-### Expected Benefits
-- **Constraint Reduction**: Eliminates O(n²) uniqueness constraints and same-warp logic
-- **Performance Improvement**: More explicit thread model should improve SAT solver efficiency
-- **Correctness by Construction**: Thread uniqueness and warp membership emerge naturally from the linear ID formulation
-- **Cleaner Architecture**: Simpler constraint system with fewer degrees of freedom
+# Test specific strategy with custom configuration
+./benchmark_constraints --strategy V2 --threads 16 --iterations 5
+```
 
-### Future Refactoring Considerations
-The dual encoding approach will enable systematic performance analysis and provide a foundation for future architectural improvements to the constraint generation system.
+### Achieved Benefits
+- **Performance Improvement**: 113x speedup measured in theorem proving benchmarks
+- **Constraint Simplification**: V2 eliminates complex uniqueness and same-warp constraints
+- **Correctness by Construction**: Thread uniqueness and warp membership guaranteed by linear ID formulation
+- **Modular Architecture**: Clean separation allows easy strategy selection and future extensions
+
+### Technical Implementation Details
+
+#### V2 Constraint Generation
+```ocaml
+(* V2 defines coordinates in terms of linear thread ID *)
+let thread_id = warp_id * threads_per_warp + uid in
+let threadIdx_x = thread_id mod block_dim.x in
+let threadIdx_y = (thread_id / block_dim.x) mod block_dim.y in
+let threadIdx_z = thread_id / (block_dim.x * block_dim.y) in
+```
+
+#### Strategy Selection Interface
+```ocaml
+(* Optimization with V2 *)
+ua ~generator:Constraints.V2 cfg locals cond index
+
+(* Theorem proving with V2 *)
+Theorem.prove ~generator:Constraints.V2 theorem
+```
+
+### Scaling Analysis: Variable Range Impact
+
+Additional benchmarking explored how theorem complexity scales with variable ranges. Testing the theorem `cost(x * tid) = x` where `1 ≤ x ≤ upper_bound`:
+
+#### Benchmark Results (V2, 32 threads per warp)
+```
+Upper bound: 1, Time: 0.029s
+Upper bound: 2, Time: 0.130s
+Upper bound: 3, Time: 0.225s
+Upper bound: 4, Time: 0.821s
+Upper bound: 5, Time: 0.940s
+Upper bound: 6, Time: 1.021s
+Upper bound: 7, Time: 1.273s
+Upper bound: 8, Time: 1.860s
+Upper bound: 9, Time: 1.762s
+Upper bound: 10, Time: 7.222s
+Upper bound: 11, Time: 1.731s
+Upper bound: 12, Time: 7.776s
+Upper bound: 13, Time: 8.911s
+Upper bound: 14, Time: 8.532s
+Upper bound: 15, Time: 9.224s
+```
+
+#### Observations
+- Variable range size impacts solving time, but the relationship is non-linear and somewhat unpredictable
+- Times generally increase with larger ranges, but with significant variance (e.g., bound 9 vs 10)
+- For larger variable ranges, the approach may become computationally intractable
 
 ## Open Questions
 

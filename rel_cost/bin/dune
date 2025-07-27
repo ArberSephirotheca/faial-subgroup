@@ -1,0 +1,4 @@
+(executable
+ (public_name benchmark_constraints)
+ (name benchmark_constraints)
+ (libraries rel_cost protocols cmdliner unix))

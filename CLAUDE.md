@@ -119,6 +119,18 @@ Use clear, descriptive commit messages that focus on the actual changes made.
 
 When writing conceptual documentation for this project, follow these principles to create clear, useful explanations:
 
+### Document Evolution and Progress
+- Update documentation status as work progresses from planned to implemented
+- Change status indicators like "(Planned)" to "(Implemented)" when work completes
+- Document both successful approaches and failed attempts with performance data to show the journey
+- Preserve historical context explaining why decisions were made and what alternatives were considered
+
+### Performance Data as Evidence
+- Include actual benchmark results and measurements when documenting performance claims
+- Let quantitative results speak for themselves rather than adding subjective qualifiers like "massive" or "significant"
+- Provide specific test conditions and methodologies for reproducibility
+- Example: "V1: 1.578 seconds, V2: 0.014 seconds (113x speedup)" rather than "much faster"
+
 ### Intent-First Communication
 - Lead with the "why" before the "how" - establish what we're trying to accomplish before explaining methods
 - Help readers understand the reasoning behind design decisions and transformations
