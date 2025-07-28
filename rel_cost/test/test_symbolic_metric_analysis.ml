@@ -154,7 +154,7 @@ let test_ua_threadIdx_x () : unit =
     ~index:(Var Variable.tid_x) ()
 
 let for_each_version (f : Constraints.t -> unit) : unit =
-  [ Constraints.V1; Constraints.V2 ] |> List.iter f
+  Constraints.values |> List.iter f
 
 let test_warp_constraints_enforces_bounds_and_uniqueness () : unit =
   (* Test that warp_constraints prevents threads from having same coordinates within bounds *)
@@ -233,6 +233,36 @@ let test_theorem_prove_exact_cost () : unit =
     };
   ()
 
+let test_constraints_bug1 () : unit =
+  let cfg = make_config 4 in
+  let theorem = {
+    Theorem.cfg;
+    locals = Variable.Set.empty;
+    thread_context = b_true;
+    global_context = b_true;
+    index = n_mult (Num 2) (Var Variable.tid_x);
+    comparison = Comparison.Equal;
+    expected_cost = Num 2;
+  } in
+  
+  (* Test all constraint versions - they should all behave consistently *)
+  Constraints.values |> List.iter (fun v ->
+    (* Check that we get a counterexample, not a proof *)
+    match Theorem.prove ~generator:v theorem with
+    | ProofResult.Counterexample _ -> () (* This is what we expect *)
+    | p ->
+        let msg =
+          Printf.sprintf "Expecting counterexample from %s but got %s\n%s"
+            (Constraints.to_string v)
+            (ProofResult.to_string p)
+            (Constraints.to_bexp v cfg
+              |> Exp.b_and_split
+              |> List.map Exp.b_to_string
+              |> String.concat "\n&&")
+        in
+        Alcotest.fail msg
+  )
+
 let tests : unit Alcotest.test_case list =
   [
     ("replicate_empty_locals", `Quick, test_replicate_empty_locals);
@@ -247,6 +277,7 @@ let tests : unit Alcotest.test_case list =
       test_warp_constraints_enforces_bounds_and_uniqueness );
     ("cross_warp_unsoundness_test", `Quick, test_cross_warp_unsoundness_test);
     ("theorem_prove_exact_cost", `Quick, test_theorem_prove_exact_cost);
+    ("constraints_bug1", `Quick, test_constraints_bug1);
   ]
 
 let () =

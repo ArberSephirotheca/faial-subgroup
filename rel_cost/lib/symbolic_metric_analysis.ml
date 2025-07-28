@@ -78,22 +78,53 @@ let clamp ~lower ~value ~upper : bexp =
 
 (* This module holds the constraint-generation code. *)
 module Constraints = struct
-  type t = V1 | V2
+  type t = V1 | V2 | V3 | V4
 
-  let to_string : t -> string = function V1 -> "V1" | V2 -> "V2"
+  let to_string : t -> string = function
+    | V1 -> "v1"
+    | V2 -> "v2"
+    | V3 -> "v3"
+    | V4 -> "v4"
+
+  let of_string : string -> t option = function
+    | "V1" | "v1" -> Some V1
+    | "V2" | "v2" -> Some V2
+    | "V3" | "v3" -> Some V3
+    | "V4" | "v4" -> Some V4
+    | _ -> None
+
+  let default : t = V4
+
+  let values : t list =
+    [ V1; V2; V3; V4 ]
 
   let tids (cfg : Config.t) : Variable.Set.t =
-    [ Variable.tid_x; Variable.tid_y; Variable.tid_z ]
+    Variable.tid_list
     |> List.filter (fun x -> not (Config.is_warp_uniform x cfg))
     |> Variable.Set.of_list
 
-  (* Constraint generation 1.0 *)
-  module V1Gen = struct
+  (* Constraint generation 1.0: add constraints to threadIdx *)
+  module V1_3Gen = struct
     let unique_tid_constraint_1 (thread_ids : nexp list) : bexp =
-      (* Use the built-in distinct primitive to ensure all thread IDs are unique *)
-      Distinct thread_ids
+      (* Generate pairwise inequality constraints: t1 != t2 && t1 != t3 && ... *)
+      thread_ids
+      |> List.fold_left (fun (visited, acc) tid ->
+        (* tid is dissimilar from all threads in visited *)
+        let dissim =
+          visited
+          |> List.map (fun t -> n_neq tid t)
+          |> Exp.b_and_ex
+        in
+        (* add another visited, accumulate dissimilarity *)
+        (tid :: visited, b_and dissim acc)
+      ) ([], b_true)
+      |> snd (* ignore the list of visited tids *)
 
     let unique_tid_constraint_2 (thread_ids : nexp list) : bexp =
+      (* Use the built-in distinct primitive *)
+      Distinct thread_ids
+
+    let unique_tid_constraint_3 (thread_ids : nexp list) : bexp =
       (* Create chain of less-than constraints: tid0 < tid1 < tid2 < ... < tid(n-1) *)
       let rec make_chain = function
         | [] | [ _ ] -> b_true
@@ -110,40 +141,52 @@ module Constraints = struct
           n_eq wid_i wid_next)
       |> b_and_ex
 
-    let make (cfg : Config.t) : bexp =
-      let thread_id : nexp =
-        (* only generate variables for warp divergent tid *)
-        let tid_x =
+    let make (version:t) (cfg : Config.t) : bexp =
+      (* First constraint: tid_1 != tid_2 != ... != tid_n *)
+      let thread_ids : nexp list =
+        (* 1. only generate variables for warp divergent tid *)
+        (* 2. use cfg.block_dim instead of variable blockDim *)
+        let tid_x = (* threadIdx.x *)
           if Config.is_warp_uniform Variable.tid_x cfg then Num 0
           else Var Variable.tid_x
         in
-        let tid_y =
+        let tid_y = (* blockDim.x * threadIdx.y *)
           if Config.is_warp_uniform Variable.tid_y cfg then Num 0
           else n_mult (Var Variable.tid_y) (Num cfg.block_dim.x)
         in
-        let tid_z =
+        let tid_z = (* blockDim.x * blockDim.y * threadIdx.z *)
           if Config.is_warp_uniform Variable.tid_z cfg then Num 0
           else
             n_mult (Var Variable.tid_z)
               (Num (cfg.block_dim.x * cfg.block_dim.y))
         in
-        n_plus tid_x (n_plus tid_y tid_z)
+        (* n_plus elides (Num 0) from the expression *)
+        n_plus tid_x (n_plus tid_y tid_z) (* tid_x + tid_y + tid_z *)
+        |> Proj.proj_n
+        |> Proj.run cfg.threads_per_warp (tids cfg)
       in
-      let thread_ids =
-        thread_id |> Proj.proj_n |> Proj.run cfg.threads_per_warp (tids cfg)
+      (* 3 different versions generate equivalent unique_tid constraints *)
+      let unique_tid =
+        match version with
+        | V1 -> unique_tid_constraint_1
+        | V2 -> unique_tid_constraint_2
+        | V3 -> unique_tid_constraint_3
+        | V4 ->
+          failwith ("Internal error: unexpected version " ^ to_string version)
       in
+      let c1 = unique_tid thread_ids in
+      (* Second constraint: tid / threads_per_warp *)
       let warp_ids =
-        thread_ids
+        thread_ids (* <- crucially, we reuse thread_ids *)
         |> List.map (fun tid -> n_div tid (Num cfg.threads_per_warp))
         |> Array.of_list
       in
-      let c1 = unique_tid_constraint_2 thread_ids in
       let c2 = same_warp_constraint cfg warp_ids in
       b_and c1 c2
   end
 
-  (* Constraint generation 2.0 - Linear Thread ID Architecture *)
-  module V2Gen = struct
+  (* Constraint generation 2.0: define threadIdx directly *)
+  module V4Gen = struct
     let make (cfg : Config.t) : bexp =
       let warp_id_var = Variable.from_name "$warp_id" in
 
@@ -213,7 +256,9 @@ module Constraints = struct
 
   let to_bexp (strategy : t) (cfg : Config.t) : bexp =
     let strategy_constraint =
-      match strategy with V1 -> V1Gen.make cfg | V2 -> V2Gen.make cfg
+      match strategy with
+      | V1 | V2 | V3 -> V1_3Gen.make strategy cfg
+      | V4 -> V4Gen.make cfg
     in
     b_and strategy_constraint (tid_bounds_constraint cfg)
 end
@@ -246,7 +291,7 @@ let thread_locals_set (cfg : Config.t) : Variable.Set.t =
   cfg |> thread_locals_list |> Variable.Set.of_list
 
 let ua ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
-    ?(generator = Constraints.V2) (cfg : Config.t) (locals : Variable.Set.t)
+    ?(generator = Constraints.default) (cfg : Config.t) (locals : Variable.Set.t)
     (cond : bexp) (index : nexp) : int option =
   let open Gen_z3.IntGen in
   let locals =
@@ -316,7 +361,7 @@ module Theorem = struct
       (Comparison.to_string thm.comparison)
       (n_to_string thm.expected_cost)
 
-  let prove ?(generator = Constraints.V1) (thm : t) : ProofResult.t =
+  let prove ?(generator = Constraints.default) (thm : t) : ProofResult.t =
     let open Gen_z3.IntGen in
     let locals =
       Variable.Set.union
