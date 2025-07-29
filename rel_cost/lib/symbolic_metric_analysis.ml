@@ -1,6 +1,9 @@
 open Protocols
 open Exp
 
+let proj ~(suffix:string) : Variable.t -> Variable.t =
+  Variable.update_name (fun n -> n ^ "$" ^ suffix)
+
 module Proj = struct
   (*
     The idea behind this algorithm is to take each local variable and
@@ -15,7 +18,7 @@ module Proj = struct
 
   let proj_var (x : Variable.t) (ctx : t) : Variable.t =
     if Variable.Set.mem x ctx.locals then
-      Variable.update_name (fun n -> n ^ "$" ^ ctx.suffix) x
+      proj ~suffix:ctx.suffix x
     else x
 
   let rec proj_n (n : nexp) (ctx : t) : nexp =
@@ -147,15 +150,15 @@ module Constraints = struct
         (* 1. only generate variables for warp divergent tid *)
         (* 2. use cfg.block_dim instead of variable blockDim *)
         let tid_x = (* threadIdx.x *)
-          if Config.is_warp_uniform Variable.tid_x cfg then Num 0
+          if Config.tid_x_is_warp_uniform cfg then Num 0
           else Var Variable.tid_x
         in
         let tid_y = (* blockDim.x * threadIdx.y *)
-          if Config.is_warp_uniform Variable.tid_y cfg then Num 0
+          if Config.tid_y_is_warp_uniform cfg then Num 0
           else n_mult (Var Variable.tid_y) (Num cfg.block_dim.x)
         in
         let tid_z = (* blockDim.x * blockDim.y * threadIdx.z *)
-          if Config.is_warp_uniform Variable.tid_z cfg then Num 0
+          if Config.tid_z_is_warp_uniform cfg then Num 0
           else
             n_mult (Var Variable.tid_z)
               (Num (cfg.block_dim.x * cfg.block_dim.y))
@@ -219,9 +222,7 @@ module Constraints = struct
 
             coord_generators
             |> List.map (fun (var, coord_fn) ->
-                   let tid_var =
-                     Variable.update_name (fun n -> n ^ "$" ^ suffix) var
-                   in
+                   let tid_var = proj ~suffix var in
                    let coord_expr = coord_fn thread_id in
                    n_eq (Var tid_var) coord_expr)
             |> b_and_ex)
@@ -246,7 +247,7 @@ module Constraints = struct
       ]
       |> List.filter (fun (x, _) -> not (Config.is_warp_uniform x cfg))
       |> List.map (fun (x, d) ->
-             let x = Variable.update_name (fun n -> n ^ "$" ^ suffix) x in
+             let x = proj ~suffix x in
              clamp ~lower:(Num 0) ~value:(Var x) ~upper:(Num d))
       |> b_and_ex
     in
@@ -263,68 +264,43 @@ module Constraints = struct
     b_and strategy_constraint (tid_bounds_constraint cfg)
 end
 
-let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (cond : bexp)
-    (index : nexp) : nexp =
-  let index = n_div index (Num (Config.memory_segments_bits cfg)) in
-  let index =
-    (* replicate index per each thread *)
-    Proj.run cfg.threads_per_warp locals (fun ctx ->
-        (Proj.proj_b cond ctx, Proj.proj_n index ctx))
-    (* for each replciated index *)
-    |> List.fold_left
-         (fun ((accum, visited) : nexp * (bexp * nexp) list) (p : bexp * nexp)
-            ->
-           ( n_plus (n_if (cond_dissimilar p visited) (Num 1) (Num 0)) accum,
-             p :: visited ))
-         (* total cost = 0, visited = [] *)
-         (Num 0, [])
-    |>
-    (* take only the accumulated value *)
-    fst
-  in
-  index
-
+(* Compute the warp-divergent tid list *)
 let thread_locals_list (cfg : Config.t) : Variable.t list =
   Variable.tid_list |> List.filter (fun x -> not (Config.is_warp_uniform x cfg))
 
 let thread_locals_set (cfg : Config.t) : Variable.Set.t =
   cfg |> thread_locals_list |> Variable.Set.of_list
 
-let ua ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
-    ?(generator = Constraints.default) (cfg : Config.t) (locals : Variable.Set.t)
-    (cond : bexp) (index : nexp) : int option =
-  let open Gen_z3.IntGen in
+let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (cond : bexp)
+    (index : nexp) : nexp =
   let locals =
     Variable.Set.union
       (Variable.Set.diff locals Variable.tid_set)
       (thread_locals_set cfg)
   in
+  let index = n_div index (Num (Config.memory_segments_bits cfg)) in
+  (* replicate index per each thread *)
+  Proj.run cfg.threads_per_warp locals (fun ctx ->
+      (Proj.proj_b cond ctx, Proj.proj_n index ctx))
+  (* for each replciated index *)
+  |> List.fold_left
+        (fun ((accum, visited) : nexp * (bexp * nexp) list) (p : bexp * nexp)
+          ->
+          ( n_plus (n_if (cond_dissimilar p visited) (Num 1) (Num 0)) accum,
+            p :: visited ))
+        (* total cost = 0, visited = [] *)
+        (Num 0, [])
+  |>
+  (* take only the accumulated value *)
+  fst
+
+let ua ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
+    ?(generator = Constraints.default) (cfg : Config.t) (locals : Variable.Set.t)
+    (cond : bexp) (index : nexp) : int option =
+  let open Gen_z3.IntGen in
   let formula = encode_ua cfg locals cond index in
   optimize_expr strategy ~pre:(Constraints.to_bexp generator cfg) formula
   |> Result.to_option
-
-module Comparison = struct
-  type t =
-    | Equal (* cost = expected *)
-    | LessEqual (* cost <= expected *)
-    | GreaterEqual (* cost >= expected *)
-    | Less (* cost < expected *)
-    | Greater (* cost > expected *)
-
-  let to_string : t -> string = function
-    | Equal -> "="
-    | LessEqual -> "<="
-    | GreaterEqual -> ">="
-    | Less -> "<"
-    | Greater -> ">"
-
-  let to_relation : t -> nexp -> nexp -> bexp = function
-    | Equal -> n_eq
-    | LessEqual -> n_le
-    | GreaterEqual -> n_ge
-    | Less -> n_lt
-    | Greater -> n_gt
-end
 
 module ProofResult = struct
   type t =
@@ -349,7 +325,7 @@ module Theorem = struct
     thread_context : bexp;
     global_context : bexp;
     index : nexp;
-    comparison : Comparison.t;
+    rel : N_rel.t;
     expected_cost : nexp;
   }
 
@@ -358,20 +334,13 @@ module Theorem = struct
       (b_to_string thm.thread_context)
       (b_to_string thm.global_context)
       (n_to_string thm.index)
-      (Comparison.to_string thm.comparison)
+      (N_rel.to_string thm.rel)
       (n_to_string thm.expected_cost)
 
   let prove ?(generator = Constraints.default) (thm : t) : ProofResult.t =
     let open Gen_z3.IntGen in
-    let locals =
-      Variable.Set.union
-        (Variable.Set.diff thm.locals Variable.tid_set)
-        (thread_locals_set thm.cfg)
-    in
-    let index = thm.index in
-    let actual_cost = encode_ua thm.cfg locals thm.thread_context index in
-    let comparison_fn = Comparison.to_relation thm.comparison in
-    let goal = comparison_fn actual_cost thm.expected_cost in
+    let given = encode_ua thm.cfg thm.locals thm.thread_context thm.index in
+    let goal = NRel (thm.rel, given, thm.expected_cost) in
     (* Prove that NOT(actual_cost comparison expected_cost) is UNSAT *)
     let constraint_system =
       b_and_ex
@@ -384,4 +353,15 @@ module Theorem = struct
     | Unsat -> ProofResult.Proved
     | Sat model -> ProofResult.Counterexample model
     | Unknown msg -> ProofResult.Unknown msg
+
+  let optimize_cost ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
+    ?(generator = Constraints.default) (thm : t) : int option =
+    ua
+      ~strategy
+      ~generator
+      thm.cfg
+      thm.locals
+      (b_and thm.thread_context thm.global_context)
+      thm.index
+
 end

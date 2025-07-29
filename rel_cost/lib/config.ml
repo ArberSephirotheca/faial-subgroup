@@ -20,18 +20,51 @@ let total_blocks (cfg : t) : int = Dim3.total cfg.grid_dim
 let total_threads (cfg : t) : int = Dim3.total cfg.block_dim * total_blocks cfg
 let total_warps (cfg : t) : int = total_threads cfg / cfg.threads_per_warp
 
+(* Returns true when threadIdx.x is warp uniform. *)
+let tid_x_is_warp_uniform (cfg: t) : bool =
+  cfg.block_dim.x = 1
+
+(* Returns true when threadIdx.x is warp divergent. *)
+let tid_x_is_warp_divergent (cfg: t) : bool =
+  not (tid_x_is_warp_uniform cfg)
+
+let tid_y_is_warp_uniform (cfg: t) : bool =
+  cfg.block_dim.y = 1 || cfg.block_dim.x >= cfg.threads_per_warp
+
+let tid_y_is_warp_divergent (cfg: t) : bool =
+  not (tid_y_is_warp_uniform cfg)
+
+let tid_z_is_warp_uniform (cfg: t) : bool =
+  cfg.block_dim.z = 1
+  || cfg.block_dim.x * cfg.block_dim.y >= cfg.threads_per_warp
+
+let tid_z_is_warp_divergent (cfg: t) : bool =
+  not (tid_z_is_warp_uniform cfg)
+
 (** Returns true if a threadIdx variable is warp-uniform (same value for every
     warp). *)
 let is_warp_uniform (x : Variable.t) (cfg : t) : bool =
   (* threadIdx.x is warp-local *)
-  (Variable.equal x Variable.tid_x && cfg.block_dim.x = 1)
+  (Variable.equal x Variable.tid_x && tid_x_is_warp_uniform cfg)
   (* threadIdx.y is warp-local *)
-  || Variable.equal x Variable.tid_y
-     && (cfg.block_dim.y = 1 || cfg.block_dim.x >= cfg.threads_per_warp)
+  || (Variable.equal x Variable.tid_y && tid_y_is_warp_uniform cfg)
   (* threadIdx.z is warp-local *)
-  || Variable.equal x Variable.tid_z
-     && (cfg.block_dim.z = 1
-        || cfg.block_dim.x * cfg.block_dim.y >= cfg.threads_per_warp)
+  || (Variable.equal x Variable.tid_z && tid_z_is_warp_uniform cfg)
+
+let add_when (b:bool) (x:Variable.t) (l:Variable.t list) : Variable.t list =
+  if b then x :: l else l
+
+let warp_uniform_tid_list (cfg: t) : Variable.t list =
+  []
+  |> add_when (tid_x_is_warp_uniform cfg) Variable.tid_x
+  |> add_when (tid_y_is_warp_uniform cfg) Variable.tid_y
+  |> add_when (tid_z_is_warp_uniform cfg) Variable.tid_z
+
+let warp_divergent_tid_list (cfg: t) : Variable.t list  =
+  []
+  |> add_when (tid_x_is_warp_divergent cfg) Variable.tid_x
+  |> add_when (tid_y_is_warp_divergent cfg) Variable.tid_y
+  |> add_when (tid_z_is_warp_divergent cfg) Variable.tid_z
 
 (** Returns the memory segment size in bits used for memory transaction
     granularity.

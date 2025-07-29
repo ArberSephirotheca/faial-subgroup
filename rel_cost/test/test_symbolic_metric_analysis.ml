@@ -228,7 +228,7 @@ let test_theorem_prove_exact_cost () : unit =
       thread_context = b_true;
       global_context = b_true;
       index = n_mult (Num k) (Var Variable.tid_x);
-      comparison = Comparison.Equal;
+      rel = N_rel.Eq;
       expected_cost = Num k;
     };
   ()
@@ -241,7 +241,7 @@ let test_constraints_bug1 () : unit =
     thread_context = b_true;
     global_context = b_true;
     index = n_mult (Num 2) (Var Variable.tid_x);
-    comparison = Comparison.Equal;
+    rel = N_rel.Eq;
     expected_cost = Num 2;
   } in
   

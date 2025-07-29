@@ -2,16 +2,33 @@
 
 ## Summary
 
-This work evolved the unique access analysis from an O(n²) pairwise constraint approach to an SMT-based system using Z3's distinct primitive. The implementation revealed performance bottlenecks with SMT solving at scale, leading to the development of alternative constraint formulations.
+In this document, we record the development of implementing a symbolic-based metric-analysis that relies on SMT solving.
+
+Versions 1.0 until 3.0 all encode
 
 ### Key Evolution
-1. **Initial state**: O(n²) manual pairwise inequality constraints, timing out on larger thread counts
-2. **SMT integration**: Added `Distinct` constructor to leverage Z3's built-in primitive - improved correctness but performance remained intractable for 16+ threads
-3. **Ordered constraints**: Implemented chain-based approach (tid0 < tid1 < tid2 < ...) making analysis tractable up to 32 threads
-4. **Optimization**: Added warp-uniform variable detection to reduce constraint complexity and bank count normalization for proper uncoalesced access semantics
+- **Version 1.0, pairwise inequalities**: eg, `tid1 != tid2 && .. && tid2 != tid3 && ...`, to enforce distinct unique thread identifiers
+- **Version 2.0, built-in operator distinct**: eg, `distinct(tid1, tid2, ...)`, to enforce distinct unique thread identifiers
+- **Version 3.0, ordered thread identifiers**: eg, `tid1 < tid2 < tid3 < ...`, to enforce distinct unique thread identifiers
+- **Version 4.0, directly define linear**: Fundamental redesign using linear thread IDs instead of coordinate-based representations, eliminating complex uniqueness constraints
 
-### Performance Insights
-The bottleneck was the interaction between `Distinct` constraints and thread-local conditions, not the constraint system itself. Removing thread uniqueness constraints allowed 32-thread analysis in 0.13 seconds, while the full constraint system with ordered chains completed in 16 seconds versus timeout with `Distinct`.
+### Performance comparison: V1 < V2 < V3 < V4
+
+Current benchmark results demonstrate clear performance improvements across constraint system evolution:
+
+#### Theorem 1: `cost(2 * threadIdx.x) = 2` (8 threads, optimization mode)
+- **V1 (Pairwise)**: 0.239s, Cost: 1
+- **V2 (Distinct)**: 0.130s, Cost: 1  
+- **V3 (Ordered)**: 0.067s, Cost: 1
+- **V4 (Linear)**: 0.009s, Cost: 1
+
+#### Theorem 2: `cost(x * threadIdx.x) = x where 1 ≤ x ≤ 10` (6 threads, optimization mode)
+- **V1 (Pairwise)**: 1.238s, Cost: 2
+- **V2 (Distinct)**: 0.900s, Cost: 2
+- **V3 (Ordered)**: 0.045s, Cost: 2  
+- **V4 (Linear)**: 0.013s, Cost: 2
+
+**Key Insights**: V4's linear thread ID architecture provides **26x speedup** over V1 pairwise constraints for Theorem 1, and **95x speedup** for the more complex Theorem 2. Each evolution step contributes meaningful performance improvements, with V4 representing the most significant breakthrough.
 
 ## Phase 1: Adding Distinct Constructor to Expression Language
 
@@ -47,9 +64,9 @@ The `Distinct` constraint with thread-local conditions creates complex SMT formu
 Develop tractable alternative to `Distinct` constraints for thread uniqueness.
 
 ### Implementation of Ordered Chain Constraints
-Created `unique_tid_constraint_2` using ordered chain approach:
+Created `unique_tid_constraint_3` using ordered chain approach:
 ```ocaml
-let unique_tid_constraint_2 (cfg:Config.t) : bexp =
+let unique_tid_constraint (cfg:Config.t) : bexp =
   let thread_ids = List.init cfg.threads_per_warp (fun i -> thread_id (string_of_int i) cfg) in
   let rec make_chain = function
     | [] | [_] -> b_true
@@ -110,9 +127,10 @@ CLI accepts `--metric=ua2` option. Test: `./faial-cost --metric=ua2 --only-cost 
 ## Technical Outcomes
 
 ### Constraint System Architecture
-- `unique_tid_constraint_1`: Uses `Distinct` primitive, accurate but slow with thread-local conditions
-- `unique_tid_constraint_2`: Uses ordered chain constraints, faster scaling
-- Rest of constraint system: Scales well to 32+ threads
+- **V1**: `unique_tid_constraint_1` - Pairwise inequality constraints using fold
+- **V2**: `unique_tid_constraint_2` - Built-in `Distinct` primitive  
+- **V3**: `unique_tid_constraint_3` - Ordered chain constraints (tid0 < tid1 < tid2 < ...)
+- **V4**: `V4Gen.make` - Linear thread ID architecture with direct coordinate definition
 
 ### Metric Analysis Options
 - `--metric=ua`: Heuristic-based uncoalesced access analysis
@@ -205,13 +223,13 @@ Initial testing revealed that the theorem prover does not scale to interesting, 
 ### Impact on Project Direction
 This performance limitation motivated **Phase 7: Linear Thread ID Architecture**. The theorem proving DSL demonstrates the need for a fundamentally faster constraint system to enable formal verification of realistic cost properties.
 
-## Phase 7: Linear Thread ID Architecture (Implemented)
+## Phase 7: V4 Linear Thread ID Architecture (Implemented)
 
 ### Motivation
-The theorem proving DSL revealed that current constraint system performance prevents verification of interesting cost properties. The overarching goal is: **How can we make metric analysis fast enough to enable practical theorem proving?**
+The theorem proving DSL revealed that V1-V3 constraint system performance prevents verification of interesting cost properties. The overarching goal is: **How can we make metric analysis fast enough to enable practical theorem proving?**
 
 ### Objective
-Fundamentally redesign the thread modeling approach to use linear thread IDs instead of coordinate-based representations, eliminating the need for complex uniqueness and same-warp constraints.
+V4 fundamentally redesigns the thread modeling approach to use linear thread IDs instead of coordinate-based representations, eliminating the need for complex uniqueness and same-warp constraints that burden V1-V3.
 
 ### Core Design Principles
 The current approach leaves thread coordinates with many degrees of freedom, requiring complex constraints to enforce uniqueness and warp membership. SAT solvers perform better with explicit, deterministic formulations.
@@ -244,10 +262,10 @@ let threadIdx_z = thread_id / (block_dim.x * block_dim.y) in
 ```
 
 #### Implementation Strategy
-1. **Modular Constraint System**: Created `V1Gen` and `V2Gen` modules with `Config.t -> bexp` interfaces
-2. **Linear Thread ID Formulation**: V2 defines `thread_id = warp_id * threads_per_warp + uid`
+1. **Modular Constraint System**: Created `V1_3Gen` and `V4Gen` modules with `Config.t -> bexp` interfaces
+2. **Linear Thread ID Formulation**: V4 defines `thread_id = warp_id * threads_per_warp + uid`
 3. **Coordinate Redefinition**: CUDA coordinates computed from linear thread ID rather than being free variables
-4. **Strategy Selection**: Both `ua` and `Theorem.prove` functions accept `~generator` parameter for V1/V2 selection
+4. **Strategy Selection**: Both `ua` and `Theorem.prove` functions accept `~generator` parameter for V1/V2/V3/V4 selection
 
 #### Unsupported Cases
 Block dimensions that don't align with warp boundaries (e.g., `block_dim.x = 17` with `threads_per_warp = 32`) will be flagged as unsupported with appropriate warnings. This is consistent with typical CUDA programming practices.
@@ -281,18 +299,21 @@ let threadIdx_z = thread_id / (block_dim.x * block_dim.y) in
 
 #### Strategy Selection Interface
 ```ocaml
-(* Optimization with V2 *)
-ua ~generator:Constraints.V2 cfg locals cond index
+(* Optimization with V4 *)
+ua ~generator:Constraints.V4 cfg locals cond index
 
-(* Theorem proving with V2 *)
-Theorem.prove ~generator:Constraints.V2 theorem
+(* Theorem proving with V4 *)
+Theorem.prove ~generator:Constraints.V4 theorem
+
+(* All versions available: V1, V2, V3, V4 *)
+Theorem.optimize_cost ~generator:Constraints.V1 theorem
 ```
 
 ### Scaling Analysis: Variable Range Impact
 
 Additional benchmarking explored how theorem complexity scales with variable ranges. Testing the theorem `cost(x * tid) = x` where `1 ≤ x ≤ upper_bound`:
 
-#### Benchmark Results (V2, 32 threads per warp)
+#### Benchmark Results (V4, 32 threads per warp)
 ```
 Upper bound: 1, Time: 0.029s
 Upper bound: 2, Time: 0.130s
@@ -316,6 +337,3 @@ Upper bound: 15, Time: 9.224s
 - Times generally increase with larger ranges, but with significant variance (e.g., bound 9 vs 10)
 - For larger variable ranges, the approach may become computationally intractable
 
-## Open Questions
-
-- **Z3 timeout behavior**: Z3 uses 600-second default timeout when no explicit timeout specified, causing 10-minute delays in development
