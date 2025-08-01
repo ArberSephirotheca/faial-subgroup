@@ -235,33 +235,32 @@ let test_theorem_prove_exact_cost () : unit =
 
 let test_constraints_bug1 () : unit =
   let cfg = make_config 4 in
-  let theorem = {
-    Theorem.cfg;
-    locals = Variable.Set.empty;
-    thread_context = b_true;
-    global_context = b_true;
-    index = n_mult (Num 2) (Var Variable.tid_x);
-    rel = N_rel.Eq;
-    expected_cost = Num 2;
-  } in
-  
+  let theorem =
+    {
+      Theorem.cfg;
+      locals = Variable.Set.empty;
+      thread_context = b_true;
+      global_context = b_true;
+      index = n_mult (Num 2) (Var Variable.tid_x);
+      rel = N_rel.Eq;
+      expected_cost = Num 2;
+    }
+  in
+
   (* Test all constraint versions - they should all behave consistently *)
-  Constraints.values |> List.iter (fun v ->
-    (* Check that we get a counterexample, not a proof *)
-    match Theorem.prove ~generator:v theorem with
-    | ProofResult.Counterexample _ -> () (* This is what we expect *)
-    | p ->
-        let msg =
-          Printf.sprintf "Expecting counterexample from %s but got %s\n%s"
-            (Constraints.to_string v)
-            (ProofResult.to_string p)
-            (Constraints.to_bexp v cfg
-              |> Exp.b_and_split
-              |> List.map Exp.b_to_string
-              |> String.concat "\n&&")
-        in
-        Alcotest.fail msg
-  )
+  Constraints.values
+  |> List.iter (fun v ->
+         (* Check that we get a counterexample, not a proof *)
+         match Theorem.prove ~generator:v theorem with
+         | ProofResult.Counterexample _ -> () (* This is what we expect *)
+         | p ->
+             let msg =
+               Printf.sprintf "Expecting counterexample from %s but got %s\n%s"
+                 (Constraints.to_string v) (ProofResult.to_string p)
+                 (Constraints.to_bexp v cfg |> Exp.b_and_split
+                |> List.map Exp.b_to_string |> String.concat "\n&&")
+             in
+             Alcotest.fail msg)
 
 let tests : unit Alcotest.test_case list =
   [

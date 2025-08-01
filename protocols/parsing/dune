@@ -1,0 +1,7 @@
+(menhir (modules tactics_parser))
+
+(ocamllex tactics_lexer)
+
+(library
+ (name protocols_parser)
+ (libraries stage0 protocols))

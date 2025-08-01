@@ -4,8 +4,6 @@
 
 In this document, we record the development of implementing a symbolic-based metric-analysis that relies on SMT solving.
 
-Versions 1.0 until 3.0 all encode
-
 ### Key Evolution
 - **Version 1.0, pairwise inequalities**: eg, `tid1 != tid2 && .. && tid2 != tid3 && ...`, to enforce distinct unique thread identifiers
 - **Version 2.0, built-in operator distinct**: eg, `distinct(tid1, tid2, ...)`, to enforce distinct unique thread identifiers

@@ -1,6 +1,6 @@
 (lang dune 3.17)
 (cram enable)
-
+(using menhir 2.0)
 ; Generate opam files automatically
 (generate_opam_files true)
 

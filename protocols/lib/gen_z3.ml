@@ -154,6 +154,11 @@ module Solver = struct
 
   type t = Sat of Model.model | Unsat | Unknown of string
 
+  let to_string : t -> string = function
+    | Sat m -> Printf.sprintf "SAT(%s)" (Model.to_string m)
+    | Unsat -> "UNSAT"
+    | Unknown s -> Printf.sprintf "UNKNOWN(%s)" s
+
   let run (solver : Solver.solver) : t =
     match Solver.check solver [] with
     | SATISFIABLE -> (
@@ -166,6 +171,139 @@ module Solver = struct
                   configuration"))
     | UNSATISFIABLE -> Unsat
     | UNKNOWN -> Unknown (Solver.get_reason_unknown solver)
+end
+
+module Params = struct
+  module Value = struct
+    type t = Bool of bool | Int of int | Float of float | String of string
+
+    let to_string : t -> string = function
+      | Bool true -> "true"
+      | Bool false -> "false"
+      | Int i -> string_of_int i
+      | Float f -> string_of_float f
+      | String s -> s
+
+    let add_param (ctx : Z3.context) (params : Z3.Params.params) (name : string)
+        : t -> unit = function
+      | Bool b -> Z3.Params.add_bool params (Z3.Symbol.mk_string ctx name) b
+      | Int i -> Z3.Params.add_int params (Z3.Symbol.mk_string ctx name) i
+      | Float f -> Z3.Params.add_float params (Z3.Symbol.mk_string ctx name) f
+      | String s ->
+          Z3.Params.add_symbol params
+            (Z3.Symbol.mk_string ctx name)
+            (Z3.Symbol.mk_string ctx s)
+  end
+
+  type t = (string * Value.t) list
+
+  let to_z3 (ctx : Z3.context) (param_list : t) : Z3.Params.params =
+    let z3_params = Z3.Params.mk_params ctx in
+    List.iter
+      (fun (name, value) -> Value.add_param ctx z3_params name value)
+      param_list;
+    z3_params
+
+  let to_string (param_list : t) : string =
+    param_list
+    |> List.map (fun (name, value) ->
+           Printf.sprintf "%s=%s" name (Value.to_string value))
+    |> String.concat ", " |> Printf.sprintf "{%s}"
+end
+
+module Probe = struct
+  type t =
+    | Probe of string
+    | Const of float
+    | And of { left : t; right : t }
+    | Or of { left : t; right : t }
+    | Not of t
+
+  let rec to_z3 (ctx : Z3.context) : t -> Z3.Probe.probe = function
+    | Const f -> Z3.Probe.const ctx f
+    | Probe name -> Z3.Probe.mk_probe ctx name
+    | And { left; right } ->
+        Z3.Probe.and_ ctx (to_z3 ctx left) (to_z3 ctx right)
+    | Or { left; right } -> Z3.Probe.or_ ctx (to_z3 ctx left) (to_z3 ctx right)
+    | Not probe -> Z3.Probe.not_ ctx (to_z3 ctx probe)
+
+  let rec to_string : t -> string = function
+    | Const f -> Printf.sprintf "%f" f
+    | Probe name -> Printf.sprintf "(probe \"%s\")" name
+    | And { left; right } ->
+        Printf.sprintf "(and %s %s)" (to_string left) (to_string right)
+    | Or { left; right } ->
+        Printf.sprintf "(or %s %s)" (to_string left) (to_string right)
+    | Not probe -> Printf.sprintf "(not %s)" (to_string probe)
+end
+
+module Tactic = struct
+  type t =
+    | Tactic of string
+    | AndThen of { first : t; second : t }
+    | OrElse of { first : t; fallback : t }
+    | TryFor of { timeout_ms : int; body : t }
+    | Repeat of { body : t; max_iterations : int }
+    | ParOr of t list
+    | ParAndThen of { first : t; second : t }
+    | Cond of { probe : Probe.t; then_tactic : t; else_tactic : t }
+    | FailIfNotDecided
+    | UsingParams of { params : Params.t; body : t }
+    | Skip
+    | Fail
+
+  let and_then (first : t) (second : t) : t =
+    match first with Skip -> second | _ -> AndThen { first; second }
+
+  let and_then_ex (l : t list) : t = l |> List.fold_left and_then Skip
+
+  let rec to_z3 (ctx : Z3.context) : t -> Z3.Tactic.tactic = function
+    | Tactic name -> Z3.Tactic.mk_tactic ctx name
+    | AndThen { first; second } ->
+        Z3.Tactic.and_then ctx (to_z3 ctx first) (to_z3 ctx second) []
+    | OrElse { first; fallback } ->
+        Z3.Tactic.or_else ctx (to_z3 ctx first) (to_z3 ctx fallback)
+    | TryFor { timeout_ms; body } ->
+        Z3.Tactic.try_for ctx (to_z3 ctx body) timeout_ms
+    | Repeat { body; max_iterations } ->
+        Z3.Tactic.repeat ctx (to_z3 ctx body) max_iterations
+    | ParOr tactics -> Z3.Tactic.par_or ctx (List.map (to_z3 ctx) tactics)
+    | ParAndThen { first; second } ->
+        Z3.Tactic.par_and_then ctx (to_z3 ctx first) (to_z3 ctx second)
+    | Cond { probe; then_tactic; else_tactic } ->
+        Z3.Tactic.cond ctx (Probe.to_z3 ctx probe) (to_z3 ctx then_tactic)
+          (to_z3 ctx else_tactic)
+    | FailIfNotDecided -> Z3.Tactic.fail_if_not_decided ctx
+    | UsingParams { params; body } ->
+        Z3.Tactic.using_params ctx (to_z3 ctx body) (Params.to_z3 ctx params)
+    | Skip -> Z3.Tactic.skip ctx
+    | Fail -> Z3.Tactic.fail ctx
+
+  let rec to_string : t -> string = function
+    | Tactic name -> Printf.sprintf "(tactic \"%s\")" name
+    | AndThen { first; second } ->
+        Printf.sprintf "(and-then %s %s)" (to_string first) (to_string second)
+    | OrElse { first; fallback } ->
+        Printf.sprintf "(or-else %s %s)" (to_string first) (to_string fallback)
+    | TryFor { timeout_ms; body } ->
+        Printf.sprintf "(try-for %d %s)" timeout_ms (to_string body)
+    | Repeat { body; max_iterations } ->
+        Printf.sprintf "(repeat %s %d)" (to_string body) max_iterations
+    | ParOr tactics ->
+        let tactics_str = String.concat " " (List.map to_string tactics) in
+        Printf.sprintf "(par-or %s)" tactics_str
+    | ParAndThen { first; second } ->
+        Printf.sprintf "(par-and-then %s %s)" (to_string first)
+          (to_string second)
+    | Cond { probe; then_tactic; else_tactic } ->
+        Printf.sprintf "(cond %s %s %s)" (Probe.to_string probe)
+          (to_string then_tactic) (to_string else_tactic)
+    | FailIfNotDecided -> "fail-if-not-decided"
+    | UsingParams { params; body } ->
+        Printf.sprintf "(using-params %s %s)" (Params.to_string params)
+          (to_string body)
+    | Skip -> "skip"
+    | Fail -> "fail"
 end
 
 module Optimizer = struct
@@ -200,6 +338,13 @@ module Optimizer = struct
                   configuration"))
     | UNSATISFIABLE -> Unsat
     | UNKNOWN -> Unknown (Optimize.get_reason_unknown opt)
+end
+
+module type Z3_SOLVER = sig
+  val solve : ?timeout:int -> Exp.bexp -> Solver.t
+
+  val solve_with_tactic :
+    ?timeout:int -> ?debug:bool -> Tactic.t -> Exp.bexp -> Solver.t
 end
 
 module CodeGen (N : NUMERIC_OPS) = struct
@@ -327,6 +472,60 @@ module CodeGen (N : NUMERIC_OPS) = struct
     let solver = Z3.Solver.mk_solver ctx None in
     Z3.Solver.add solver [ b_to_expr ctx pre ];
     Solver.run solver
+
+  let solve_with_tactic ?(timeout = 0) ?(debug = false) (tactic : Tactic.t)
+      (pre : Exp.bexp) : Solver.t =
+    let args =
+      if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
+    in
+    let ctx = Z3.mk_context args in
+    let constraints = [ b_to_expr ctx pre ] in
+
+    if debug then
+      (* Debugging mode: Manual goal/tactic application for detailed info *)
+      try
+        let goal = Z3.Goal.mk_goal ctx true false false in
+        List.iter
+          (fun constraint_expr -> Z3.Goal.add goal [ constraint_expr ])
+          constraints;
+        let z3_tactic = Tactic.to_z3 ctx tactic in
+        match Z3.Tactic.apply z3_tactic goal None with
+        | apply_result ->
+            let subgoals = Z3.Tactic.ApplyResult.get_subgoals apply_result in
+            let num_subgoals = List.length subgoals in
+            if num_subgoals = 0 then (
+              (* No subgoals means the goal was solved to true (tautology) *)
+              (* Create a simple solver to get an empty model *)
+              let temp_solver = Z3.Solver.mk_solver ctx None in
+              Z3.Solver.add temp_solver [ Z3.Boolean.mk_true ctx ];
+              Solver.run temp_solver)
+            else if num_subgoals = 1 then (
+              (* One subgoal - check if it's satisfiable *)
+              let subgoal = List.hd subgoals in
+              let solver = Z3.Solver.mk_solver ctx None in
+              let exprs = Z3.Goal.get_formulas subgoal in
+              Z3.Solver.add solver exprs;
+              Solver.run solver)
+            else
+              (* Multiple subgoals - provide detailed error *)
+              Solver.Unknown
+                ("Tactic '" ^ Tactic.to_string tactic ^ "' produced "
+               ^ string_of_int num_subgoals ^ " subgoals")
+      with Z3.Error msg ->
+        (* Z3 tactic failure - convert to proper Unknown result *)
+        Solver.Unknown
+          ("Tactic '" ^ Tactic.to_string tactic ^ "' failed: " ^ msg)
+    else
+      (* Production mode: Direct tactic-to-solver conversion *)
+      try
+        let z3_tactic = Tactic.to_z3 ctx tactic in
+        let solver = Z3.Solver.mk_solver_t ctx z3_tactic in
+        Z3.Solver.add solver constraints;
+        Solver.run solver
+      with Z3.Error msg ->
+        (* Z3 tactic creation/solving failure *)
+        Solver.Unknown
+          ("Tactic '" ^ Tactic.to_string tactic ^ "' failed: " ^ msg)
 end
 
 module SignedBitVectorOps (W : WordSize) = struct

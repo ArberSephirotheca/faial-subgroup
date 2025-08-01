@@ -75,6 +75,35 @@ let test_optimize_expr_with_timeout () : unit =
     Alcotest.(result int string)
     "maximize with timeout" (Ok 7) result
 
+let test_tactic_fail () : unit =
+  (* Test Fail tactic in debugging mode - should always fail with detailed info *)
+  let tautology = Bool true in
+  [ true; false ]
+  |> List.iter (fun debug ->
+         let result = IntGen.solve_with_tactic ~debug Tactic.Fail tautology in
+         let open Solver in
+         match result with
+         | Unknown _ -> ()
+         | e ->
+             Printf.sprintf "debug=%b, unexpected: %s" debug
+               (Solver.to_string e)
+             |> Alcotest.fail)
+
+let test_tactic_skip () : unit =
+  (* Test Skip tactic in production mode - should solve tautology *)
+  let tautology = Bool true in
+  [ true; false ]
+  |> List.iter (fun debug ->
+         let result = IntGen.solve_with_tactic ~debug Tactic.Skip tautology in
+         match result with
+         | Solver.Sat _ ->
+             ()
+             (* Expected - skip should leave goal unchanged, tautology should be sat *)
+         | e ->
+             Printf.sprintf "debug=%b, unexpected: %s" debug
+               (Solver.to_string e)
+             |> Alcotest.fail)
+
 let tests : unit Alcotest.test_case list =
   [
     ("optimize_expr_simple", `Quick, test_optimize_expr_simple);
@@ -87,6 +116,8 @@ let tests : unit Alcotest.test_case list =
     ("optimize_expr_unsat", `Quick, test_optimize_expr_unsat);
     ("optimize_expr_multiplication", `Quick, test_optimize_expr_multiplication);
     ("optimize_expr_with_timeout", `Quick, test_optimize_expr_with_timeout);
+    ("tactic_fail", `Quick, test_tactic_fail);
+    ("tactic_skip", `Quick, test_tactic_skip);
   ]
 
 let () = Alcotest.run "Gen_z3" [ ("test_gen_z3", tests) ]
