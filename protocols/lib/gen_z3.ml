@@ -159,8 +159,7 @@ module Solver = struct
     | Unsat -> "UNSAT"
     | Unknown s -> Printf.sprintf "UNKNOWN(%s)" s
 
-  let run (solver : Solver.solver) : t =
-    match Solver.check solver [] with
+  let of_status (solver : Z3.Solver.solver) : Z3.Solver.status -> t = function
     | SATISFIABLE -> (
         match Solver.get_model solver with
         | Some model -> Sat model
@@ -171,6 +170,9 @@ module Solver = struct
                   configuration"))
     | UNSATISFIABLE -> Unsat
     | UNKNOWN -> Unknown (Solver.get_reason_unknown solver)
+
+  let run (solver : Solver.solver) : t =
+    Solver.check solver [] |> of_status solver
 end
 
 module Params = struct
@@ -304,6 +306,51 @@ module Tactic = struct
           (to_string body)
     | Skip -> "skip"
     | Fail -> "fail"
+end
+
+module Debugger = struct
+  type goal = Z3.Goal.goal
+  type t = goal list
+
+  let make (goal : goal) : t = [ goal ]
+
+  let to_string (l : t) : string =
+    l |> List.map Z3.Goal.to_string |> String.concat " ∨ "
+    |> Printf.sprintf "(goals %s)"
+
+  let apply (tactic : Z3.Tactic.tactic) (goal : goal) : t =
+    Z3.Tactic.apply tactic goal None
+    (* Convert apply_result to list of subgoals *)
+    |> Z3.Tactic.ApplyResult.get_subgoals
+
+  let apply_all (tactic : Z3.Tactic.tactic) : goal list -> goal list =
+    List.concat_map (apply tactic)
+
+  let check (solver : Z3.Solver.solver) (goals : t) : Z3.Solver.status =
+    goals |> List.map Z3.Goal.get_formulas |> List.iter (Z3.Solver.add solver);
+    Z3.Solver.check solver []
+
+  let step (ctx : Z3.context) (state : t) : Tactic.t -> Tactic.t list * t =
+    function
+    | AndThen { first; second } -> ([ first; second ], state)
+    | p ->
+        let p = Tactic.to_z3 ctx p in
+        ([], apply_all p state)
+
+  let debug (ctx : Z3.context) (solver : Z3.Solver.solver) :
+      Z3.Expr.expr -> Tactic.t -> Z3.Solver.status =
+    let rec iter (goals : t) (prog : Tactic.t list) : Z3.Solver.status =
+      match prog with
+      | [] -> check solver goals
+      | tac :: prog ->
+          let prog', state = step ctx goals tac in
+          print_endline (to_string state);
+          iter state (prog' @ prog)
+    in
+    fun expr tac ->
+      let goal = Z3.Goal.mk_goal ctx true false false in
+      Z3.Goal.add goal [ expr ];
+      iter [ goal ] [ tac ]
 end
 
 module Optimizer = struct
@@ -463,8 +510,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Unsat -> Error "unsat"
     | Unknown m -> Error m
 
-  let solve ?(timeout = 0) (* By default no timeout is given *) (pre : Exp.bexp)
-      : Solver.t =
+  let solve ?(timeout = 0) (pre : Exp.bexp) : Solver.t =
     let args =
       if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
     in
@@ -479,17 +525,18 @@ module CodeGen (N : NUMERIC_OPS) = struct
       if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
     in
     let ctx = Z3.mk_context args in
-    let constraints = [ b_to_expr ctx pre ] in
+    let goal = b_to_expr ctx pre in
 
     if debug then
       (* Debugging mode: Manual goal/tactic application for detailed info *)
       try
-        let goal = Z3.Goal.mk_goal ctx true false false in
-        List.iter
-          (fun constraint_expr -> Z3.Goal.add goal [ constraint_expr ])
-          constraints;
+        let solver = Z3.Solver.mk_solver ctx None in
+        Debugger.debug ctx solver goal tactic |> Solver.of_status solver
+        (*
+        let z3_goal = Z3.Goal.mk_goal ctx true false false in
+        Z3.Goal.add z3_goal [goal];
         let z3_tactic = Tactic.to_z3 ctx tactic in
-        match Z3.Tactic.apply z3_tactic goal None with
+        match Z3.Tactic.apply z3_tactic z3_goal None with
         | apply_result ->
             let subgoals = Z3.Tactic.ApplyResult.get_subgoals apply_result in
             let num_subgoals = List.length subgoals in
@@ -511,6 +558,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
               Solver.Unknown
                 ("Tactic '" ^ Tactic.to_string tactic ^ "' produced "
                ^ string_of_int num_subgoals ^ " subgoals")
+          *)
       with Z3.Error msg ->
         (* Z3 tactic failure - convert to proper Unknown result *)
         Solver.Unknown
@@ -520,7 +568,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
       try
         let z3_tactic = Tactic.to_z3 ctx tactic in
         let solver = Z3.Solver.mk_solver_t ctx z3_tactic in
-        Z3.Solver.add solver constraints;
+        Z3.Solver.add solver [ goal ];
         Solver.run solver
       with Z3.Error msg ->
         (* Z3 tactic creation/solving failure *)

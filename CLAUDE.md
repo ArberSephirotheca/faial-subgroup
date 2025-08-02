@@ -341,3 +341,98 @@ This work log documents the major evolution of the unique access analysis system
 - `ua`: Main SMT-based unique access analysis function with bank count normalization
 
 **Open issues**: Z3 timeout behavior, config field for array elements (should be separate from bank_count, initialized to 32)
+
+## OCaml Programming Style Guidelines
+
+When writing OCaml code for this project, follow these style preferences observed in the codebase:
+
+### Module Design Patterns
+
+1. **Functor-Based Abstraction**: Use functors to parameterize modules and eliminate code duplication
+   - Example: `module Make (P: PARSER) = struct ... end` for reusable parsing infrastructure
+   - Example: `module CodeGen (N : NUMERIC_OPS) = struct ... end` for different numeric backends
+
+2. **Module Type First**: Define clean module signatures before implementation
+   - Keep signatures minimal and focused: `type t`, core functions, and necessary exceptions
+   - Example: `PARSER` signature with just `type t`, `exception Parsing_error`, and `val parse`
+
+3. **Inline Module Implementation**: Use inline struct definitions for simple instantiations
+   ```ocaml
+   module TacticParser = Make (struct
+     type t = Tactic.t
+     exception Parsing_error = Tactics_parser.Error
+     let parse = Tactics_parser.main Tactics_lexer.read
+   end)
+   ```
+
+### Function Design Patterns
+
+1. **Pipeline-Friendly Functions**: Design functions to work well with `|>` operator
+   ```ocaml
+   let of_string (input : string) : (P.t, string) Result.t =
+     input
+     |> Lexing.from_string
+     |> parse
+   ```
+
+2. **Conventional Naming**: Follow OCaml naming conventions for conversion functions
+   - `of_string`, `of_channel`, `of_filename` for creating values from different sources
+   - `to_string`, `to_z3` for converting values to different representations
+
+3. **Optional Parameters with Defaults**: Use optional parameters with clear defaults
+   - `?(filename=None)` for optional file context
+   - `?(timeout = 0)` for optional timeouts
+   - `?(debug = false)` for optional debugging modes
+
+### Error Handling Patterns
+
+1. **Result Types**: Prefer `Result.t` over exceptions for expected failures
+   - Use `(Success_type, string) Result.t` pattern consistently
+   - Convert exceptions to Result types at API boundaries
+
+2. **Informative Error Messages**: Include context in error messages
+   - File locations: `"in file '%s' at line %d, column %d"`
+   - Operation context: `"Lexer error in file '%s': %s"`
+   - Error categorization: distinguish parse errors, lexer errors, file errors
+
+3. **Exception Hierarchies**: Use exception aliasing to maintain clean interfaces
+   - `exception Parsing_error = Tactics_parser.Error` to abstract underlying parser details
+
+### Type Definition Patterns
+
+1. **Record Types with Named Fields**: Use descriptive field names in records
+   ```ocaml
+   type t = { name : string; description : string; tactic : Tactic.t option }
+   ```
+
+2. **Variant Types with Context**: Include necessary data in variant constructors
+   ```ocaml
+   | AndThen of { first : t; second : t }
+   | UsingParams of { params : Params.t; body : t }
+   ```
+
+3. **Type Aliases for Clarity**: Use type aliases to clarify domain concepts
+   ```ocaml
+   type goal = Z3.Goal.goal
+   type t = goal list
+   ```
+
+### Code Organization Patterns
+
+1. **Helper Functions Last**: Put main API functions first, helper functions after
+2. **Logical Grouping**: Group related functions together (all parsing functions, all conversion functions)
+3. **Module Nesting**: Use nested modules for related functionality (e.g., `Params.Value` module)
+
+### Documentation Style
+
+1. **Inline Comments for Complex Logic**: Add comments for non-obvious algorithmic choices
+2. **Type Annotations on Public Functions**: Always annotate return types for module interfaces
+3. **Example Usage**: Include example patterns in comments for complex APIs
+
+### Debugging and Development
+
+1. **Debug Parameters**: Include optional debug parameters in functions that might need debugging
+2. **Informative Debug Output**: Use structured debug output that shows state transitions
+3. **Graceful Degradation**: Allow systems to continue working when debug/optional features fail
+
+These patterns emphasize clarity, reusability, and maintainability while following standard OCaml idioms.

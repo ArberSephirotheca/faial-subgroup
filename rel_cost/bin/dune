@@ -6,4 +6,4 @@
 (executable
  (public_name benchmark_tactics)
  (name benchmark_tactics)
- (libraries rel_cost protocols protocols_parser cmdliner unix))
+ (libraries rel_cost protocols protocols_parsing cmdliner unix))

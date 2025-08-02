@@ -13,7 +13,7 @@ let thm1 (cfg : Config.t) : Theorem.t =
   {
     cfg;
     locals = Variable.Set.empty;
-    thread_context = b_true;
+    local_context = b_true;
     global_context = b_true;
     index = n_mult (Num 2) (Var Variable.tid_x);
     (* 2 * tid *)
@@ -27,7 +27,7 @@ let thm2 (cfg : Config.t) : Theorem.t =
   {
     cfg;
     locals = Variable.Set.empty;
-    thread_context = b_true;
+    local_context = b_true;
     global_context = opt;
     index = n_mult x (Var Variable.tid_x);
     rel = N_rel.Eq;
@@ -47,7 +47,7 @@ let thm3 (cfg : Config.t) : Theorem.t =
   {
     cfg;
     locals = Variable.Set.empty;
-    thread_context = b_true;
+    local_context = b_true;
     global_context = opt;
     index = n_mult x (Var Variable.tid_x);
     rel = N_rel.Eq;

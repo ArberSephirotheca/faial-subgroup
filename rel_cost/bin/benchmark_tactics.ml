@@ -4,7 +4,7 @@ open Protocols.Gen_z3
 open Exp
 open Cmdliner
 open Symbolic_metric_analysis
-module Parsers = Protocols_parser.Parsers
+open Protocols_parsing.Parsers
 
 (* Factory function for Config objects *)
 let make_config (threads_per_warp : int) (block_dim : Dim3.t) : Config.t =
@@ -17,7 +17,7 @@ let thm2 (cfg : Config.t) : Theorem.t =
   {
     cfg;
     locals = Variable.Set.empty;
-    thread_context = b_true;
+    local_context = b_true;
     global_context = opt;
     index = n_mult x (Var Variable.tid_x);
     rel = N_rel.Eq;
@@ -25,7 +25,7 @@ let thm2 (cfg : Config.t) : Theorem.t =
   }
 
 let parse (s : string) : Tactic.t option =
-  Some (match Parsers.parse_string s with Ok e -> e | Error e -> failwith e)
+  Some (match TacticParser.of_string s with Ok e -> e | Error e -> failwith e)
 
 (* Define different tactic strategies to benchmark *)
 module TacticStrategy = struct
@@ -142,7 +142,13 @@ module TacticStrategy = struct
       tactic =
         parse
           {|
-        if (is-qfbv) {
+                      solve-eqs;
+                       bit-blast;
+                       aig;
+                       sat;
+      |};
+      (*
+              if (is-qfbv) {
           qfbv;
         } else if (is-qflia) {
           qflia;
@@ -151,7 +157,7 @@ module TacticStrategy = struct
           bit-blast;
           sat;
         }
-      |};
+*)
     }
 
   let t1 =
@@ -273,7 +279,7 @@ let benchmark_tactic ~(solver_backend : SolverBackend.t)
   let solver_module = SolverBackend.to_module solver_backend in
   let time, result =
     time_it (fun () ->
-        Theorem.prove ~solver:solver_module ~debug:true ~tactic:strategy.tactic
+        Theorem.prove ~solver:solver_module ~debug:false ~tactic:strategy.tactic
           theorem)
   in
   (time, result)

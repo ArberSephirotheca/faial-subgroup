@@ -225,7 +225,7 @@ let test_theorem_prove_exact_cost () : unit =
     {
       cfg;
       locals = Variable.Set.empty;
-      thread_context = b_true;
+      local_context = b_true;
       global_context = b_true;
       index = n_mult (Num k) (Var Variable.tid_x);
       rel = N_rel.Eq;
@@ -239,7 +239,7 @@ let test_constraints_bug1 () : unit =
     {
       Theorem.cfg;
       locals = Variable.Set.empty;
-      thread_context = b_true;
+      local_context = b_true;
       global_context = b_true;
       index = n_mult (Num 2) (Var Variable.tid_x);
       rel = N_rel.Eq;

@@ -314,7 +314,7 @@ module Theorem = struct
   type t = {
     cfg : Config.t;
     locals : Variable.Set.t;
-    thread_context : bexp;
+    local_context : bexp;
     global_context : bexp;
     index : nexp;
     rel : N_rel.t;
@@ -322,8 +322,8 @@ module Theorem = struct
   }
 
   let to_string (thm : t) : string =
-    Printf.sprintf "thread=%s; global=%s |- cost(%s) %s %s"
-      (b_to_string thm.thread_context)
+    Printf.sprintf "local=%s; global=%s |- cost(%s) %s %s"
+      (b_to_string thm.local_context)
       (b_to_string thm.global_context)
       (n_to_string thm.index) (N_rel.to_string thm.rel)
       (n_to_string thm.expected_cost)
@@ -332,7 +332,7 @@ module Theorem = struct
       ?(debug = true) ?(generator = Constraints.default)
       ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) : ProofResult.t =
     let module S = (val solver) in
-    let given = encode_ua thm.cfg thm.locals thm.thread_context thm.index in
+    let given = encode_ua thm.cfg thm.locals thm.local_context thm.index in
     let goal = NRel (thm.rel, given, thm.expected_cost) in
     (* Prove that NOT(actual_cost comparison expected_cost) is UNSAT *)
     let constraint_system =
@@ -358,6 +358,6 @@ module Theorem = struct
   let optimize_cost ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
       ?(generator = Constraints.default) (thm : t) : int option =
     ua ~strategy ~generator thm.cfg thm.locals
-      (b_and thm.thread_context thm.global_context)
+      (b_and thm.local_context thm.global_context)
       thm.index
 end

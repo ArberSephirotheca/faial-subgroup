@@ -4,6 +4,7 @@
    test_gen_z3
    test_gv_parser
    test_range
+   test_exp_parser
  )
- (libraries stage0 protocols oUnit alcotest)
+ (libraries stage0 protocols protocols_parsing oUnit alcotest)
 )
