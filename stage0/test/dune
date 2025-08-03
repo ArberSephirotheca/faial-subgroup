@@ -1,0 +1,9 @@
+(tests
+ (names
+   test_common
+   test_streamutil
+   test_slice
+   test_py
+ )
+ (libraries stage0 oUnit)
+)
