@@ -1,0 +1,7 @@
+(menhir (modules theorem_parser))
+
+(ocamllex theorem_lexer)
+
+(library
+ (name rel_cost_parsing)
+ (libraries stage0 protocols rel_cost))

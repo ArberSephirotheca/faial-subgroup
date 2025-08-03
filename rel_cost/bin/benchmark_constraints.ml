@@ -1,82 +1,25 @@
 open Rel_cost
 open Protocols
-open Exp
 open Cmdliner
 open Symbolic_metric_analysis
+open Rel_cost_parsing.Parsers
+open Rel_cost_parsing
 
 (* Factory function for Config objects *)
 let make_config (threads_per_warp : int) (block_dim : Dim3.t) : Config.t =
   Config.make ~threads_per_warp ~block_dim ~grid_dim:(Dim3.make ~x:1 ()) ()
 
-let thm1 (cfg : Config.t) : Theorem.t =
-  (* cost (2 tid) = 2 *)
-  {
-    cfg;
-    locals = Variable.Set.empty;
-    local_context = b_true;
-    global_context = b_true;
-    index = n_mult (Num 2) (Var Variable.tid_x);
-    (* 2 * tid *)
-    rel = N_rel.Eq;
-    expected_cost = Num 2;
-  }
-
-let thm2 (cfg : Config.t) : Theorem.t =
-  let x = Var (Variable.from_name "x") in
-  let opt = b_and (n_ge x (Num 1)) (n_le x (Num 10)) in
-  {
-    cfg;
-    locals = Variable.Set.empty;
-    local_context = b_true;
-    global_context = opt;
-    index = n_mult x (Var Variable.tid_x);
-    rel = N_rel.Eq;
-    expected_cost = x;
-  }
-
-let thm3 (cfg : Config.t) : Theorem.t =
-  let x = Var (Variable.from_name "x") in
-  let opt =
-    b_and_ex
-      [
-        n_ge x (Num 1);
-        n_le x (Num 32);
-        (*n_eq (Var (Variable.from_name "$warp_id")) (Num 0);*)
-      ]
-  in
-  {
-    cfg;
-    locals = Variable.Set.empty;
-    local_context = b_true;
-    global_context = opt;
-    index = n_mult x (Var Variable.tid_x);
-    rel = N_rel.Eq;
-    expected_cost = x;
-  }
-
-(* List of available theorems with titles *)
-let theorems : (string * (Config.t -> Theorem.t)) list =
-  [
-    ("cost(2 * threadIdx.x) = 2", thm1);
-    ("cost(x * threadIdx.x) = x where 1 ≤ x ≤ 10", thm2);
-    ("cost(x * threadIdx.x) = x where 1 ≤ x ≤ 10 && warp_id = 0", thm3);
-  ]
-
-let get_theorem (n : int) : Config.t -> Theorem.t =
-  if n >= 1 && n <= List.length theorems then List.nth theorems (n - 1) |> snd
-  else failwith (Printf.sprintf "Invalid theorem number %d" n)
-
-(* Print all theorems *)
-let list_theorems () =
-  Printf.printf "Available theorems:\n\n";
-  List.iteri
-    (fun i (title, thm_fn) ->
-      let cfg = make_config 32 (Dim3.make ~x:32 ()) in
-      (* Use default config for display *)
-      let theorem = thm_fn cfg in
-      Printf.printf "%d. %s\n" (i + 1) title;
-      Printf.printf "   %s\n\n" (Theorem.to_string theorem))
-    theorems
+(* Load and parse theorem from file *)
+let load_theorem_from_file (filename : string) (cfg : Config.t) : Theorem.t =
+  match TheoremFileParser.of_filename filename with
+  | Ok theorem_file ->
+      print_endline ("Parsed:\n" ^ Theorem_file.to_string theorem_file);
+      print_endline "==========================";
+      let thm = Rel_cost_parsing.Theorem_file.to_theorem cfg theorem_file in
+      thm
+  | Error msg ->
+      failwith
+        (Printf.sprintf "Failed to parse theorem file '%s': %s" filename msg)
 
 module BenchmarkMode = struct
   type t = Prove | Optimize
@@ -118,11 +61,13 @@ let benchmark_optimize ~generator ~theorem =
       | None -> print_endline "Optimization failed (no solution found)")
 
 let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
-    ~(all : bool) ~(theorem : int) ~(mode : BenchmarkMode.t)
+    ~(all : bool) ~(filename : string) ~(mode : BenchmarkMode.t)
     ~(block_dim : Dim3.t) =
   let strategies = if all then Constraints.values else [ strategy ] in
   let cfg = make_config threads_per_warp block_dim in
-  let theorem : Theorem.t = get_theorem theorem cfg in
+  let theorem : Theorem.t = load_theorem_from_file filename cfg in
+  Printf.printf "Loaded theorem:\n%s\n" (Theorem.to_string theorem);
+  print_endline "=========================================";
   List.iter
     (fun generator ->
       Printf.printf "Strategy: %s\n" (Constraints.to_string generator);
@@ -135,11 +80,9 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
     strategies
 
 (* Main benchmark function *)
-let main (strategy : Constraints.t) (threads_per_warp : int) (theorem : int)
-    (all : bool) (list_thms : bool) (mode : BenchmarkMode.t)
-    (block_dim : Dim3.t) : unit =
-  if list_thms then list_theorems ()
-  else run_benchmarks ~strategy ~all ~threads_per_warp ~theorem ~mode ~block_dim
+let main (strategy : Constraints.t) (threads_per_warp : int) (filename : string)
+    (all : bool) (mode : BenchmarkMode.t) (block_dim : Dim3.t) : unit =
+  run_benchmarks ~strategy ~all ~threads_per_warp ~filename ~mode ~block_dim
 
 let constraints_conv : Constraints.t Arg.conv =
   let parse s =
@@ -175,20 +118,13 @@ let threads_arg =
   let doc = "Threads per warp" in
   Arg.(value & opt int 32 & info [ "t"; "threads" ] ~doc)
 
-let theorem_arg =
-  let doc =
-    Printf.sprintf "Theorem number to test (1-%d, default: 2)"
-      (List.length theorems)
-  in
-  Arg.(value & opt int 2 & info [ "T"; "theorem" ] ~doc)
+let filename_arg =
+  let doc = "Theorem file to load and benchmark" in
+  Arg.(required & pos 0 (some file) None & info [] ~docv:"THEOREM_FILE" ~doc)
 
 let all_arg =
   let doc = "Run all constraint versions" in
   Arg.(value & flag & info [ "all" ] ~doc)
-
-let list_theorems_arg =
-  let doc = "List all available theorems" in
-  Arg.(value & flag & info [ "list-theorems" ] ~doc)
 
 let benchmark_mode_conv : BenchmarkMode.t Arg.conv =
   let parse s =
@@ -221,12 +157,12 @@ let block_dim_arg =
 
 (* Command definition *)
 let main_cmd =
-  let doc = "Benchmark constraint generation strategies" in
+  let doc = "Benchmark constraint generation strategies on theorem files" in
   let info = Cmd.info "benchmark_constraints" ~doc in
   Cmd.v info
     Term.(
-      const main $ strategy_arg $ threads_arg $ theorem_arg $ all_arg
-      $ list_theorems_arg $ mode_arg $ block_dim_arg)
+      const main $ strategy_arg $ threads_arg $ filename_arg $ all_arg
+      $ mode_arg $ block_dim_arg)
 
 (* Main entry point *)
 let () = Cmd.eval main_cmd |> exit

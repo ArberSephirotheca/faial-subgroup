@@ -1,6 +1,7 @@
 %{
 open Protocols
 open Protocols.Exp
+open Theorem_file
 %}
 
 %token <string> IDENT
@@ -13,7 +14,9 @@ open Protocols.Exp
 %token EQ NEQ LT LE GT GE
 %token L_AND L_OR L_NOT
 %token QUESTION COLON
-%token CAST_INT CAST_BOOL
+%token CAST_INT CAST_BOOL LOCALS X Y Z UA LBRACKET RBRACKET COMMA LOCAL_CONTEXT
+%token GLOBAL_CONTEXT LBRACE THREADS_PER_WARP SEMICOLON RBRACE
+%token BLOCK_DIM
 %token EOF
 
 (* C operator precedence (lowest to highest) *)
@@ -30,6 +33,7 @@ open Protocols.Exp
 %left MULT DIV MOD           (* multiplicative *)
 %right L_NOT BIT_NOT UMINUS  (* unary operators *)
 
+%start <Theorem_file.t> file_main
 %start <nexp> nexp_main
 %start <bexp> bexp_main
 
@@ -41,11 +45,23 @@ nexp_main:
 bexp_main:
   | b=bexp EOF { b }
 
+var:
+  | id=IDENT { Variable.from_name id }
+  | THREADS_PER_WARP { Variable.from_name "threads_per_warp" }
+  | BLOCK_DIM { Variable.from_name "block_dim" }
+  | LOCALS { Variable.from_name "locals" }
+  | LOCAL_CONTEXT { Variable.from_name "local_context" }
+  | GLOBAL_CONTEXT { Variable.from_name "global_context" }
+  | UA { Variable.from_name "ua" }
+  | X { Variable.from_name "x" }
+  | Y { Variable.from_name "y" }
+  | Z { Variable.from_name "z" }
+
 nexp:
   (* Literals *)
   | i=INT                                { Num i }
-  | id=IDENT                             { Var (Variable.from_name id) }
-  
+  | v=var                                { Var v }
+
   (* Arithmetic binary operators *)
   | left=nexp PLUS right=nexp            { Binary (N_binary.Plus, left, right) }
   | left=nexp MINUS right=nexp           { Binary (N_binary.Minus, left, right) }
@@ -97,3 +113,48 @@ bexp:
   
   (* Parentheses *)
   | LPAREN b=bexp RPAREN                 { b }
+
+file_main:
+  | f=file EOF { f }
+
+%inline a_field: field SEMICOLON { $1 }
+
+file:
+  | fields=a_field* theorem=theorem_statement {
+      let file = List.fold_left (fun acc setter -> setter acc) make fields in
+      let (index, rel, cost) = theorem in
+      set_goal index rel cost file
+    }
+
+field:
+  | THREADS_PER_WARP COLON value=INT { set_threads_per_warp value }
+  | BLOCK_DIM COLON dim=dim3_object { set_block_dim dim }
+  | LOCALS COLON vars=variable_list { set_locals vars }
+  | LOCAL_CONTEXT COLON expr=bexp { set_local_context expr }
+  | GLOBAL_CONTEXT COLON expr=bexp { set_global_context expr }
+
+theorem_statement:
+  | UA LPAREN index=nexp RPAREN op=rel_op cost=nexp { (index, op, cost) }
+
+rel_op:
+  | EQ { N_rel.Eq }
+  | NEQ { N_rel.Neq }
+  | LT { N_rel.Lt }
+  | LE { N_rel.Le }
+  | GT { N_rel.Gt }
+  | GE { N_rel.Ge }
+
+dim3_object:
+  | LBRACE l=separated_list(COMMA, dim3_field) RBRACE {
+      List.fold_left (fun acc setter -> setter acc) Dim3.one l
+    }
+
+dim3_field:
+  | separated_pair(X, COLON, INT) { Dim3.set_x (snd $1) }
+  | separated_pair(Y, COLON, INT) { Dim3.set_y (snd $1) }
+  | separated_pair(Z, COLON, INT) { Dim3.set_z (snd $1) }
+
+variable_list:
+  | l=delimited(LBRACKET, separated_list(COMMA, var), RBRACKET) {
+      l
+    }

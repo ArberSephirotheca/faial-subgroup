@@ -4,6 +4,9 @@ let make ?(x = 1) ?(y = 1) ?(z = 1) () : t = { x; y; z }
 let one : t = { x = 1; y = 1; z = 1 }
 let zero : t = { x = 0; y = 0; z = 0 }
 let total (e : t) : int = e.x * e.y * e.z
+let set_x (x : int) (d : t) : t = { d with x }
+let set_y (y : int) (d : t) : t = { d with y }
+let set_z (z : int) (d : t) : t = { d with z }
 
 let from_json ?(default = one) (j : Yojson.Basic.t) : (t, string) Result.t =
   match j with

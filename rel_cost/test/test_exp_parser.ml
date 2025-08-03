@@ -1,5 +1,5 @@
 open Protocols.Exp
-open Protocols_parsing.Parsers
+open Rel_cost_parsing.Parsers
 open Protocols
 
 (* Helper functions to reduce repetition *)
@@ -133,6 +133,8 @@ let nexp_bitwise_tests =
     test_nexp_parse "right shift" "x >> y"
       (Binary (N_binary.RightShift, var "x", var "y"));
     test_nexp_parse "bitwise not" "~x" (Unary (N_unary.BitNot, var "x"));
+    test_nexp_parse "bitwise and" "mask & 255"
+      (Binary (N_binary.BitAnd, var "mask", Num 255));
   ]
 
 let nexp_precedence_tests =
@@ -144,6 +146,8 @@ let nexp_precedence_tests =
     test_nexp_parse "bitwise operations precedence" "a & b | c"
       (Binary
          (N_binary.BitOr, Binary (N_binary.BitAnd, var "a", var "b"), var "c"));
+    test_bexp_parse "bitwise and equal" "(mask & 255) == mask"
+      (NRel (N_rel.Eq, Binary (N_binary.BitAnd, var "mask", Num 255), var "mask"));
   ]
 
 let nexp_ternary_tests =

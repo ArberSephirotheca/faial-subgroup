@@ -322,7 +322,14 @@ module Theorem = struct
   }
 
   let to_string (thm : t) : string =
-    Printf.sprintf "local=%s; global=%s |- cost(%s) %s %s"
+    Printf.sprintf
+      "config: %s\n\
+       locals: [%s]\n\
+       local_context: %s;\n\
+       global_context: %s;\n\
+       ⊢ cost(%s) %s %s"
+      (Config.to_string thm.cfg)
+      (Variable.set_to_string thm.locals)
       (b_to_string thm.local_context)
       (b_to_string thm.global_context)
       (n_to_string thm.index) (N_rel.to_string thm.rel)

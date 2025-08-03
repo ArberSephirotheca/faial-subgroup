@@ -1,5 +1,5 @@
 {
-open Exp_parser
+open Theorem_parser
 }
 
 rule read = parse
@@ -52,12 +52,29 @@ rule read = parse
   | "int"                 { CAST_INT }
   | "bool"                { CAST_BOOL }
   
+  (* Keywords (must come before identifiers) *)
+  | "threads_per_warp"    { THREADS_PER_WARP }
+  | "block_dim"           { BLOCK_DIM }
+  | "locals"              { LOCALS }
+  | "local_context"       { LOCAL_CONTEXT }
+  | "global_context"      { GLOBAL_CONTEXT }
+  | "ua"                  { UA }
+  | "x"                   { X }
+  | "y"                   { Y }  
+  | "z"                   { Z }
+  
   (* Identifiers (C-style + dots) *)
   | ['a'-'z' 'A'-'Z' '_']['a'-'z' 'A'-'Z' '_' '.' '0'-'9']* as id { IDENT(id) }
   
   (* Punctuation *)
   | '('                   { LPAREN }
   | ')'                   { RPAREN }
+  | '{'                   { LBRACE }
+  | '}'                   { RBRACE }
+  | '['                   { LBRACKET }
+  | ']'                   { RBRACKET }
+  | ';'                   { SEMICOLON }
+  | ','                   { COMMA }
   | eof                   { EOF }
   
   (* Error *)

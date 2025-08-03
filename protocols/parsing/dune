@@ -2,9 +2,6 @@
 
 (ocamllex tactics_lexer)
 
-(menhir (modules exp_parser))
-
-(ocamllex exp_lexer)
 
 (library
  (name protocols_parsing)
