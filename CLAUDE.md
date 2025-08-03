@@ -98,6 +98,59 @@ Test a specific kernel:
 4. For specific analysis development, focus on the relevant module (drf/, rel_cost/, etc.)
 5. Add test cases to appropriate examples/ subdirectory
 
+## Engineering Guidelines
+
+### Prefer Simple Solutions
+- Choose simple, clear workarounds over complex technical solutions
+- Work with existing tools and designs rather than against them
+- Leverage natural language/framework features (like parser context sensitivity) instead of implementing complex state management
+- Ask "what's the simplest approach that works?" before implementing sophisticated solutions
+- Complex doesn't always mean better - often the straightforward approach is the most elegant
+
+### OCaml Testing Best Practices
+
+When writing tests with Alcotest, follow these patterns demonstrated in `rel_cost/test/test_exp_parser.ml`:
+
+#### Helper Functions to Reduce Repetition
+```ocaml
+let parse_nexp_ok (input : string) : nexp =
+  match NExpParser.of_string input with
+  | Ok expr -> expr
+  | Error msg -> Alcotest.failf "Parse error for '%s': %s" input msg
+
+let test_nexp_parse (name : string) (input : string) (expected : nexp) =
+  (name, `Quick, fun () ->
+    let actual = parse_nexp_ok input in
+    Alcotest.(check bool) name true (actual = expected))
+```
+
+#### Test Organization
+- **Group related tests**: `nexp_literal_tests`, `nexp_arithmetic_tests`, etc.
+- **Use descriptive names**: `"integer literal"`, `"bitwise operations precedence"`
+- **Test edge cases**: negative numbers, precedence, error conditions
+- **Helper functions**: Create `var "x"` helpers to reduce AST construction boilerplate
+
+#### Error Testing Patterns
+- **Basic error tests**: Verify parsing fails for invalid input
+- **Location error tests**: Check error messages contain correct line/column numbers
+- **Use `Alcotest.failf`**: For detailed error messages with context
+
+#### Test Structure
+```ocaml
+let all_tests = [
+  ("category name", test_list);
+  ("nexp literals", nexp_literal_tests);
+  ("error handling", error_tests);
+]
+```
+
+#### Key Principles
+- **Comprehensive coverage**: Test literals, operators, precedence, errors, edge cases
+- **Clear test names**: Should describe exactly what is being tested
+- **Reduce boilerplate**: Use helpers for common parsing and AST construction patterns
+- **Test both success and failure**: Include positive and negative test cases
+- **Location tracking**: For parsers, test that error locations are accurate
+
 ### Dependency Management
 
 Dependencies are managed through `dune-project` and the committed `faial.opam` file:
