@@ -1,35 +1,65 @@
 open Stage0
-open OUnit2
 open Streamutil
 
-let list_str (f : 'a -> string) (l : 'a list) : string =
-  let x = List.map f l in
-  match x with [] -> "[]" | _ -> "[ " ^ String.concat "," x ^ " ]"
+(* Helper functions to reduce repetition *)
+let test_stream_conversion (name : string) (input : int list) (expected : int list) =
+  ( name,
+    `Quick,
+    fun () ->
+      let actual = from_list input |> to_list in
+      Alcotest.(check (list int)) name expected actual )
 
-let stream_eq (f : 'a -> string) (l : 'a list) (s : 'a stream) : unit =
-  let g = to_list s in
-  let msg = "expected: " ^ list_str f l ^ " given: " ^ list_str f g in
-  assert_equal l g ~msg
+let test_empty_stream (name : string) (expected : int list) =
+  ( name,
+    `Quick,
+    fun () ->
+      let actual = empty |> to_list in
+      Alcotest.(check (list int)) name expected actual )
 
-let stream_int_eq = stream_eq string_of_int
+let test_sequence (name : string) (l1 : int list) (l2 : int list) (expected : int list) =
+  ( name,
+    `Quick,
+    fun () ->
+      let s1 = from_list l1 in
+      let s2 = from_list l2 in
+      let actual = sequence s1 s2 |> to_list in
+      Alcotest.(check (list int)) name expected actual )
 
-let tests =
-  "streams"
-  >::: [
-         ( "stream_to_list" >:: fun _ ->
-           let l = [ 1; 2; 3 ] in
-           stream_int_eq l (from_list l);
-           stream_int_eq [] (from_list []) );
-         ("stream_make" >:: fun _ -> stream_int_eq [] empty);
-         ( "stream_seq" >:: fun _ ->
-           let s1 = from_list [ 1; 2; 3 ] in
-           let s2 = from_list [ 4; 5; 6 ] in
-           let e = [ 1; 2; 3; 4; 5; 6 ] in
-           let g = sequence s1 s2 |> to_list in
-           assert_equal e g );
-         ( "stream_take" >:: fun _ ->
-           stream_int_eq [ 1; 2; 3 ]
-             (from_list [ 1; 2; 3; 4 ] |> take 3 |> from_list) );
-       ]
+let test_take (name : string) (input : int list) (n : int) (expected : int list) =
+  ( name,
+    `Quick,
+    fun () ->
+      let actual = from_list input |> take n |> from_list |> to_list in
+      Alcotest.(check (list int)) name expected actual )
 
-let _ = run_test_tt_main tests
+(* Test case groups *)
+let stream_conversion_tests =
+  [
+    test_stream_conversion "non-empty list" [ 1; 2; 3 ] [ 1; 2; 3 ];
+    test_stream_conversion "empty list" [] [];
+  ]
+
+let empty_stream_tests =
+  [
+    test_empty_stream "empty stream" [];
+  ]
+
+let sequence_tests =
+  [
+    test_sequence "concatenate two streams" [ 1; 2; 3 ] [ 4; 5; 6 ] [ 1; 2; 3; 4; 5; 6 ];
+  ]
+
+let take_tests =
+  [
+    test_take "take first 3 elements" [ 1; 2; 3; 4 ] 3 [ 1; 2; 3 ];
+  ]
+
+let all_tests =
+  [
+    ("stream conversion", stream_conversion_tests);
+    ("empty stream", empty_stream_tests);
+    ("sequence", sequence_tests);
+    ("take", take_tests);
+  ]
+
+let () = Alcotest.run "Streamutil" all_tests

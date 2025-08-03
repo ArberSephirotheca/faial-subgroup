@@ -5,5 +5,5 @@
    test_slice
    test_py
  )
- (libraries stage0 oUnit)
+ (libraries stage0 alcotest)
 )
