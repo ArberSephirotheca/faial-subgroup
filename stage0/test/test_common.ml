@@ -2,21 +2,24 @@ open Stage0
 open Common
 
 (* Helper functions to reduce repetition *)
-let test_append_rev1 (name : string) (l1 : int list) (l2 : int list) (expected : int list) =
+let test_append_rev1 (name : string) (l1 : int list) (l2 : int list)
+    (expected : int list) =
   ( name,
     `Quick,
     fun () ->
       let actual = append_rev1 l1 l2 in
       Alcotest.(check (list int)) name expected actual )
 
-let test_append_tr (name : string) (l1 : int list) (l2 : int list) (expected : int list) =
+let test_append_tr (name : string) (l1 : int list) (l2 : int list)
+    (expected : int list) =
   ( name,
     `Quick,
     fun () ->
       let actual = append_tr l1 l2 in
       Alcotest.(check (list int)) name expected actual )
 
-let test_contains (name : string) (substring : string) (text : string) (expected : bool) =
+let test_contains (name : string) (substring : string) (text : string)
+    (expected : bool) =
   ( name,
     `Quick,
     fun () ->
@@ -30,7 +33,8 @@ let test_range (name : string) ?from (to_ : int) (expected : int list) =
       let actual = range ?from to_ in
       Alcotest.(check (list int)) name expected actual )
 
-let test_substring (name : string) (start : int) (finish : int option) (text : string) (expected : string) =
+let test_substring (name : string) (start : int) (finish : int option)
+    (text : string) (expected : string) =
   ( name,
     `Quick,
     fun () ->
@@ -41,7 +45,8 @@ let test_substring (name : string) (start : int) (finish : int option) (text : s
 let append_rev1_tests =
   [
     test_append_rev1 "reverse first list only" [ 1; 2; 3; 4 ] [] [ 4; 3; 2; 1 ];
-    test_append_rev1 "reverse first, append second" [ 1; 2; 3 ] [ 4 ] [ 3; 2; 1; 4 ];
+    test_append_rev1 "reverse first, append second" [ 1; 2; 3 ] [ 4 ]
+      [ 3; 2; 1; 4 ];
     test_append_rev1 "balanced lists" [ 1; 2 ] [ 3; 4 ] [ 2; 1; 3; 4 ];
     test_append_rev1 "single element first" [ 1 ] [ 2; 3; 4 ] [ 1; 2; 3; 4 ];
     test_append_rev1 "empty first list" [] [ 1; 2; 3; 4 ] [ 1; 2; 3; 4 ];
@@ -93,7 +98,10 @@ let hashtbl_elements_tests =
         let ht = Hashtbl.create 0 in
         Hashtbl.add ht 0 true;
         let actual = Common.hashtbl_elements ht in
-        Alcotest.(check (list (pair int bool))) "single element" [ (0, true) ] actual );
+        Alcotest.(check (list (pair int bool)))
+          "single element"
+          [ (0, true) ]
+          actual );
     ( "multiple elements",
       `Quick,
       fun () ->
@@ -104,9 +112,15 @@ let hashtbl_elements_tests =
           Common.hashtbl_elements ht
           |> List.sort (fun (x, _) (y, _) -> compare x y)
         in
-        Alcotest.(check (list (pair int bool))) "two elements" [ (0, true); (1, false) ] (elems ());
+        Alcotest.(check (list (pair int bool)))
+          "two elements"
+          [ (0, true); (1, false) ]
+          (elems ());
         Hashtbl.add ht 2 true;
-        Alcotest.(check (list (pair int bool))) "three elements" [ (0, true); (1, false); (2, true) ] (elems ()) );
+        Alcotest.(check (list (pair int bool)))
+          "three elements"
+          [ (0, true); (1, false); (2, true) ]
+          (elems ()) );
   ]
 
 let hashtbl_update_tests =
@@ -120,12 +134,20 @@ let hashtbl_update_tests =
           |> List.sort (fun (x, _) (y, _) -> compare x y)
         in
         hashtbl_update ht [ (0, true); (1, false); (2, true) ];
-        Alcotest.(check (list (pair int bool))) "initial update" [ (0, true); (1, false); (2, true) ] (elems ());
+        Alcotest.(check (list (pair int bool)))
+          "initial update"
+          [ (0, true); (1, false); (2, true) ]
+          (elems ());
         hashtbl_update ht [];
-        Alcotest.(check (list (pair int bool))) "empty update" [ (0, true); (1, false); (2, true) ] (elems ());
+        Alcotest.(check (list (pair int bool)))
+          "empty update"
+          [ (0, true); (1, false); (2, true) ]
+          (elems ());
         hashtbl_update ht [ (5, true); (4, false) ];
-        Alcotest.(check (list (pair int bool))) "additional update" 
-          [ (0, true); (1, false); (2, true); (4, false); (5, true) ] (elems ()) );
+        Alcotest.(check (list (pair int bool)))
+          "additional update"
+          [ (0, true); (1, false); (2, true); (4, false); (5, true) ]
+          (elems ()) );
   ]
 
 let hashtbl_from_list_tests =
@@ -138,8 +160,10 @@ let hashtbl_from_list_tests =
           |> Common.hashtbl_elements
           |> List.sort (fun (x, _) (y, _) -> compare x y)
         in
-        let check_equal kv = 
-          Alcotest.(check (list (pair int bool))) "hashtbl_from_list" kv (elems kv) in
+        let check_equal kv =
+          Alcotest.(check (list (pair int bool)))
+            "hashtbl_from_list" kv (elems kv)
+        in
         check_equal [];
         check_equal [ (0, true); (2, true) ];
         check_equal [ (0, true); (1, false); (2, true) ] );

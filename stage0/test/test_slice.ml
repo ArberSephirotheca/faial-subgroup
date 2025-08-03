@@ -1,7 +1,8 @@
 open Stage0
 
 (* Helper function to reduce repetition *)
-let test_slice (name : string) (start : int) (finish : int option) (text : string) (expected : string) =
+let test_slice (name : string) (start : int) (finish : int option)
+    (text : string) (expected : string) =
   ( name,
     `Quick,
     fun () ->

@@ -20,13 +20,15 @@ let basic_range_tests =
 let empty_range_tests =
   [
     test_range "empty range (start > stop)" ~start:5 0 [];
-    test_range "empty range (negative step, start < stop)" ~start:1 ~step:(-1) 3 [];
+    test_range "empty range (negative step, start < stop)" ~start:1 ~step:(-1) 3
+      [];
     test_range "empty range (positive step, start > stop)" ~start:3 ~step:1 1 [];
   ]
 
 let negative_step_tests =
   [
-    test_range "negative step (5 down to 0)" ~start:5 ~step:(-1) 0 [ 5; 4; 3; 2; 1 ];
+    test_range "negative step (5 down to 0)" ~start:5 ~step:(-1) 0
+      [ 5; 4; 3; 2; 1 ];
     test_range "negative step with step=-2" ~start:5 ~step:(-2) 0 [ 5; 3; 1 ];
   ]
 
