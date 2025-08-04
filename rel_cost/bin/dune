@@ -1,7 +1,7 @@
 (executable
  (public_name benchmark_constraints)
  (name benchmark_constraints)
- (libraries rel_cost protocols rel_cost_parsing cmdliner unix))
+ (libraries rel_cost protocols rel_cost_parsing protocols_parsing cmdliner unix))
 
 (executable
  (public_name benchmark_tactics)

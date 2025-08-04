@@ -22,15 +22,17 @@ let load_theorem_from_file (filename : string) (cfg : Config.t) : Theorem.t =
         (Printf.sprintf "Failed to parse theorem file '%s': %s" filename msg)
 
 module BenchmarkMode = struct
-  type t = Prove | Optimize
+  type t = Prove | Max | Min
 
   let to_string : t -> string = function
     | Prove -> "prove"
-    | Optimize -> "optimize"
+    | Max -> "max"
+    | Min -> "min"
 
   let of_string : string -> t option = function
     | "prove" | "p" -> Some Prove
-    | "optimize" | "o" -> Some Optimize
+    | "max" | "maximize" -> Some Max
+    | "min" | "minimize" -> Some Min
     | _ -> None
 
   let default : t = Prove
@@ -42,10 +44,21 @@ let time_it (f : unit -> unit) : float =
   let end_time = Unix.gettimeofday () in
   end_time -. start_time
 
+(* Load and parse tactic from file *)
+let load_tactic_from_file = function
+  | None -> None
+  | Some filename -> (
+      match Protocols_parsing.Parsers.TacticParser.of_filename filename with
+      | Ok tactic -> Some tactic
+      | Error msg ->
+          failwith
+            (Printf.sprintf "Failed to parse tactic file '%s': %s" filename msg)
+      )
+
 (* Benchmark theorem proving *)
-let benchmark_prove ~generator ~theorem =
+let benchmark_prove ~generator ~tactic ~theorem =
   time_it (fun () ->
-      match Theorem.prove ~generator theorem with
+      match Theorem.prove ~generator ~tactic theorem with
       | ProofResult.Proved -> ()
       | ProofResult.Counterexample model ->
           print_endline
@@ -54,18 +67,36 @@ let benchmark_prove ~generator ~theorem =
           print_endline ("Proof failed with unknown result: " ^ msg))
 
 (* Benchmark cost optimization *)
-let benchmark_optimize ~generator ~theorem =
+let benchmark_optimize ~strategy ~generator ~theorem =
   time_it (fun () ->
-      match Theorem.optimize_cost ~generator theorem with
+      match Theorem.optimize_cost ~strategy ~generator theorem with
       | Some cost -> Printf.printf "Optimized cost: %d\n" cost
       | None -> print_endline "Optimization failed (no solution found)")
 
 let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
     ~(all : bool) ~(filename : string) ~(mode : BenchmarkMode.t)
-    ~(block_dim : Dim3.t) =
+    ~(tactic_file : string option) ~(block_dim : Dim3.t) =
   let strategies = if all then Constraints.values else [ strategy ] in
   let cfg = make_config threads_per_warp block_dim in
   let theorem : Theorem.t = load_theorem_from_file filename cfg in
+
+  (* Validate tactic file usage *)
+  (match (mode, tactic_file) with
+  | (BenchmarkMode.Max | BenchmarkMode.Min), Some _ ->
+      Printf.printf
+        "Warning: Tactic file ignored for %s mode (tactics only supported in \
+         prove mode)\n\n"
+        (BenchmarkMode.to_string mode)
+  | BenchmarkMode.Prove, Some tfile ->
+      Printf.printf "Using tactic file: %s\n" tfile
+  | _ -> ());
+
+  let tactic =
+    match mode with
+    | BenchmarkMode.Prove -> load_tactic_from_file tactic_file
+    | _ -> None
+  in
+
   Printf.printf "Loaded theorem:\n%s\n" (Theorem.to_string theorem);
   print_endline "=========================================";
   List.iter
@@ -73,16 +104,23 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
       Printf.printf "Strategy: %s\n" (Constraints.to_string generator);
       let time =
         match mode with
-        | BenchmarkMode.Prove -> benchmark_prove ~generator ~theorem
-        | BenchmarkMode.Optimize -> benchmark_optimize ~generator ~theorem
+        | BenchmarkMode.Prove -> benchmark_prove ~generator ~tactic ~theorem
+        | BenchmarkMode.Max ->
+            benchmark_optimize ~strategy:Gen_z3.Optimizer.Strategy.Maximize
+              ~generator ~theorem
+        | BenchmarkMode.Min ->
+            benchmark_optimize ~strategy:Gen_z3.Optimizer.Strategy.Minimize
+              ~generator ~theorem
       in
       Printf.printf "Time: %.3fs\n\n" time)
     strategies
 
 (* Main benchmark function *)
 let main (strategy : Constraints.t) (threads_per_warp : int) (filename : string)
-    (all : bool) (mode : BenchmarkMode.t) (block_dim : Dim3.t) : unit =
-  run_benchmarks ~strategy ~all ~threads_per_warp ~filename ~mode ~block_dim
+    (all : bool) (mode : BenchmarkMode.t) (tactic_file : string option)
+    (block_dim : Dim3.t) : unit =
+  run_benchmarks ~strategy ~all ~threads_per_warp ~filename ~mode ~tactic_file
+    ~block_dim
 
 let constraints_conv : Constraints.t Arg.conv =
   let parse s =
@@ -112,7 +150,7 @@ let strategy_arg =
   Arg.(
     value
     & opt constraints_conv Constraints.default
-    & info [ "c"; "constraint" ] ~doc)
+    & info [ "v"; "constraint" ] ~doc)
 
 let threads_arg =
   let doc = "Threads per warp" in
@@ -121,6 +159,10 @@ let threads_arg =
 let filename_arg =
   let doc = "Theorem file to load and benchmark" in
   Arg.(required & pos 0 (some file) None & info [] ~docv:"THEOREM_FILE" ~doc)
+
+let tactic_file_arg =
+  let doc = "Optional tactic file for prove mode (ignored for max/min modes)" in
+  Arg.(value & opt (some file) None & info [ "tactics" ] ~doc)
 
 let all_arg =
   let doc = "Run all constraint versions" in
@@ -134,13 +176,17 @@ let benchmark_mode_conv : BenchmarkMode.t Arg.conv =
         Error
           (`Msg
              (Printf.sprintf
-                "Invalid mode '%s'. Valid options are: prove, p, optimize, o" s))
+                "Invalid mode '%s'. Valid options are: prove, p, max, \
+                 maximize, min, minimize"
+                s))
   in
   let print fmt v = Format.fprintf fmt "%s" (BenchmarkMode.to_string v) in
   Arg.conv (parse, print)
 
 let mode_arg =
-  let doc = "Benchmark mode. Valid options: prove, p, optimize, o" in
+  let doc =
+    "Benchmark mode. Valid options: prove, p, max, maximize, min, minimize"
+  in
   Arg.(
     value
     & opt benchmark_mode_conv BenchmarkMode.default
@@ -162,7 +208,7 @@ let main_cmd =
   Cmd.v info
     Term.(
       const main $ strategy_arg $ threads_arg $ filename_arg $ all_arg
-      $ mode_arg $ block_dim_arg)
+      $ mode_arg $ tactic_file_arg $ block_dim_arg)
 
 (* Main entry point *)
 let () = Cmd.eval main_cmd |> exit
