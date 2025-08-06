@@ -38,6 +38,29 @@ module BenchmarkMode = struct
   let default : t = Prove
 end
 
+module SolverBackend = struct
+  type t = IntGen | Bv32Gen | Bv64Gen
+
+  let to_string : t -> string = function
+    | IntGen -> "int"
+    | Bv32Gen -> "bv32"
+    | Bv64Gen -> "bv64"
+
+  let of_string : string -> t option = function
+    | "int" | "IntGen" -> Some IntGen
+    | "bv32" | "Bv32Gen" -> Some Bv32Gen
+    | "bv64" | "Bv64Gen" -> Some Bv64Gen
+    | _ -> None
+
+  let to_module : t -> (module Gen_z3.Z3_SOLVER) = function
+    | IntGen -> (module Gen_z3.IntGen)
+    | Bv32Gen -> (module Gen_z3.Bv32Gen)
+    | Bv64Gen -> (module Gen_z3.Bv64Gen)
+
+  let default : t = Bv64Gen
+  let all : t list = [ IntGen; Bv32Gen; Bv64Gen ]
+end
+
 let time_it (f : unit -> unit) : float =
   let start_time = Unix.gettimeofday () in
   f ();
@@ -56,9 +79,9 @@ let load_tactic_from_file = function
       )
 
 (* Benchmark theorem proving *)
-let benchmark_prove ~generator ~tactic ~theorem =
+let benchmark_prove ~generator ~tactic ~debug ~solver ~theorem =
   time_it (fun () ->
-      match Theorem.prove ~generator ~tactic theorem with
+      match Theorem.prove ~generator ~tactic ~debug ~solver theorem with
       | ProofResult.Proved -> ()
       | ProofResult.Counterexample model ->
           print_endline
@@ -75,7 +98,8 @@ let benchmark_optimize ~strategy ~generator ~theorem =
 
 let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
     ~(all : bool) ~(filename : string) ~(mode : BenchmarkMode.t)
-    ~(tactic_file : string option) ~(block_dim : Dim3.t) =
+    ~(tactic_file : string option) ~(debug : bool)
+    ~(solver_backend : SolverBackend.t) ~(block_dim : Dim3.t) =
   let strategies = if all then Constraints.values else [ strategy ] in
   let cfg = make_config threads_per_warp block_dim in
   let theorem : Theorem.t = load_theorem_from_file filename cfg in
@@ -97,14 +121,19 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
     | _ -> None
   in
 
+  let solver_module = SolverBackend.to_module solver_backend in
+
   Printf.printf "Loaded theorem:\n%s\n" (Theorem.to_string theorem);
+  Printf.printf "Using solver: %s\n" (SolverBackend.to_string solver_backend);
   print_endline "=========================================";
   List.iter
     (fun generator ->
       Printf.printf "Strategy: %s\n" (Constraints.to_string generator);
       let time =
         match mode with
-        | BenchmarkMode.Prove -> benchmark_prove ~generator ~tactic ~theorem
+        | BenchmarkMode.Prove ->
+            benchmark_prove ~generator ~tactic ~debug ~solver:solver_module
+              ~theorem
         | BenchmarkMode.Max ->
             benchmark_optimize ~strategy:Gen_z3.Optimizer.Strategy.Maximize
               ~generator ~theorem
@@ -118,9 +147,10 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
 (* Main benchmark function *)
 let main (strategy : Constraints.t) (threads_per_warp : int) (filename : string)
     (all : bool) (mode : BenchmarkMode.t) (tactic_file : string option)
-    (block_dim : Dim3.t) : unit =
+    (debug : bool) (solver_backend : SolverBackend.t) (block_dim : Dim3.t) :
+    unit =
   run_benchmarks ~strategy ~all ~threads_per_warp ~filename ~mode ~tactic_file
-    ~block_dim
+    ~debug ~solver_backend ~block_dim
 
 let constraints_conv : Constraints.t Arg.conv =
   let parse s =
@@ -168,6 +198,42 @@ let all_arg =
   let doc = "Run all constraint versions" in
   Arg.(value & flag & info [ "all" ] ~doc)
 
+let debug_arg =
+  let doc = "Enable debug output from Z3 solver" in
+  Arg.(value & flag & info [ "debug" ] ~doc)
+
+let solver_backend_conv : SolverBackend.t Arg.conv =
+  let parse s =
+    match SolverBackend.of_string s with
+    | Some v -> Ok v
+    | None ->
+        let valid_options =
+          SolverBackend.all
+          |> List.map SolverBackend.to_string
+          |> String.concat ", "
+        in
+        Error
+          (`Msg
+             (Printf.sprintf "Invalid solver '%s'. Valid options are: %s" s
+                valid_options))
+  in
+  let print fmt v = Format.fprintf fmt "%s" (SolverBackend.to_string v) in
+  Arg.conv (parse, print)
+
+let solver_arg =
+  let doc =
+    let valid_options =
+      SolverBackend.all
+      |> List.map SolverBackend.to_string
+      |> String.concat ", "
+    in
+    Printf.sprintf "Z3 solver backend. Valid options: %s" valid_options
+  in
+  Arg.(
+    value
+    & opt solver_backend_conv SolverBackend.default
+    & info [ "s"; "solver" ] ~doc)
+
 let benchmark_mode_conv : BenchmarkMode.t Arg.conv =
   let parse s =
     match BenchmarkMode.of_string s with
@@ -203,12 +269,14 @@ let block_dim_arg =
 
 (* Command definition *)
 let main_cmd =
-  let doc = "Benchmark constraint generation strategies on theorem files" in
-  let info = Cmd.info "benchmark_constraints" ~doc in
+  let doc =
+    "Prove cost theorems and optimize constraint generation strategies"
+  in
+  let info = Cmd.info "faial-cost-prover" ~doc in
   Cmd.v info
     Term.(
       const main $ strategy_arg $ threads_arg $ filename_arg $ all_arg
-      $ mode_arg $ tactic_file_arg $ block_dim_arg)
+      $ mode_arg $ tactic_file_arg $ debug_arg $ solver_arg $ block_dim_arg)
 
 (* Main entry point *)
 let () = Cmd.eval main_cmd |> exit

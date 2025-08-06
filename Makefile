@@ -14,11 +14,12 @@ all: c-ast \
 	faial-cost \
 	faial-cost-diff \
 	faial-cost-dyn \
+	faial-cost-prover \
 	wgsl-ast
 
 clean:
 	$(DUNE) clean
-	rm -f faial-bin gen_kernels pico faial-gen faial-cost-diff
+	rm -f faial-bin gen_kernels pico faial-gen faial-cost-diff faial-cost-prover
 
 build:
 	$(DUNE) build
@@ -59,6 +60,9 @@ faial-gen: build
 gen_kernels: build
 	cp -f $(BUILD)/codegen/gen_kernels.exe gen_kernels
 
+faial-cost-prover: build
+	cp -f $(BUILD)/rel_cost/bin/cost_prover.exe faial-cost-prover
+
 test: build-test
 	$(DUNE) runtest
 
@@ -93,4 +97,5 @@ gitlab: gitlab-test gitlab-bin
 	faial-cost \
 	faial-cost-dyn \
 	faial-cost-diff \
+	faial-cost-prover \
 	wgsl-ast

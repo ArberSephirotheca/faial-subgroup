@@ -32,6 +32,7 @@ make faial-drf         # Data-race freedom analysis tool
 make faial-bc          # Bank conflict analysis tool
 make faial-sync        # Barrier divergence analysis tool
 make faial-cost        # Cost analysis tool
+make faial-cost-prover # Cost theorem prover and constraint optimization tool
 make faial-gen         # Code generation tool
 make c-ast             # C AST parser
 make wgsl-ast          # WGSL AST parser

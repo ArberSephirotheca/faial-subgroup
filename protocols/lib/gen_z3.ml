@@ -253,6 +253,8 @@ module Tactic = struct
     | UsingParams of { params : Params.t; body : t }
     | Skip
     | Fail
+    | PrintGoals
+    | Print of string
 
   let and_then (first : t) (second : t) : t =
     match first with Skip -> second | _ -> AndThen { first; second }
@@ -280,6 +282,7 @@ module Tactic = struct
         Z3.Tactic.using_params ctx (to_z3 ctx body) (Params.to_z3 ctx params)
     | Skip -> Z3.Tactic.skip ctx
     | Fail -> Z3.Tactic.fail ctx
+    | PrintGoals | Print _ -> Z3.Tactic.skip ctx
 
   let rec to_string : t -> string = function
     | Tactic name -> Printf.sprintf "(tactic \"%s\")" name
@@ -306,19 +309,25 @@ module Tactic = struct
           (to_string body)
     | Skip -> "skip"
     | Fail -> "fail"
+    | PrintGoals -> "print-goals"
+    | Print s -> Printf.sprintf "(print %s)" s
 end
 
 module Debugger = struct
   type goal = Z3.Goal.goal
-  type t = goal list
+  type t = { work : Tactic.t list; goals : goal list }
 
-  let make (goal : goal) : t = [ goal ]
+  let to_string (st : t) : string =
+    let goals =
+      st.goals
+      |> List.mapi (fun i g ->
+             Printf.sprintf "Goal %d:\n%s" i (Z3.Goal.to_string g))
+      |> String.concat "\n"
+    in
+    let work = st.work |> List.map Tactic.to_string |> String.concat ";" in
+    goals ^ work
 
-  let to_string (l : t) : string =
-    l |> List.map Z3.Goal.to_string |> String.concat " ∨ "
-    |> Printf.sprintf "(goals %s)"
-
-  let apply (tactic : Z3.Tactic.tactic) (goal : goal) : t =
+  let apply (tactic : Z3.Tactic.tactic) (goal : goal) : goal list =
     Z3.Tactic.apply tactic goal None
     (* Convert apply_result to list of subgoals *)
     |> Z3.Tactic.ApplyResult.get_subgoals
@@ -326,31 +335,62 @@ module Debugger = struct
   let apply_all (tactic : Z3.Tactic.tactic) : goal list -> goal list =
     List.concat_map (apply tactic)
 
-  let check (solver : Z3.Solver.solver) (goals : t) : Z3.Solver.status =
+  let check (solver : Z3.Solver.solver) (goals : goal list) : Z3.Solver.status =
     goals |> List.map Z3.Goal.get_formulas |> List.iter (Z3.Solver.add solver);
     Z3.Solver.check solver []
 
-  let step (ctx : Z3.context) (state : t) : Tactic.t -> Tactic.t list * t =
-    function
-    | AndThen { first; second } -> ([ first; second ], state)
+  let step (ctx : Z3.context) (work : Tactic.t list) (goals : goal list) :
+      Tactic.t -> t list = function
+    | Cond { probe; then_tactic; else_tactic } ->
+        let probe = Probe.to_z3 ctx probe in
+        let then_goals, else_goals =
+          List.partition (fun g -> Z3.Probe.apply probe g <> 0.0) goals
+        in
+        [
+          { work = then_tactic :: work; goals = then_goals };
+          { work = else_tactic :: work; goals = else_goals };
+        ]
+        |> List.filter (fun x -> x.goals <> [])
+        (* <- filter out any empty goals *)
+    | AndThen { first; second } -> [ { work = first :: second :: work; goals } ]
+    | Skip -> [ { work; goals } ]
+    | PrintGoals ->
+        print_endline (to_string { work; goals });
+        flush stdout;
+        [ { work; goals } ]
+    | Print s ->
+        print_string s;
+        flush stdout;
+        [ { work; goals } ]
     | p ->
         let p = Tactic.to_z3 ctx p in
-        ([], apply_all p state)
+        [ { work; goals = apply_all p goals } ]
 
   let debug (ctx : Z3.context) (solver : Z3.Solver.solver) :
       Z3.Expr.expr -> Tactic.t -> Z3.Solver.status =
-    let rec iter (goals : t) (prog : Tactic.t list) : Z3.Solver.status =
-      match prog with
-      | [] -> check solver goals
-      | tac :: prog ->
-          let prog', state = step ctx goals tac in
-          print_endline (to_string state);
-          iter state (prog' @ prog)
+    let rec iter : t list -> Z3.Solver.status = function
+      | [] -> Z3.Solver.UNSATISFIABLE
+      | { work = []; goals } :: st -> (
+          (*
+          For satisfiability (SAT):
+            - The objective is to find any goal that is satisfiable
+            - If any single goal can be satisfied, the overall result is SAT
+            - This represents a logical OR - you only need one branch to be
+            satisfiable
+            - An UNKNOWN counts as an error, so execution also "aborts" by
+              not recursing.
+        *)
+          match check solver goals with
+          | Z3.Solver.UNSATISFIABLE -> iter st
+          | s -> s)
+      | { work = tac :: work; goals } :: st ->
+          let st' = step ctx work goals tac in
+          iter (st' @ st)
     in
     fun expr tac ->
       let goal = Z3.Goal.mk_goal ctx true false false in
       Z3.Goal.add goal [ expr ];
-      iter [ goal ] [ tac ]
+      iter [ { goals = [ goal ]; work = [ tac ] } ]
 end
 
 module Optimizer = struct
@@ -532,33 +572,6 @@ module CodeGen (N : NUMERIC_OPS) = struct
       try
         let solver = Z3.Solver.mk_solver ctx None in
         Debugger.debug ctx solver goal tactic |> Solver.of_status solver
-        (*
-        let z3_goal = Z3.Goal.mk_goal ctx true false false in
-        Z3.Goal.add z3_goal [goal];
-        let z3_tactic = Tactic.to_z3 ctx tactic in
-        match Z3.Tactic.apply z3_tactic z3_goal None with
-        | apply_result ->
-            let subgoals = Z3.Tactic.ApplyResult.get_subgoals apply_result in
-            let num_subgoals = List.length subgoals in
-            if num_subgoals = 0 then (
-              (* No subgoals means the goal was solved to true (tautology) *)
-              (* Create a simple solver to get an empty model *)
-              let temp_solver = Z3.Solver.mk_solver ctx None in
-              Z3.Solver.add temp_solver [ Z3.Boolean.mk_true ctx ];
-              Solver.run temp_solver)
-            else if num_subgoals = 1 then (
-              (* One subgoal - check if it's satisfiable *)
-              let subgoal = List.hd subgoals in
-              let solver = Z3.Solver.mk_solver ctx None in
-              let exprs = Z3.Goal.get_formulas subgoal in
-              Z3.Solver.add solver exprs;
-              Solver.run solver)
-            else
-              (* Multiple subgoals - provide detailed error *)
-              Solver.Unknown
-                ("Tactic '" ^ Tactic.to_string tactic ^ "' produced "
-               ^ string_of_int num_subgoals ^ " subgoals")
-          *)
       with Z3.Error msg ->
         (* Z3 tactic failure - convert to proper Unknown result *)
         Solver.Unknown

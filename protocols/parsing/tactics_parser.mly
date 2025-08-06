@@ -12,7 +12,7 @@ open Tactic
 %token LPAREN RPAREN LBRACE RBRACE
 %token SEMI L_OR L_AND NOT COMMA COLON
 %token IF ELSE FAIL_IF_NOT_DECIDED TIMEOUT REPEAT
-%token WITH SKIP FAIL PAR SEQ SEC MILLI_SEC
+%token WITH SKIP FAIL PAR SEQ SEC MILLI_SEC PRINT
 %token EOF
 
 
@@ -62,10 +62,11 @@ compound_stmt:
     { and_then_ex seq }
 
 tactic_instr:
-  | IDENT  { Tactic $1 }
+  | IDENT  { if $1 = "print-goals" then PrintGoals else Tactic $1 }
   | FAIL_IF_NOT_DECIDED      { FailIfNotDecided }
   | SKIP                     { Skip }
   | FAIL                     { Fail }
+  | PRINT s=STRING             { Print s }
 
 probe:
   | IDENT                    { Probe $1 }

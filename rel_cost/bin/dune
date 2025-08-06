@@ -1,6 +1,6 @@
 (executable
- (public_name benchmark_constraints)
- (name benchmark_constraints)
+ (public_name faial-cost-prover)
+ (name cost_prover)
  (libraries rel_cost protocols rel_cost_parsing protocols_parsing cmdliner unix))
 
 (executable
