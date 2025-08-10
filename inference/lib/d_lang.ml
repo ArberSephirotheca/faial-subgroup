@@ -526,6 +526,7 @@ module Program = struct
     List.concat_map (fun k -> Def.to_s k @ [ Line "" ]) p
 
   let print (p : t) : unit = Indent.print (to_s p)
+  let filter (pred : Def.t -> bool) (p : t) : t = List.filter pred p
 end
 
 module SignatureDB = struct

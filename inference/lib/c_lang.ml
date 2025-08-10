@@ -1473,6 +1473,9 @@ module Kernel = struct
   let attribute (x : t) : KernelAttr.t = x.attribute
   let rewrite_comma (k : t) : t = { k with code = Stmt.rewrite_comma k.code }
 
+  (* Returns whether the kernel has a __global__ modifier *)
+  let is_global (k : t) : bool = KernelAttr.is_global k.attribute
+
   let to_s (k : t) : Indent.t list =
     let tps =
       if k.type_params <> [] then
@@ -1829,6 +1832,7 @@ module Program = struct
     List.concat_map (fun k -> Def.to_s k @ [ Line "" ]) p
 
   let print (p : t) : unit = Indent.print (to_s p)
+  let filter (pred : Def.t -> bool) (p : t) : t = List.filter pred p
 
   let parse ?(remove_commas = true) ?(rewrite_shared_variables = true)
       (j : Yojson.Basic.t) : t j_result =

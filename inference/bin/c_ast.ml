@@ -14,19 +14,8 @@ let analyze (j : Yojson.Basic.t) :
       Rjson.print_error e;
       exit (-1)
 
-let main (fname : string) (silent : bool) : unit =
-  let j = Cu_to_json.cu_to_json ~ignore_fail:true fname in
-  let k1, k2, k3 = analyze j in
-  if silent then ()
-  else (
-    print_endline "\n==================== STAGE 1: C\n";
-    C_lang.Program.print k1;
-    print_endline
-      "==================== STAGE 2: C with reads/writes as statements\n";
-    D_lang.Program.print k2;
-    print_endline "==================== STAGE 3: IMP\n";
-    List.iter Imp.Kernel.print k3;
-    print_endline "==================== STAGE 4: stats\n");
+let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
+    (k3 : Imp.Kernel.t list) : unit =
   let k1_len = List.length k1 in
   let k2_ht = Hashtbl.create k1_len in
   let k3_ht = Hashtbl.create k1_len in
@@ -82,6 +71,40 @@ let main (fname : string) (silent : bool) : unit =
   in
   print_endline (Yojson.Basic.pretty_to_string (`List l))
 
+let main (fname : string) (silent : bool) (skip_json : bool)
+    (only_global : bool) : unit =
+  let j = Cu_to_json.cu_to_json ~ignore_fail:true fname in
+  let k1, k2, k3 = analyze j in
+
+  let k1_filtered =
+    C_lang.Program.filter
+      (function
+        | Kernel k -> (not only_global) || C_lang.Kernel.is_global k
+        | _ -> not only_global)
+      k1
+  in
+  let k2_filtered =
+    D_lang.Program.filter
+      (function
+        | Kernel k -> (not only_global) || D_lang.Kernel.is_global k
+        | _ -> not only_global)
+      k2
+  in
+  let k3_filtered =
+    if only_global then List.filter Imp.Kernel.is_global k3 else k3
+  in
+  if silent then ()
+  else (
+    print_endline "\n==================== STAGE 1: C\n";
+    C_lang.Program.print k1_filtered;
+    print_endline
+      "==================== STAGE 2: C with reads/writes as statements\n";
+    D_lang.Program.print k2_filtered;
+    print_endline "==================== STAGE 3: IMP\n";
+    List.iter Imp.Kernel.print k3_filtered;
+    print_endline "==================== STAGE 4: stats\n");
+  if not skip_json then print_json_summary k1 k2 k3
+
 open Cmdliner
 
 let get_fname =
@@ -92,7 +115,15 @@ let silent =
   let doc = "Silence output" in
   Arg.(value & flag & info [ "silent" ] ~doc)
 
-let main_t = Term.(const main $ get_fname $ silent)
+let skip_json =
+  let doc = "Skip JSON serialization output" in
+  Arg.(value & flag & info [ "skip-json" ] ~doc)
+
+let only_global =
+  let doc = "Only print __global__ kernels" in
+  Arg.(value & flag & info [ "only-global" ] ~doc)
+
+let main_t = Term.(const main $ get_fname $ silent $ skip_json $ only_global)
 
 let info =
   let doc = "Print the C-AST" in

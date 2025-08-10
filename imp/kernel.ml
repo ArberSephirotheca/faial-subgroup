@@ -138,6 +138,7 @@ let to_s (k : t) : Indent.t list =
   ]
 
 let print (k : t) : unit = Indent.print (to_s k)
+let is_global (k : t) : bool = k.visibility = Visibility.Global
 
 let remove_global_asserts (k : t) : t =
   { k with code = Stmt.filter_asserts Assert.is_local k.code }

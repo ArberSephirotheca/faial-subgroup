@@ -26,6 +26,23 @@ JSON (WGSL AST) → W_lang → Imp → Memory Access Protocol
 - **`w_lang.ml`** - WGSL AST definitions
 - **`w_to_imp.ml`** - WGSL to Imp translation
 
+## Kernel Attributes: `__global__` vs `__device__`
+
+CUDA kernels have two visibility modifiers that are preserved throughout the translation pipeline:
+
+- **`__global__`**: Entry point kernels callable from host code
+- **`__device__`**: Auxiliary functions callable only from GPU code
+
+**Representation across pipeline stages:**
+
+| Stage | Field | Type | `__global__` | `__device__` | Helper Function |
+|-------|-------|------|--------------|--------------|-----------------|
+| **C_lang** | `kernel.attribute` | `KernelAttr.t` | `Default` | `Auxiliary` | `KernelAttr.is_global` |
+| **D_lang** | `kernel.attribute` | `KernelAttr.t` | `Default` | `Auxiliary` | `Kernel.is_global` |
+| **Imp** | `kernel.visibility` | `Visibility.t` | `Global` | `Device` | `Kernel.is_global` |
+
+Each stage provides an `is_global` helper function for consistent filtering and analysis. The `c-ast` tool supports `--only-global` flag to display only `__global__` kernels across all three stages.
+
 
 ## C/CUDA Pipeline: `c_lang → d_lang → d_to_imp → Imp`
 

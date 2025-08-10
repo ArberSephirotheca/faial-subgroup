@@ -138,8 +138,7 @@ module Distinct = struct
     return (Variable.Set.mem x vars)
 
   (* Add variable to used set *)
-  let add_var (x : Variable.t) : unit state =
-    State.update (Variable.Set.add x)
+  let add_var (x : Variable.t) : unit state = State.update (Variable.Set.add x)
 
   (* Generate fresh variable and add it to state *)
   let fresh_var (x : Variable.t) : Variable.t state =
@@ -149,7 +148,7 @@ module Distinct = struct
     return new_x
 
   let rec distinct : t -> t state = function
-    | Access _ | Skip | Sync _ | Assert _ as p -> return p
+    | (Access _ | Skip | Sync _ | Assert _) as p -> return p
     | Seq (p, q) ->
         let* p = distinct p in
         let* q = distinct q in
@@ -189,7 +188,7 @@ end
 
 (* Helper functions for variable distinctness state monad *)
 let vars_distinct : t -> t =
-  fun p -> State.run Variable.Set.empty (Distinct.distinct p) |> snd
+ fun p -> State.run Variable.Set.empty (Distinct.distinct p) |> snd
 
 (* Rewrite assigns that cannot be represented as lets *)
 let fix_assigns : t -> t =
