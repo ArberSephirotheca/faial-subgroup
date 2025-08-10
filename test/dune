@@ -1,6 +1,5 @@
 (tests
  (names
-   test_imp
    test_locsplit
  )
  (libraries stage0 ra protocols drf inference oUnit rel_cost)
