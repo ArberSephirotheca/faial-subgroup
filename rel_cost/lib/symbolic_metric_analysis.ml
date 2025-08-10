@@ -288,10 +288,11 @@ let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (cond : bexp)
 
 let ua ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default) (cfg : Config.t)
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
     (locals : Variable.Set.t) (cond : bexp) (index : nexp) : int option =
-  let open Gen_z3.IntGen in
+  let module S = (val solver) in
   let formula = encode_ua cfg locals cond index in
-  optimize_expr strategy ~pre:(Constraints.to_bexp generator cfg) formula
+  S.optimize_expr strategy ~pre:(Constraints.to_bexp generator cfg) formula
   |> Result.to_option
 
 module ProofResult = struct
