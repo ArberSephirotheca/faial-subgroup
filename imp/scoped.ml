@@ -127,45 +127,69 @@ let filter_locs (locs : Memory.t Variable.Map.t) : t -> t =
   in
   filter
 
-let vars_distinct : t -> t =
-  let rec distinct (vars : Variable.Set.t) (p : t) : Variable.Set.t * t =
-    match p with
-    | Access _ | Skip | Sync _ | Assert _ -> (vars, p)
+module Distinct = struct
+  open State.Syntax
+
+  type 'a state = (Variable.Set.t, 'a) State.t
+
+  (* Check if variable is already used *)
+  let is_used (x : Variable.t) : bool state =
+    let* vars = State.get in
+    return (Variable.Set.mem x vars)
+
+  (* Add variable to used set *)
+  let add_var (x : Variable.t) : unit state =
+    State.update (Variable.Set.add x)
+
+  (* Generate fresh variable and add it to state *)
+  let fresh_var (x : Variable.t) : Variable.t state =
+    let* vars = State.get in
+    let new_x = Variable.fresh vars x in
+    let* () = add_var new_x in
+    return new_x
+
+  let rec distinct : t -> t state = function
+    | Access _ | Skip | Sync _ | Assert _ as p -> return p
     | Seq (p, q) ->
-        let vars, p = distinct vars p in
-        let vars, q = distinct vars q in
-        (vars, Seq (p, q))
+        let* p = distinct p in
+        let* q = distinct q in
+        return (Seq (p, q))
     | If (b, p, q) ->
-        let vars, p = distinct vars p in
-        let vars, q = distinct vars q in
-        (vars, If (b, p, q))
+        let* p = distinct p in
+        let* q = distinct q in
+        return (If (b, p, q))
     | Assign a ->
-        let vars, body = distinct vars a.body in
-        (vars, Assign { a with body })
+        let* body = distinct a.body in
+        return (Assign { a with body })
     | Decl (d, p) ->
         let x = d.var in
-        if Variable.Set.mem x vars then
-          let new_x : Variable.t = Variable.fresh vars x in
-          let vars = Variable.Set.add new_x vars in
+        let* used = is_used x in
+        if used then
+          let* new_x = fresh_var x in
           let p = subst (x, Var new_x) p in
-          let vars, p = distinct vars p in
-          (vars, Decl ({ d with var = new_x }, p))
+          let* p = distinct p in
+          return (Decl ({ d with var = new_x }, p))
         else
-          let vars, p = distinct (Variable.Set.add x vars) p in
-          (vars, Decl (d, p))
+          let* () = add_var x in
+          let* p = distinct p in
+          return (Decl (d, p))
     | For (r, p) ->
         let x = Range.var r in
-        if Variable.Set.mem x vars then
-          let new_x : Variable.t = Variable.fresh vars x in
-          let vars = Variable.Set.add new_x vars in
+        let* used = is_used x in
+        if used then
+          let* new_x = fresh_var x in
           let p = subst (x, Var new_x) p in
-          let vars, p = distinct vars p in
-          (vars, For ({ r with var = new_x }, p))
+          let* p = distinct p in
+          return (For ({ r with var = new_x }, p))
         else
-          let vars, p = distinct (Variable.Set.add x vars) p in
-          (vars, For (r, p))
-  in
-  fun p -> distinct Variable.Set.empty p |> snd
+          let* () = add_var x in
+          let* p = distinct p in
+          return (For (r, p))
+end
+
+(* Helper functions for variable distinctness state monad *)
+let vars_distinct : t -> t =
+  fun p -> State.run Variable.Set.empty (Distinct.distinct p) |> snd
 
 (* Rewrite assigns that cannot be represented as lets *)
 let fix_assigns : t -> t =
