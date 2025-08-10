@@ -17,36 +17,33 @@ end
 type binop = Z3.context -> Expr.expr -> Expr.expr -> Expr.expr
 type unop = Z3.context -> Expr.expr -> Expr.expr
 
-let bitvector_to_hex (x:string) : string option =
-  if x = "" || x.[0] <> '#' then
-    None
-  else Some (
-    let orig_x = x in
-    (* Input is: #x0000004000000000 *)
-    let offset n x =
-      let len = String.length x - n in
-      if len < 0 then
-        raise (Invalid_argument (Printf.sprintf "parse_num: %s" orig_x))
-      else
-        String.sub x n len
-    in
-    (* We need to remove the prefix #x; input becomes: 0000004000000000 *)
-    let x = offset 2 x in
-    (* Removes the prefix: #x *)
-    (* Then we need to remove the prefix 0s,
+let bitvector_to_hex (x : string) : string option =
+  if x = "" || x.[0] <> '#' then None
+  else
+    Some
+      (let orig_x = x in
+       (* Input is: #x0000004000000000 *)
+       let offset n x =
+         let len = String.length x - n in
+         if len < 0 then
+           raise (Invalid_argument (Printf.sprintf "parse_num: %s" orig_x))
+         else String.sub x n len
+       in
+       (* We need to remove the prefix #x; input becomes: 0000004000000000 *)
+       let x = offset 2 x in
+       (* Removes the prefix: #x *)
+       (* Then we need to remove the prefix 0s,
         otherwise Int32.of_string doesn't like it.
       Input becomes: 4000000000 *)
-    let rec trim_0 x =
-      if String.length x > 0 && String.get x 0 = '0' then trim_0 (offset 1 x)
-      else x
-    in
-    (* Prefix it with a 0x so that Int64.of_string knows it's an hex *)
-    let x = "0x" ^ trim_0 x in
-    (* Finally, convert it into an int64 (signed),
+       let rec trim_0 x =
+         if String.length x > 0 && String.get x 0 = '0' then trim_0 (offset 1 x)
+         else x
+       in
+       (* Prefix it with a 0x so that Int64.of_string knows it's an hex *)
+       let x = "0x" ^ trim_0 x in
+       (* Finally, convert it into an int64 (signed),
         and then render it back to a string, as this is for display only *)
-    if x = "0x" then "0x0" else x
-  )
-
+       if x = "0x" then "0x0" else x)
 
 (* We define an abstract module to handle numeric operations
    so that we can support arbitrary backends. *)
@@ -158,10 +155,7 @@ module BitVectorOps (W : WordSize) = struct
   let mk_unary_minus = BitVector.mk_neg
 
   let parse_num x =
-    x
-    |> bitvector_to_hex
-    |> Option.map W.decode_hex
-    |> Option.value ~default:x
+    x |> bitvector_to_hex |> Option.map W.decode_hex |> Option.value ~default:x
 end
 
 (* Convert a declaration to a variable *)
@@ -649,10 +643,7 @@ module SignedBitVectorOps (W : WordSize) = struct
   let mk_unary_minus = BitVector.mk_neg
 
   let parse_num x =
-    x
-    |> bitvector_to_hex
-    |> Option.map W.decode_hex
-    |> Option.value ~default:x
+    x |> bitvector_to_hex |> Option.map W.decode_hex |> Option.value ~default:x
 end
 
 module IntGen = CodeGen (ArithmeticOps)
