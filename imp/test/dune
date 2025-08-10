@@ -1,7 +1,8 @@
 (tests
  (names
-   test_imp
+   test_scoped
+   test_encode_assigns
  )
- (libraries stage0 protocols inference oUnit)
+ (libraries stage0 protocols inference alcotest)
 )
 
