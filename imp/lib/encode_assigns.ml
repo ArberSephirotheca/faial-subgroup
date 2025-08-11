@@ -77,7 +77,7 @@ module ReplacePair = SubstMake (Subst.SubstPair)
 
 let subst = ReplacePair.subst
 
-let from_scoped (known : Variable.Set.t) : Scoped.t -> t =
+let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
   let n_subst (st : Subst.SubstAssoc.t) (n : Exp.nexp) : Exp.nexp =
     if Subst.SubstAssoc.is_empty st then n else Subst.ReplaceAssoc.n_subst st n
   in
@@ -91,7 +91,7 @@ let from_scoped (known : Variable.Set.t) : Scoped.t -> t =
     if Subst.SubstAssoc.is_empty st then r else Subst.ReplaceAssoc.r_subst st r
   in
   let rec inline (known : Variable.Set.t) (st : Subst.SubstAssoc.t)
-      (i : Scoped.t) : t =
+      (i : Scoped.Code.t) : t =
     let add_var (x : Variable.t) :
         Variable.t * Variable.Set.t * Subst.SubstAssoc.t =
       let x, st =
@@ -124,4 +124,4 @@ let from_scoped (known : Variable.Set.t) : Scoped.t -> t =
         For ({ r with var = x }, inline known st p)
     | Seq (p1, p2) -> Seq (inline known st p1, inline known st p2)
   in
-  fun p -> p |> Scoped.vars_distinct |> inline known (Subst.SubstAssoc.make [])
+  fun p -> p |> Scoped.Code.vars_distinct |> inline known (Subst.SubstAssoc.make [])

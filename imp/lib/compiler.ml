@@ -6,22 +6,16 @@ module Exp = Protocols.Exp
 open Exp
 
 let compile (k : Kernel.t) : Protocols.Kernel.t =
-  let globals =
-    (* Take the global variables and the scalars defined in the paramter list *)
-    k.global_variables
-    |> Protocols.Params.union_left (ParameterList.to_params k.parameters)
-  in
-  (* Add any globals defined from scoped *)
-  let globals, p = Scoped.from_stmt (globals, k.code) in
+  let k = Scoped.Kernel.from_imp k in
   (* Merge globally-defined arrays and arrays defined in parameters. *)
   let arrays =
     k.global_arrays
     |> Variable.MapUtil.union_left (ParameterList.to_arrays k.parameters)
   in
   let p =
-    p
-    |> Scoped.filter_locs arrays (* Remove unknown arrays *)
-    |> Scoped.fix_assigns
+    k.code
+    |> Scoped.Code.filter_locs arrays (* Remove unknown arrays *)
+    |> Scoped.Code.fix_assigns
     (* Inline local variable assignment and ensure variables are distinct*)
     |> Encode_assigns.from_scoped (ParameterList.to_set k.parameters)
     |> Encode_asserts.from_encode_assigns
@@ -48,10 +42,15 @@ let compile (k : Kernel.t) : Protocols.Kernel.t =
     pre;
     arrays;
     local_variables = locals;
-    global_variables = globals;
+    global_variables = k.global_variables;
     code = p;
     visibility = k.visibility;
     block_dim = k.block_dim;
     grid_dim = k.grid_dim;
   }
 
+let compile_all ?(inline_calls = true) (l : Kernel.t list) : Protocols.Kernel.t list =
+  let l =
+    if inline_calls then Inline_calls.inline_calls l else l
+  in
+  List.map compile l

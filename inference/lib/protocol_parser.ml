@@ -107,8 +107,7 @@ module Make (L : Logger.Logger) = struct
       parsed with
       kernels =
         parsed.kernels
-        |> (if inline_calls then Imp.Inline_calls.inline_calls else fun x -> x)
-        |> List.map Imp.Compiler.compile
+        |> Imp.Compiler.compile_all ~inline_calls
         |> List.filter (fun k ->
                (not only_globals)
                || (only_globals && Protocols.Kernel.is_global k));
