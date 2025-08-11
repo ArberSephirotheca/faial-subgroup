@@ -108,6 +108,8 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
     | Assert b -> Assert (Assert.map (b_subst st) b)
     | Access e -> Access (a_subst st e)
     | Skip -> Skip
+    | Call (c, _) ->
+        raise (Invalid_argument ("Call inline first: " ^ Call.to_string c))
     | If (b, p1, p2) ->
         let b = b_subst st b in
         If (b, inline known st p1, inline known st p2)
@@ -124,4 +126,5 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
         For ({ r with var = x }, inline known st p)
     | Seq (p1, p2) -> Seq (inline known st p1, inline known st p2)
   in
-  fun p -> p |> Scoped.Code.vars_distinct |> inline known (Subst.SubstAssoc.make [])
+  fun p ->
+    p |> Scoped.Code.vars_distinct |> inline known (Subst.SubstAssoc.make [])

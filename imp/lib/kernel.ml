@@ -48,9 +48,17 @@ module Parameter = struct
       | Array m -> Memory.to_string m
       | Enum e -> Enum.name e
       | Unsupported -> "?"
+
+    let to_c_type : t -> C_type.t = function
+      | Enum e -> Enum.to_c_type e
+      | Array _ | Unsupported -> C_type.unknown
+      | Scalar ty -> ty
   end
 
   type t = Variable.t * Type.t
+
+  let to_c_type : Variable.t * Type.t -> Variable.t * C_type.t =
+   fun (a, ty) -> (a, Type.to_c_type ty)
 
   let enum (name : Variable.t) (e : Enum.t) : t = (name, Enum e)
   let array (name : Variable.t) (m : Memory.t) : t = (name, Array m)
@@ -84,6 +92,9 @@ module ParameterList = struct
         | Scalar ty -> Params.add x ty ps
         | Unsupported | Array _ -> ps)
       Params.empty l
+
+  let to_c_type (x : t) : (Variable.t * C_type.t) list =
+    x |> List.map Parameter.to_c_type
 
   let to_list (x : t) : Variable.t list = x |> List.map fst
   let to_set (x : t) : Variable.Set.t = x |> to_list |> Variable.Set.of_list
@@ -137,8 +148,7 @@ let to_s (k : t) : Indent.t list =
     Line "}";
   ]
 
-let to_string (k: t) : string = Indent.to_string (to_s k)
-
+let to_string (k : t) : string = Indent.to_string (to_s k)
 let print (k : t) : unit = Indent.print (to_s k)
 let is_global (k : t) : bool = k.visibility = Visibility.Global
 
@@ -146,4 +156,3 @@ let remove_global_asserts (k : t) : t =
   { k with code = Stmt.filter_asserts Assert.is_local k.code }
 
 let calls (k : t) : StringSet.t = Stmt.calls k.code
-

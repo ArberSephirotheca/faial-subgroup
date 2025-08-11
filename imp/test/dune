@@ -2,6 +2,7 @@
  (names
    test_scoped
    test_encode_assigns
+   test_kernel_inline
  )
  (libraries stage0 protocols inference alcotest)
 )

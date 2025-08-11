@@ -13,7 +13,8 @@ let scoped_testable : Scoped.Code.t Alcotest.testable =
   Alcotest.testable pp equal
 
 (* Test helper functions *)
-let test_scoped_conversion (name : string) (stmt : Stmt.t) (expected : Scoped.Code.t) =
+let test_scoped_conversion (name : string) (stmt : Stmt.t)
+    (expected : Scoped.Code.t) =
   ( name,
     `Quick,
     fun () ->
@@ -21,31 +22,29 @@ let test_scoped_conversion (name : string) (stmt : Stmt.t) (expected : Scoped.Co
       Alcotest.check scoped_testable name expected actual )
 
 (* Test data using helper functions - following test_exp_parser.ml style *)
-let scoped_conversion_tests = 
+let scoped_conversion_tests =
   [
     (* Simple increment and write *)
     test_scoped_conversion "increment and write"
       (let id = var "id" in
        let sq = var "s_Q" in
-       let wr = Imp.Stmt.(Write { array = sq; index = [ Var id ]; payload = None }) in
-       let inc (x : Variable.t) = Imp.Stmt.decl_set x (n_plus (Num 32) (Var x)) in
+       let wr =
+         Imp.Stmt.(Write { array = sq; index = [ Var id ]; payload = None })
+       in
+       let inc (x : Variable.t) =
+         Imp.Stmt.decl_set x (n_plus (Num 32) (Var x))
+       in
        Stmt.from_list [ inc id; wr ])
       (let id = var "id" in
        let sq = var "s_Q" in
-       Code.Decl (
-         Decl.set id (n_plus (Num 32) (Var id)),
-         Access { array = sq; index = [ Var id ]; mode = Write None }
-       ));
-    
+       Code.Decl
+         ( Decl.set id (n_plus (Num 32) (Var id)),
+           Access { array = sq; index = [ Var id ]; mode = Write None } ));
     (* Simple variable declaration *)
     test_scoped_conversion "simple variable declaration"
       (Stmt.decl_unset (var "x"))
       (Code.Decl (Decl.unset (var "x"), Skip));
   ]
 
-let all_tests = 
-  [
-    ("scoped conversions", scoped_conversion_tests);
-  ]
-
+let all_tests = [ ("scoped conversions", scoped_conversion_tests) ]
 let () = Alcotest.run "scoped" all_tests

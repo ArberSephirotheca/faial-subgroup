@@ -1,9 +1,10 @@
 open Stage0
 module StringMap = Common.StringMap
 module StringSet = Common.StringSet
+module K = Kernel
 
 type t = {
-  kernels : Kernel.t StringMap.t; (* Kernel name to kernel *)
+  kernels : Scoped.Kernel.t StringMap.t; (* Kernel name to kernel *)
   targets : StringSet.t StringMap.t;
       (* For each kernel which other kernels it is calling *)
   visited : StringSet.t;
@@ -24,56 +25,76 @@ let to_string (s : t) : string =
       |> List.map (fun (k, v) -> k ^ "=" ^ string_set v))
   ^ "\n" ^ "\tvisited = " ^ string_set s.visited ^ "\n" ^ "}"
 
-
 module Inline = struct
   module Variable = Protocols.Variable
   module C_type = Protocols.C_type
-  open Kernel
-  let apply (result : (Variable.t * C_type.t) option) (args : Arg.t list) (k : Kernel.t)
-      : Stmt.t =
-    let code =
-      match result with
-      | Some (var, ty) ->
-          let d : Decl.t = { var; init = k.return; ty } in
-          Stmt.Seq (Stmt.decl d, k.code)
-      | None -> k.code
-    in
-    List.fold_right
-      (fun (x, a) s ->
-        let i =
-          let open Arg in
-          match a with
-          | Scalar e -> Stmt.decl_set x e
-          | Unsupported -> Stmt.decl_unset x
-          | Array u ->
-              Stmt.LocationAlias
-                { target = x; source = u.array; offset = u.offset }
-        in
-        Stmt.Seq (i, s))
-      (Common.zip (ParameterList.to_list k.parameters) args)
-      code
 
-  let inline_stmt (funcs : t StringMap.t) : Stmt.t -> Stmt.t =
-    let rec inline (s : Stmt.t) : Stmt.t =
-      match s with
-      | Call c -> (
+  let apply (vars : Variable.Set.t) (result : (Variable.t * C_type.t) option)
+      (args : Arg.t list) (k : Scoped.Kernel.t) (s : Scoped.Code.t) :
+      Scoped.Code.t =
+    let open Scoped.Code in
+    let s =
+      match (result, k.return) with
+      | Some (var, ty), Some data ->
+          (*
+            var x in {
+              k.body;
+              x := k.return;
+            }
+            *)
+          decl_set ~ty var data s
+      (* TODO: | Some (var, ty), None -> *)
+      | _, _ -> s
+    in
+    k.code
+    (* prepend the assignments of arguments to parameters *)
+    |> List.fold_right
+         (fun ((x, ty), a) s ->
+           let open Scoped.Code in
+           let open Arg in
+           match a with
+           | Scalar e -> decl_set ~ty x e s
+           | Unsupported -> decl_unset ~ty x s
+           | Array u ->
+               Scoped.Code.loc_subst
+                 { target = x; source = u.array; offset = u.offset }
+                 s)
+         (Common.zip (K.ParameterList.to_c_type k.parameters) args)
+    (* make the binders in the generate code distinct from free-vars *)
+    |> Scoped.Code.vars_distinct ~vars
+    (* then add inside the child, meaning that the free-variables of the
+       outer-context are preserved  *)
+    |> Scoped.Code.add_inside ~child:s
+
+  let inline_stmt (funcs : Scoped.Kernel.t StringMap.t) :
+      Variable.Set.t -> Scoped.Code.t -> Scoped.Code.t =
+    let rec inline (vars : Variable.Set.t) : Scoped.Code.t -> Scoped.Code.t =
+      function
+      | Call (c, s) -> (
+          let vars =
+            match c.result with
+            | Some (x, _) -> Variable.Set.add x vars
+            | None -> vars
+          in
           match StringMap.find_opt (Call.unique_id c) funcs with
-          | Some k -> apply c.result c.args k
-          | None -> s)
-      | Sync _ | Assert _ | Read _ | Write _ | Atomic _ | Decl _ | LocationAlias _
-      | Assign _ ->
-          s
-      | Skip -> Skip
-      | Seq (p, q) -> Seq (inline p, inline q)
-      | If (b, s1, s2) -> If (b, inline s1, inline s2)
-      | For (r, s) -> For (r, inline s)
-      | Star s -> Star (inline s)
+          | Some (k : Scoped.Kernel.t) -> apply vars c.result c.args k s
+          | None -> Call (c, inline vars s))
+      | Seq (p, q) -> Seq (inline vars p, inline vars q)
+      | If (b, s1, s2) -> If (b, inline vars s1, inline vars s2)
+      | For (r, s) -> For (r, inline (Variable.Set.add r.var vars) s)
+      | Decl (d, s) -> Decl (d, inline (Variable.Set.add d.var vars) s)
+      | Assign a -> Assign { a with body = inline vars a.body }
+      | (Sync _ | Assert _ | Access _ | Skip) as s -> s
     in
     inline
 end
 
-let inline (funcs : Kernel.t StringMap.t) (k : Kernel.t) : Kernel.t =
-  { k with code = Inline.inline_stmt funcs k.code }
+let inline (funcs : Scoped.Kernel.t StringMap.t) (k : Scoped.Kernel.t) :
+    Scoped.Kernel.t =
+  {
+    k with
+    code = Inline.inline_stmt funcs (Scoped.Kernel.variable_set k) k.code;
+  }
 
 let inline_kernels (kernels : StringSet.t) (s : t) : t =
   (* Get the code of the kernels to call *)
@@ -115,18 +136,20 @@ let next (s : t) : StringSet.t =
   in
   StringSet.diff possible s.visited
 
-let from_list (ks : Kernel.t list) : t =
+let from_list (ks : Scoped.Kernel.t list) : t =
   {
     targets =
       ks
-      |> List.map (fun k -> (Kernel.unique_id k, Kernel.calls k))
+      |> List.map (fun k -> (Scoped.Kernel.unique_id k, Scoped.Kernel.calls k))
       |> StringMap.of_list;
     kernels =
-      ks |> List.map (fun k -> (Kernel.unique_id k, k)) |> StringMap.of_list;
+      ks
+      |> List.map (fun k -> (Scoped.Kernel.unique_id k, k))
+      |> StringMap.of_list;
     visited = StringSet.empty;
   }
 
-let kernel_list (s : t) : Kernel.t list =
+let kernel_list (s : t) : Scoped.Kernel.t list =
   s.kernels |> StringMap.bindings |> List.map snd
 
 let rec inline_all (s : t) : t =
@@ -138,5 +161,5 @@ let rec inline_all (s : t) : t =
     (* inline more *)
     inline_all (inline_kernels n s)
 
-let inline_calls (l : Kernel.t list) : Kernel.t list =
+let inline_calls (l : Scoped.Kernel.t list) : Scoped.Kernel.t list =
   l |> from_list |> inline_all |> kernel_list

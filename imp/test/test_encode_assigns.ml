@@ -11,7 +11,8 @@ let encode_assigns_testable : Encode_assigns.t Alcotest.testable =
   let equal = ( = ) in
   Alcotest.testable pp equal
 
-let test_encode_assigns_conversion (name : string) (scoped : Scoped.Code.t) (expected : Encode_assigns.t) =
+let test_encode_assigns_conversion (name : string) (scoped : Scoped.Code.t)
+    (expected : Encode_assigns.t) =
   ( name,
     `Quick,
     fun () ->
@@ -24,23 +25,18 @@ let encode_assigns_tests =
     test_encode_assigns_conversion "encode simple assignment"
       (let id = var "id" in
        let sq = var "s_Q" in
-       Code.Decl (
-         Decl.set id (n_plus (Num 32) (Var id)),
-         Access { array = sq; index = [ Var id ]; mode = Write None }
-       ))
+       Code.Decl
+         ( Decl.set id (n_plus (Num 32) (Var id)),
+           Access { array = sq; index = [ Var id ]; mode = Write None } ))
       (let id = var "id" in
        let sq = var "s_Q" in
-       Access { array = sq; index = [ n_plus (Num 32) (Var id) ]; mode = Write None });
-    
+       Access
+         { array = sq; index = [ n_plus (Num 32) (Var id) ]; mode = Write None });
     (* Variable declaration without assignment *)
     test_encode_assigns_conversion "encode variable declaration"
       (Code.Decl (Decl.unset (var "x"), Skip))
       (Encode_assigns.decl (var "x") Skip);
   ]
 
-let all_tests = 
-  [
-    ("encode assigns", encode_assigns_tests);
-  ]
-
+let all_tests = [ ("encode assigns", encode_assigns_tests) ]
 let () = Alcotest.run "Imp" all_tests
