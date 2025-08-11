@@ -197,44 +197,51 @@ let compile (k : t) : Protocols.Kernel.t =
 
 let calls (k : t) : StringSet.t = Stmt.calls k.code
 
-let apply (result : (Variable.t * C_type.t) option) (args : Arg.t list) (k : t)
-    : Stmt.t =
-  let code =
-    match result with
-    | Some (var, ty) ->
-        let d : Decl.t = { var; init = k.return; ty } in
-        Stmt.Seq (Stmt.decl d, k.code)
-    | None -> k.code
-  in
-  List.fold_right
-    (fun (x, a) s ->
-      let i =
-        let open Arg in
-        match a with
-        | Scalar e -> Stmt.decl_set x e
-        | Unsupported -> Stmt.decl_unset x
-        | Array u ->
-            Stmt.LocationAlias
-              { target = x; source = u.array; offset = u.offset }
-      in
-      Stmt.Seq (i, s))
-    (Common.zip (ParameterList.to_list k.parameters) args)
-    code
+module Inline = struct
+  type 'a state = (Variable.Set.t, 'a) State.t
+
+  let apply (result : (Variable.t * C_type.t) option) (args : Arg.t list) (k : t)
+      : Stmt.t =
+    let code =
+      match result with
+      | Some (var, ty) ->
+          let d : Decl.t = { var; init = k.return; ty } in
+          Stmt.Seq (Stmt.decl d, k.code)
+      | None -> k.code
+    in
+    List.fold_right
+      (fun (x, a) s ->
+        let i =
+          let open Arg in
+          match a with
+          | Scalar e -> Stmt.decl_set x e
+          | Unsupported -> Stmt.decl_unset x
+          | Array u ->
+              Stmt.LocationAlias
+                { target = x; source = u.array; offset = u.offset }
+        in
+        Stmt.Seq (i, s))
+      (Common.zip (ParameterList.to_list k.parameters) args)
+      code
+
+  let inline_stmt (funcs : t StringMap.t) : Stmt.t -> Stmt.t =
+    let rec inline (s : Stmt.t) : Stmt.t =
+      match s with
+      | Call c -> (
+          match StringMap.find_opt (Call.unique_id c) funcs with
+          | Some k -> apply c.result c.args k
+          | None -> s)
+      | Sync _ | Assert _ | Read _ | Write _ | Atomic _ | Decl _ | LocationAlias _
+      | Assign _ ->
+          s
+      | Skip -> Skip
+      | Seq (p, q) -> Seq (inline p, inline q)
+      | If (b, s1, s2) -> If (b, inline s1, inline s2)
+      | For (r, s) -> For (r, inline s)
+      | Star s -> Star (inline s)
+    in
+    inline
+end
 
 let inline (funcs : t StringMap.t) (k : t) : t =
-  let rec inline (s : Stmt.t) : Stmt.t =
-    match s with
-    | Call c -> (
-        match StringMap.find_opt (Call.unique_id c) funcs with
-        | Some k -> apply c.result c.args k
-        | None -> s)
-    | Sync _ | Assert _ | Read _ | Write _ | Atomic _ | Decl _ | LocationAlias _
-    | Assign _ ->
-        s
-    | Skip -> Skip
-    | Seq (p, q) -> Seq (inline p, inline q)
-    | If (b, s1, s2) -> If (b, inline s1, inline s2)
-    | For (r, s) -> For (r, inline s)
-    | Star s -> Star (inline s)
-  in
-  { k with code = inline k.code }
+  { k with code = Inline.inline_stmt funcs k.code }
