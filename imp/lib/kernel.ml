@@ -137,6 +137,8 @@ let to_s (k : t) : Indent.t list =
     Line "}";
   ]
 
+let to_string (k: t) : string = Indent.to_string (to_s k)
+
 let print (k : t) : unit = Indent.print (to_s k)
 let is_global (k : t) : bool = k.visibility = Visibility.Global
 
@@ -204,8 +206,8 @@ let apply (result : (Variable.t * C_type.t) option) (args : Arg.t list) (k : t)
         Stmt.Seq (Stmt.decl d, k.code)
     | None -> k.code
   in
-  List.fold_left
-    (fun s (x, a) ->
+  List.fold_right
+    (fun (x, a) s ->
       let i =
         let open Arg in
         match a with
@@ -216,8 +218,8 @@ let apply (result : (Variable.t * C_type.t) option) (args : Arg.t list) (k : t)
               { target = x; source = u.array; offset = u.offset }
       in
       Stmt.Seq (i, s))
-    code
     (Common.zip (ParameterList.to_list k.parameters) args)
+    code
 
 let inline (funcs : t StringMap.t) (k : t) : t =
   let rec inline (s : Stmt.t) : Stmt.t =
