@@ -220,18 +220,16 @@ module Make (LOG : Logger.Logger) = struct
       (UnifAnalysis.unif unif, ctx1, ctx2, stats)
 
     let add_range (uniform_loop : Range.t -> Range.t option) (range : Range.t)
-        (ctx : t) : (Range.t * Accuracy.t * t) option =
-      let free_locals =
+        (ctx : t) : (Range.t * Accuracy.t * t, string) Result.t =
+      let locals =
         Range.free_names range Variable.Set.empty
         |> Variable.Set.inter ctx.locals
       in
-      let only_tid_in_locals =
-        Variable.Set.diff free_locals Variable.tid_set |> Variable.Set.is_empty
-      in
+      let non_tid_locals = Variable.Set.diff locals Variable.tid_set in
       (* Warp-uniform loop *)
-      if Variable.Set.is_empty free_locals then
-        Some (range, Accuracy.Exact, ctx) (* Warp-divergent loop *)
-      else if only_tid_in_locals then
+      if Variable.Set.is_empty locals then
+        Ok (range, Accuracy.Exact, ctx) (* Warp-divergent loop *)
+      else if non_tid_locals |> Variable.Set.is_empty then
         (* get the first number *)
         let init = Range.first range in
         match uniform_loop range with
@@ -253,9 +251,10 @@ module Make (LOG : Logger.Logger) = struct
               else ctx
             in
             (* In either case we must mark the loop as inexact *)
-            Some (new_range, Accuracy.Approximate, ctx)
-        | None -> None
-      else None
+            Ok (new_range, Accuracy.Approximate, ctx)
+        | None -> Error "Unabled to solve range"
+      else
+        Error (Printf.sprintf "Range has thread-locals: {%s}" (Variable.set_to_string non_tid_locals))
   end
 
   let from_kernel ?(unif_cond = UniformCond.Exact)
@@ -304,17 +303,17 @@ module Make (LOG : Logger.Logger) = struct
           Ok (code, Stats.add metrics (Stats.add metric1 metric2))
       | Loop { range; body } -> (
           match Context.add_range uniform_loop range ctx with
-          | Some (range, accu, ctx) ->
+          | Ok (range, accu, ctx) ->
               let* body, metric = from_p ctx body in
               Ok (Loop { range; body }, Stats.add (Stats.make_loop accu) metric)
-          | None ->
+          | Error reason ->
               let* body, metric = from_p ctx body in
               if Ra.Stmt.is_zero body then
                 Ok (Skip, Stats.add (Stats.make_loop Exact) metric)
               else
                 (* Finally, we get to a point where the loop bounds are
                 thread-local and we know nothing about them. *)
-                Error ("Unsupported loop range: " ^ Range.to_string range))
+                Error (Printf.sprintf "Unsupported loop range: %s: (%s)" reason (Range.to_string range)))
     in
     let ctx =
       Params.to_set k.local_variables
