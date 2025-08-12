@@ -288,16 +288,15 @@ module Code = struct
             else Params.add a.var a.ty assigns
           in
           (assigns, Assign { a with body })
-      | Call (c, p) ->
-          (match c.result with
+      | Call (c, p) -> (
+          match c.result with
           | Some (var, ty) ->
-            let defined = Params.add var ty defined in
-            let assigns, p = fix_assigns defined p in
-            (assigns, Call (c, p))
+              let defined = Params.add var ty defined in
+              let assigns, p = fix_assigns defined p in
+              (assigns, Call (c, p))
           | None ->
-            let assigns, p = fix_assigns defined p in
-            (assigns, Call (c, p))
-          )
+              let assigns, p = fix_assigns defined p in
+              (assigns, Call (c, p)))
       | Decl (d, p) ->
           let defined = Params.add d.var d.ty defined in
           let assigns, p = fix_assigns defined p in
