@@ -227,8 +227,8 @@ module Make (LOG : Logger.Logger) = struct
       in
       let non_tid_locals = Variable.Set.diff locals Variable.tid_set in
       (* Warp-uniform loop *)
-      if Variable.Set.is_empty locals then
-        Ok (range, Accuracy.Exact, ctx) (* Warp-divergent loop *)
+      if Variable.Set.is_empty locals then Ok (range, Accuracy.Exact, ctx)
+        (* Warp-divergent loop *)
       else if non_tid_locals |> Variable.Set.is_empty then
         (* get the first number *)
         let init = Range.first range in
@@ -254,7 +254,9 @@ module Make (LOG : Logger.Logger) = struct
             Ok (new_range, Accuracy.Approximate, ctx)
         | None -> Error "Unabled to solve range"
       else
-        Error (Printf.sprintf "Range has thread-locals: {%s}" (Variable.set_to_string non_tid_locals))
+        Error
+          (Printf.sprintf "Range has thread-locals: {%s}"
+             (Variable.set_to_string non_tid_locals))
   end
 
   let from_kernel ?(unif_cond = UniformCond.Exact)
@@ -313,7 +315,9 @@ module Make (LOG : Logger.Logger) = struct
               else
                 (* Finally, we get to a point where the loop bounds are
                 thread-local and we know nothing about them. *)
-                Error (Printf.sprintf "Unsupported loop range: %s: (%s)" reason (Range.to_string range)))
+                Error
+                  (Printf.sprintf "Unsupported loop range: %s: (%s)" reason
+                     (Range.to_string range)))
     in
     let ctx =
       Params.to_set k.local_variables
