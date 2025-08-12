@@ -274,8 +274,6 @@ module Code = struct
     let rec fix_assigns (defined : Params.t) (i : t) : Params.t * t =
       match i with
       | Skip | Sync _ | Access _ | Assert _ -> (Params.empty, i)
-      | Call (c, _) ->
-          raise (Invalid_argument ("Invoke inline first: " ^ Call.to_string c))
       | If (b, p, q) ->
           let assigns_1, p = fix_assigns Params.empty p in
           let assigns_2, q = fix_assigns Params.empty q in
@@ -290,6 +288,16 @@ module Code = struct
             else Params.add a.var a.ty assigns
           in
           (assigns, Assign { a with body })
+      | Call (c, p) ->
+          (match c.result with
+          | Some (var, ty) ->
+            let defined = Params.add var ty defined in
+            let assigns, p = fix_assigns defined p in
+            (assigns, Call (c, p))
+          | None ->
+            let assigns, p = fix_assigns defined p in
+            (assigns, Call (c, p))
+          )
       | Decl (d, p) ->
           let defined = Params.add d.var d.ty defined in
           let assigns, p = fix_assigns defined p in

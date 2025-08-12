@@ -108,8 +108,7 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
     | Assert b -> Assert (Assert.map (b_subst st) b)
     | Access e -> Access (a_subst st e)
     | Skip -> Skip
-    | Call (c, _) ->
-        raise (Invalid_argument ("Call inline first: " ^ Call.to_string c))
+    | Call (_, p) -> inline known st p
     | If (b, p1, p2) ->
         let b = b_subst st b in
         If (b, inline known st p1, inline known st p2)
