@@ -95,13 +95,30 @@ let pow ~base (n : nexp) : bexp =
   in
   pows 0 |> eq_nums n
 
+let from_decl (var:Variable.t) (ty:C_type.t) : t =
+  let (lower_bound, upper_bound) =
+    ty
+    |> C_type.to_int_dom
+    |> Option.value ~default:Int_dom.signed_int
+    |> Int_dom.to_range
+  in
+  {
+    var;
+    ty;
+    dir = Increase;
+    step = Plus (Num 1);
+    lower_bound = Num lower_bound;
+    upper_bound = Num upper_bound;
+  }
+
+(* Convert a variable declaration into a range *)
+let decl_to_bexp (var:Variable.t) (ty:C_type.t) : bexp =
+  ty |> C_type.to_int_dom
+  |> Option.value ~default:Int_dom.signed_int
+  |> Int_dom.to_bexp var
+
 let to_cond (r : t) : bexp =
   let x = Var r.var in
-  let ty =
-    r.ty |> C_type.to_int_dom
-    |> Option.value ~default:Int_dom.signed_int
-    |> Int_dom.to_bexp r.var
-  in
   let lb = r.lower_bound in
   let ub = r.upper_bound in
   (match r.step with
@@ -118,7 +135,7 @@ let to_cond (r : t) : bexp =
   | Mult e ->
       prerr_endline ("range_to_cond: unsupported range: " ^ Exp.n_to_string e);
       [ (* Ensure that the step is positive *) n_gt e (Num 1) ])
-  @ [ (* lb <= x < ub *) n_le lb x; n_le x ub; ty ]
+  @ [ (* lb <= x < ub *) n_le lb x; n_le x ub; decl_to_bexp r.var r.ty ]
   |> b_and_ex
 
 (*
