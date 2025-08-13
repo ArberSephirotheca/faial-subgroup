@@ -8,6 +8,17 @@ module Step = struct
   let mult (e : nexp) : t = Mult e
   let is_plus : t -> bool = function Plus _ -> true | _ -> false
   let is_mult : t -> bool = function Mult _ -> true | _ -> false
+  let zero : t -> nexp = function Mult _ -> Num 1 | Plus _ -> Num 0
+
+  (** Returns the increase function *)
+  let to_inc : t -> nexp -> nexp -> nexp = function
+    | Mult _ -> n_mult
+    | Plus _ -> n_plus
+
+  (** Returns the decrease function *)
+  let to_dec : t -> nexp -> nexp -> nexp = function
+    | Mult _ -> n_div
+    | Plus _ -> n_minus
 
   let to_string : t -> string = function
     | Plus x -> "+= " ^ n_to_string x
@@ -95,10 +106,9 @@ let pow ~base (n : nexp) : bexp =
   in
   pows 0 |> eq_nums n
 
-let from_decl (var:Variable.t) (ty:C_type.t) : t =
-  let (lower_bound, upper_bound) =
-    ty
-    |> C_type.to_int_dom
+let from_decl (var : Variable.t) (ty : C_type.t) : t =
+  let lower_bound, upper_bound =
+    ty |> C_type.to_int_dom
     |> Option.value ~default:Int_dom.signed_int
     |> Int_dom.to_range
   in
@@ -112,7 +122,7 @@ let from_decl (var:Variable.t) (ty:C_type.t) : t =
   }
 
 (* Convert a variable declaration into a range *)
-let decl_to_bexp (var:Variable.t) (ty:C_type.t) : bexp =
+let decl_to_bexp (var : Variable.t) (ty : C_type.t) : bexp =
   ty |> C_type.to_int_dom
   |> Option.value ~default:Int_dom.signed_int
   |> Int_dom.to_bexp var
@@ -358,6 +368,17 @@ let next (r : t) : t =
   match r.dir with
   | Increase -> { r with lower_bound = Step.inc r.step r.lower_bound }
   | Decrease -> { r with upper_bound = Step.dec r.step r.upper_bound }
+
+(* Translates the range to zero, meaning if the range is
+   [x, y] becomes [0, y - x] for an additive range
+   [x, y] becomes [1, y / x] for a multiplicative range
+*)
+let to_zero (r : t) : t =
+  {
+    r with
+    lower_bound = Step.zero r.step;
+    upper_bound = Step.to_dec r.step r.upper_bound r.lower_bound;
+  }
 
 let is_valid (r : t) : bexp =
   b_and (Step.is_valid r.step)
