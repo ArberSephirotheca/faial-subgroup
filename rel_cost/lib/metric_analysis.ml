@@ -171,6 +171,13 @@ module IndexCost = struct
 
   let from_cost (c : Cost.t) : t =
     { code = Ra.Stmt.Tick (Cost.value c); exact = c.exact }
+
+  let to_cost (e : t) : (Cost.t, string) Result.t =
+    match e.code with
+    | Ra.Stmt.Tick n -> Ok (Cost.from_int ~value:n ~exact:e.exact ())
+    | _ -> Error ("to_cost: " ^ Ra.Stmt.to_string e.code)
+
+  let to_string (e : t) : string = Ra.Stmt.to_string e.code
 end
 
 module Make (L : Logger.Logger) = struct
