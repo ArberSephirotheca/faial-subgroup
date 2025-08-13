@@ -2,6 +2,7 @@
   (name test)
   (deps (glob_files *.cu)
     ../../approx/bin/main.exe
+    ../../drf/bin/main.exe
   )
   (libraries stage0
     ; 3rd-party:
