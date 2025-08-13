@@ -9,7 +9,7 @@ module Code = struct
     | Index of Exp.nexp
     | Loop of { range : Range.t; body : t }
     | Cond of Exp.bexp * t
-    | Decl of Variable.t * t
+    | Decl of { var : Variable.t; ty : C_type.t; body : t }
 
   module SubstMake (S : Subst.SUBST) = struct
     module M = Subst.Make (S)
@@ -19,22 +19,35 @@ module Code = struct
           Loop { range = M.r_subst s r; body = subst s acc }
       | Cond (b, acc) -> Cond (M.b_subst s b, subst s acc)
       | Index a -> Index (M.n_subst s a)
-      | Decl (x, acc) ->
-          M.add s x (function
-            | Some s -> Decl (x, subst s acc)
-            | None -> Decl (x, acc))
+      | Decl { var; ty; body } as i ->
+          M.add s var (function
+            | Some s -> Decl { var; ty; body = subst s body }
+            | None -> i)
   end
 
   module S1 = SubstMake (Subst.SubstPair)
 
   let subst = S1.subst
 
+  let normalize : t -> t =
+    let rec norm : t -> t = function
+      | Index _ as s -> s
+      | Cond (e, s) -> Cond (e, norm s)
+      | Decl {var; ty; body} ->
+        Decl {var; ty; body=norm body}
+      | Loop {range; body} ->
+        (* x' := x + lb *)
+        let new_x = Range.Step.to_inc range.step (Var range.var) range.lower_bound in
+        Loop {range=Range.to_zero range; body = norm (subst (range.var, new_x) body);}
+    in
+    norm
+
   let to_ra (idx_analysis : Variable.Set.t -> Exp.nexp -> int) :
       Variable.Set.t -> t -> Ra.Stmt.t =
     let rec to_ra (locals : Variable.Set.t) : t -> Ra.Stmt.t = function
       | Index a -> Tick (idx_analysis locals a)
       | Cond (_, p) -> to_ra locals p
-      | Decl (x, p) -> to_ra (Variable.Set.add x locals) p
+      | Decl { var = x; body = p; _ } -> to_ra (Variable.Set.add x locals) p
       | Loop { range; body } -> Loop { range; body = to_ra locals body }
     in
     to_ra
@@ -44,17 +57,42 @@ module Code = struct
         "for (" ^ Range.to_string r ^ ")\n" ^ to_string acc
     | Cond (b, acc) -> "if (" ^ Exp.b_to_string b ^ ")\n" ^ to_string acc
     | Index a -> array ^ "[" ^ Exp.n_to_string a ^ "]"
-    | Decl (x, p) -> "var " ^ Variable.name x ^ " " ^ to_string p ^ "\n"
+    | Decl { var = x; body = p; _ } ->
+        "var " ^ Variable.name x ^ " " ^ to_string p ^ "\n"
+
+  (* Returns the set of local variables mentioned in the index *)
+  let locals ~init : t -> Variable.Set.t =
+    let rec locals (fns : Variable.Set.t) : t -> Variable.Set.t = function
+      | Index _ -> fns
+      | Loop { range = r; body = p } ->
+          let r_fns = Range.free_names r Variable.Set.empty in
+          let fns =
+            (* Test if the loop range contains thread-locals *)
+            if Variable.Set.inter r_fns fns |> Variable.Set.is_empty then fns
+            else Variable.Set.add r.var fns
+          in
+          locals fns p
+      | Cond (_, p) -> locals fns p
+      | Decl { var; ty = _; body } -> locals (Variable.Set.add var fns) body
+    in
+    locals init
 
   let rec map_index (f : Exp.nexp -> Exp.nexp) : t -> t = function
     | Index a -> Index (f a)
     | Loop { range = r; body = p } -> Loop { range = r; body = map_index f p }
     | Cond (e, p) -> Cond (e, map_index f p)
-    | Decl (x, p) -> Decl (x, map_index f p)
+    | Decl { var; ty; body } -> Decl { var; ty; body = map_index f body }
+
+  let rec to_bexp : t -> Exp.bexp = function
+    | Index _ -> Exp.b_true
+    | Cond (b, p) -> Exp.b_and b (to_bexp p)
+    | Decl { var; ty; body } ->
+        Exp.b_and (Range.decl_to_bexp var ty) (to_bexp body)
+    | Loop { range; body } -> Exp.b_and (Range.to_cond range) (to_bexp body)
 
   let rec index : t -> Exp.nexp = function
     | Index a -> a
-    | Loop { body = p; _ } | Cond (_, p) | Decl (_, p) -> index p
+    | Loop { body = p; _ } | Cond (_, p) | Decl { body = p; _ } -> index p
 
   let flatten (a : t) : t = Index (index a)
 
@@ -67,60 +105,21 @@ module Code = struct
       | Cond (e, a) ->
           let fns, a = opt a in
           (Exp.b_free_names e fns, Cond (e, a))
-      | Decl (x, a) ->
+      | Decl { var; ty; body = a } ->
           let fns, a = opt a in
-          let a = if Variable.Set.mem x fns then Decl (x, a) else a in
+          let a =
+            if Variable.Set.mem var fns then Decl { var; ty; body = a } else a
+          in
           (fns, a)
     in
     fun a -> opt a |> snd
-
-  let minimize : t -> t =
-    let rec min : t -> Exp.bexp list * Variable.Set.t * t = function
-      | Index e -> ([], Exp.n_free_names e Variable.Set.empty, Index e)
-      | Loop { range = r; body = a } ->
-          let l, fns, a = min a in
-          if Variable.Set.mem r.var fns then
-            let r_fns = Range.free_names r Variable.Set.empty in
-            let loop_l, l = List.partition (Exp.b_mem r.var) l in
-            if Variable.Set.inter r_fns fns |> Variable.Set.is_empty then
-              (l, fns, a)
-            else
-              let a =
-                if loop_l = [] then a else Cond (Exp.b_and_ex loop_l, a)
-              in
-              ( l,
-                Variable.Set.union r_fns (Variable.Set.add r.var fns),
-                Loop { range = r; body = a } )
-          else (l, fns, a)
-      | Cond (e, a) ->
-          let l, fns, a = min a in
-          let e_l =
-            Exp.b_and_split e
-            (* only keep variables that mention variables from the body *)
-            |> List.filter (Exp.b_exists (fun x -> Variable.Set.mem x fns))
-          in
-          (Common.append_rev1 e_l l, Exp.b_free_names e fns, a)
-      | Decl (x, a) ->
-          let l, fns, a = min a in
-          let a = if Variable.Set.mem x fns then Decl (x, a) else a in
-          (l, fns, a)
-    in
-    fun a ->
-      let l, _, a = min a in
-      if l = [] then a else Cond (Exp.b_and_ex l, a)
-
-  let index_cost (params : Config.t) (m : Metric.t) (a : t) :
-      (Cost.t, string) Result.t =
-    let idx = index a in
-    let ctx = Vectorized.from_config params in
-    Vectorized.to_cost m idx ctx
 
   let to_approx (x : Variable.t) : t -> Approx.Code.t =
     let rec to_approx : t -> Approx.Code.t = function
       | Index a -> Access (Access.read x [ a ])
       | Loop { range = r; body = a } -> Loop { range = r; body = to_approx a }
       | Cond (b, a) -> Cond (b, to_approx a)
-      | Decl (x, a) -> Approx.Code.decl x (to_approx a)
+      | Decl { var; ty = _; body } -> Approx.Code.decl var (to_approx body)
     in
     to_approx
 
@@ -141,7 +140,7 @@ module Code = struct
       let rec eval (c : Cost.t) (ctx : Vectorized.t) :
           t -> (Cost.t, string) Result.t = function
         | Index a -> Vectorized.to_cost m a ctx
-        | Decl (_, a) ->
+        | Decl { body = a; _ } ->
             (* Ignore variables so that if eval uses an unknown variable it
            gets stuck. *)
             eval c ctx a
@@ -162,8 +161,16 @@ module Code = struct
       eval Cost.zero ctx
 
   module Make (L : Logger.Logger) = struct
-    module O = Metric_analysis.Make (L)
+    module M = Metric_analysis.Make (L)
     module L = Linearize_index.Make (L)
+
+    let index_cost ~local_variables (config : Config.t) (m : Metric.t) (a : t) :
+        Metric_analysis.IndexCost.t =
+      let index = index a in
+      let locals = locals ~init:local_variables a in
+      let divergence = to_bexp a in
+      M.run m config ~strategy:Analysis_strategy.OverApproximation ~locals
+        ~index ~divergence
 
     let from_proto (arrays : Memory.t Variable.Map.t) (cfg : Config.t) :
         Variable.Set.t -> Protocols.Code.t -> (Variable.t * t) Seq.t =
@@ -172,15 +179,13 @@ module Code = struct
           = function
         | Access { array = x; index = l; _ } ->
             l |> lin x
-            |> Option.map (fun e ->
-                   let e = O.bc_remove_offset_aux cfg locals e in
-                   Seq.return (x, Index e))
+            |> Option.map (fun e -> Seq.return (x, Index e))
             |> Option.value ~default:Seq.empty
         | Sync _ -> Seq.empty
-        | Decl { body = p; var; _ } ->
+        | Decl { body = p; var; ty } ->
             p
             |> on_p (Variable.Set.add var locals)
-            |> Seq.map (fun (x, i) -> (x, Decl (var, i)))
+            |> Seq.map (fun (x, i) -> (x, Decl { var; body = i; ty }))
         | If (b, p, q) ->
             Seq.append
               (on_p locals p |> Seq.map (fun (x, p) -> (x, Cond (b, p))))
@@ -203,6 +208,8 @@ module Code = struct
 
   module Silent = Make (Logger.Silent)
   module Default = Make (Logger.Colors)
+
+  let index_cost = Default.index_cost
 
   let from_proto :
       Memory.t Variable.Map.t ->
@@ -237,8 +244,6 @@ let location (k : t) : Location.t = Variable.location k.array
 let to_string (k : t) : string =
   Code.to_string ~array:(Variable.name k.array) k.code
 
-let minimize (k : t) : t = { k with code = Code.minimize k.code }
-
 let map_index (f : Exp.nexp -> Exp.nexp) (k : t) : t =
   { k with code = Code.map_index f k.code }
 
@@ -247,9 +252,12 @@ let to_check (k : t) : Approx.Check.t =
   let vars = Variable.Set.union k.global_variables Variable.tid_set in
   Approx.Check.from_code vars code
 
+let normalize (k : t) : t =
+  { k with code = Code.normalize k.code }
+
 let index_cost (params : Config.t) (m : Metric.t) (k : t) :
-    (Cost.t, string) Result.t =
-  Code.index_cost params m k.code
+    Metric_analysis.IndexCost.t =
+  Code.index_cost ~local_variables:k.local_variables params m k.code
 
 let trim_decls (k : t) : t = { k with code = Code.trim_decls k.code }
 

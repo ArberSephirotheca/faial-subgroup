@@ -14,8 +14,8 @@ module Hotspot = struct
   type t = {
     bank : Bank.t;
     divergence : Divergence_analysis.t;
-    max_cost : Cost.t;
-    index : (Cost.t, string) Result.t;
+    (*max_cost : Cost.t;*)
+    index : Metric_analysis.IndexCost.t;
     sim : (Cost.t, string) Result.t;
   }
 
@@ -59,7 +59,8 @@ module Solver = struct
 
   let sliced_cost (a : t) (k : Kernel.t) : Hotspot.t list =
     Bank.from_proto a.config k
-    |> Seq.filter_map (fun bank ->
+    |> Seq.map (fun bank ->
+           let bank = Bank.normalize bank in
            let m =
              let open Bank in
              match bank.hierarchy with
@@ -69,21 +70,14 @@ module Solver = struct
            let to_cost value = Cost.from_int ~value ~exact:true () in
            let max_cost = Metric.max_cost_from a.config m |> to_cost in
            let r_cost = Bank.index_cost a.config m bank in
-           let max_cost = Result.value ~default:max_cost r_cost in
-           let min_cost = Metric.min_cost m |> to_cost in
+           let _ = a.skip_zero in
            let divergence = Divergence_analysis.from_bank bank in
-           let cost = Result.value ~default:max_cost r_cost in
            let sim =
-             if
-               a.simulate
-               && Divergence_analysis.is_known divergence
-               && Cost.(cost > min_cost)
-             then Bank.eval_res ~max_cost:max_cost.value a.config m bank
+             if a.simulate && Divergence_analysis.is_known divergence then
+               Bank.eval_res ~max_cost:max_cost.value a.config m bank
              else Error "Run with --simulate to output simulated cost."
            in
-           (* Convert a slice into an expression *)
-           if Cost.(cost <= min_cost) && a.skip_zero then None
-           else Some Hotspot.{ index = r_cost; max_cost; bank; divergence; sim })
+           Hotspot.{ index = r_cost; bank; divergence; sim })
     |> List.of_seq
 
   let run (s : t) : (Kernel.t * Hotspot.t list) list =
@@ -131,8 +125,8 @@ module TUI = struct
                      else " (potential)"
                    in
                    e ^ pot
-               | Ok e, _ ->
-                   let e = e.value |> string_of_int in
+               | e, _ ->
+                   let e = e |> Metric_analysis.IndexCost.to_string in
                    let pot =
                      if
                        Divergence_analysis.is_thread_uniform conflict.divergence
@@ -140,7 +134,6 @@ module TUI = struct
                      else " (potential)"
                    in
                    e ^ pot
-               | _, _ -> string_of_int conflict.max_cost.value ^ " (potential)"
              in
              let cost =
                let open PrintBox in
@@ -158,7 +151,7 @@ module TUI = struct
                @
                let tsx =
                  if Result.is_ok conflict.sim then conflict.sim
-                 else conflict.index
+                 else conflict.index |> Metric_analysis.IndexCost.to_cost
                in
                match tsx with
                | Ok Cost.{ value; state = Some { accesses = accs; _ }; _ } ->
@@ -247,7 +240,7 @@ module JUI = struct
                  let cost =
                    [
                      ( "index_analysis",
-                       match c.index with
+                       match c.index |> Metric_analysis.IndexCost.to_cost with
                        | Ok { value; _ } -> `Int value
                        | Error _ -> `Null );
                      ( "access",
@@ -291,7 +284,7 @@ let run ?(skip_zero = true) ~skip_distinct_vars ~config ~output_json
   in
   if output_json then JUI.run app else TUI.run app
 
-let pico (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
+let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
     (show_all : bool) (skip_distinct_vars : bool) (ignore_absent : bool)
     (output_json : bool) (only_reads : bool) (only_writes : bool)
     (params : (string * int) list) (simulate : bool) =
@@ -386,9 +379,9 @@ let simulate =
   let doc = "Simulate the cost if possible." in
   Arg.(value & flag & info [ "sim" ] ~doc)
 
-let pico_t =
+let main_t =
   Term.(
-    const pico $ get_fname $ block_dim $ grid_dim $ show_all
+    const main $ get_fname $ block_dim $ grid_dim $ show_all
     $ skip_distinct_vars $ ignore_absent $ output_json $ only_reads
     $ only_writes $ params $ simulate)
 
@@ -396,4 +389,4 @@ let info =
   let doc = "Static analysis of bank-conflicts for GPU programs" in
   Cmd.info "faial-bc" ~version:"%%VERSION%%" ~doc
 
-let () = Cmd.v info pico_t |> Cmd.eval |> exit
+let () = Cmd.v info main_t |> Cmd.eval |> exit

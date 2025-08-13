@@ -19,7 +19,8 @@ let rec c_is_uniform (locals : Variable.Set.t) : Bank.Code.t -> bool = function
   | Loop { range = r; body = p } ->
       r_is_uniform locals r && c_is_uniform locals p
   | Cond (e, p) -> b_is_uniform locals e && c_is_uniform locals p
-  | Decl (x, p) -> c_is_uniform (Variable.Set.add x locals) p
+  | Decl { var; ty = _; body } ->
+      c_is_uniform (Variable.Set.add var locals) body
 
 let is_uniform (k : Bank.t) : bool =
   c_is_uniform (Variable.Set.union k.local_variables Variable.tid_set) k.code
@@ -34,7 +35,7 @@ let rec c_is_divergent : Bank.Code.t -> bool = function
   | Index _ -> false
   | Loop { range = r; body = p } -> r_is_divergent r || c_is_divergent p
   | Cond (e, p) -> b_is_divergent e || c_is_divergent p
-  | Decl (_, p) -> c_is_divergent p
+  | Decl { body = p; _ } -> c_is_divergent p
 
 let is_divergent (k : Bank.t) : bool = c_is_divergent k.code
 
