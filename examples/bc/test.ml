@@ -160,7 +160,7 @@ let unsupported : Fpath.t list =
   ]
   |> List.map (fun x -> Fpath.(v "." / x))
 
-let cost_exe : Fpath.t = Files.from_string "../../total_cost/main.exe"
+let cost_exe : Fpath.t = Files.from_string "../../rel_cost/bin/cost.exe"
 
 let cost ?(metric = "bc") ?(args = []) (fname : Fpath.t) : Subprocess.t =
   Subprocess.make (Fpath.to_string cost_exe)

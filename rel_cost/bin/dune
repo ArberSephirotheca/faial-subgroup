@@ -7,3 +7,36 @@
  (public_name benchmark_tactics)
  (name benchmark_tactics)
  (libraries rel_cost protocols protocols_parsing cmdliner unix))
+
+(executable
+  (public_name faial-cost)
+  (name cost)
+  (modules cost)
+  (modes exe byte)
+  (libraries
+    ; 1st-party
+    cmdliner z3 printbox printbox-text
+    ; 1st-pary
+    rel_cost ra inference
+  )
+)
+
+(executable
+ (public_name faial-cost-diff)
+ (name cost_diff)
+ (modules cost_diff)
+ (modes exe byte)
+ (libraries
+   ; 1st-party
+   cmdliner z3 printbox printbox-text
+   ; 1st-pary
+   rel_cost ra inference
+ )
+)
+
+(executable
+ (public_name faial-cost-dyn)
+ (name cost_dyn)
+ (modules cost_dyn)
+ (modes exe byte)
+ (libraries inference cmdliner z3 rel_cost ra))

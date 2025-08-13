@@ -1,7 +1,7 @@
 (test
   (name test)
   (deps (glob_files *.cu)
-    ../../total_cost/main.exe
+    ../../rel_cost/bin/cost.exe
   )
   (libraries stage0
     ; 3rd-party:
