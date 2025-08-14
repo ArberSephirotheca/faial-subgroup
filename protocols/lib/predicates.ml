@@ -56,25 +56,21 @@ let get_predicates (b : bexp) : t list =
   |> StringSet.elements
   |> List.map (Hashtbl.find all_predicates_db)
 
-let inline : bexp -> bexp =
-  let rec inline_n (n : nexp) : nexp =
-    match n with
-    | NCall _ | Var _ | Num _ -> n
-    | CastInt b -> CastInt (inline_b b)
-    | Other e -> Other (inline_n e)
-    | Unary (o, e) -> Unary (o, inline_n e)
-    | Binary (o, n1, n2) -> Binary (o, inline_n n1, inline_n n2)
-    | NIf (b, n1, n2) -> NIf (inline_b b, inline_n n1, inline_n n2)
-  and inline_b (b : bexp) : bexp =
-    match b with
-    | Pred (x, n) ->
-        let p = Hashtbl.find all_predicates_db x in
-        p.pred_body (inline_n n)
-    | Bool _ -> b
-    | CastBool e -> CastBool (inline_n e)
-    | BNot b -> BNot (inline_b b)
-    | NRel (o, n1, n2) -> NRel (o, inline_n n1, inline_n n2)
-    | BRel (o, b1, b2) -> BRel (o, inline_b b1, inline_b b2)
-    | Distinct exprs -> Distinct (List.map inline_n exprs)
-  in
-  inline_b
+let rec n_inline : nexp -> nexp = function
+  | (NCall _ | Var _ | Num _) as n -> n
+  | CastInt b -> CastInt (b_inline b)
+  | Other e -> Other (n_inline e)
+  | Unary (o, e) -> Unary (o, n_inline e)
+  | Binary (o, n1, n2) -> Binary (o, n_inline n1, n_inline n2)
+  | NIf (b, n1, n2) -> NIf (b_inline b, n_inline n1, n_inline n2)
+
+and b_inline : bexp -> bexp = function
+  | Pred (x, n) ->
+      let p = Hashtbl.find all_predicates_db x in
+      p.pred_body (n_inline n)
+  | Bool _ as b -> b
+  | CastBool e -> CastBool (n_inline e)
+  | BNot b -> BNot (b_inline b)
+  | NRel (o, n1, n2) -> NRel (o, n_inline n1, n_inline n2)
+  | BRel (o, b1, b2) -> BRel (o, b_inline b1, b_inline b2)
+  | Distinct exprs -> Distinct (List.map n_inline exprs)

@@ -18,7 +18,7 @@ type json = Yojson.Basic.t
 
 let add (b_to_expr : Z3.context -> bexp -> Expr.expr) (s : Solver.solver)
     (ctx : Z3.context) (p : Symbexp.Proof.t) : unit =
-  [ b_to_expr ctx (Predicates.inline p.goal) ] |> Solver.add s
+  [ b_to_expr ctx (Predicates.b_inline p.goal) ] |> Solver.add s
 
 module Environ = struct
   open Common

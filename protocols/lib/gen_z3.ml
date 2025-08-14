@@ -6,6 +6,7 @@ module Arithmetic = Z3.Arithmetic
 module Integer = Z3.Arithmetic.Integer
 module BitVector = Z3.BitVector
 
+exception Preprocessing_error of string
 exception Not_implemented of string
 
 module type GEN = sig
@@ -456,6 +457,7 @@ end
 
 module CodeGen (N : NUMERIC_OPS) = struct
   let parse_num = N.parse_num
+  let preprocessing_error msg = raise (Preprocessing_error msg)
 
   let nbin_to_expr :
       N_binary.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr = function
@@ -492,8 +494,10 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Other n ->
         let n : string = Exp.n_to_string n in
         raise (Not_implemented ("n_to_expr: not implemented for Other of " ^ n))
-    | NCall _ ->
-        failwith "b_to_expr: invoke Predicates.inline to remove predicates"
+    | NCall _ as c ->
+        preprocessing_error
+          ("b_to_expr: invoke Predicates.inline to remove predicates: "
+         ^ n_to_string c)
     | Num (n : int) -> N.mk_num ctx n
     | Binary (op, n1, n2) ->
         (nbin_to_expr op) ctx (n_to_expr ctx n1) (n_to_expr ctx n2)
@@ -509,8 +513,10 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | BRel (op, b1, b2) ->
         (brel_to_expr op) ctx (b_to_expr ctx b1) (b_to_expr ctx b2)
     | BNot (b : bexp) -> Boolean.mk_not ctx (b_to_expr ctx b)
-    | Pred _ ->
-        failwith "b_to_expr: invoke Predicates.inline to remove predicates"
+    | Pred _ as c ->
+        preprocessing_error
+          ("b_to_expr: invoke Predicates.inline to remove predicates: "
+         ^ b_to_string c)
     | Distinct exprs ->
         let z3_exprs = List.map (n_to_expr ctx) exprs in
         Boolean.mk_distinct ctx z3_exprs
