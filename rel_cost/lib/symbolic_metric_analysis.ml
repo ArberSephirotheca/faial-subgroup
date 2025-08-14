@@ -291,9 +291,14 @@ let ua ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
     (locals : Variable.Set.t) (cond : bexp) (index : nexp) : int option =
   let module S = (val solver) in
-  let formula = encode_ua cfg locals cond index in
-  S.optimize_expr strategy ~pre:(Constraints.to_bexp generator cfg) formula
-  |> Result.to_option
+  let solve cond index =
+    let formula = encode_ua cfg locals cond index in
+    S.optimize_expr strategy ~pre:(Constraints.to_bexp generator cfg) formula
+    |> Result.to_option
+  in
+  try solve cond index
+  with Protocols.Gen_z3.Preprocessing_error _ ->
+    solve (Predicates.b_inline cond) (Predicates.n_inline index)
 
 module ProofResult = struct
   type t =
