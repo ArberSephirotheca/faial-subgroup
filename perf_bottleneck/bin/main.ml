@@ -4,19 +4,58 @@ open Rel_cost
 open Protocols
 open Perf_bottleneck
 
+module MemoryFilter = struct
+  type t = SharedOnly | GlobalOnly | Both
+
+  let contains (hierarchy : Mem_hierarchy.t) (filter : t) : bool =
+    match filter with
+    | Both -> true
+    | SharedOnly -> Mem_hierarchy.is_shared hierarchy
+    | GlobalOnly -> not (Mem_hierarchy.is_shared hierarchy)
+
+  let conv : t Cmdliner.Arg.conv =
+    let parse s =
+      match s with
+      | "shared" -> Ok SharedOnly
+      | "global" -> Ok GlobalOnly
+      | "both" -> Ok Both
+      | _ -> Error (`Msg "Expected shared, global, or both")
+    in
+    let print ppf = function
+      | SharedOnly -> Format.fprintf ppf "shared"
+      | GlobalOnly -> Format.fprintf ppf "global"
+      | Both -> Format.fprintf ppf "both"
+    in
+    Cmdliner.Arg.conv (parse, print)
+end
+
 let abort_when (b : bool) (msg : string) : unit =
   if b then (
     Logger.Colors.error msg;
     exit (-2))
   else ()
 
+let time_analysis (f : unit -> 'a) : float * 'a =
+  let start = Unix.gettimeofday () in
+  let result = f () in
+  let elapsed = Unix.gettimeofday () -. start in
+  (elapsed, result)
+
+let format_time_sliding (seconds : float) : string =
+  if seconds >= 60.0 then
+    let mins = int_of_float (seconds /. 60.0) in
+    let remaining_secs = seconds -. (float_of_int mins *. 60.0) in
+    Printf.sprintf "%dm %.1fs" mins remaining_secs
+  else if seconds >= 1.0 then Printf.sprintf "%.2fs" seconds
+  else Printf.sprintf "%.3fms" (seconds *. 1000.0)
+
 module Hotspot = struct
   type t = {
     bank : Bank.t;
     divergence : Divergence_analysis.t;
-    (*max_cost : Cost.t;*)
     index : Metric_analysis.IndexCost.t;
     sim : (Cost.t, string) Result.t;
+    analysis_time_secs : float;
   }
 
   let hierarchy (e : t) : Mem_hierarchy.t =
@@ -36,10 +75,13 @@ module Solver = struct
     grid_dim : Dim3.t;
     params : (string * int) list;
     simulate : bool;
+    sat : bool;
+    memory_filter : MemoryFilter.t;
   }
 
   let make ~kernels ~skip_zero ~skip_distinct_vars ~config ~ignore_absent
-      ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate : t =
+      ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate ~sat
+      ~memory_filter : t =
     let kernels =
       if skip_distinct_vars then kernels
       else List.map Kernel.vars_distinct kernels
@@ -55,21 +97,29 @@ module Solver = struct
       grid_dim;
       params;
       simulate;
+      sat;
+      memory_filter;
     }
 
   let sliced_cost (a : t) (k : Kernel.t) : Hotspot.t list =
     Bank.from_proto a.config k
+    |> Seq.filter (fun bank ->
+           let open Bank in
+           MemoryFilter.contains bank.hierarchy a.memory_filter)
     |> Seq.map (fun bank ->
            let bank = Bank.normalize bank in
            let m =
              let open Bank in
              match bank.hierarchy with
              | Mem_hierarchy.SharedMemory -> Metric.BankConflicts
-             | GlobalMemory -> UncoalescedAccesses
+             | GlobalMemory ->
+                 if a.sat then UncoalescedAccesses2 else UncoalescedAccesses
            in
            let to_cost value = Cost.from_int ~value ~exact:true () in
            let max_cost = Metric.max_cost_from a.config m |> to_cost in
-           let r_cost = Bank.index_cost a.config m bank in
+           let analysis_time_secs, r_cost =
+             time_analysis (fun () -> Bank.index_cost a.config m bank)
+           in
            let _ = a.skip_zero in
            let divergence = Divergence_analysis.from_bank bank in
            let sim =
@@ -77,7 +127,7 @@ module Solver = struct
                Bank.eval_res ~max_cost:max_cost.value a.config m bank
              else Error "Run with --simulate to output simulated cost."
            in
-           Hotspot.{ index = r_cost; bank; divergence; sim })
+           Hotspot.{ index = r_cost; bank; divergence; sim; analysis_time_secs })
     |> List.of_seq
 
   let run (s : t) : (Kernel.t * Hotspot.t list) list =
@@ -142,6 +192,10 @@ module TUI = struct
                   [|
                     text_with_style Style.bold "Thread-divergence";
                     text (Divergence_analysis.to_string conflict.divergence);
+                  |];
+                  [|
+                    text_with_style Style.bold "Analysis time";
+                    text (format_time_sliding conflict.analysis_time_secs);
                   |];
                   [|
                     text_with_style Style.bold "Context";
@@ -249,6 +303,7 @@ module JUI = struct
                        `String
                          (c.bank |> Divergence_analysis.from_bank
                         |> Divergence_analysis.to_string) );
+                     ("analysis_time_secs", `Float c.analysis_time_secs);
                      ( "sim",
                        match c.sim with
                        | Ok { value; _ } -> `Int value
@@ -277,24 +332,26 @@ end
 
 let run ?(skip_zero = true) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate (kernels : Kernel.t list) : unit =
+    ~simulate ~sat ~memory_filter (kernels : Kernel.t list) : unit =
   let app : Solver.t =
     Solver.make ~skip_zero ~skip_distinct_vars ~config ~kernels ~ignore_absent
-      ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate
+      ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate ~sat
+      ~memory_filter
   in
   if output_json then JUI.run app else TUI.run app
 
 let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
     (show_all : bool) (skip_distinct_vars : bool) (ignore_absent : bool)
     (output_json : bool) (only_reads : bool) (only_writes : bool)
-    (params : (string * int) list) (simulate : bool) =
+    (params : (string * int) list) (simulate : bool) (sat : bool)
+    (memory_filter : MemoryFilter.t) =
   let parsed = Protocol_parser.Silent.to_proto ~block_dim ~grid_dim fname in
   let block_dim = parsed.options.block_dim in
   let grid_dim = parsed.options.grid_dim in
   let config = Config.make ~block_dim ~grid_dim () in
   run ~skip_zero:(not show_all) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate parsed.kernels
+    ~simulate ~sat ~memory_filter parsed.kernels
 
 (* Command-line interface *)
 
@@ -379,11 +436,25 @@ let simulate =
   let doc = "Simulate the cost if possible." in
   Arg.(value & flag & info [ "sim" ] ~doc)
 
+let sat =
+  let doc = "Use SAT-based analysis for uncoalesced accesses." in
+  Arg.(value & flag & info [ "sat" ] ~doc)
+
+let memory_type =
+  let doc =
+    "Filter analysis by memory type: shared (bank conflicts), global \
+     (uncoalesced accesses), or both."
+  in
+  Arg.(
+    value
+    & opt MemoryFilter.conv MemoryFilter.Both
+    & info [ "memory-type" ] ~docv:"TYPE" ~doc)
+
 let main_t =
   Term.(
     const main $ get_fname $ block_dim $ grid_dim $ show_all
     $ skip_distinct_vars $ ignore_absent $ output_json $ only_reads
-    $ only_writes $ params $ simulate)
+    $ only_writes $ params $ simulate $ sat $ memory_type)
 
 let info =
   let doc = "Static analysis of bank-conflicts for GPU programs" in

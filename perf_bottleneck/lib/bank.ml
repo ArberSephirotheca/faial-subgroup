@@ -33,12 +33,17 @@ module Code = struct
     let rec norm : t -> t = function
       | Index _ as s -> s
       | Cond (e, s) -> Cond (e, norm s)
-      | Decl {var; ty; body} ->
-        Decl {var; ty; body=norm body}
-      | Loop {range; body} ->
-        (* x' := x + lb *)
-        let new_x = Range.Step.to_inc range.step (Var range.var) range.lower_bound in
-        Loop {range=Range.to_zero range; body = norm (subst (range.var, new_x) body);}
+      | Decl { var; ty; body } -> Decl { var; ty; body = norm body }
+      | Loop { range; body } ->
+          (* x' := x + lb *)
+          let new_x =
+            Range.Step.to_inc range.step (Var range.var) range.lower_bound
+          in
+          Loop
+            {
+              range = Range.to_zero range;
+              body = norm (subst (range.var, new_x) body);
+            }
     in
     norm
 
@@ -252,8 +257,7 @@ let to_check (k : t) : Approx.Check.t =
   let vars = Variable.Set.union k.global_variables Variable.tid_set in
   Approx.Check.from_code vars code
 
-let normalize (k : t) : t =
-  { k with code = Code.normalize k.code }
+let normalize (k : t) : t = { k with code = Code.normalize k.code }
 
 let index_cost (params : Config.t) (m : Metric.t) (k : t) :
     Metric_analysis.IndexCost.t =
