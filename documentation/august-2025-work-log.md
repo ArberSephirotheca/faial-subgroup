@@ -8,10 +8,11 @@ Symbolic metric analysis now handles predicates (eg, pow2) that may be generated
 - Code generation now raises an exception when predicate inlining is missing ([31987bf](https://gitlab.com/umb-svl/faial/-/commit/31987bf))
 - Our symbolic metric analysis now inlines predicates on demand ([72c46a2](https://gitlab.com/umb-svl/faial/-/commit/72c46a2))
 
-### Update: performance metric analysis tool (Aug 13-14)
+### Update: performance metric analysis tool (Aug 13-14, 17)
 
 Revived our metric analysis tool can show the cost per access. This feature is in contrast to `faial-cost` that accounts for the _total_ cost for a kernel.
 
+- Experimenting with removing context to measure performance overheads ([3df9eec](https://gitlab.com/umb-svl/faial/-/commit/3df9eec6aa202fc251ff37d10024df78f5c3e400))
 - Enhanced bank conflict analysis in `perf_bottleneck/lib/bank.ml` with per-access cost improvements ([fe20b90](https://gitlab.com/umb-svl/faial/-/commit/fe20b904f660713c6de31437480a9e7fe7d80ea3)
 - Added support for enabling SAT, timing the analysis, and filtering accesses by memory hierarchy [d8b7905](https://gitlab.com/umb-svl/faial/-/commit/d8b7905ce30eccad308701190e60a0c91ae7ddf7))
 - Updated range expressions to reuse code generation from DRF analysis([1e26d10](https://gitlab.com/umb-svl/faial/-/commit/1e26d10), [4e1f688](https://gitlab.com/umb-svl/faial/-/commit/4e1f688))
