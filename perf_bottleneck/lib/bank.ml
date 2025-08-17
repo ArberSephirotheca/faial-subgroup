@@ -47,6 +47,64 @@ module Code = struct
     in
     norm
 
+  module Erase_context = struct
+    type prog = t
+
+    type t = {
+      globals : Variable.Set.t;
+      result : prog;
+      locals : Variable.Set.t;
+    }
+
+    (* Erase some of the context to simplify analysis *)
+    let rec minimal (locals : Variable.Set.t) : prog -> t = function
+      | Index e as s ->
+          let fns = Exp.n_free_names e Variable.Set.empty in
+          {
+            globals = Variable.Set.diff fns locals;
+            result = s;
+            locals = Variable.Set.inter fns locals;
+          }
+      | Decl { var; ty; body } ->
+          let { globals; result = body; locals } =
+            minimal (Variable.Set.add var locals) body
+          in
+          let result =
+            if Variable.Set.mem var locals then
+              (* conver decl into cond *)
+              Cond (Range.decl_to_bexp var ty, body)
+            else
+              (* discard decl altogether *)
+              body
+          in
+          { locals; globals; result }
+      | Loop { range = { var; ty; _ } as r; body } ->
+          (* Convert loops into declarations *)
+          let new_locals =
+            if Range.intersects locals r then Variable.Set.add var locals
+            else locals
+          in
+          let { globals; locals; result = body } = minimal new_locals body in
+          let result =
+            if Variable.Set.mem var locals || Variable.Set.mem var globals then
+              (* convert to cond *)
+              Cond (Range.decl_to_bexp var ty, body)
+            else
+              (* loop does not affect index *)
+              body
+          in
+          { globals; locals; result }
+      | Cond (BRel (BAnd, e1, e2), s) ->
+          minimal locals (Cond (e1, Cond (e2, s)))
+      | Cond (e, s) when Exp.b_intersects locals e ->
+          let { globals; locals; result = s } = minimal locals s in
+          { globals; locals; result = Cond (e, s) }
+      | Cond (_, s) -> minimal locals s
+  end
+
+  let erase_context ~locals : t -> Erase_context.t =
+   fun s -> Erase_context.minimal locals s
+
   let to_ra (idx_analysis : Variable.Set.t -> Exp.nexp -> int) :
       Variable.Set.t -> t -> Ra.Stmt.t =
     let rec to_ra (locals : Variable.Set.t) : t -> Ra.Stmt.t = function
@@ -240,11 +298,14 @@ type t = {
   code : Code.t;
 }
 
-(*
-let transaction_count (params:Config.t) (k:t) : (int, string) Result.t =
-  Code.transaction_count params k.local_variables k.code
-*)
 let location (k : t) : Location.t = Variable.location k.array
+
+let erase_context (k : t) : t =
+  let open Code.Erase_context in
+  let { locals; globals; result } =
+    Code.erase_context ~locals:k.local_variables k.code
+  in
+  { k with local_variables = locals; global_variables = globals; code = result }
 
 let to_string (k : t) : string =
   Code.to_string ~array:(Variable.name k.array) k.code

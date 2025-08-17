@@ -77,11 +77,12 @@ module Solver = struct
     simulate : bool;
     sat : bool;
     memory_filter : MemoryFilter.t;
+    erase_ctx : bool;
   }
 
   let make ~kernels ~skip_zero ~skip_distinct_vars ~config ~ignore_absent
       ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate ~sat
-      ~memory_filter : t =
+      ~memory_filter ~erase_ctx : t =
     let kernels =
       if skip_distinct_vars then kernels
       else List.map Kernel.vars_distinct kernels
@@ -99,6 +100,7 @@ module Solver = struct
       simulate;
       sat;
       memory_filter;
+      erase_ctx;
     }
 
   let sliced_cost (a : t) (k : Kernel.t) : Hotspot.t list =
@@ -108,6 +110,7 @@ module Solver = struct
            MemoryFilter.contains bank.hierarchy a.memory_filter)
     |> Seq.map (fun bank ->
            let bank = Bank.normalize bank in
+           let bank = if a.erase_ctx then Bank.erase_context bank else bank in
            let m =
              let open Bank in
              match bank.hierarchy with
@@ -332,11 +335,11 @@ end
 
 let run ?(skip_zero = true) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate ~sat ~memory_filter (kernels : Kernel.t list) : unit =
+    ~simulate ~sat ~memory_filter ~erase_ctx (kernels : Kernel.t list) : unit =
   let app : Solver.t =
     Solver.make ~skip_zero ~skip_distinct_vars ~config ~kernels ~ignore_absent
       ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate ~sat
-      ~memory_filter
+      ~memory_filter ~erase_ctx
   in
   if output_json then JUI.run app else TUI.run app
 
@@ -344,14 +347,14 @@ let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
     (show_all : bool) (skip_distinct_vars : bool) (ignore_absent : bool)
     (output_json : bool) (only_reads : bool) (only_writes : bool)
     (params : (string * int) list) (simulate : bool) (sat : bool)
-    (memory_filter : MemoryFilter.t) =
+    (memory_filter : MemoryFilter.t) (erase_ctx : bool) =
   let parsed = Protocol_parser.Silent.to_proto ~block_dim ~grid_dim fname in
   let block_dim = parsed.options.block_dim in
   let grid_dim = parsed.options.grid_dim in
   let config = Config.make ~block_dim ~grid_dim () in
   run ~skip_zero:(not show_all) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate ~sat ~memory_filter parsed.kernels
+    ~simulate ~sat ~memory_filter ~erase_ctx parsed.kernels
 
 (* Command-line interface *)
 
@@ -450,11 +453,15 @@ let memory_type =
     & opt MemoryFilter.conv MemoryFilter.Both
     & info [ "memory-type" ] ~docv:"TYPE" ~doc)
 
+let erase_ctx =
+  let doc = "Apply context erasure to simplify analysis after normalization." in
+  Arg.(value & flag & info [ "erase-ctx" ] ~doc)
+
 let main_t =
   Term.(
     const main $ get_fname $ block_dim $ grid_dim $ show_all
     $ skip_distinct_vars $ ignore_absent $ output_json $ only_reads
-    $ only_writes $ params $ simulate $ sat $ memory_type)
+    $ only_writes $ params $ simulate $ sat $ memory_type $ erase_ctx)
 
 let info =
   let doc = "Static analysis of bank-conflicts for GPU programs" in
