@@ -14,6 +14,43 @@ let make_config (threads_per_warp : int) : Config.t =
 (* Utility function to create variables *)
 let var_ (name : string) : nexp = Var (Variable.from_name name)
 
+(* Helper functions for count_active_threads tests *)
+let test_encode_count_active_threads (name : string) (threads_per_warp : int)
+    (locals : Variable.Set.t) (cond : bexp) (expected : nexp) =
+  ( name,
+    `Quick,
+    fun () ->
+      let cfg = make_config threads_per_warp in
+      let actual = encode_count_active_threads cfg locals cond in
+      if actual = expected then ()
+      else
+        Alcotest.failf
+          "encode_count_active_threads failed for %s:\n\
+           \texpected != given:\n\
+           %s\n\
+           %s\n\
+           (condition: %s, threads_per_warp: %d)"
+          name (n_to_string expected) (n_to_string actual) (b_to_string cond)
+          threads_per_warp )
+
+let test_count_active_threads (name : string)
+    ?(strategy = Gen_z3.Optimizer.Strategy.Maximize) (threads_per_warp : int)
+    (locals : Variable.Set.t) (cond : bexp) (expected : int option) =
+  ( name,
+    `Quick,
+    fun () ->
+      let cfg = make_config threads_per_warp in
+      let actual = count_active_threads ~strategy cfg locals cond in
+      if actual = expected then ()
+      else
+        Alcotest.failf
+          "count_active_threads failed for %s: expected %s, got %s (condition: \
+           %s, threads_per_warp: %d)"
+          name
+          (match expected with Some x -> string_of_int x | None -> "None")
+          (match actual with Some x -> string_of_int x | None -> "None")
+          (b_to_string cond) threads_per_warp )
+
 (* Utility function to check if an expression is even *)
 let is_even (e : nexp) : bexp = n_eq (Binary (Mod, e, Num 2)) (Num 0)
 
@@ -85,6 +122,64 @@ let assert_ua
   in
   let result = ua ~strategy cfg locals cond index_with_segments in
   Alcotest.check Alcotest.(option int) "ua result" expected result
+
+(* Test cases for encode_count_active_threads *)
+let encode_count_active_threads_tests =
+  [
+    test_encode_count_active_threads "always true, 2 threads" 2
+      Variable.Set.empty b_true (Num 2);
+    test_encode_count_active_threads "always true, 4 threads" 4
+      Variable.Set.empty b_true (Num 4);
+    test_encode_count_active_threads "always false, 2 threads" 2
+      Variable.Set.empty b_false (Num 0);
+    test_encode_count_active_threads "with local variable x" 2
+      (Variable.Set.singleton (Variable.from_name "x"))
+      b_true (Num 2);
+    test_encode_count_active_threads "even threadIdx.x condition" 2
+      Variable.Set.empty
+      (is_even (Var Variable.tid_x))
+      (n_plus
+         (n_if (is_even (var_ "threadIdx.x$1")) (Num 1) (Num 0))
+         (n_if (is_even (var_ "threadIdx.x$0")) (Num 1) (Num 0)));
+    test_encode_count_active_threads "even threadIdx.x condition" 3
+      Variable.Set.empty
+      (is_even (Var Variable.tid_x))
+      (n_plus
+         (n_if (is_even (var_ "threadIdx.x$2")) (Num 1) (Num 0))
+         (n_plus
+            (n_if (is_even (var_ "threadIdx.x$1")) (Num 1) (Num 0))
+            (n_if (is_even (var_ "threadIdx.x$0")) (Num 1) (Num 0))));
+  ]
+
+(* Test cases for count_active_threads *)
+let count_active_threads_tests =
+  [
+    test_count_active_threads "always true, 2 threads" 2 Variable.Set.empty
+      b_true (Some 2);
+    test_count_active_threads "always true, 4 threads" 4 Variable.Set.empty
+      b_true (Some 4);
+    test_count_active_threads "always false, 2 threads" 2 Variable.Set.empty
+      b_false (Some 0);
+    test_count_active_threads "with local variable x" 2
+      (Variable.Set.singleton (Variable.from_name "x"))
+      b_true (Some 2);
+    test_count_active_threads "even threadIdx.x, 2 threads" 2 Variable.Set.empty
+      (is_even (Var Variable.tid_x))
+      (Some 1);
+    test_count_active_threads "even threadIdx.x, 4 threads" 4 Variable.Set.empty
+      (is_even (Var Variable.tid_x))
+      (Some 2);
+    test_count_active_threads "even threadIdx.x, 10 threads" 8
+      Variable.Set.empty
+      (is_even (Var Variable.tid_x))
+      (Some 4);
+    test_count_active_threads "maximize strategy"
+      ~strategy:Gen_z3.Optimizer.Strategy.Maximize 2 Variable.Set.empty b_true
+      (Some 2);
+    test_count_active_threads "minimize strategy"
+      ~strategy:Gen_z3.Optimizer.Strategy.Minimize 2 Variable.Set.empty b_true
+      (Some 2);
+  ]
 
 let test_replicate_empty_locals () : unit =
   (* Test with empty locals, cfg with 2 threads_per_warp *)
@@ -279,6 +374,11 @@ let tests : unit Alcotest.test_case list =
     ("constraints_bug1", `Quick, test_constraints_bug1);
   ]
 
-let () =
-  Alcotest.run "Symbolic Metric Analysis"
-    [ ("test_symbolic_metric_analysis", tests) ]
+let all_tests =
+  [
+    ("encode_count_active_threads", encode_count_active_threads_tests);
+    ("count_active_threads", count_active_threads_tests);
+    ("legacy_tests", tests);
+  ]
+
+let () = Alcotest.run "Symbolic Metric Analysis" all_tests

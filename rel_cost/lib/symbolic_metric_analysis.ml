@@ -264,6 +264,44 @@ module Constraints = struct
     b_and strategy_constraint (tid_bounds_constraint cfg)
 end
 
+(* Optimizes an encoding *)
+let run_encoding ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
+    ?(generator = Constraints.default)
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
+    (formula : nexp) : int option =
+  let module S = (val solver) in
+  let solve formula =
+    S.optimize_expr strategy ~pre:(Constraints.to_bexp generator cfg) formula
+    |> Result.to_option
+  in
+  try solve formula
+  with Protocols.Gen_z3.Preprocessing_error _ ->
+    solve (Predicates.n_inline formula)
+
+let encode_count_active_threads (cfg : Config.t) (locals : Variable.Set.t)
+    (cond : bexp) : nexp =
+  let locals =
+    Variable.Set.union
+      (Variable.Set.diff locals Variable.tid_set)
+      (Config.warp_divergent_tid_set cfg)
+  in
+  (* replicate index per each thread *)
+  Proj.run cfg.threads_per_warp locals (fun ctx -> Proj.proj_b cond ctx)
+  (* for each replicated index *)
+  |> List.fold_left
+       (fun (accum : nexp) (cond : bexp) ->
+         n_plus (n_if cond (Num 1) (Num 0)) accum)
+       (* total cost = 0, visited = [] *)
+       (Num 0)
+
+let count_active_threads ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
+    ?(generator = Constraints.default)
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
+    (locals : Variable.Set.t) (cond : bexp) : int option =
+  cond
+  |> encode_count_active_threads cfg locals
+  |> run_encoding ~strategy ~generator ~solver cfg
+
 let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (cond : bexp)
     (index : nexp) : nexp =
   let locals =
@@ -275,7 +313,7 @@ let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (cond : bexp)
   (* replicate index per each thread *)
   Proj.run cfg.threads_per_warp locals (fun ctx ->
       (Proj.proj_b cond ctx, Proj.proj_n index ctx))
-  (* for each replciated index *)
+  (* for each replicated index *)
   |> List.fold_left
        (fun ((accum, visited) : nexp * (bexp * nexp) list) (p : bexp * nexp) ->
          ( n_plus (n_if (cond_dissimilar p visited) (Num 1) (Num 0)) accum,
@@ -287,18 +325,11 @@ let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (cond : bexp)
   fst
 
 let ua ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
-    ?(generator = Constraints.default) (cfg : Config.t)
-    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
+    ?(generator = Constraints.default)
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
     (locals : Variable.Set.t) (cond : bexp) (index : nexp) : int option =
-  let module S = (val solver) in
-  let solve cond index =
-    let formula = encode_ua cfg locals cond index in
-    S.optimize_expr strategy ~pre:(Constraints.to_bexp generator cfg) formula
-    |> Result.to_option
-  in
-  try solve cond index
-  with Protocols.Gen_z3.Preprocessing_error _ ->
-    solve (Predicates.b_inline cond) (Predicates.n_inline index)
+  encode_ua cfg locals cond index
+  |> run_encoding ~strategy ~generator ~solver cfg
 
 module ProofResult = struct
   type t =
