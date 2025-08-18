@@ -78,11 +78,13 @@ module Solver = struct
     sat : bool;
     memory_filter : MemoryFilter.t;
     erase_ctx : bool;
+    line_filter : int option;
+    col_filter : int option;
   }
 
   let make ~kernels ~skip_zero ~skip_distinct_vars ~config ~ignore_absent
       ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate ~sat
-      ~memory_filter ~erase_ctx : t =
+      ~memory_filter ~erase_ctx ~line_filter ~col_filter : t =
     let kernels =
       if skip_distinct_vars then kernels
       else List.map Kernel.vars_distinct kernels
@@ -101,13 +103,27 @@ module Solver = struct
       sat;
       memory_filter;
       erase_ctx;
+      line_filter;
+      col_filter;
     }
 
   let sliced_cost (a : t) (k : Kernel.t) : Hotspot.t list =
     Bank.from_proto a.config k
     |> Seq.filter (fun bank ->
            let open Bank in
-           MemoryFilter.contains bank.hierarchy a.memory_filter)
+           let memory_match = MemoryFilter.contains bank.hierarchy a.memory_filter in
+           let loc = Bank.location bank in
+           let line_match = match a.line_filter with
+             | None -> true
+             | Some target_line -> Index.to_base1 loc.line = target_line
+           in
+           let col_match = match a.col_filter with
+             | None -> true
+             | Some target_col -> 
+                 let start_col = loc.interval |> Interval.start |> Index.to_base1 in
+                 start_col = target_col
+           in
+           memory_match && line_match && col_match)
     |> Seq.map (fun bank ->
            let bank = Bank.normalize bank in
            let bank = if a.erase_ctx then Bank.erase_context bank else bank in
@@ -335,11 +351,11 @@ end
 
 let run ?(skip_zero = true) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate ~sat ~memory_filter ~erase_ctx (kernels : Kernel.t list) : unit =
+    ~simulate ~sat ~memory_filter ~erase_ctx ~line_filter ~col_filter (kernels : Kernel.t list) : unit =
   let app : Solver.t =
     Solver.make ~skip_zero ~skip_distinct_vars ~config ~kernels ~ignore_absent
       ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate ~sat
-      ~memory_filter ~erase_ctx
+      ~memory_filter ~erase_ctx ~line_filter ~col_filter
   in
   if output_json then JUI.run app else TUI.run app
 
@@ -347,14 +363,14 @@ let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
     (show_all : bool) (skip_distinct_vars : bool) (ignore_absent : bool)
     (output_json : bool) (only_reads : bool) (only_writes : bool)
     (params : (string * int) list) (simulate : bool) (sat : bool)
-    (memory_filter : MemoryFilter.t) (erase_ctx : bool) =
+    (memory_filter : MemoryFilter.t) (erase_ctx : bool) (line_filter : int option) (col_filter : int option) =
   let parsed = Protocol_parser.Silent.to_proto ~block_dim ~grid_dim fname in
   let block_dim = parsed.options.block_dim in
   let grid_dim = parsed.options.grid_dim in
   let config = Config.make ~block_dim ~grid_dim () in
   run ~skip_zero:(not show_all) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate ~sat ~memory_filter ~erase_ctx parsed.kernels
+    ~simulate ~sat ~memory_filter ~erase_ctx ~line_filter ~col_filter parsed.kernels
 
 (* Command-line interface *)
 
@@ -457,11 +473,19 @@ let erase_ctx =
   let doc = "Apply context erasure to simplify analysis after normalization." in
   Arg.(value & flag & info [ "erase-ctx" ] ~doc)
 
+let line_filter =
+  let doc = "Show only accesses at the specified line number (1-indexed)." in
+  Arg.(value & opt (some int) None & info [ "line" ] ~docv:"LINE" ~doc)
+
+let col_filter =
+  let doc = "Show only accesses at the specified column number (1-indexed)." in
+  Arg.(value & opt (some int) None & info [ "col" ] ~docv:"COL" ~doc)
+
 let main_t =
   Term.(
     const main $ get_fname $ block_dim $ grid_dim $ show_all
     $ skip_distinct_vars $ ignore_absent $ output_json $ only_reads
-    $ only_writes $ params $ simulate $ sat $ memory_type $ erase_ctx)
+    $ only_writes $ params $ simulate $ sat $ memory_type $ erase_ctx $ line_filter $ col_filter)
 
 let info =
   let doc = "Static analysis of bank-conflicts for GPU programs" in
