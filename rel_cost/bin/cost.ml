@@ -218,16 +218,11 @@ module Solver = struct
             List.map (Protocols.Kernel.filter_access retain_acc)
           else fun x -> x)
       |> List.map (fun k ->
-             if s.metric = CountAccesses then k
-             else
-               let vs : Variable.Set.t =
-                 match s.metric with
-                 | BankConflicts -> Protocols.Kernel.shared_arrays k
-                 | UncoalescedAccesses -> Protocols.Kernel.global_arrays k
-                 | UncoalescedAccesses2 -> Protocols.Kernel.global_arrays k
-                 | _ -> failwith "internal error"
-               in
-               Protocols.Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
+             let vs : Variable.Set.t =
+               let open Protocols.Kernel in
+               Metric.supported_arrays k.arrays s.metric
+             in
+             Protocols.Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
       |> List.map
            (Protocols.Kernel.inline_all ~block_dim:(Some s.block_dim)
               ~grid_dim:(Some s.grid_dim) ~globals:s.params)

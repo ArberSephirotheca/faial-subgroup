@@ -54,3 +54,19 @@ let min_cost (m : t) : int =
   | UncoalescedAccesses2 -> min_uncoalesced_accesses
   | CountAccesses -> 1
   | ActiveThreads -> 0
+
+let supports_memory (memory : Protocols.Memory.t) (metric : t) : bool =
+  match metric with
+  | BankConflicts -> Protocols.Memory.is_shared memory
+  | UncoalescedAccesses -> Protocols.Memory.is_global memory
+  | UncoalescedAccesses2 -> Protocols.Memory.is_global memory
+  | CountAccesses -> true
+  | ActiveThreads -> true
+
+let supported_arrays (arrays : Protocols.Memory.t Protocols.Variable.Map.t)
+    (metric : t) : Protocols.Variable.Set.t =
+  Protocols.Variable.Map.fold
+    (fun var memory acc ->
+      if supports_memory memory metric then Protocols.Variable.Set.add var acc
+      else acc)
+    arrays Protocols.Variable.Set.empty
