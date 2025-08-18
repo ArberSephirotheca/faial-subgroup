@@ -111,16 +111,22 @@ module Solver = struct
     Bank.from_proto a.config k
     |> Seq.filter (fun bank ->
            let open Bank in
-           let memory_match = MemoryFilter.contains bank.hierarchy a.memory_filter in
+           let memory_match =
+             MemoryFilter.contains bank.hierarchy a.memory_filter
+           in
            let loc = Bank.location bank in
-           let line_match = match a.line_filter with
+           let line_match =
+             match a.line_filter with
              | None -> true
              | Some target_line -> Index.to_base1 loc.line = target_line
            in
-           let col_match = match a.col_filter with
+           let col_match =
+             match a.col_filter with
              | None -> true
-             | Some target_col -> 
-                 let start_col = loc.interval |> Interval.start |> Index.to_base1 in
+             | Some target_col ->
+                 let start_col =
+                   loc.interval |> Interval.start |> Index.to_base1
+                 in
                  start_col = target_col
            in
            memory_match && line_match && col_match)
@@ -351,7 +357,8 @@ end
 
 let run ?(skip_zero = true) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate ~sat ~memory_filter ~erase_ctx ~line_filter ~col_filter (kernels : Kernel.t list) : unit =
+    ~simulate ~sat ~memory_filter ~erase_ctx ~line_filter ~col_filter
+    (kernels : Kernel.t list) : unit =
   let app : Solver.t =
     Solver.make ~skip_zero ~skip_distinct_vars ~config ~kernels ~ignore_absent
       ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate ~sat
@@ -363,14 +370,16 @@ let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
     (show_all : bool) (skip_distinct_vars : bool) (ignore_absent : bool)
     (output_json : bool) (only_reads : bool) (only_writes : bool)
     (params : (string * int) list) (simulate : bool) (sat : bool)
-    (memory_filter : MemoryFilter.t) (erase_ctx : bool) (line_filter : int option) (col_filter : int option) =
+    (memory_filter : MemoryFilter.t) (erase_ctx : bool)
+    (line_filter : int option) (col_filter : int option) =
   let parsed = Protocol_parser.Silent.to_proto ~block_dim ~grid_dim fname in
   let block_dim = parsed.options.block_dim in
   let grid_dim = parsed.options.grid_dim in
   let config = Config.make ~block_dim ~grid_dim () in
   run ~skip_zero:(not show_all) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate ~sat ~memory_filter ~erase_ctx ~line_filter ~col_filter parsed.kernels
+    ~simulate ~sat ~memory_filter ~erase_ctx ~line_filter ~col_filter
+    parsed.kernels
 
 (* Command-line interface *)
 
@@ -485,7 +494,8 @@ let main_t =
   Term.(
     const main $ get_fname $ block_dim $ grid_dim $ show_all
     $ skip_distinct_vars $ ignore_absent $ output_json $ only_reads
-    $ only_writes $ params $ simulate $ sat $ memory_type $ erase_ctx $ line_filter $ col_filter)
+    $ only_writes $ params $ simulate $ sat $ memory_type $ erase_ctx
+    $ line_filter $ col_filter)
 
 let info =
   let doc = "Static analysis of bank-conflicts for GPU programs" in
