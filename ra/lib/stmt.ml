@@ -123,6 +123,14 @@ module Opt = struct
     else Loop { range = r; body = p }
 
   let choice (p : t) (q : t) : t = Choice (p, q)
+
+  let clamp ~value ~upper_bound : t =
+    let open Exp in
+    match value with
+    | Num value ->
+        let value = max value 0 in
+        Tick (min value upper_bound)
+    | _ -> Clamp { value; upper_bound }
 end
 
 (* Performs a tick, up to a certain upper bound.

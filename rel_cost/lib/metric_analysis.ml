@@ -271,8 +271,8 @@ module Make (L : Logger.Logger) = struct
                  "UA: found uniform-times-tid, generating exact cost: %s 🡆 %s"
                  (Exp.n_to_string index) (Exp.n_to_string coef));
             let code =
-              Ra.Stmt.Clamp
-                { value = coef; upper_bound = Vectorized.tid_count vec }
+              Ra.Stmt.Opt.clamp ~value:(Constfold.n_opt coef)
+                ~upper_bound:(Vectorized.tid_count vec)
             in
             { code; exact = true }
         | _ -> to_cost index
