@@ -288,6 +288,16 @@ module Make (L : Logger.Logger) = struct
     | None -> Vectorized.max_cost Metric.UncoalescedAccesses vec)
     |> IndexCost.from_cost
 
+  let run_count_active_threads (ctx : t) : IndexCost.t =
+    let vec = to_vectorized ctx in
+    (match
+       Symbolic_metric_analysis.count_active_threads ctx.config ctx.locals
+         ctx.divergence
+     with
+    | Some i -> Cost.from_int ~value:i ~exact:true ()
+    | None -> Vectorized.max_cost Metric.ActiveThreads vec)
+    |> IndexCost.from_cost
+
   let run_count (_ctx : t) : IndexCost.t =
     IndexCost.from_cost (Cost.from_int ~value:1 ~exact:true ())
 
@@ -299,6 +309,7 @@ module Make (L : Logger.Logger) = struct
       | UncoalescedAccesses -> run_ua
       | UncoalescedAccesses2 -> run_ua2
       | CountAccesses -> run_count
+      | ActiveThreads -> run_count_active_threads
     in
     run { config; divergence; strategy; locals; index }
 end

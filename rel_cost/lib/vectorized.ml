@@ -233,9 +233,9 @@ let tid_count (ctx : t) : int =
 let to_cost ?(verbose = false) (m : Metric.t) (index : Exp.nexp) (ctx : t) :
     (Cost.t, string) Result.t =
   let* idx = n_eval_res index ctx in
-  let* enabled = b_eval_res ctx.cond ctx in
+  let* b_enabled = b_eval_res ctx.cond ctx in
   let idx = NMap.to_array idx in
-  let enabled = BMap.to_array enabled in
+  let enabled = BMap.to_array b_enabled in
   let is_valid : bool =
     Array.combine idx enabled
     |> Array.for_all (fun (idx, enabled) -> (not enabled) || idx >= 0)
@@ -249,6 +249,8 @@ let to_cost ?(verbose = false) (m : Metric.t) (index : Exp.nexp) (ctx : t) :
          | UncoalescedAccesses -> Warp.uncoalesced idx enabled tids
          | UncoalescedAccesses2 -> Warp.uncoalesced idx enabled tids
          | CountAccesses -> Cost.from_int ~value:1 ~exact:true ()
+         | ActiveThreads ->
+             Cost.from_int ~value:(BMap.count true b_enabled) ~exact:true ()
        in
        (if verbose then
           Array.map2
