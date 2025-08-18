@@ -297,9 +297,9 @@ module JUI = struct
                  let cost =
                    [
                      ( "index_analysis",
-                       match c.index |> Metric_analysis.IndexCost.to_cost with
-                       | Ok { value; _ } -> `Int value
-                       | Error _ -> `Null );
+                       match c.index.code with
+                       | Tick value -> `Int value
+                       | e -> `String (Ra.Stmt.to_string e) );
                      ( "access",
                        `String (c.bank |> Bank.trim_decls |> Bank.to_string) );
                      ( "thread_divergence_analysis",
