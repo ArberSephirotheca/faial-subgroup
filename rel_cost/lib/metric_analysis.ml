@@ -278,7 +278,7 @@ module Make (L : Logger.Logger) = struct
         | _ -> to_cost index
       else index |> to_cost
 
-  let run_ua2 (ctx : t) : IndexCost.t =
+  let run_ua_sat (ctx : t) : IndexCost.t =
     let vec = to_vectorized ctx in
     (match
        Symbolic_metric_analysis.ua ctx.config ctx.locals ctx.divergence
@@ -307,7 +307,7 @@ module Make (L : Logger.Logger) = struct
       match m with
       | BankConflicts -> run_bc
       | UncoalescedAccesses -> run_ua
-      | UncoalescedAccesses2 -> run_ua2
+      | UncoalescedAccessesSat -> run_ua_sat
       | CountAccesses -> run_count
       | ActiveThreads -> run_count_active_threads
     in

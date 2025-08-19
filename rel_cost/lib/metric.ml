@@ -1,14 +1,14 @@
 type t =
   | BankConflicts
   | UncoalescedAccesses
-  | UncoalescedAccesses2
+  | UncoalescedAccessesSat
   | CountAccesses
   | ActiveThreads
 
 let to_string : t -> string = function
   | BankConflicts -> "bc"
   | UncoalescedAccesses -> "ua"
-  | UncoalescedAccesses2 -> "ua2"
+  | UncoalescedAccessesSat -> "ua-sat"
   | CountAccesses -> "count"
   | ActiveThreads -> "active"
 
@@ -16,7 +16,7 @@ let values : t list =
   [
     BankConflicts;
     UncoalescedAccesses;
-    UncoalescedAccesses2;
+    UncoalescedAccessesSat;
     CountAccesses;
     ActiveThreads;
   ]
@@ -39,8 +39,8 @@ let max_bank_conflicts ~thread_count ~bank_count : int =
 
 let max_cost ~thread_count ~bank_count : t -> int = function
   | BankConflicts -> max_bank_conflicts ~thread_count ~bank_count
-  | UncoalescedAccesses -> max_uncoalesced_accesses ~thread_count
-  | UncoalescedAccesses2 -> max_uncoalesced_accesses ~thread_count
+  | UncoalescedAccesses | UncoalescedAccessesSat ->
+      max_uncoalesced_accesses ~thread_count
   | CountAccesses -> max_count_accesses
   | ActiveThreads -> thread_count
 
@@ -50,18 +50,16 @@ let max_cost_from (cfg : Config.t) : t -> int =
 let min_cost (m : t) : int =
   match m with
   | BankConflicts -> min_bank_conflicts
-  | UncoalescedAccesses -> min_uncoalesced_accesses
-  | UncoalescedAccesses2 -> min_uncoalesced_accesses
+  | UncoalescedAccesses | UncoalescedAccessesSat -> min_uncoalesced_accesses
   | CountAccesses -> 1
   | ActiveThreads -> 0
 
 let supports_memory (memory : Protocols.Memory.t) (metric : t) : bool =
   match metric with
   | BankConflicts -> Protocols.Memory.is_shared memory
-  | UncoalescedAccesses -> Protocols.Memory.is_global memory
-  | UncoalescedAccesses2 -> Protocols.Memory.is_global memory
-  | CountAccesses -> true
-  | ActiveThreads -> true
+  | UncoalescedAccesses | UncoalescedAccessesSat ->
+      Protocols.Memory.is_global memory
+  | CountAccesses | ActiveThreads -> true
 
 let supported_arrays (arrays : Protocols.Memory.t Protocols.Variable.Map.t)
     (metric : t) : Protocols.Variable.Set.t =

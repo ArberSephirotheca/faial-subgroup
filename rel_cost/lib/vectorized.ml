@@ -247,7 +247,7 @@ let to_cost ?(verbose = false) (m : Metric.t) (index : Exp.nexp) (ctx : t) :
          match m with
          | BankConflicts -> Warp.bank_conflicts ctx.bank_count idx enabled tids
          | UncoalescedAccesses -> Warp.uncoalesced idx enabled tids
-         | UncoalescedAccesses2 -> Warp.uncoalesced idx enabled tids
+         | UncoalescedAccessesSat -> Warp.uncoalesced idx enabled tids
          | CountAccesses -> Cost.from_int ~value:1 ~exact:true ()
          | ActiveThreads ->
              Cost.from_int ~value:(BMap.count true b_enabled) ~exact:true ()
