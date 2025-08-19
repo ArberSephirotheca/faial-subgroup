@@ -255,7 +255,7 @@ module Constraints = struct
         bounds_for_thread (string_of_int i))
     |> b_and_ex
 
-  let to_bexp (strategy : t) (cfg : Config.t) : bexp =
+  let to_bexp (cfg : Config.t) (strategy : t) : bexp =
     let strategy_constraint =
       match strategy with
       | V1 | V2 | V3 -> V1_3Gen.make strategy cfg
@@ -271,7 +271,7 @@ let run_encoding ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     (formula : nexp) : int option =
   let module S = (val solver) in
   let solve formula =
-    S.optimize_expr strategy ~pre:(Constraints.to_bexp generator cfg) formula
+    S.optimize_expr strategy ~pre:(Constraints.to_bexp cfg generator) formula
     |> Result.to_option
   in
   try solve formula
@@ -382,7 +382,7 @@ module Theorem = struct
     let constraint_system =
       b_and_ex
         [
-          thm.global_context; Constraints.to_bexp generator thm.cfg; b_not goal;
+          thm.global_context; Constraints.to_bexp thm.cfg generator; b_not goal;
         ]
     in
     let result =
