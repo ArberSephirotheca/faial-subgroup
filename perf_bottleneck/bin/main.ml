@@ -75,16 +75,16 @@ module Solver = struct
     grid_dim : Dim3.t;
     params : (string * int) list;
     simulate : bool;
-    sat : bool;
     memory_filter : MemoryFilter.t;
     erase_ctx : bool;
     line_filter : int option;
     col_filter : int option;
+    metric : Metric.t;
   }
 
   let make ~kernels ~skip_zero ~skip_distinct_vars ~config ~ignore_absent
-      ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate ~sat
-      ~memory_filter ~erase_ctx ~line_filter ~col_filter : t =
+      ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate
+      ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric : t =
     let kernels =
       if skip_distinct_vars then kernels
       else List.map Kernel.vars_distinct kernels
@@ -100,11 +100,11 @@ module Solver = struct
       grid_dim;
       params;
       simulate;
-      sat;
       memory_filter;
       erase_ctx;
       line_filter;
       col_filter;
+      metric;
     }
 
   let sliced_cost (a : t) (k : Kernel.t) : Hotspot.t list =
@@ -133,23 +133,16 @@ module Solver = struct
     |> Seq.map (fun bank ->
            let bank = Bank.normalize bank in
            let bank = if a.erase_ctx then Bank.erase_context bank else bank in
-           let m =
-             let open Bank in
-             match bank.hierarchy with
-             | Mem_hierarchy.SharedMemory -> Metric.BankConflicts
-             | GlobalMemory ->
-                 if a.sat then UncoalescedAccesses2 else UncoalescedAccesses
-           in
            let to_cost value = Cost.from_int ~value ~exact:true () in
-           let max_cost = Metric.max_cost_from a.config m |> to_cost in
+           let max_cost = Metric.max_cost_from a.config a.metric |> to_cost in
            let analysis_time_secs, r_cost =
-             time_analysis (fun () -> Bank.index_cost a.config m bank)
+             time_analysis (fun () -> Bank.index_cost a.config a.metric bank)
            in
            let _ = a.skip_zero in
            let divergence = Divergence_analysis.from_bank bank in
            let sim =
              if a.simulate && Divergence_analysis.is_known divergence then
-               Bank.eval_res ~max_cost:max_cost.value a.config m bank
+               Bank.eval_res ~max_cost:max_cost.value a.config a.metric bank
              else Error "Run with --simulate to output simulated cost."
            in
            Hotspot.{ index = r_cost; bank; divergence; sim; analysis_time_secs })
@@ -166,6 +159,12 @@ module Solver = struct
     let ks =
       s.kernels
       |> List.map (Kernel.filter_access retain_acc)
+      |> List.map (fun k ->
+             let vs : Variable.Set.t =
+               let open Kernel in
+               Metric.supported_arrays k.arrays s.metric
+             in
+             Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
       |> List.map
            (Kernel.inline_all ~block_dim:(Some s.block_dim)
               ~grid_dim:(Some s.grid_dim) ~globals:s.params)
@@ -328,6 +327,8 @@ module JUI = struct
                        `String
                          (c.bank |> Divergence_analysis.from_bank
                         |> Divergence_analysis.to_string) );
+                     ("cond_size", `Int (c.bank |> Bank.cond_size));
+                     ("index_size", `Int (c.bank |> Bank.index_size));
                      ("analysis_time_secs", `Float c.analysis_time_secs);
                      ( "sim",
                        match c.sim with
@@ -357,28 +358,28 @@ end
 
 let run ?(skip_zero = true) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate ~sat ~memory_filter ~erase_ctx ~line_filter ~col_filter
+    ~simulate ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric
     (kernels : Kernel.t list) : unit =
   let app : Solver.t =
     Solver.make ~skip_zero ~skip_distinct_vars ~config ~kernels ~ignore_absent
-      ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate ~sat
-      ~memory_filter ~erase_ctx ~line_filter ~col_filter
+      ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate
+      ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric
   in
   if output_json then JUI.run app else TUI.run app
 
 let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
     (show_all : bool) (skip_distinct_vars : bool) (ignore_absent : bool)
     (output_json : bool) (only_reads : bool) (only_writes : bool)
-    (params : (string * int) list) (simulate : bool) (sat : bool)
+    (params : (string * int) list) (simulate : bool)
     (memory_filter : MemoryFilter.t) (erase_ctx : bool)
-    (line_filter : int option) (col_filter : int option) =
+    (line_filter : int option) (col_filter : int option) (metric : Metric.t) =
   let parsed = Protocol_parser.Silent.to_proto ~block_dim ~grid_dim fname in
   let block_dim = parsed.options.block_dim in
   let grid_dim = parsed.options.grid_dim in
   let config = Config.make ~block_dim ~grid_dim () in
   run ~skip_zero:(not show_all) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate ~sat ~memory_filter ~erase_ctx ~line_filter ~col_filter
+    ~simulate ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric
     parsed.kernels
 
 (* Command-line interface *)
@@ -464,10 +465,6 @@ let simulate =
   let doc = "Simulate the cost if possible." in
   Arg.(value & flag & info [ "sim" ] ~doc)
 
-let sat =
-  let doc = "Use SAT-based analysis for uncoalesced accesses." in
-  Arg.(value & flag & info [ "sat" ] ~doc)
-
 let memory_type =
   let doc =
     "Filter analysis by memory type: shared (bank conflicts), global \
@@ -490,12 +487,19 @@ let col_filter =
   let doc = "Show only accesses at the specified column number (1-indexed)." in
   Arg.(value & opt (some int) None & info [ "col" ] ~docv:"COL" ~doc)
 
+let metric =
+  let doc = "Select the metric to measure the cost." in
+  Arg.(
+    required
+    & opt (some (enum Metric.choices)) None
+    & info [ "m"; "metric" ] ~doc)
+
 let main_t =
   Term.(
     const main $ get_fname $ block_dim $ grid_dim $ show_all
     $ skip_distinct_vars $ ignore_absent $ output_json $ only_reads
-    $ only_writes $ params $ simulate $ sat $ memory_type $ erase_ctx
-    $ line_filter $ col_filter)
+    $ only_writes $ params $ simulate $ memory_type $ erase_ctx $ line_filter
+    $ col_filter $ metric)
 
 let info =
   let doc = "Static analysis of bank-conflicts for GPU programs" in

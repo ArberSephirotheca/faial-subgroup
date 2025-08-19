@@ -153,9 +153,15 @@ module Code = struct
         Exp.b_and (Range.decl_to_bexp var ty) (to_bexp body)
     | Loop { range; body } -> Exp.b_and (Range.to_cond range) (to_bexp body)
 
+  let cond_size (e : t) : int =
+    Exp.b_free_names (to_bexp e) Variable.Set.empty |> Variable.Set.cardinal
+
   let rec index : t -> Exp.nexp = function
     | Index a -> a
     | Loop { body = p; _ } | Cond (_, p) | Decl { body = p; _ } -> index p
+
+  let index_size (e : t) : int =
+    Exp.n_free_names (index e) Variable.Set.empty |> Variable.Set.cardinal
 
   let flatten (a : t) : t = Index (index a)
 
@@ -318,6 +324,8 @@ let to_check (k : t) : Approx.Check.t =
   let vars = Variable.Set.union k.global_variables Variable.tid_set in
   Approx.Check.from_code vars code
 
+let index_size (k : t) : int = k.code |> Code.index_size
+let cond_size (k : t) : int = k.code |> Code.cond_size
 let normalize (k : t) : t = { k with code = Code.normalize k.code }
 
 let index_cost (params : Config.t) (m : Metric.t) (k : t) :
