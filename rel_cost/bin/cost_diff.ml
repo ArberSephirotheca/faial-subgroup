@@ -124,11 +124,8 @@ module Solver = struct
              if s.metric = CountAccesses then k
              else
                let vs : Variable.Set.t =
-                 match s.metric with
-                 | BankConflicts -> Protocols.Kernel.shared_arrays k
-                 | UncoalescedAccesses -> Protocols.Kernel.global_arrays k
-                 | UncoalescedAccesses2 -> Protocols.Kernel.global_arrays k
-                 | _ -> failwith "internal error"
+                 let open Protocols.Kernel in
+                 Metric.supported_arrays k.arrays s.metric
                in
                Protocols.Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
       |> List.map
