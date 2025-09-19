@@ -248,14 +248,11 @@ let test_ua_threadIdx_x () : unit =
     ~cond:(is_even (Var Variable.tid_x))
     ~index:(Var Variable.tid_x) ()
 
-let for_each_version (f : Constraints.t -> unit) : unit =
-  Constraints.values |> List.iter f
-
 let test_warp_constraints_enforces_bounds_and_uniqueness () : unit =
   (* Test that warp_constraints prevents threads from having same coordinates within bounds *)
-  for_each_version (fun gen ->
+  Constraints.values |> List.iter (fun gen ->
       let cfg = make_config 2 in
-      let c = Constraints.to_bexp gen cfg in
+      let c = Constraints.to_bexp cfg gen in
       (* Is it possible for 2 tids to be equal? *)
       let contradiction =
         b_and c (n_eq (var_ "threadIdx.x$0") (var_ "threadIdx.x$1"))
@@ -272,13 +269,13 @@ let test_warp_constraints_enforces_bounds_and_uniqueness () : unit =
 
 let test_cross_warp_unsoundness_test () : unit =
   (* Test to expose unsoundness: threads from different warps should not be allowed *)
-  for_each_version (fun gen ->
+  Constraints.values |> List.iter (fun gen ->
       let cfg =
         Config.make ~threads_per_warp:32
           ~block_dim:(Dim3.make ~x:64 ()) (* 2 warps: 0-31 and 32-63 *)
           ~grid_dim:(Dim3.make ~x:1 ()) ()
       in
-      let c = Constraints.to_bexp gen cfg in
+      let c = Constraints.to_bexp cfg gen in
       (* Try to assign threads from different warps *)
       let cross_warp =
         b_and_ex
@@ -352,7 +349,7 @@ let test_constraints_bug1 () : unit =
              let msg =
                Printf.sprintf "Expecting counterexample from %s but got %s\n%s"
                  (Constraints.to_string v) (ProofResult.to_string p)
-                 (Constraints.to_bexp v cfg |> Exp.b_and_split
+                 (Constraints.to_bexp cfg v |> Exp.b_and_split
                 |> List.map Exp.b_to_string |> String.concat "\n&&")
              in
              Alcotest.fail msg)
