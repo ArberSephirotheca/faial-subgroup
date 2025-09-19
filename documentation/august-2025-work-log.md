@@ -1,5 +1,6 @@
 # August 2025 Development Work Log
 
+Last documented commit: eafa506
 
 ### New feature: symbolic metric analysis adds support for predicates (Aug 13-14)
 
@@ -8,7 +9,7 @@ Symbolic metric analysis now handles predicates (eg, pow2) that may be generated
 - Code generation now raises an exception when predicate inlining is missing ([31987bf](https://gitlab.com/umb-svl/faial/-/commit/31987bf))
 - Our symbolic metric analysis now inlines predicates on demand ([72c46a2](https://gitlab.com/umb-svl/faial/-/commit/72c46a2))
 
-### Update: performance metric analysis tool (Aug 13-14, 17-18)
+### Update: performance metric analysis tool (Aug 13-14, 17-18, 20)
 
 Revived our metric analysis tool can show the cost per access. This feature is in contrast to `faial-cost` that accounts for the _total_ cost for a kernel.
 
@@ -19,6 +20,10 @@ Revived our metric analysis tool can show the cost per access. This feature is i
 - Enhanced bank conflict analysis in `perf_bottleneck/lib/bank.ml` with per-access cost improvements ([fe20b90](https://gitlab.com/umb-svl/faial/-/commit/fe20b904f660713c6de31437480a9e7fe7d80ea3)
 - Added support for enabling SAT, timing the analysis, and filtering accesses by memory hierarchy [d8b7905](https://gitlab.com/umb-svl/faial/-/commit/d8b7905ce30eccad308701190e60a0c91ae7ddf7))
 - Updated range expressions to reuse code generation from DRF analysis([1e26d10](https://gitlab.com/umb-svl/faial/-/commit/1e26d10), [4e1f688](https://gitlab.com/umb-svl/faial/-/commit/4e1f688))
+- Created a new metric `ActiveThreads` to count how many threads are active when accessing memory. Implemented `count_active_threads` functionality using SMT-based analysis ([cf190cb](https://gitlab.com/umb-svl/faial/-/commit/cf190cb), [edaeebd](https://gitlab.com/umb-svl/faial/-/commit/edaeebd))
+- Implemented functionality for filtering which arrays could be handled by each metric into functions `supports_memory` and `supported_arrays` under `metric.ml`, eliminating duplicated logic across cost analysis tools ([129f76f](https://gitlab.com/umb-svl/faial/-/commit/129f76f), [67e01f0](https://gitlab.com/umb-svl/faial/-/commit/67e01f0))
+- Replaced automatic metric selection with explicit `--metric` parameter in `faial-bc` to allow users to choose specific analysis metrics (`bc`, `ua`, `ua-sat`, `count`, `active`) instead of relying on memory hierarchy-based selection, removing the `--sat` flag as it was subsumed by metric selection ([530805d](https://gitlab.com/umb-svl/faial/-/commit/530805d), [eafa506](https://gitlab.com/umb-svl/faial/-/commit/eafa506))
+- Added tracking of unique variable usage statistics in JSON output with `cond_size` (variables in conditions) and `index_size` (variables in indexing expressions) fields for performance analysis ([eafa506](https://gitlab.com/umb-svl/faial/-/commit/eafa506))
 
 ### Bug fix: scoping issue caused by function call inlining (Aug 10-11)
 
