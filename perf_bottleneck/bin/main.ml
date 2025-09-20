@@ -491,7 +491,11 @@ let col_filter =
   Arg.(value & opt (some int) None & info [ "col" ] ~docv:"COL" ~doc)
 
 let metric =
-  let doc = "Select the metric to measure the cost." in
+  let doc =
+    Printf.sprintf
+      "Select a metric: (%s)."
+      (Metric.values |> List.map Metric.to_string |> String.concat ", ")
+    in
   Arg.(
     required
     & opt (some (enum Metric.choices)) None
