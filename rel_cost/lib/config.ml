@@ -18,7 +18,12 @@ let to_string (c : t) : string =
 
 let total_blocks (cfg : t) : int = Dim3.total cfg.grid_dim
 let total_threads (cfg : t) : int = Dim3.total cfg.block_dim * total_blocks cfg
-let total_warps (cfg : t) : int = total_threads cfg / cfg.threads_per_warp
+let total_warps (cfg : t) : int =
+ let ceil_div a b =
+    let q = a / b in
+    if a mod b = 0 then q else q + 1
+  in
+  ceil_div (Dim3.total cfg.block_dim) cfg.threads_per_warp
 
 (* Returns true when threadIdx.x is warp uniform. *)
 let tid_x_is_warp_uniform (cfg : t) : bool = cfg.block_dim.x = 1
