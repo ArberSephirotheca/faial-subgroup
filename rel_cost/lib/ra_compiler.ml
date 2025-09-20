@@ -290,7 +290,7 @@ module Make (LOG : Logger.Logger) = struct
             |> Option.map (fun index ->
                    let cost =
                      idx_analysis ~locals:ctx.locals ~index
-                       ~divergence:ctx.divergence
+                       ~divergence:ctx.divergence ~verbose:false
                    in
                    (cost.code, Stats.make_index Accuracy.Exact))
                (* When the array is ignored, return Skip *)

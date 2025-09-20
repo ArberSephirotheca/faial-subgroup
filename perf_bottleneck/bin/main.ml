@@ -80,11 +80,12 @@ module Solver = struct
     line_filter : int option;
     col_filter : int option;
     metric : Metric.t;
+    verbose : bool;
   }
 
   let make ~kernels ~skip_zero ~skip_distinct_vars ~config ~ignore_absent
       ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate
-      ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric : t =
+      ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric ~verbose : t =
     let kernels =
       if skip_distinct_vars then kernels
       else List.map Kernel.vars_distinct kernels
@@ -105,6 +106,7 @@ module Solver = struct
       line_filter;
       col_filter;
       metric;
+      verbose;
     }
 
   let sliced_cost (a : t) (k : Kernel.t) : Hotspot.t list =
@@ -136,7 +138,7 @@ module Solver = struct
            let to_cost value = Cost.from_int ~value ~exact:true () in
            let max_cost = Metric.max_cost_from a.config a.metric |> to_cost in
            let analysis_time_secs, r_cost =
-             time_analysis (fun () -> Bank.index_cost a.config a.metric bank)
+             time_analysis (fun () -> Bank.index_cost ~verbose:a.verbose a.config a.metric bank)
            in
            let _ = a.skip_zero in
            let divergence = Divergence_analysis.from_bank bank in
@@ -359,11 +361,11 @@ end
 let run ?(skip_zero = true) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
     ~simulate ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric
-    (kernels : Kernel.t list) : unit =
+    ~verbose (kernels : Kernel.t list) : unit =
   let app : Solver.t =
     Solver.make ~skip_zero ~skip_distinct_vars ~config ~kernels ~ignore_absent
       ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate
-      ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric
+      ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric ~verbose
   in
   if output_json then JUI.run app else TUI.run app
 
@@ -372,7 +374,8 @@ let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
     (output_json : bool) (only_reads : bool) (only_writes : bool)
     (params : (string * int) list) (simulate : bool)
     (memory_filter : MemoryFilter.t) (erase_ctx : bool)
-    (line_filter : int option) (col_filter : int option) (metric : Metric.t) =
+    (line_filter : int option) (col_filter : int option) (metric : Metric.t)
+    (verbose : bool) =
   let parsed = Protocol_parser.Silent.to_proto ~block_dim ~grid_dim fname in
   let block_dim = parsed.options.block_dim in
   let grid_dim = parsed.options.grid_dim in
@@ -380,7 +383,7 @@ let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
   run ~skip_zero:(not show_all) ~skip_distinct_vars ~config ~output_json
     ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
     ~simulate ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric
-    parsed.kernels
+    ~verbose parsed.kernels
 
 (* Command-line interface *)
 
@@ -494,12 +497,16 @@ let metric =
     & opt (some (enum Metric.choices)) None
     & info [ "m"; "metric" ] ~doc)
 
+let verbose =
+  let doc = "Enable verbose output for analysis." in
+  Arg.(value & flag & info [ "v"; "verbose" ] ~doc)
+
 let main_t =
   Term.(
     const main $ get_fname $ block_dim $ grid_dim $ show_all
     $ skip_distinct_vars $ ignore_absent $ output_json $ only_reads
     $ only_writes $ params $ simulate $ memory_type $ erase_ctx $ line_filter
-    $ col_filter $ metric)
+    $ col_filter $ metric $ verbose)
 
 let info =
   let doc = "Static analysis of bank-conflicts for GPU programs" in

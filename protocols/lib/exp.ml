@@ -257,6 +257,11 @@ let thread_eq (e : nexp) : bexp = n_eq e (Other e)
 let thread_distinct (idx : Variable.t list) : bexp =
   b_or_ex (List.map (fun x -> b_not (thread_eq (Var x))) idx)
 
+let rec n_bin_split (o:N_binary.t) : nexp -> nexp list = function
+  | Binary (o', e1, e2) when o' = o -> n_bin_split o e1 @ n_bin_split o e2
+  | e -> [ e ]
+
+
 let rec b_and_split : bexp -> bexp list = function
   | BRel (BAnd, b1, b2) -> b_and_split b1 @ b_and_split b2
   | b -> [ b ]

@@ -278,20 +278,20 @@ module Make (L : Logger.Logger) = struct
         | _ -> to_cost index
       else index |> to_cost
 
-  let run_ua_sat (ctx : t) : IndexCost.t =
+  let run_ua_sat ~verbose (ctx : t) : IndexCost.t =
     let vec = to_vectorized ctx in
     (match
-       Symbolic_metric_analysis.ua ctx.config ctx.locals ctx.divergence
+       Symbolic_metric_analysis.ua ~verbose ctx.config ctx.locals ctx.divergence
          ctx.index
      with
     | Some i -> Cost.from_int ~value:i ~exact:true ()
     | None -> Vectorized.max_cost Metric.UncoalescedAccesses vec)
     |> IndexCost.from_cost
 
-  let run_count_active_threads (ctx : t) : IndexCost.t =
+  let run_count_active_threads ~verbose (ctx : t) : IndexCost.t =
     let vec = to_vectorized ctx in
     (match
-       Symbolic_metric_analysis.count_active_threads ctx.config ctx.locals
+       Symbolic_metric_analysis.count_active_threads ~verbose ctx.config ctx.locals
          ctx.divergence
      with
     | Some i -> Cost.from_int ~value:i ~exact:true ()
@@ -301,15 +301,15 @@ module Make (L : Logger.Logger) = struct
   let run_count (_ctx : t) : IndexCost.t =
     IndexCost.from_cost (Cost.from_int ~value:1 ~exact:true ())
 
-  let run (m : Metric.t) (config : Config.t) ~strategy ~locals ~index
+  let run (m : Metric.t) (config : Config.t) ~verbose ~strategy ~locals ~index
       ~divergence : IndexCost.t =
     let run =
       match m with
       | BankConflicts -> run_bc
       | UncoalescedAccesses -> run_ua
-      | UncoalescedAccessesSat -> run_ua_sat
+      | UncoalescedAccessesSat -> run_ua_sat ~verbose
       | CountAccesses -> run_count
-      | ActiveThreads -> run_count_active_threads
+      | ActiveThreads -> run_count_active_threads ~verbose
     in
     run { config; divergence; strategy; locals; index }
 end
