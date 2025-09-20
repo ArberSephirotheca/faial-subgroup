@@ -237,31 +237,27 @@ module Constraints = struct
       b_and_ex (warp_bounds :: thread_constraints)
   end
 
-  let tid_bounds_constraint (cfg : Config.t) : bexp =
-    (* only generate variables for warp divergent tid *)
-    let bounds_for_thread (suffix : string) : bexp =
-      [
-        (Variable.tid_x, cfg.block_dim.x);
-        (Variable.tid_y, cfg.block_dim.y);
-        (Variable.tid_z, cfg.block_dim.z);
-      ]
-      |> List.filter (fun (x, _) -> Config.is_warp_divergent x cfg)
-      |> List.map (fun (x, d) ->
-             let x = proj ~suffix x in
-             clamp ~lower:(Num 0) ~value:(Var x) ~upper:(Num d))
-      |> b_and_ex
+  let to_architecture (cfg : Config.t) (strategy : t) : Architecture.Defaults.t
+      =
+    let globals =
+      Variable.Set.empty
+      |> Variable.Set.union Variable.bid_set
+      |> Variable.Set.union Variable.bdim_set
+      |> Variable.Set.union Variable.gdim_set
+      |> Params.from_set C_type.unsigned_int
     in
-    List.init cfg.threads_per_warp (fun i ->
-        bounds_for_thread (string_of_int i))
-    |> b_and_ex
-
-  let to_bexp (cfg : Config.t) (strategy : t) : bexp =
-    let strategy_constraint =
+    let locals =
+      Config.warp_divergent_tid_set cfg |> Params.from_set C_type.unsigned_int
+    in
+    let distinct =
       match strategy with
       | V1 | V2 | V3 -> V1_3Gen.make strategy cfg
       | V4 -> V4Gen.make cfg
     in
-    b_and strategy_constraint (tid_bounds_constraint cfg)
+    { globals; locals; distinct }
+
+  let to_bexp (cfg : Config.t) (strategy : t) : bexp =
+    to_architecture cfg strategy |> Architecture.Defaults.to_bexp
 end
 
 (* Optimizes an encoding *)
