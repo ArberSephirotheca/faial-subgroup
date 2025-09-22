@@ -128,7 +128,7 @@ module Code = struct
     let rec locals (fns : Variable.Set.t) : t -> Variable.Set.t = function
       | Index _ -> fns
       | Loop { range = r; body = p } ->
-          let r_fns = Range.free_names r Variable.Set.empty in
+          let r_fns = Exp.n_free_names r.lower_bound Variable.Set.empty in
           let fns =
             (* Test if the loop range contains thread-locals *)
             if Variable.Set.inter r_fns fns |> Variable.Set.is_empty then fns
@@ -162,6 +162,14 @@ module Code = struct
 
   let index_size (e : t) : int =
     Exp.n_free_names (index e) Variable.Set.empty |> Variable.Set.cardinal
+
+  let rec free_names (i : t) (fns : Variable.Set.t) : Variable.Set.t =
+    match i with
+    | Index a -> Exp.n_free_names a fns
+    | Cond (b, p) -> Exp.b_free_names b fns |> free_names p
+    | Decl { var = x; body = p; _ } -> free_names p fns |> Variable.Set.remove x
+    | Loop { range = r; body = p } ->
+        free_names p fns |> Variable.Set.remove r.var |> Range.free_names r
 
   let flatten (a : t) : t = Index (index a)
 
@@ -315,7 +323,13 @@ let erase_context (k : t) : t =
   { k with local_variables = locals; global_variables = globals; code = result }
 
 let to_string (k : t) : string =
-  Code.to_string ~array:(Variable.name k.array) k.code
+  Printf.sprintf "%s array(%s %s) locals(%s) globals(%s) {\n%s\n}"
+    k.name
+    (Mem_hierarchy.to_string k.hierarchy)
+    (Variable.name k.array)
+    (Variable.set_to_string k.local_variables)
+    (Variable.set_to_string k.global_variables)
+    (Code.to_string ~array:(Variable.name k.array) k.code)
 
 let map_index (f : Exp.nexp -> Exp.nexp) (k : t) : t =
   { k with code = Code.map_index f k.code }
@@ -342,17 +356,27 @@ module Make (L : Logger.Logger) = struct
   Given a kernel return a sequence of slices.
   *)
   let from_proto (cfg : Config.t) (k : Kernel.t) : t Seq.t =
-    let local_variables = Params.to_set k.local_variables in
+    let local_variables =
+      Variable.Set.union
+        (Params.to_set k.local_variables) (Config.warp_divergent_tid_set cfg)
+    in
+    let global_variables =
+      Variable.Set.union
+        (Params.to_set k.global_variables) (Config.global_variable_set cfg)
+    in
     k.code
     |> Protocols.Code.subst_block_dim cfg.block_dim
     |> Protocols.Code.subst_grid_dim cfg.grid_dim
     |> Code.from_proto k.arrays cfg local_variables
     |> Seq.map (fun (array, p) ->
            let code = if k.pre = Bool true then p else Code.Cond (k.pre, p) in
+           let used = Code.free_names code Variable.Set.empty in
+           let local_variables = Variable.Set.inter used local_variables in
+           let global_variables = Variable.Set.inter used global_variables in
            {
              name = k.name;
              hierarchy = Variable.Map.find array k.arrays |> Memory.hierarchy;
-             global_variables = Params.to_set k.global_variables;
+             global_variables;
              local_variables;
              code;
              array;
