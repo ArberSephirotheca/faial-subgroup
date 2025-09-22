@@ -135,6 +135,7 @@ module Solver = struct
     |> Seq.map (fun bank ->
            let bank = Bank.normalize bank in
            let bank = if a.erase_ctx then Bank.erase_context bank else bank in
+           if a.verbose then prerr_endline(Bank.to_string bank);
            let to_cost value = Cost.from_int ~value ~exact:true () in
            let max_cost = Metric.max_cost_from a.config a.metric |> to_cost in
            let analysis_time_secs, r_cost =
