@@ -257,26 +257,22 @@ module Constraints = struct
     { globals; locals; distinct }
 
   let to_bexp (cfg : Config.t) (strategy : t) : bexp =
-    strategy
-    |> to_architecture cfg
+    strategy |> to_architecture cfg
     |> Architecture.Defaults.to_dyn_bexp ~bdim:cfg.block_dim ~gdim:cfg.grid_dim
 end
 
-let print_optimize (pre:bexp) (formula:nexp) : unit =
+let print_optimize (pre : bexp) (formula : nexp) : unit =
   let pre =
-    pre
-    |> Exp.b_and_split
-    |> List.map Exp.b_to_string
+    pre |> Exp.b_and_split |> List.map Exp.b_to_string
     |> String.concat "\n    && "
   in
   let formula =
     formula
     |> Exp.n_bin_split N_binary.Plus
-    |> List.map Exp.n_to_string
-    |> String.concat "\n    + "
+    |> List.map Exp.n_to_string |> String.concat "\n    + "
   in
-  prerr_endline (Printf.sprintf
-    "optimize {\n  pre: %s\n  cost: %s\n}" pre formula)
+  prerr_endline
+    (Printf.sprintf "optimize {\n  pre: %s\n  cost: %s\n}" pre formula)
 
 (* Optimizes an encoding *)
 let run_encoding ?(verbose=false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)

@@ -18,8 +18,9 @@ let to_string (c : t) : string =
 
 let total_blocks (cfg : t) : int = Dim3.total cfg.grid_dim
 let total_threads (cfg : t) : int = Dim3.total cfg.block_dim * total_blocks cfg
+
 let total_warps (cfg : t) : int =
- let ceil_div a b =
+  let ceil_div a b =
     let q = a / b in
     if a mod b = 0 then q else q + 1
   in
@@ -78,13 +79,10 @@ let warp_uniform_tid_set (cfg : t) : Variable.Set.t =
   cfg |> warp_uniform_tid_list |> Variable.Set.of_list
 
 let _base_global_set : Variable.Set.t =
-  Variable.
-    (bid_set
-    |> Set.union bdim_set
-    |> Set.union gdim_set)
+  Variable.(bid_set |> Set.union bdim_set |> Set.union gdim_set)
 
 (** Returns the runtime global variables: tid (if any), bid, bdim, gdim *)
-let global_variable_set (cfg: t) : Variable.Set.t =
+let global_variable_set (cfg : t) : Variable.Set.t =
   Variable.Set.union
     (Variable.Set.of_list (warp_uniform_tid_list cfg))
     _base_global_set

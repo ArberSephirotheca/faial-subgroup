@@ -291,8 +291,8 @@ module Make (L : Logger.Logger) = struct
   let run_count_active_threads ~verbose (ctx : t) : IndexCost.t =
     let vec = to_vectorized ctx in
     (match
-       Symbolic_metric_analysis.count_active_threads ~verbose ctx.config ctx.locals
-         ctx.divergence
+       Symbolic_metric_analysis.count_active_threads ~verbose ctx.config
+         ctx.locals ctx.divergence
      with
     | Some i -> Cost.from_int ~value:i ~exact:true ()
     | None -> Vectorized.max_cost Metric.ActiveThreads vec)

@@ -241,14 +241,13 @@ module Code = struct
     module M = Metric_analysis.Make (L)
     module L = Linearize_index.Make (L)
 
-    let index_cost ?(verbose=true) ~local_variables (config : Config.t) (m : Metric.t) (a : t) :
-        Metric_analysis.IndexCost.t =
+    let index_cost ?(verbose = true) ~local_variables (config : Config.t)
+        (m : Metric.t) (a : t) : Metric_analysis.IndexCost.t =
       let index = index a in
       let locals = locals ~init:local_variables a in
       let divergence = to_bexp a in
-      M.run m config ~verbose
-        ~strategy:Analysis_strategy.OverApproximation ~locals
-        ~index ~divergence
+      M.run m config ~verbose ~strategy:Analysis_strategy.OverApproximation
+        ~locals ~index ~divergence
 
     let from_proto (arrays : Memory.t Variable.Map.t) (cfg : Config.t) :
         Variable.Set.t -> Protocols.Code.t -> (Variable.t * t) Seq.t =
@@ -323,8 +322,7 @@ let erase_context (k : t) : t =
   { k with local_variables = locals; global_variables = globals; code = result }
 
 let to_string (k : t) : string =
-  Printf.sprintf "%s array(%s %s) locals(%s) globals(%s) {\n%s\n}"
-    k.name
+  Printf.sprintf "%s array(%s %s) locals(%s) globals(%s) {\n%s\n}" k.name
     (Mem_hierarchy.to_string k.hierarchy)
     (Variable.name k.array)
     (Variable.set_to_string k.local_variables)
@@ -343,7 +341,7 @@ let index_size (k : t) : int = k.code |> Code.index_size
 let cond_size (k : t) : int = k.code |> Code.cond_size
 let normalize (k : t) : t = { k with code = Code.normalize k.code }
 
-let index_cost ?(verbose=false) (params : Config.t) (m : Metric.t) (k : t) :
+let index_cost ?(verbose = false) (params : Config.t) (m : Metric.t) (k : t) :
     Metric_analysis.IndexCost.t =
   Code.index_cost ~verbose ~local_variables:k.local_variables params m k.code
 
@@ -358,11 +356,13 @@ module Make (L : Logger.Logger) = struct
   let from_proto (cfg : Config.t) (k : Kernel.t) : t Seq.t =
     let local_variables =
       Variable.Set.union
-        (Params.to_set k.local_variables) (Config.warp_divergent_tid_set cfg)
+        (Params.to_set k.local_variables)
+        (Config.warp_divergent_tid_set cfg)
     in
     let global_variables =
       Variable.Set.union
-        (Params.to_set k.global_variables) (Config.global_variable_set cfg)
+        (Params.to_set k.global_variables)
+        (Config.global_variable_set cfg)
     in
     k.code
     |> Protocols.Code.subst_block_dim cfg.block_dim
