@@ -47,6 +47,30 @@ module Defaults = struct
     in
     b_and_ex [ idx_lt_dim; idx_ge_0; dim_ge_1 ]
 
+  (* Generate runtime constraints on demand *)
+  let dyn_base : used:Variable.Set.t -> bdim : Dim3.t -> gdim : Dim3.t -> bexp =
+    fun ~used ~bdim ~gdim ->
+      [
+        (Variable.tid_x, bdim.x);
+        (Variable.tid_y, bdim.y);
+        (Variable.tid_z, bdim.z);
+        (Variable.bid_x, gdim.x);
+        (Variable.bid_y, gdim.y);
+        (Variable.bid_z, gdim.z);
+      ]
+      |> List.filter_map (fun (x, dim) ->
+          if Variable.Set.mem x used then
+            (* 0 <= x <= dim *)
+            Some (
+              b_and
+                (n_le (Num 0) (Var x))
+                (n_lt (Var x) (Num dim))
+            )
+          else
+            None
+        )
+      |> b_and_ex
+
   let block : t =
     {
       globals =
@@ -74,8 +98,15 @@ module Defaults = struct
     }
 
   let to_bexp (e : t) : bexp = b_and e.distinct base
+
+  (* Generate constraints when we know the used variables, bdim and gdim *)
+  let to_dyn_bexp ~gdim ~bdim (e : t) : bexp =
+    let used = Variable.Set.union (Params.to_set e.locals) (Params.to_set e.globals) in
+    b_and e.distinct (dyn_base ~used ~gdim ~bdim)
+
 end
 
 let to_defaults : t -> Defaults.t = function
   | Grid -> Defaults.grid
   | Block -> Defaults.block
+

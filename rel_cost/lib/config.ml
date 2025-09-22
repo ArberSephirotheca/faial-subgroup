@@ -77,6 +77,18 @@ let warp_divergent_tid_set (cfg : t) : Variable.Set.t =
 let warp_uniform_tid_set (cfg : t) : Variable.Set.t =
   cfg |> warp_uniform_tid_list |> Variable.Set.of_list
 
+let _base_global_set : Variable.Set.t =
+  Variable.
+    (bid_set
+    |> Set.union bdim_set
+    |> Set.union gdim_set)
+
+(** Returns the runtime global variables: tid (if any), bid, bdim, gdim *)
+let global_variable_set (cfg: t) : Variable.Set.t =
+  Variable.Set.union
+    (Variable.Set.of_list (warp_uniform_tid_list cfg))
+    _base_global_set
+
 (** Returns the memory segment size in bits used for memory transaction
     granularity.
 

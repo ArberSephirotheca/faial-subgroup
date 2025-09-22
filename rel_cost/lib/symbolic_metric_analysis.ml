@@ -257,7 +257,9 @@ module Constraints = struct
     { globals; locals; distinct }
 
   let to_bexp (cfg : Config.t) (strategy : t) : bexp =
-    to_architecture cfg strategy |> Architecture.Defaults.to_bexp
+    strategy
+    |> to_architecture cfg
+    |> Architecture.Defaults.to_dyn_bexp ~bdim:cfg.block_dim ~gdim:cfg.grid_dim
 end
 
 let print_optimize (pre:bexp) (formula:nexp) : unit =
