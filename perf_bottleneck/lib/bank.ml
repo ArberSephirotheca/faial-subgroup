@@ -153,15 +153,31 @@ module Code = struct
         Exp.b_and (Range.decl_to_bexp var ty) (to_bexp body)
     | Loop { range; body } -> Exp.b_and (Range.to_cond range) (to_bexp body)
 
-  let cond_size (e : t) : int =
-    Exp.b_free_names (to_bexp e) Variable.Set.empty |> Variable.Set.cardinal
+  let rec local_binders (locals : Variable.Set.t) : t -> Variable.Set.t =
+    function
+    | Index _ -> locals
+    | Loop { range = { var; lower_bound = lb; _ }; body = p } ->
+        let locals =
+          let lb_locals =
+            Variable.Set.inter (Exp.n_free_names lb Variable.Set.empty) locals
+          in
+          if Variable.Set.is_empty lb_locals then locals
+          else Variable.Set.add var locals
+        in
+        local_binders locals p
+    | Decl { var = x; body = p; _ } ->
+        local_binders (Variable.Set.add x locals) p
+    | Cond (_, p) -> local_binders locals p
+
+  let cond_variables (e : t) : Variable.Set.t =
+    Exp.b_free_names (to_bexp e) Variable.Set.empty
 
   let rec index : t -> Exp.nexp = function
     | Index a -> a
     | Loop { body = p; _ } | Cond (_, p) | Decl { body = p; _ } -> index p
 
-  let index_size (e : t) : int =
-    Exp.n_free_names (index e) Variable.Set.empty |> Variable.Set.cardinal
+  let index_variables (e : t) : Variable.Set.t =
+    Exp.n_free_names (index e) Variable.Set.empty
 
   let rec free_names (i : t) (fns : Variable.Set.t) : Variable.Set.t =
     match i with
@@ -337,8 +353,16 @@ let to_check (k : t) : Approx.Check.t =
   let vars = Variable.Set.union k.global_variables Variable.tid_set in
   Approx.Check.from_code vars code
 
-let index_size (k : t) : int = k.code |> Code.index_size
-let cond_size (k : t) : int = k.code |> Code.cond_size
+let local_variable_count (k : t) (variables : Variable.Set.t) : int =
+  Variable.Set.inter (Code.local_binders k.local_variables k.code) variables
+  |> Variable.Set.cardinal
+
+let index_size (k : t) : int =
+  k.code |> Code.index_variables |> local_variable_count k
+
+let cond_size (k : t) : int =
+  k.code |> Code.cond_variables |> local_variable_count k
+
 let normalize (k : t) : t = { k with code = Code.normalize k.code }
 
 let index_cost ?(verbose = false) (params : Config.t) (m : Metric.t) (k : t) :
