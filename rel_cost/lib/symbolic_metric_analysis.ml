@@ -292,7 +292,7 @@ let run_encoding ?(verbose = false)
   let pre = Constraints.to_bexp cfg generator in
   (* the final formula must handle the case where the global condition fails,
      thus returning the default value of 0. *)
-  let formula = NIf (global_cond, encoder local_cond, Num 0) in
+  let formula = n_if global_cond (encoder local_cond) (Num 0) in
   let solve formula =
     S.optimize_expr strategy ~pre formula |> Result.to_option
   in
