@@ -57,6 +57,11 @@ module Proj = struct
       (index : nexp) : (bexp * nexp) list =
     run cfg.threads_per_warp locals (fun ctx ->
         (proj_b cond ctx, proj_n index ctx))
+
+  let split_local_global (locals : Variable.Set.t) (b : Exp.bexp) :
+      Exp.bexp * Exp.bexp =
+    b |> Exp.b_and_split |> List.partition (b_intersects locals)
+    |> fun (l, r) -> (Exp.b_and_ex l, Exp.b_and_ex r)
 end
 
 (*
@@ -274,13 +279,20 @@ let print_optimize (pre : bexp) (formula : nexp) : unit =
   prerr_endline
     (Printf.sprintf "optimize {\n  pre: %s\n  cost: %s\n}" pre formula)
 
-(* Optimizes an encoding *)
-let run_encoding ?(verbose=false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
+(** Optimizes an encoding *)
+let run_encoding ?(verbose = false)
+    ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
-    (formula : nexp) : int option =
+    (locals : Variable.Set.t) (active_threads : bexp) (encoder : bexp -> nexp) :
+    int option =
   let module S = (val solver) in
+  let local_cond, global_cond = Proj.split_local_global locals active_threads in
+  (* pre: the generated runtime constraints (eg, tid is unique) *)
   let pre = Constraints.to_bexp cfg generator in
+  (* the final formula must handle the case where the global condition fails,
+     thus returning the default value of 0. *)
+  let formula = NIf (global_cond, encoder local_cond, Num 0) in
   let solve formula =
     S.optimize_expr strategy ~pre formula |> Result.to_option
   in
@@ -291,11 +303,6 @@ let run_encoding ?(verbose=false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximiz
 
 let encode_count_active_threads (cfg : Config.t) (locals : Variable.Set.t)
     (cond : bexp) : nexp =
-  let locals =
-    Variable.Set.union
-      (Variable.Set.diff locals Variable.tid_set)
-      (Config.warp_divergent_tid_set cfg)
-  in
   (* replicate index per each thread *)
   Proj.run cfg.threads_per_warp locals (fun ctx -> Proj.proj_b cond ctx)
   (* for each replicated index *)
@@ -305,21 +312,16 @@ let encode_count_active_threads (cfg : Config.t) (locals : Variable.Set.t)
        (* total cost = 0, visited = [] *)
        (Num 0)
 
-let count_active_threads ?(verbose=false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
+let count_active_threads ?(verbose = false)
+    ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
     (locals : Variable.Set.t) (cond : bexp) : int option =
-  cond
-  |> encode_count_active_threads cfg locals
-  |> run_encoding ~verbose ~strategy ~generator ~solver cfg
+  run_encoding ~verbose ~strategy ~generator ~solver cfg locals cond
+    (encode_count_active_threads cfg locals)
 
-let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (cond : bexp)
-    (index : nexp) : nexp =
-  let locals =
-    Variable.Set.union
-      (Variable.Set.diff locals Variable.tid_set)
-      (Config.warp_divergent_tid_set cfg)
-  in
+let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (index : nexp)
+    (cond : bexp) : nexp =
   let index = n_div index (Num (Config.memory_segments_bits cfg)) in
   (* replicate index per each thread *)
   Proj.run cfg.threads_per_warp locals (fun ctx ->
@@ -335,12 +337,12 @@ let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (cond : bexp)
   (* take only the accumulated value *)
   fst
 
-let ua ?(verbose=true) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
+let ua ?(verbose = true) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
     (locals : Variable.Set.t) (cond : bexp) (index : nexp) : int option =
-  encode_ua cfg locals cond index
-  |> run_encoding ~verbose ~strategy ~generator ~solver cfg
+  run_encoding ~verbose ~strategy ~generator ~solver cfg locals cond
+    (encode_ua cfg locals index)
 
 module ProofResult = struct
   type t =
@@ -387,7 +389,7 @@ module Theorem = struct
       ?(debug = true) ?(generator = Constraints.default)
       ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) : ProofResult.t =
     let module S = (val solver) in
-    let given = encode_ua thm.cfg thm.locals thm.local_context thm.index in
+    let given = encode_ua thm.cfg thm.locals thm.index thm.local_context in
     let goal = NRel (thm.rel, given, thm.expected_cost) in
     (* Prove that NOT(actual_cost comparison expected_cost) is UNSAT *)
     let constraint_system =

@@ -41,15 +41,12 @@ let test_count_active_threads (name : string)
     fun () ->
       let cfg = make_config threads_per_warp in
       let actual = count_active_threads ~strategy cfg locals cond in
-      if actual = expected then ()
-      else
-        Alcotest.failf
-          "count_active_threads failed for %s: expected %s, got %s (condition: \
-           %s, threads_per_warp: %d)"
-          name
-          (match expected with Some x -> string_of_int x | None -> "None")
-          (match actual with Some x -> string_of_int x | None -> "None")
-          (b_to_string cond) threads_per_warp )
+      let int_option_testable = Alcotest.(option int) in
+      Alcotest.check int_option_testable
+        (Printf.sprintf
+           "count_active_threads for %s (condition: %s, threads_per_warp: %d)"
+           name (b_to_string cond) threads_per_warp)
+        expected actual )
 
 (* Utility function to check if an expression is even *)
 let is_even (e : nexp) : bexp = n_eq (Binary (Mod, e, Num 2)) (Num 0)
@@ -97,7 +94,7 @@ let assert_replicate ~(expected : (bexp * nexp) list) ~(threads_per_warp : int)
 let assert_encode_ua ~(expected : nexp) ~(threads_per_warp : int)
     ~(locals : Variable.Set.t) ~(cond : bexp) ~(index : nexp) : unit =
   let cfg = make_config threads_per_warp in
-  let result = encode_ua cfg locals cond index in
+  let result = encode_ua cfg locals index cond in
   let detailed_msg =
     Printf.sprintf
       "encode_ua failed\n\
@@ -136,13 +133,13 @@ let encode_count_active_threads_tests =
       (Variable.Set.singleton (Variable.from_name "x"))
       b_true (Num 2);
     test_encode_count_active_threads "even threadIdx.x condition" 2
-      Variable.Set.empty
+      (Variable.Set.singleton Variable.tid_x)
       (is_even (Var Variable.tid_x))
       (n_plus
          (n_if (is_even (var_ "threadIdx.x$1")) (Num 1) (Num 0))
          (n_if (is_even (var_ "threadIdx.x$0")) (Num 1) (Num 0)));
     test_encode_count_active_threads "even threadIdx.x condition" 3
-      Variable.Set.empty
+      (Variable.Set.singleton Variable.tid_x)
       (is_even (Var Variable.tid_x))
       (n_plus
          (n_if (is_even (var_ "threadIdx.x$2")) (Num 1) (Num 0))
@@ -163,14 +160,16 @@ let count_active_threads_tests =
     test_count_active_threads "with local variable x" 2
       (Variable.Set.singleton (Variable.from_name "x"))
       b_true (Some 2);
-    test_count_active_threads "even threadIdx.x, 2 threads" 2 Variable.Set.empty
+    test_count_active_threads "even threadIdx.x, 2 threads" 2
+      (Variable.Set.singleton Variable.tid_x)
       (is_even (Var Variable.tid_x))
       (Some 1);
-    test_count_active_threads "even threadIdx.x, 4 threads" 4 Variable.Set.empty
+    test_count_active_threads "even threadIdx.x, 4 threads" 4
+      (Variable.Set.singleton Variable.tid_x)
       (is_even (Var Variable.tid_x))
       (Some 2);
     test_count_active_threads "even threadIdx.x, 10 threads" 8
-      Variable.Set.empty
+      (Variable.Set.singleton Variable.tid_x)
       (is_even (Var Variable.tid_x))
       (Some 4);
     test_count_active_threads "maximize strategy"
@@ -233,18 +232,20 @@ let test_ua_threadIdx_x () : unit =
 
   (* Test minimize strategy *)
   assert_ua ~strategy:Gen_z3.Optimizer.Strategy.Minimize ~expected:(Some 2)
-    ~threads_per_warp:2 ~locals:Variable.Set.empty ~cond:b_true
-    ~index:(Var Variable.tid_x) ();
+    ~threads_per_warp:2
+    ~locals:(Variable.Set.singleton Variable.tid_x)
+    ~cond:b_true ~index:(Var Variable.tid_x) ();
 
   (* Test maximize strategy *)
   assert_ua ~strategy:Gen_z3.Optimizer.Strategy.Maximize ~expected:(Some 2)
-    ~threads_per_warp:2 ~locals:Variable.Set.empty ~cond:b_true
-    ~index:(Var Variable.tid_x) ();
+    ~threads_per_warp:2
+    ~locals:(Variable.Set.singleton Variable.tid_x)
+    ~cond:b_true ~index:(Var Variable.tid_x) ();
 
   (* Test with condition tidx % 2 == 0 (only even thread IDs) *)
   assert_ua ~strategy:Gen_z3.Optimizer.Strategy.Maximize ~expected:(Some 2)
     ~threads_per_warp:4 (* Only threadIdx.x is a thread-local variable *)
-    ~locals:Variable.Set.empty
+    ~locals:(Variable.Set.singleton Variable.tid_x)
     ~cond:(is_even (Var Variable.tid_x))
     ~index:(Var Variable.tid_x) ()
 
@@ -320,7 +321,7 @@ let test_theorem_prove_exact_cost () : unit =
   prove_thorem "2 * threadIdx.x should have exact cost 2"
     {
       cfg;
-      locals = Variable.Set.empty;
+      locals = Variable.Set.singleton Variable.tid_x;
       local_context = b_true;
       global_context = b_true;
       index = n_mult (Num k) (Var Variable.tid_x);
