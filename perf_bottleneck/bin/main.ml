@@ -133,7 +133,7 @@ module Solver = struct
            in
            memory_match && line_match && col_match)
     |> Seq.map (fun bank ->
-           let bank = Bank.normalize bank in
+           let bank = Bank.normalize bank |> Bank.trim_decls in
            let bank = if a.erase_ctx then Bank.erase_context bank else bank in
            if a.verbose then prerr_endline (Bank.to_string bank);
            let to_cost value = Cost.from_int ~value ~exact:true () in
