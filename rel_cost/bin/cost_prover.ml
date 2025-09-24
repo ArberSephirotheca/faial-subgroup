@@ -111,8 +111,7 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
         "Warning: Tactic file ignored for %s mode (tactics only supported in \
          prove mode)\n\n"
         (RunMode.to_string mode)
-  | RunMode.Prove, Some tfile ->
-      Printf.printf "Using tactic file: %s\n" tfile
+  | RunMode.Prove, Some tfile -> Printf.printf "Using tactic file: %s\n" tfile
   | _ -> ());
 
   let tactic =
@@ -146,9 +145,8 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
 
 (* Main benchmark function *)
 let main (strategy : Constraints.t) (threads_per_warp : int) (filename : string)
-    (all : bool) (mode : RunMode.t) (tactic_file : string option)
-    (debug : bool) (solver_backend : SolverBackend.t) (block_dim : Dim3.t) :
-    unit =
+    (all : bool) (mode : RunMode.t) (tactic_file : string option) (debug : bool)
+    (solver_backend : SolverBackend.t) (block_dim : Dim3.t) : unit =
   run_benchmarks ~strategy ~all ~threads_per_warp ~filename ~mode ~tactic_file
     ~debug ~solver_backend ~block_dim
 
@@ -254,9 +252,7 @@ let mode_arg =
     "Benchmark mode. Valid options: prove, p, max, maximize, min, minimize"
   in
   Arg.(
-    value
-    & opt benchmark_mode_conv RunMode.default
-    & info [ "m"; "mode" ] ~doc)
+    value & opt benchmark_mode_conv RunMode.default & info [ "m"; "mode" ] ~doc)
 
 let dim3_conv : Dim3.t Arg.conv =
   let parse s = Dim3.parse s |> Result.map_error (fun x -> `Msg x) in

@@ -357,8 +357,7 @@ let local_binders (k : t) : Variable.Set.t =
   Code.local_binders k.local_variables k.code
 
 let local_variable_count (k : t) (variables : Variable.Set.t) : int =
-  Variable.Set.inter (local_binders k) variables
-  |> Variable.Set.cardinal
+  Variable.Set.inter (local_binders k) variables |> Variable.Set.cardinal
 
 let index_size (k : t) : int =
   k.code |> Code.index_variables |> local_variable_count k
@@ -367,9 +366,7 @@ let cond_size (k : t) : int =
   k.code |> Code.cond_variables |> local_variable_count k
 
 let normalize (k : t) : t = { k with code = Code.normalize k.code }
-
 let to_bexp (k : t) : Exp.bexp = Code.to_bexp k.code
-
 let index (k : t) : Exp.nexp = Code.index k.code
 
 let index_cost ?(verbose = false) (params : Config.t) (m : Metric.t) (k : t) :

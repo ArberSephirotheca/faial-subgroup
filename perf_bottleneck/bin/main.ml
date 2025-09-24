@@ -374,11 +374,7 @@ module TheoremExporter = struct
     let local_context = Bank.to_bexp b in
     (* Calculate expected cost from analysis *)
     let expected_cost =
-      let cost =
-        match h.index.code with
-        | Tick value -> value
-        | _ -> 32
-      in
+      let cost = match h.index.code with Tick value -> value | _ -> 32 in
       let open Exp in
       Num cost
     in
@@ -395,36 +391,38 @@ module TheoremExporter = struct
   (* Export theorems to stdout *)
   let export_theorems (s : Solver.t) : unit =
     let results = Solver.run s in
-    List.iteri (fun kernel_idx ((kernel:Kernel.t), hotspots) ->
-      List.iteri (fun hotspot_idx hotspot ->
-        let cfg = s.config in
-        let theorem = hotspot_to_theorem cfg hotspot in
-        let content = Theorem.to_serializable_string theorem in
-        prerr_endline (Printf.sprintf "(* Theorem for kernel '%s' hotspot %d_%d *)\n"
-          kernel.name kernel_idx hotspot_idx);
-        prerr_endline content;
-        prerr_endline ""
-      ) hotspots
-    ) results
+    List.iteri
+      (fun kernel_idx ((kernel : Kernel.t), hotspots) ->
+        List.iteri
+          (fun hotspot_idx hotspot ->
+            let cfg = s.config in
+            let theorem = hotspot_to_theorem cfg hotspot in
+            let content = Theorem.to_serializable_string theorem in
+            prerr_endline
+              (Printf.sprintf "(* Theorem for kernel '%s' hotspot %d_%d *)\n"
+                 kernel.name kernel_idx hotspot_idx);
+            prerr_endline content;
+            prerr_endline "")
+          hotspots)
+      results
 end
 
-let run ?(skip_zero = true) ~skip_distinct_vars ~config ~output_json ~export_theorems
-    ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric
-    ~verbose (kernels : Kernel.t list) : unit =
+let run ?(skip_zero = true) ~skip_distinct_vars ~config ~output_json
+    ~export_theorems ~ignore_absent ~only_reads ~only_writes ~block_dim
+    ~grid_dim ~params ~simulate ~memory_filter ~erase_ctx ~line_filter
+    ~col_filter ~metric ~verbose (kernels : Kernel.t list) : unit =
   let app : Solver.t =
     Solver.make ~skip_zero ~skip_distinct_vars ~config ~kernels ~ignore_absent
       ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate
       ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric ~verbose
   in
   if export_theorems then TheoremExporter.export_theorems app;
-  if output_json then JUI.run app
-  else TUI.run app
+  if output_json then JUI.run app else TUI.run app
 
 let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
     (show_all : bool) (skip_distinct_vars : bool) (ignore_absent : bool)
-    (output_json : bool) (export_theorems : bool) (only_reads : bool) (only_writes : bool)
-    (params : (string * int) list) (simulate : bool)
+    (output_json : bool) (export_theorems : bool) (only_reads : bool)
+    (only_writes : bool) (params : (string * int) list) (simulate : bool)
     (memory_filter : MemoryFilter.t) (erase_ctx : bool)
     (line_filter : int option) (col_filter : int option) (metric : Metric.t)
     (verbose : bool) =
@@ -432,10 +430,10 @@ let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
   let block_dim = parsed.options.block_dim in
   let grid_dim = parsed.options.grid_dim in
   let config = Config.make ~block_dim ~grid_dim () in
-  run ~skip_zero:(not show_all) ~skip_distinct_vars ~config ~output_json ~export_theorems
-    ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim ~params
-    ~simulate ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric
-    ~verbose parsed.kernels
+  run ~skip_zero:(not show_all) ~skip_distinct_vars ~config ~output_json
+    ~export_theorems ~ignore_absent ~only_reads ~only_writes ~block_dim
+    ~grid_dim ~params ~simulate ~memory_filter ~erase_ctx ~line_filter
+    ~col_filter ~metric ~verbose parsed.kernels
 
 (* Command-line interface *)
 
@@ -563,9 +561,9 @@ let verbose =
 let main_t =
   Term.(
     const main $ get_fname $ block_dim $ grid_dim $ show_all
-    $ skip_distinct_vars $ ignore_absent $ output_json $ export_theorems $ only_reads
-    $ only_writes $ params $ simulate $ memory_type $ erase_ctx $ line_filter
-    $ col_filter $ metric $ verbose)
+    $ skip_distinct_vars $ ignore_absent $ output_json $ export_theorems
+    $ only_reads $ only_writes $ params $ simulate $ memory_type $ erase_ctx
+    $ line_filter $ col_filter $ metric $ verbose)
 
 let info =
   let doc = "Static analysis of bank-conflicts for GPU programs" in
