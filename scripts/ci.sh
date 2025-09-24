@@ -1,6 +1,6 @@
 #!/bin/bash
 set -x
-Z3_VERSION=4.13.0
+Z3_VERSION=$(cd "$(dirname "$0")" && dune exec z3-version.exe)
 case $(uname -s) in
   Linux)
     JOB=build

@@ -1,0 +1,4 @@
+(executable
+ (public_name z3-version)
+ (name z3-version)
+ (libraries z3))
