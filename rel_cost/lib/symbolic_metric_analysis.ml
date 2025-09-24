@@ -385,6 +385,34 @@ module Theorem = struct
       (n_to_string thm.index) (N_rel.to_string thm.rel)
       (n_to_string thm.expected_cost)
 
+  (* Serialize theorem in format parseable by TheoremFileParser *)
+  let to_serializable_string (thm : t) : string =
+    let cfg = thm.cfg in
+    let locals_list =
+      thm.locals |> Variable.Set.elements
+      |> List.map Variable.name
+      |> String.concat ", "
+    in
+    let block_dim_str =
+      Printf.sprintf "{x: %d, y: %d, z: %d}"
+        cfg.block_dim.x cfg.block_dim.y cfg.block_dim.z
+    in
+    Printf.sprintf
+      "threads_per_warp: %d;\n\
+       block_dim: %s;\n\
+       locals: [%s];\n\
+       local_context: %s;\n\
+       global_context: %s;\n\
+       ua(%s) %s %s"
+      cfg.threads_per_warp
+      block_dim_str
+      locals_list
+      (b_to_string thm.local_context)
+      (b_to_string thm.global_context)
+      (n_to_string thm.index)
+      (N_rel.to_string thm.rel)
+      (n_to_string thm.expected_cost)
+
   let prove ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
       ?(debug = true) ?(generator = Constraints.default)
       ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) : ProofResult.t =
