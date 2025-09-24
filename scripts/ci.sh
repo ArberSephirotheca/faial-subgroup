@@ -4,7 +4,7 @@ Z3_VERSION=$(cd "$(dirname "$0")" && dune exec ./z3_version.exe)
 case $(uname -s) in
   Linux)
     JOB=build
-    Z3_ARCH=x64-glibc-2.31
+    Z3_ARCH=x64-glibc-2.39
     Z3_DLL=libz3.so
     ;;
   Darwin)
