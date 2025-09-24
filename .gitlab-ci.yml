@@ -104,6 +104,8 @@ build-container:
   script:
     - docker build -f docker/tools.Dockerfile -t $CONTAINER_IMAGE:$CI_COMMIT_SHA .
     - docker build -f docker/tools.Dockerfile -t $CONTAINER_IMAGE:latest .
+    - echo "Testing container with tutorial/saxpy.cu"
+    - docker run --rm -v $CI_PROJECT_DIR:/workspace $CONTAINER_IMAGE:latest faial-drf tutorial/saxpy.cu
     - docker push $CONTAINER_IMAGE:$CI_COMMIT_SHA
     - docker push $CONTAINER_IMAGE:latest
   after_script:
