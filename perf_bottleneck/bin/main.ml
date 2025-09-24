@@ -502,8 +502,8 @@ let output_json =
   Arg.(value & flag & info [ "json" ] ~doc)
 
 let export_theorems =
-  let doc = "Export analysis results as theorem files for faial-cost-prover." in
-  Arg.(value & flag & info [ "export-theorems" ] ~doc)
+  let doc = "Show analysis results as theorem for faial-cost-prover." in
+  Arg.(value & flag & info [ "show-theorems" ] ~doc)
 
 let only_reads =
   let doc = "Only account for load transactions (access reads)." in
