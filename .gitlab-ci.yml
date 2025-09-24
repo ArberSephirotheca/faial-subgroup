@@ -6,7 +6,6 @@ stages:
 - deploy
 
 image: registry.gitlab.com/umb-svl/faial/faial:ci
-variables:
 
 .cache: &global_cache
   before_script:
@@ -25,7 +24,11 @@ check-opam-consistency:
     - eval $(opam config env)
     - cp faial.opam faial.opam.backup
     - dune build faial.opam
-    - diff faial.opam.backup faial.opam || (echo "ERROR: Generated faial.opam differs from committed version. Run 'dune build faial.opam' and commit the changes." && exit 1)
+    - |
+      diff faial.opam.backup faial.opam || (
+        echo "ERROR: Generated faial.opam differs from committed version. Run 'dune build faial.opam' and commit the changes."
+        exit 1
+      )
     - echo "✅ faial.opam is consistent with dune-project"
 
 test:
