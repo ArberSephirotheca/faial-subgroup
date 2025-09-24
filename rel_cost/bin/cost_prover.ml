@@ -21,7 +21,7 @@ let load_theorem_from_file (filename : string) (cfg : Config.t) : Theorem.t =
       failwith
         (Printf.sprintf "Failed to parse theorem file '%s': %s" filename msg)
 
-module BenchmarkMode = struct
+module RunMode = struct
   type t = Prove | Max | Min
 
   let to_string : t -> string = function
@@ -97,7 +97,7 @@ let benchmark_optimize ~strategy ~generator ~theorem =
       | None -> print_endline "Optimization failed (no solution found)")
 
 let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
-    ~(all : bool) ~(filename : string) ~(mode : BenchmarkMode.t)
+    ~(all : bool) ~(filename : string) ~(mode : RunMode.t)
     ~(tactic_file : string option) ~(debug : bool)
     ~(solver_backend : SolverBackend.t) ~(block_dim : Dim3.t) =
   let strategies = if all then Constraints.values else [ strategy ] in
@@ -106,18 +106,18 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
 
   (* Validate tactic file usage *)
   (match (mode, tactic_file) with
-  | (BenchmarkMode.Max | BenchmarkMode.Min), Some _ ->
+  | (RunMode.Max | RunMode.Min), Some _ ->
       Printf.printf
         "Warning: Tactic file ignored for %s mode (tactics only supported in \
          prove mode)\n\n"
-        (BenchmarkMode.to_string mode)
-  | BenchmarkMode.Prove, Some tfile ->
+        (RunMode.to_string mode)
+  | RunMode.Prove, Some tfile ->
       Printf.printf "Using tactic file: %s\n" tfile
   | _ -> ());
 
   let tactic =
     match mode with
-    | BenchmarkMode.Prove -> load_tactic_from_file tactic_file
+    | RunMode.Prove -> load_tactic_from_file tactic_file
     | _ -> None
   in
 
@@ -131,13 +131,13 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
       Printf.printf "Strategy: %s\n" (Constraints.to_string generator);
       let time =
         match mode with
-        | BenchmarkMode.Prove ->
+        | RunMode.Prove ->
             benchmark_prove ~generator ~tactic ~debug ~solver:solver_module
               ~theorem
-        | BenchmarkMode.Max ->
+        | RunMode.Max ->
             benchmark_optimize ~strategy:Gen_z3.Optimizer.Strategy.Maximize
               ~generator ~theorem
-        | BenchmarkMode.Min ->
+        | RunMode.Min ->
             benchmark_optimize ~strategy:Gen_z3.Optimizer.Strategy.Minimize
               ~generator ~theorem
       in
@@ -146,7 +146,7 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
 
 (* Main benchmark function *)
 let main (strategy : Constraints.t) (threads_per_warp : int) (filename : string)
-    (all : bool) (mode : BenchmarkMode.t) (tactic_file : string option)
+    (all : bool) (mode : RunMode.t) (tactic_file : string option)
     (debug : bool) (solver_backend : SolverBackend.t) (block_dim : Dim3.t) :
     unit =
   run_benchmarks ~strategy ~all ~threads_per_warp ~filename ~mode ~tactic_file
@@ -234,9 +234,9 @@ let solver_arg =
     & opt solver_backend_conv SolverBackend.default
     & info [ "s"; "solver" ] ~doc)
 
-let benchmark_mode_conv : BenchmarkMode.t Arg.conv =
+let benchmark_mode_conv : RunMode.t Arg.conv =
   let parse s =
-    match BenchmarkMode.of_string s with
+    match RunMode.of_string s with
     | Some v -> Ok v
     | None ->
         Error
@@ -246,7 +246,7 @@ let benchmark_mode_conv : BenchmarkMode.t Arg.conv =
                  maximize, min, minimize"
                 s))
   in
-  let print fmt v = Format.fprintf fmt "%s" (BenchmarkMode.to_string v) in
+  let print fmt v = Format.fprintf fmt "%s" (RunMode.to_string v) in
   Arg.conv (parse, print)
 
 let mode_arg =
@@ -255,7 +255,7 @@ let mode_arg =
   in
   Arg.(
     value
-    & opt benchmark_mode_conv BenchmarkMode.default
+    & opt benchmark_mode_conv RunMode.default
     & info [ "m"; "mode" ] ~doc)
 
 let dim3_conv : Dim3.t Arg.conv =
