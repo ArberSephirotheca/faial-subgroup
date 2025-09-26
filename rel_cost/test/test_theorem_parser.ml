@@ -449,6 +449,126 @@ let round_trip_tests =
     |};
   ]
 
+(* Comment support tests *)
+let test_comment_parsing (name : string) (input : string) =
+  ( name,
+    `Quick,
+    fun () ->
+      (* Just test that parsing succeeds with comments *)
+      let _parsed = parse_theorem_ok input in
+      (* If we get here without exception, comments work *)
+      () )
+
+let comment_tests =
+  [
+    test_comment_parsing "line comments"
+      {|
+      threads_per_warp : 32; // line comment
+      block_dim : {x: 32, y: 1, z: 1}; // another comment
+      locals : []; // empty locals
+      local_context : true; // always true
+      global_context : true; // global true
+      prove ua(tidx) == 1; // goal comment
+    |};
+
+    test_comment_parsing "block comments"
+      {|
+      /* This is a block comment */
+      threads_per_warp : 32;
+      /* Another block comment
+         spanning multiple lines */
+      block_dim : {x: 32, y: 1, z: 1};
+      locals : [];
+      local_context : true;
+      global_context : true;
+      prove ua(tidx) == 1;
+    |};
+
+    test_comment_parsing "mixed comments"
+      {|
+      threads_per_warp : 32; // line comment
+      /* block comment */ block_dim : {x: 32, y: 1, z: 1};
+      locals : []; /* inline block */
+      local_context : true; // another line comment
+      global_context : true;
+      prove ua(tidx) == 1; // final comment
+    |};
+
+    test_comment_parsing "comments in expressions"
+      {|
+      threads_per_warp : 32;
+      block_dim : {x: 32, y: 1, z: 1};
+      locals : [x, y];
+      local_context : x > 0 /* greater than zero */ && y >= 0;
+      global_context : true;
+      prove ua(x + y) == 2; // sum should be 2
+    |};
+
+    test_comment_parsing "comments everywhere"
+      {|
+      // File header comment
+      /* Configuration section */
+      threads_per_warp : 32; // threads per warp
+      block_dim : {x: 32, y: 1, z: 1}; /* block dimensions */
+
+      // Variables section
+      locals : [mask, offset]; // local variables
+
+      /* Context definitions */
+      local_context : mask > 0 && /* positive mask */ offset >= 0;
+      global_context : true; // always true
+
+      // Goals section
+      prove ua(tidx + offset) <= mask; // prove statement
+      max ua(mask & tidx); // maximize statement
+      min offset + 1; // minimize statement
+    |};
+
+    test_comment_parsing "multiline block comments"
+      {|
+      threads_per_warp : 32;
+      /* This is a multiline block comment
+         that spans several lines
+         and contains various text
+         but no nested comments */
+      block_dim : {x: 32, y: 1, z: 1};
+      locals : [];
+      local_context : true;
+      global_context : true;
+      prove ua(tidx) == 1;
+    |};
+  ]
+
+(* Test for comment error handling *)
+let test_comment_error (name : string) (input : string) =
+  ( name,
+    `Quick,
+    fun () ->
+      (* Test that parsing fails with appropriate error *)
+      match TheoremFileParser.of_string input with
+      | Ok _ -> Alcotest.failf "Expected parse error for %s" name
+      | Error msg ->
+          (* Verify error message mentions unterminated comment *)
+          let open Stage0.Common in
+          if contains ~substring:"Unterminated" msg || contains ~substring:"comment" msg then
+            ()
+          else
+            Alcotest.failf "Error message should mention unterminated comment: %s" msg )
+
+let comment_error_tests =
+  [
+    test_comment_error "unterminated block comment"
+      {|
+      threads_per_warp : 32;
+      /* This comment is never closed
+      block_dim : {x: 32, y: 1, z: 1};
+      locals : [];
+      local_context : true;
+      global_context : true;
+      prove ua(tidx) == 1;
+    |};
+  ]
+
 let all_tests =
   [
     ("benchmark examples", benchmark_tests);
@@ -457,6 +577,8 @@ let all_tests =
     ("complex expressions", complex_expression_tests);
     ("error handling", error_tests);
     ("round-trip serialization", round_trip_tests);
+    ("comment support", comment_tests);
+    ("comment error handling", comment_error_tests);
   ]
 
 (* Run the tests *)
