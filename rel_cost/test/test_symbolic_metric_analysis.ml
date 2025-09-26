@@ -21,7 +21,7 @@ let test_encode_count_active_threads (name : string) (threads_per_warp : int)
     `Quick,
     fun () ->
       let cfg = make_config threads_per_warp in
-      let actual = encode_count_active_threads cfg locals cond in
+      let actual = encode_count_active_threads cfg locals (Num 0) cond in
       if actual = expected then ()
       else
         Alcotest.failf
@@ -40,7 +40,7 @@ let test_count_active_threads (name : string)
     `Quick,
     fun () ->
       let cfg = make_config threads_per_warp in
-      let actual = count_active_threads ~strategy cfg locals cond in
+      let actual = count_active_threads ~strategy cfg locals cond (Num 0) in
       let int_option_testable = Alcotest.(option int) in
       Alcotest.check int_option_testable
         (Printf.sprintf
