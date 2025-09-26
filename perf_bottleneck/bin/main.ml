@@ -378,14 +378,16 @@ module TheoremExporter = struct
       let open Exp in
       Num cost
     in
+    (* Create a goal comparing ua(index) == expected_cost *)
+    let goal =
+      Theorem.Goal.Prop (NRel (N_rel.Eq, NCall ("ua", index), expected_cost))
+    in
     {
       cfg;
       locals;
       local_context;
       global_context = Exp.b_true;
-      index;
-      rel = N_rel.Eq;
-      expected_cost;
+      goals = [ goal ];
     }
 
   (* Export theorems to stdout *)
@@ -397,7 +399,10 @@ module TheoremExporter = struct
           (fun hotspot_idx hotspot ->
             let cfg = s.config in
             let theorem = hotspot_to_theorem cfg hotspot in
-            let content = Theorem.to_serializable_string theorem in
+            let content =
+              theorem |> Rel_cost_parsing.Theorem_file.of_theorem
+              |> Rel_cost_parsing.Theorem_file.to_string
+            in
             prerr_endline
               (Printf.sprintf "(* Theorem for kernel '%s' hotspot %d_%d *)\n"
                  kernel.name kernel_idx hotspot_idx);

@@ -19,9 +19,7 @@ let thm2 (cfg : Config.t) : Theorem.t =
     locals = Variable.Set.empty;
     local_context = b_true;
     global_context = opt;
-    index = n_mult x (Var Variable.tid_x);
-    rel = N_rel.Eq;
-    expected_cost = x;
+    goals = [ Prop (Exp.n_eq (n_mult x (Var Variable.tid_x)) x) ];
   }
 
 let parse (s : string) : Tactic.t option =
@@ -273,14 +271,14 @@ module SolverBackend = struct
   let all : t list = [ IntGen; Bv32Gen; Bv64Gen ]
 end
 
-(* Benchmark a single tactic strategy using Theorem.prove *)
+(* Benchmark a single tactic strategy using Theorem.execute *)
 let benchmark_tactic ~(solver_backend : SolverBackend.t)
     ~(strategy : TacticStrategy.t) ~(theorem : Theorem.t) =
   let solver_module = SolverBackend.to_module solver_backend in
   let time, result =
     time_it (fun () ->
-        Theorem.prove ~solver:solver_module ~debug:false ~tactic:strategy.tactic
-          theorem)
+        Theorem.execute ~solver:solver_module ~debug:false
+          ~tactic:strategy.tactic theorem)
   in
   (time, result)
 
@@ -307,11 +305,18 @@ let run_benchmarks ~(solver_backend : SolverBackend.t)
       flush stdout;
 
       try
-        let time, result =
+        let time, results =
           benchmark_tactic ~solver_backend ~strategy ~theorem
         in
         Printf.printf "Time: %.3fs\n" time;
-        Printf.printf "Result: %s\n" (ProofResult.to_string result)
+        Printf.printf "Results:\n";
+        List.iteri
+          (fun i result ->
+            match result with
+            | Ok res ->
+                Printf.printf "  Goal %d: %s\n" i (TheoremResult.to_string res)
+            | Error msg -> Printf.printf "  Goal %d: ERROR - %s\n" i msg)
+          results
       with exn ->
         Printf.printf "FAILED: %s\n" (Printexc.to_string exn);
 

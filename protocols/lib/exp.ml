@@ -321,6 +321,17 @@ let n_intersects (s : Variable.Set.t) : nexp -> bool =
 let b_intersects (s : Variable.Set.t) : bexp -> bool =
   b_exists (fun x -> Variable.Set.mem x s)
 
+(* b_map only recurses to the first numeric expression it finds, not recursively
+   in numeric expressions. *)
+let rec b_map (f : nexp -> nexp) : bexp -> bexp = function
+  | Bool _ as b -> b
+  | NRel (o, n1, n2) -> NRel (o, f n1, f n2)
+  | BRel (o, b1, b2) -> BRel (o, b_map f b1, b_map f b2)
+  | BNot b -> BNot (b_map f b)
+  | Pred (s, e) -> Pred (s, f e)
+  | CastBool e -> CastBool (f e)
+  | Distinct l -> Distinct (List.map f l)
+
 let rec n_par (n : nexp) : string =
   match n with
   | Num _ | Var _ | NCall _ | Other _ | CastInt _ -> n_to_string n
@@ -339,8 +350,7 @@ and n_to_string : nexp -> string = function
 and b_to_string : bexp -> string = function
   | Bool b -> if b then "true" else "false"
   | CastBool e -> "bool(" ^ n_to_string e ^ ")"
-  | NRel (b, n1, n2) ->
-      n_to_string n1 ^ " " ^ N_rel.to_string b ^ " " ^ n_to_string n2
+  | NRel (b, n1, n2) -> n_par n1 ^ " " ^ N_rel.to_string b ^ " " ^ n_par n2
   | BRel (b, b1, b2) -> b_par b1 ^ " " ^ B_rel.to_string b ^ " " ^ b_par b2
   | BNot b -> "!" ^ b_par b
   | Pred (x, v) -> x ^ "(" ^ n_to_string v ^ ")"

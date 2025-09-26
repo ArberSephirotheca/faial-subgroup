@@ -348,97 +348,141 @@ module ProofResult = struct
   type t =
     | Proved (* Theorem successfully proven *)
     | Counterexample of Z3.Model.model (* Found counterexample with model *)
-    | Unknown of string (* Solver couldn't determine *)
 
   let to_string : t -> string = function
     | Proved -> "Proved"
     | Counterexample model -> "Counterexample: " ^ Z3.Model.to_string model
-    | Unknown msg -> "Unknown: " ^ msg
 
   let is_success : t -> bool = function
     | Proved -> true
-    | Counterexample _ | Unknown _ -> false
+    | Counterexample _ -> false
+end
+
+module TheoremResult = struct
+  type t = OptimizationResult of int | ProofResult of ProofResult.t
+
+  let to_string : t -> string = function
+    | OptimizationResult value -> Printf.sprintf "Optimization: %d" value
+    | ProofResult result -> "Proof: " ^ ProofResult.to_string result
+
+  let is_success : t -> bool = function
+    | OptimizationResult _ ->
+        true (* Optimization always succeeds if it returns a value *)
+    | ProofResult result -> ProofResult.is_success result
 end
 
 module Theorem = struct
+  module Goal = struct
+    type t =
+      | Optimize of { strategy : Gen_z3.Optimizer.Strategy.t; expr : Exp.nexp }
+      | Prop of Exp.bexp
+
+    let to_string : t -> string = function
+      | Optimize { strategy = s; expr = e } ->
+          Gen_z3.Optimizer.Strategy.to_string s ^ " " ^ Exp.n_to_string e
+      | Prop e -> "prop " ^ Exp.b_to_string e
+  end
+
   type t = {
     cfg : Config.t;
     locals : Variable.Set.t;
     local_context : bexp;
     global_context : bexp;
-    index : nexp;
-    rel : N_rel.t;
-    expected_cost : nexp;
+    goals : Goal.t list;
   }
+
+  (* Inline ua() function calls in expressions *)
+  let n_inline_cost ~config ~locals ~context : nexp -> nexp =
+    let rec loop : nexp -> nexp = function
+      | NCall ("ua", index) -> encode_ua config locals index context
+      | (Var _ | Num _) as e -> e
+      | Other e -> Other (loop e)
+      | Binary (op, e1, e2) -> Binary (op, loop e1, loop e2)
+      | Unary (op, e) -> Unary (op, loop e)
+      | NCall (name, e) -> NCall (name, loop e)
+      | NIf (b, e1, e2) -> NIf (Exp.b_map loop b, loop e1, loop e2)
+      | CastInt b -> CastInt (Exp.b_map loop b)
+    in
+    loop
+
+  let b_inline_cost ~config ~locals ~context : bexp -> bexp =
+    Exp.b_map (n_inline_cost ~config ~locals ~context)
 
   let to_string (thm : t) : string =
     Printf.sprintf
-      "config: %s\n\
-       locals: [%s]\n\
-       local_context: %s;\n\
-       global_context: %s;\n\
-       ⊢ cost(%s) %s %s"
+      "config: %s\nlocals: [%s]\nlocal_context: %s;\nglobal_context: %s;\n⊢ %s"
       (Config.to_string thm.cfg)
       (Variable.set_to_string thm.locals)
       (b_to_string thm.local_context)
       (b_to_string thm.global_context)
-      (n_to_string thm.index) (N_rel.to_string thm.rel)
-      (n_to_string thm.expected_cost)
-
-  (* Serialize theorem in format parseable by TheoremFileParser *)
-  let to_serializable_string (thm : t) : string =
-    let cfg = thm.cfg in
-    let locals_list =
-      thm.locals |> Variable.Set.elements |> List.map Variable.name
-      |> String.concat ", "
-    in
-    let block_dim_str =
-      Printf.sprintf "{x: %d, y: %d, z: %d}" cfg.block_dim.x cfg.block_dim.y
-        cfg.block_dim.z
-    in
-    Printf.sprintf
-      "threads_per_warp: %d;\n\
-       block_dim: %s;\n\
-       locals: [%s];\n\
-       local_context: %s;\n\
-       global_context: %s;\n\
-       ua(%s) %s %s"
-      cfg.threads_per_warp block_dim_str locals_list
-      (b_to_string thm.local_context)
-      (b_to_string thm.global_context)
-      (n_to_string thm.index) (N_rel.to_string thm.rel)
-      (n_to_string thm.expected_cost)
+      (List.map Goal.to_string thm.goals |> String.concat "\n")
 
   let prove ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
       ?(debug = true) ?(generator = Constraints.default)
-      ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) : ProofResult.t =
+      ?(tactic : Gen_z3.Tactic.t option = None) (cfg : Config.t)
+      (locals : Variable.Set.t) (local_context : bexp) (global_context : bexp)
+      (proposition : bexp) : (ProofResult.t, string) Result.t =
     let module S = (val solver) in
-    let given = encode_ua thm.cfg thm.locals thm.index thm.local_context in
-    let goal = NRel (thm.rel, given, thm.expected_cost) in
-    (* Prove that NOT(actual_cost comparison expected_cost) is UNSAT *)
+    let combined_context = b_and local_context global_context in
+    let goal =
+      b_inline_cost ~config:cfg ~locals ~context:combined_context proposition
+    in
+    (* Prove that NOT(goal) is UNSAT *)
     let constraint_system =
-      b_and_ex
-        [
-          thm.global_context; Constraints.to_bexp thm.cfg generator; b_not goal;
-        ]
+      b_and_ex [ global_context; Constraints.to_bexp cfg generator; b_not goal ]
     in
     let result =
       match tactic with
       | Some tactic_strategy ->
-          (* Use tactic-based solving with debug mode enabled *)
           S.solve_with_tactic ~debug tactic_strategy constraint_system
-      | None ->
-          (* Use default solver *)
-          S.solve constraint_system
+      | None -> S.solve constraint_system
     in
     match result with
-    | Unsat -> ProofResult.Proved
-    | Sat model -> ProofResult.Counterexample model
-    | Unknown msg -> ProofResult.Unknown msg
+    | Unsat -> Ok ProofResult.Proved
+    | Sat model -> Ok (ProofResult.Counterexample model)
+    | Unknown msg -> Error ("Proof inconclusive: " ^ msg)
 
   let optimize_cost ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
-      ?(generator = Constraints.default) (thm : t) : int option =
-    ua ~strategy ~generator thm.cfg thm.locals
-      (b_and thm.local_context thm.global_context)
-      thm.index
+      ?(generator = Constraints.default)
+      ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
+      (locals : Variable.Set.t) (local_context : bexp) (global_context : bexp)
+      (expr : nexp) : (int, string) Result.t =
+    let combined_context = b_and local_context global_context in
+    let inlined_expr =
+      n_inline_cost ~config:cfg ~locals ~context:combined_context expr
+    in
+    match
+      run_encoding ~strategy ~generator ~solver cfg locals combined_context
+        (fun _ -> inlined_expr)
+    with
+    | Some value -> Ok value
+    | None -> Error "Optimization failed"
+
+  (* Execute a single goal *)
+  let execute_goal ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
+      ?(debug = true) ?(generator = Constraints.default)
+      ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) (goal : Goal.t) :
+      (TheoremResult.t, string) Result.t =
+    match goal with
+    | Goal.Optimize { strategy; expr } -> (
+        match
+          optimize_cost ~strategy ~generator ~solver thm.cfg thm.locals
+            thm.local_context thm.global_context expr
+        with
+        | Ok value -> Ok (TheoremResult.OptimizationResult value)
+        | Error msg -> Error msg)
+    | Goal.Prop proposition -> (
+        match
+          prove ~solver ~debug ~generator ~tactic thm.cfg thm.locals
+            thm.local_context thm.global_context proposition
+        with
+        | Ok proof_result -> Ok (TheoremResult.ProofResult proof_result)
+        | Error msg -> Error msg)
+
+  (* Execute all goals in a theorem *)
+  let execute ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
+      ?(debug = true) ?(generator = Constraints.default)
+      ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) :
+      (TheoremResult.t, string) Result.t list =
+    List.map (execute_goal ~solver ~debug ~generator ~tactic thm) thm.goals
 end

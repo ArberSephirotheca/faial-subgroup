@@ -310,37 +310,49 @@ let test_cross_warp_unsoundness_test () : unit =
 let prove_thorem (msg : string) (thm : Theorem.t) : unit =
   print_endline (Theorem.to_string thm);
   flush stdout;
-  Alcotest.check proof_result_testable msg ProofResult.Proved
-    (Theorem.prove thm)
+  let results = Theorem.execute thm in
+  (* Expect the first goal to be a successful proof *)
+  match results with
+  | [ Ok (TheoremResult.ProofResult ProofResult.Proved) ] ->
+      Alcotest.check proof_result_testable msg ProofResult.Proved
+        ProofResult.Proved
+  | [ Ok (TheoremResult.ProofResult result) ] ->
+      Alcotest.check proof_result_testable msg ProofResult.Proved result
+  | [ Error msg ] -> Alcotest.fail ("Theorem execution failed: " ^ msg)
+  | _ -> Alcotest.fail "Unexpected number of results or result type"
 
 let test_theorem_prove_exact_cost () : unit =
   let open Theorem in
   let cfg = make_config 32 in
   let k = 2 in
-  (* Test theorem: 2 * threadIdx.x should have exact cost 2 *)
-  prove_thorem "2 * threadIdx.x should have exact cost 2"
+  (* Test theorem: ua(2 * threadIdx.x) == 2 *)
+  let goal =
+    Goal.Prop
+      (NRel (N_rel.Eq, NCall ("ua", n_mult (Num k) (Var Variable.tid_x)), Num k))
+  in
+  prove_thorem "ua(2 * threadIdx.x) should equal 2"
     {
       cfg;
       locals = Variable.Set.singleton Variable.tid_x;
       local_context = b_true;
       global_context = b_true;
-      index = n_mult (Num k) (Var Variable.tid_x);
-      rel = N_rel.Eq;
-      expected_cost = Num k;
+      goals = [ goal ];
     };
   ()
 
 let test_constraints_bug1 () : unit =
   let cfg = make_config 4 in
+  let goal =
+    Theorem.Goal.Prop
+      (NRel (N_rel.Eq, NCall ("ua", n_mult (Num 2) (Var Variable.tid_x)), Num 2))
+  in
   let theorem =
     {
       Theorem.cfg;
       locals = Variable.Set.empty;
       local_context = b_true;
       global_context = b_true;
-      index = n_mult (Num 2) (Var Variable.tid_x);
-      rel = N_rel.Eq;
-      expected_cost = Num 2;
+      goals = [ goal ];
     }
   in
 
@@ -348,16 +360,28 @@ let test_constraints_bug1 () : unit =
   Constraints.values
   |> List.iter (fun v ->
          (* Check that we get a counterexample, not a proof *)
-         match Theorem.prove ~generator:v theorem with
-         | ProofResult.Counterexample _ -> () (* This is what we expect *)
-         | p ->
+         let results = Theorem.execute ~generator:v theorem in
+         match results with
+         | [ Ok (TheoremResult.ProofResult (ProofResult.Counterexample _)) ] ->
+             () (* This is what we expect *)
+         | [ Ok (TheoremResult.ProofResult p) ] ->
              let msg =
                Printf.sprintf "Expecting counterexample from %s but got %s\n%s"
                  (Constraints.to_string v) (ProofResult.to_string p)
                  (Constraints.to_bexp cfg v |> Exp.b_and_split
                 |> List.map Exp.b_to_string |> String.concat "\n&&")
              in
-             Alcotest.fail msg)
+             Alcotest.fail msg
+         | [ Ok (TheoremResult.OptimizationResult value) ] ->
+             Alcotest.fail
+               (Printf.sprintf
+                  "Expected proof result but got optimization result: %d" value)
+         | [ Error msg ] -> Alcotest.fail ("Theorem execution failed: " ^ msg)
+         | [] -> Alcotest.fail "No results returned from theorem execution"
+         | multiple_results ->
+             let count = List.length multiple_results in
+             Alcotest.fail
+               (Printf.sprintf "Expected single result but got %d results" count))
 
 let tests : unit Alcotest.test_case list =
   [

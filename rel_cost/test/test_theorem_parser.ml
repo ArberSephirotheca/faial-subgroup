@@ -3,14 +3,16 @@ open Rel_cost_parsing.Parsers
 open Protocols
 open Rel_cost_parsing
 open Rel_cost_parsing.Theorem_file
+open Rel_cost.Symbolic_metric_analysis.Theorem
 
 (* Helper functions to reduce repetition *)
-let parse_theorem_ok (input : string) : t =
+let parse_theorem_ok (input : string) : Theorem_file.t =
   match TheoremFileParser.of_string input with
   | Ok file -> file
   | Error msg -> Alcotest.failf "Parse error for theorem: %s" msg
 
-let test_theorem_parse (name : string) (input : string) (expected : t) =
+let test_theorem_parse (name : string) (input : string)
+    (expected : Theorem_file.t) =
   ( name,
     `Quick,
     fun () ->
@@ -42,7 +44,7 @@ let benchmark_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      ua(2 * tidx) == 2
+      prove ua(2 * tidx) == 2
     |}
       {
         threads_per_warp = Some 32;
@@ -50,9 +52,14 @@ let benchmark_tests =
         locals = Some [];
         local_context = Some (Bool true);
         global_context = Some (Bool true);
-        index = Binary (N_binary.Mult, Num 2, var "tidx");
-        rel = N_rel.Eq;
-        cost = Num 2;
+        goals =
+          [
+            Goal.Prop
+              (NRel
+                 ( N_rel.Eq,
+                   NCall ("ua", Binary (N_binary.Mult, Num 2, var "tidx")),
+                   Num 2 ));
+          ];
       };
     (* thm2: cost(x * threadIdx.x) = x where 1 ≤ x ≤ 10 *)
     test_theorem_parse "thm2 - variable with constraints"
@@ -62,7 +69,7 @@ let benchmark_tests =
       locals : [];
       local_context : true;
       global_context : x >= 1 && x <= 10;
-      ua(x * tidx) == x
+      prove ua(x * tidx) == x
     |}
       {
         threads_per_warp = Some 32;
@@ -75,9 +82,14 @@ let benchmark_tests =
                ( B_rel.BAnd,
                  NRel (N_rel.Ge, var "x", Num 1),
                  NRel (N_rel.Le, var "x", Num 10) ));
-        index = Binary (N_binary.Mult, var "x", var "tidx");
-        rel = N_rel.Eq;
-        cost = var "x";
+        goals =
+          [
+            Goal.Prop
+              (NRel
+                 ( N_rel.Eq,
+                   NCall ("ua", Binary (N_binary.Mult, var "x", var "tidx")),
+                   var "x" ));
+          ];
       };
     (* thm3: cost(x * threadIdx.x) = x where 1 ≤ x ≤ 32 *)
     test_theorem_parse "thm3 - variable with larger bounds"
@@ -87,7 +99,7 @@ let benchmark_tests =
       locals : [];
       local_context : true;
       global_context : x >= 1 && x <= 32;
-      ua(x * tidx) == x
+      prove ua(x * tidx) == x
     |}
       {
         threads_per_warp = Some 32;
@@ -100,9 +112,14 @@ let benchmark_tests =
                ( B_rel.BAnd,
                  NRel (N_rel.Ge, var "x", Num 1),
                  NRel (N_rel.Le, var "x", Num 32) ));
-        index = Binary (N_binary.Mult, var "x", var "tidx");
-        rel = N_rel.Eq;
-        cost = var "x";
+        goals =
+          [
+            Goal.Prop
+              (NRel
+                 ( N_rel.Eq,
+                   NCall ("ua", Binary (N_binary.Mult, var "x", var "tidx")),
+                   var "x" ));
+          ];
       };
   ]
 
@@ -116,7 +133,7 @@ let field_order_tests =
       threads_per_warp : 16;
       local_context : x > 0;
       block_dim : {y: 2, x: 16, z: 1};
-      ua(x + y) == 2
+      prove ua(x + y) == 2
     |}
       {
         global_context = Some (Bool true);
@@ -124,9 +141,14 @@ let field_order_tests =
         threads_per_warp = Some 16;
         local_context = Some (NRel (N_rel.Gt, var "x", Num 0));
         block_dim = Some (Dim3.make ~x:16 ~y:2 ~z:1 ());
-        index = Binary (N_binary.Plus, var "x", var "y");
-        rel = N_rel.Eq;
-        cost = Num 2;
+        goals =
+          [
+            Goal.Prop
+              (NRel
+                 ( N_rel.Eq,
+                   NCall ("ua", Binary (N_binary.Plus, var "x", var "y")),
+                   Num 2 ));
+          ];
       };
     (* Test dim3 fields in different order *)
     test_theorem_parse "dim3 fields in different order"
@@ -136,7 +158,7 @@ let field_order_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      ua(tidx) == 1
+      prove ua(tidx) == 1
     |}
       {
         threads_per_warp = Some 8;
@@ -144,9 +166,7 @@ let field_order_tests =
         locals = Some [];
         local_context = Some (Bool true);
         global_context = Some (Bool true);
-        index = var "tidx";
-        rel = N_rel.Eq;
-        cost = Num 1;
+        goals = [ Goal.Prop (NRel (N_rel.Eq, NCall ("ua", var "tidx"), Num 1)) ];
       };
   ]
 
@@ -159,7 +179,7 @@ let relational_operator_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      ua(x) != 0
+      prove ua(x) != 0
     |}
       {
         threads_per_warp = Some 32;
@@ -167,9 +187,7 @@ let relational_operator_tests =
         locals = Some [];
         local_context = Some (Bool true);
         global_context = Some (Bool true);
-        index = var "x";
-        rel = N_rel.Neq;
-        cost = Num 0;
+        goals = [ Goal.Prop (NRel (N_rel.Neq, NCall ("ua", var "x"), Num 0)) ];
       };
     test_theorem_parse "less than relation"
       {|
@@ -178,7 +196,7 @@ let relational_operator_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      ua(x) < 10
+      prove ua(x) < 10
     |}
       {
         threads_per_warp = Some 32;
@@ -186,9 +204,7 @@ let relational_operator_tests =
         locals = Some [];
         local_context = Some (Bool true);
         global_context = Some (Bool true);
-        index = var "x";
-        rel = N_rel.Lt;
-        cost = Num 10;
+        goals = [ Goal.Prop (NRel (N_rel.Lt, NCall ("ua", var "x"), Num 10)) ];
       };
     test_theorem_parse "greater equal relation"
       {|
@@ -197,7 +213,7 @@ let relational_operator_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      ua(x + 1) >= x
+      prove ua(x + 1) >= x
     |}
       {
         threads_per_warp = Some 32;
@@ -205,9 +221,14 @@ let relational_operator_tests =
         locals = Some [];
         local_context = Some (Bool true);
         global_context = Some (Bool true);
-        index = Binary (N_binary.Plus, var "x", Num 1);
-        rel = N_rel.Ge;
-        cost = var "x";
+        goals =
+          [
+            Goal.Prop
+              (NRel
+                 ( N_rel.Ge,
+                   NCall ("ua", Binary (N_binary.Plus, var "x", Num 1)),
+                   var "x" ));
+          ];
       };
   ]
 
@@ -220,7 +241,7 @@ let complex_expression_tests =
       locals : [x, y, stride];
       local_context : stride > 0 && x < 100;
       global_context : y >= 0;
-      ua((x + y) * stride + tidx % 32) == x * stride
+      prove ua((x + y) * stride + tidx % 32) == x * stride
     |}
       {
         threads_per_warp = Some 32;
@@ -239,16 +260,22 @@ let complex_expression_tests =
                  NRel (N_rel.Gt, var "stride", Num 0),
                  NRel (N_rel.Lt, var "x", Num 100) ));
         global_context = Some (NRel (N_rel.Ge, var "y", Num 0));
-        index =
-          Binary
-            ( N_binary.Plus,
-              Binary
-                ( N_binary.Mult,
-                  Binary (N_binary.Plus, var "x", var "y"),
-                  var "stride" ),
-              Binary (N_binary.Mod, var "tidx", Num 32) );
-        rel = N_rel.Eq;
-        cost = Binary (N_binary.Mult, var "x", var "stride");
+        goals =
+          [
+            Goal.Prop
+              (NRel
+                 ( N_rel.Eq,
+                   NCall
+                     ( "ua",
+                       Binary
+                         ( N_binary.Plus,
+                           Binary
+                             ( N_binary.Mult,
+                               Binary (N_binary.Plus, var "x", var "y"),
+                               var "stride" ),
+                           Binary (N_binary.Mod, var "tidx", Num 32) ) ),
+                   Binary (N_binary.Mult, var "x", var "stride") ));
+          ];
       };
     test_theorem_parse "bitwise operations"
       {|
@@ -257,7 +284,7 @@ let complex_expression_tests =
       locals : [mask];
       local_context : true;
       global_context : (mask & 255) == mask;
-      ua(tidx & mask) <= mask
+      prove ua(tidx & mask) <= mask
     |}
       {
         threads_per_warp = Some 32;
@@ -270,9 +297,14 @@ let complex_expression_tests =
                ( N_rel.Eq,
                  Binary (N_binary.BitAnd, var "mask", Num 255),
                  var "mask" ));
-        index = Binary (N_binary.BitAnd, var "tidx", var "mask");
-        rel = N_rel.Le;
-        cost = var "mask";
+        goals =
+          [
+            Goal.Prop
+              (NRel
+                 ( N_rel.Le,
+                   NCall ("ua", Binary (N_binary.BitAnd, var "tidx", var "mask")),
+                   var "mask" ));
+          ];
       };
   ]
 
@@ -298,6 +330,125 @@ let error_tests =
     |};
   ]
 
+(* Round-trip serialization tests *)
+let test_round_trip (name : string) (input : string) =
+  ( name,
+    `Quick,
+    fun () ->
+      (* Parse the input string *)
+      let original = parse_theorem_ok input in
+      (* Serialize it back to string *)
+      let serialized = Theorem_file.to_string original in
+      (* Parse the serialized string *)
+      let reparsed = parse_theorem_ok serialized in
+      (* Use Alcotest.failf for better error reporting on mismatch *)
+      if not (original = reparsed) then
+        Alcotest.failf
+          "Round-trip serialization failed.\n\
+           Original: %s\n\
+           Serialized: %s\n\
+           Reparsed: %s"
+          (Theorem_file.to_string original)
+          serialized
+          (Theorem_file.to_string reparsed)
+      else () )
+
+let round_trip_tests =
+  [
+    test_round_trip "simple constant theorem round-trip"
+      {|
+      threads_per_warp : 32;
+      block_dim : {x: 32, y: 1, z: 1};
+      locals : [];
+      local_context : true;
+      global_context : true;
+      prove ua(2 * tidx) == 2
+    |};
+    test_round_trip "variable with constraints round-trip"
+      {|
+      threads_per_warp : 32;
+      block_dim : {x: 32, y: 1, z: 1};
+      locals : [];
+      local_context : true;
+      global_context : x >= 1 && x <= 10;
+      prove ua(x * tidx) == x
+    |};
+    test_round_trip "ua on both sides comparison round-trip"
+      {|
+      threads_per_warp : 32;
+      block_dim : {x: 32, y: 1, z: 1};
+      locals : [offset];
+      local_context : offset > 0;
+      global_context : true;
+      prove ua(tidx) <= ua(tidx + offset)
+    |};
+    test_round_trip "minimize goal round-trip"
+      {|
+      threads_per_warp : 8;
+      block_dim : {x: 8, y: 2, z: 1};
+      locals : [];
+      local_context : true;
+      global_context : true;
+      min ua(tidx * 2 + 1)
+    |};
+    test_round_trip "maximize goal round-trip"
+      {|
+      threads_per_warp : 16;
+      block_dim : {x: 16, y: 1, z: 1};
+      locals : [x];
+      local_context : x > 0;
+      global_context : true;
+      max ua(x * tidx)
+    |};
+    test_round_trip "multiple goals round-trip"
+      {|
+      threads_per_warp : 32;
+      block_dim : {x: 32, y: 1, z: 1};
+      locals : [x, y];
+      local_context : x > 0 && y >= 0;
+      global_context : x <= 100;
+      prove ua(x * tidx) >= 1
+      max ua(y + tidx)
+      min x + y
+    |};
+    test_round_trip "complex arithmetic expression round-trip"
+      {|
+      threads_per_warp : 32;
+      block_dim : {x: 32, y: 1, z: 1};
+      locals : [x, y, stride];
+      local_context : stride > 0 && x < 100;
+      global_context : y >= 0;
+      prove ua((x + y) * stride + tidx % 32) == x * stride
+    |};
+    test_round_trip "bitwise operations round-trip"
+      {|
+      threads_per_warp : 32;
+      block_dim : {x: 32, y: 1, z: 1};
+      locals : [mask];
+      local_context : true;
+      global_context : (mask & 255) == mask;
+      prove ua(tidx & mask) <= mask
+    |};
+    test_round_trip "different field order round-trip"
+      {|
+      global_context : true;
+      locals : [x, y];
+      threads_per_warp : 16;
+      local_context : x > 0;
+      block_dim : {y: 2, x: 16, z: 1};
+      prove ua(x + y) == 2
+    |};
+    test_round_trip "different dim3 field order round-trip"
+      {|
+      threads_per_warp : 8;
+      block_dim : {z: 4, y: 2, x: 8};
+      locals : [];
+      local_context : true;
+      global_context : true;
+      prove ua(tidx) == 1
+    |};
+  ]
+
 let all_tests =
   [
     ("benchmark examples", benchmark_tests);
@@ -305,6 +456,7 @@ let all_tests =
     ("relational operators", relational_operator_tests);
     ("complex expressions", complex_expression_tests);
     ("error handling", error_tests);
+    ("round-trip serialization", round_trip_tests);
   ]
 
 (* Run the tests *)

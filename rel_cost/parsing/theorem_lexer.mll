@@ -58,10 +58,12 @@ rule read = parse
   | "locals"              { LOCALS }
   | "local_context"       { LOCAL_CONTEXT }
   | "global_context"      { GLOBAL_CONTEXT }
-  | "ua"                  { UA }
   | "x"                   { X }
-  | "y"                   { Y }  
+  | "y"                   { Y }
   | "z"                   { Z }
+  | "prove"               { PROVE }
+  | "max"                 { MAX }
+  | "min"                 { MIN }
   
   (* Identifiers (C-style + dots) *)
   | ['a'-'z' 'A'-'Z' '_']['a'-'z' 'A'-'Z' '_' '.' '0'-'9']* as id { IDENT(id) }

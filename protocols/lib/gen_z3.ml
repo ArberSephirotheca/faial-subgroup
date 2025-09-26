@@ -412,6 +412,10 @@ module Optimizer = struct
 
   module Strategy = struct
     type t = Maximize | Minimize
+
+    let to_string : t -> string = function
+      | Maximize -> "max"
+      | Minimize -> "min"
   end
 
   type t =

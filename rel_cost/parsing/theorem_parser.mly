@@ -2,6 +2,7 @@
 open Protocols
 open Protocols.Exp
 open Theorem_file
+open Rel_cost
 %}
 
 %token <string> IDENT
@@ -14,9 +15,9 @@ open Theorem_file
 %token EQ NEQ LT LE GT GE
 %token L_AND L_OR L_NOT
 %token QUESTION COLON
-%token CAST_INT CAST_BOOL LOCALS X Y Z UA LBRACKET RBRACKET COMMA LOCAL_CONTEXT
+%token CAST_INT CAST_BOOL LOCALS X Y Z LBRACKET RBRACKET COMMA LOCAL_CONTEXT
 %token GLOBAL_CONTEXT LBRACE THREADS_PER_WARP SEMICOLON RBRACE
-%token BLOCK_DIM
+%token BLOCK_DIM PROVE MAX MIN
 %token EOF
 
 (* C operator precedence (lowest to highest) *)
@@ -52,7 +53,6 @@ var:
   | LOCALS { Variable.from_name "locals" }
   | LOCAL_CONTEXT { Variable.from_name "local_context" }
   | GLOBAL_CONTEXT { Variable.from_name "global_context" }
-  | UA { Variable.from_name "ua" }
   | X { Variable.from_name "x" }
   | Y { Variable.from_name "y" }
   | Z { Variable.from_name "z" }
@@ -62,30 +62,33 @@ nexp:
   | i=INT                                { Num i }
   | v=var                                { Var v }
 
+  (* Function calls *)
+  | name=IDENT LPAREN arg=nexp RPAREN    { NCall (name, arg) }
+
   (* Arithmetic binary operators *)
   | left=nexp PLUS right=nexp            { Binary (N_binary.Plus, left, right) }
   | left=nexp MINUS right=nexp           { Binary (N_binary.Minus, left, right) }
   | left=nexp MULT right=nexp            { Binary (N_binary.Mult, left, right) }
   | left=nexp DIV right=nexp             { Binary (N_binary.Div, left, right) }
   | left=nexp MOD right=nexp             { Binary (N_binary.Mod, left, right) }
-  
+
   (* Bitwise binary operators *)
   | left=nexp BIT_AND right=nexp         { Binary (N_binary.BitAnd, left, right) }
   | left=nexp BIT_OR right=nexp          { Binary (N_binary.BitOr, left, right) }
   | left=nexp BIT_XOR right=nexp         { Binary (N_binary.BitXOr, left, right) }
   | left=nexp LEFT_SHIFT right=nexp      { Binary (N_binary.LeftShift, left, right) }
   | left=nexp RIGHT_SHIFT right=nexp     { Binary (N_binary.RightShift, left, right) }
-  
+
   (* Unary operators *)
   | MINUS expr=nexp %prec UMINUS         { Unary (N_unary.Negate, expr) }
   | BIT_NOT expr=nexp                    { Unary (N_unary.BitNot, expr) }
-  
+
   (* Conditional expression *)
   | cond=bexp QUESTION then_expr=nexp COLON else_expr=nexp { NIf (cond, then_expr, else_expr) }
-  
+
   (* Type cast *)
   | CAST_INT LPAREN b=bexp RPAREN        { CastInt b }
-  
+
   (* Parentheses *)
   | LPAREN n=nexp RPAREN                 { n }
 
@@ -120,10 +123,9 @@ file_main:
 %inline a_field: field SEMICOLON { $1 }
 
 file:
-  | fields=a_field* theorem=theorem_statement {
+  | fields=a_field* goals=theorem_statement* {
       let file = List.fold_left (fun acc setter -> setter acc) make fields in
-      let (index, rel, cost) = theorem in
-      set_goal index rel cost file
+      List.fold_left (fun acc goal -> add_goal goal acc) file goals
     }
 
 field:
@@ -134,15 +136,9 @@ field:
   | GLOBAL_CONTEXT COLON expr=bexp { set_global_context expr }
 
 theorem_statement:
-  | UA LPAREN index=nexp RPAREN op=rel_op cost=nexp { (index, op, cost) }
-
-rel_op:
-  | EQ { N_rel.Eq }
-  | NEQ { N_rel.Neq }
-  | LT { N_rel.Lt }
-  | LE { N_rel.Le }
-  | GT { N_rel.Gt }
-  | GE { N_rel.Ge }
+  | PROVE prop=bexp { Symbolic_metric_analysis.Theorem.Goal.Prop prop }
+  | MAX expr=nexp   { Symbolic_metric_analysis.Theorem.Goal.Optimize {strategy = Protocols.Gen_z3.Optimizer.Strategy.Maximize; expr} }
+  | MIN expr=nexp   { Symbolic_metric_analysis.Theorem.Goal.Optimize {strategy = Protocols.Gen_z3.Optimizer.Strategy.Minimize; expr} }
 
 dim3_object:
   | LBRACE l=separated_list(COMMA, dim3_field) RBRACE {
