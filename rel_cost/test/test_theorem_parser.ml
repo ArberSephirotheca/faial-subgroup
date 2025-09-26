@@ -470,7 +470,6 @@ let comment_tests =
       global_context : true; // global true
       prove ua(tidx) == 1; // goal comment
     |};
-
     test_comment_parsing "block comments"
       {|
       /* This is a block comment */
@@ -483,7 +482,6 @@ let comment_tests =
       global_context : true;
       prove ua(tidx) == 1;
     |};
-
     test_comment_parsing "mixed comments"
       {|
       threads_per_warp : 32; // line comment
@@ -493,7 +491,6 @@ let comment_tests =
       global_context : true;
       prove ua(tidx) == 1; // final comment
     |};
-
     test_comment_parsing "comments in expressions"
       {|
       threads_per_warp : 32;
@@ -503,7 +500,6 @@ let comment_tests =
       global_context : true;
       prove ua(x + y) == 2; // sum should be 2
     |};
-
     test_comment_parsing "comments everywhere"
       {|
       // File header comment
@@ -523,7 +519,6 @@ let comment_tests =
       max ua(mask & tidx); // maximize statement
       min offset + 1; // minimize statement
     |};
-
     test_comment_parsing "multiline block comments"
       {|
       threads_per_warp : 32;
@@ -550,10 +545,13 @@ let test_comment_error (name : string) (input : string) =
       | Error msg ->
           (* Verify error message mentions unterminated comment *)
           let open Stage0.Common in
-          if contains ~substring:"Unterminated" msg || contains ~substring:"comment" msg then
-            ()
+          if
+            contains ~substring:"Unterminated" msg
+            || contains ~substring:"comment" msg
+          then ()
           else
-            Alcotest.failf "Error message should mention unterminated comment: %s" msg )
+            Alcotest.failf
+              "Error message should mention unterminated comment: %s" msg )
 
 let comment_error_tests =
   [
