@@ -78,13 +78,116 @@ let load_tactic_from_file = function
             (Printf.sprintf "Failed to parse tactic file '%s': %s" filename msg)
       )
 
+(* Check if a variable name is thread-indexed (ends with $digit) *)
+let is_thread_indexed (var_name : string) : bool =
+  let parts = String.split_on_char '$' var_name in
+  match parts with
+  | [_; suffix] ->
+      (try ignore (int_of_string suffix); true
+       with _ -> false)
+  | _ -> false
+
+(* Extract base name and thread index from thread-indexed variable *)
+let parse_thread_var (var_name : string) : (string * int) option =
+  let parts = String.split_on_char '$' var_name in
+  match parts with
+  | [base; suffix] ->
+      (try Some (base, int_of_string suffix)
+       with _ -> None)
+  | _ -> None
+
+(* Group variables by base name for thread-indexed variables *)
+let group_thread_variables (var_values : (Variable.t * int) list) :
+    (string * (int * int) list) list * (Variable.t * int) list =
+  let thread_vars = ref [] in
+  let regular_vars = ref [] in
+
+  List.iter (fun (var, value) ->
+    let var_name = Variable.label var in
+    if is_thread_indexed var_name then
+      match parse_thread_var var_name with
+      | Some (base, thread_idx) -> thread_vars := (base, thread_idx, value) :: !thread_vars
+      | None -> regular_vars := (var, value) :: !regular_vars
+    else
+      regular_vars := (var, value) :: !regular_vars
+  ) var_values;
+
+  (* Group by base name *)
+  let grouped = List.fold_left (fun acc (base, thread_idx, value) ->
+    let existing = try List.assoc base acc with Not_found -> [] in
+    let updated = (thread_idx, value) :: existing in
+    (base, updated) :: (List.remove_assoc base acc)
+  ) [] !thread_vars in
+
+  (grouped, !regular_vars)
+
+(* Format counterexample with readable decimal values and tabular display *)
+let format_counterexample (theorem : Theorem.t) (model : Z3.Model.model) : string =
+  (* Get all variables from the Z3 model *)
+  let all_decls = Z3.Model.get_const_decls model in
+  let var_values = List.filter_map (fun decl ->
+    let var = Gen_z3.decl_to_variable decl in
+    match Gen_z3.Bv64Gen.get_int_decl model decl with
+    | Some value -> Some (var, value)
+    | None -> None
+  ) all_decls in
+
+  if List.length var_values = 0 then
+    "No variables found in counterexample"
+  else
+    let (thread_groups, regular_vars) = group_thread_variables var_values in
+    let threads_per_warp = theorem.cfg.threads_per_warp in
+
+    let format_regular_var (var, value) =
+      let var_name = Variable.label var in
+      Printf.sprintf "%s = %d" var_name value
+    in
+
+    let format_thread_table (base_name, thread_values) =
+      (* Sort by thread index *)
+      let sorted_values = List.sort (fun (i1, _) (i2, _) -> compare i1 i2) thread_values in
+
+      (* Create header row with bold variable name *)
+      let header_row = [PrintBox.text "Thread"; PrintBox.text_with_style PrintBox.Style.bold base_name] in
+
+      (* Create data rows: T1 through T{threads_per_warp} *)
+      let data_rows = List.init threads_per_warp (fun i ->
+        let thread_label = "T" ^ string_of_int (i + 1) in (* 1-based display *)
+        let value = try string_of_int (List.assoc i sorted_values) (* 0-based lookup *)
+                   with Not_found -> "" in
+        [PrintBox.text thread_label; PrintBox.text value]
+      ) in
+
+      (* Combine header and data rows *)
+      let all_rows = header_row :: data_rows in
+      let box_array = Array.of_list (List.map Array.of_list all_rows) in
+      let table = PrintBox.(grid box_array |> frame) in
+      PrintBox_text.to_string table
+    in
+
+    let regular_output =
+      if List.length regular_vars > 0 then
+        "Regular variables:\n" ^ (List.map format_regular_var regular_vars |> String.concat "\n")
+      else ""
+    in
+
+    let thread_output =
+      if List.length thread_groups > 0 then
+        (* Sort thread groups alphabetically by base name *)
+        let sorted_groups = List.sort (fun (name1, _) (name2, _) -> String.compare name1 name2) thread_groups in
+        "Thread-indexed variables:\n\n" ^ (List.map format_thread_table sorted_groups |> String.concat "\n\n")
+      else ""
+    in
+
+    let parts = List.filter (fun s -> s <> "") [regular_output; thread_output] in
+    String.concat "\n\n" parts
+
 (* Print theorem execution result with consistent formatting *)
-let print_theorem_result = function
+let print_theorem_result (theorem : Theorem.t) = function
   | Ok (TheoremResult.ProofResult ProofResult.Proved) ->
       print_endline "✓ Proof succeeded"
   | Ok (TheoremResult.ProofResult (ProofResult.Counterexample model)) ->
-      print_endline
-        ("✗ Proof failed with counterexample:\n" ^ Z3.Model.to_string model)
+      print_endline ("✗ Proof failed with counterexample:\n" ^ format_counterexample theorem model)
   | Ok (TheoremResult.OptimizationResult value) ->
       print_endline ("Optimization result: " ^ string_of_int value)
   | Error msg -> print_endline ("Error: " ^ msg)
@@ -93,7 +196,7 @@ let print_theorem_result = function
 let benchmark_execution ~generator ~tactic ~debug ~solver ~theorem =
   time_it (fun () ->
       let results = Theorem.execute ~generator ~tactic ~debug ~solver theorem in
-      List.iter print_theorem_result results)
+      List.iter (print_theorem_result theorem) results)
 
 let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
     ~(all : bool) ~(filename : string) ~(mode : RunMode.t)

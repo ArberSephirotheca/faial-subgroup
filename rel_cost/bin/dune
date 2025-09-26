@@ -1,7 +1,7 @@
 (executable
  (public_name faial-cost-prover)
  (name cost_prover)
- (libraries rel_cost protocols rel_cost_parsing protocols_parsing cmdliner unix))
+ (libraries rel_cost protocols rel_cost_parsing protocols_parsing cmdliner unix printbox printbox-text))
 
 (executable
  (public_name benchmark_tactics)
