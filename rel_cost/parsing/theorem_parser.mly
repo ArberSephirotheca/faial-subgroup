@@ -136,9 +136,9 @@ field:
   | GLOBAL_CONTEXT COLON expr=bexp { set_global_context expr }
 
 theorem_statement:
-  | PROVE prop=bexp { Symbolic_metric_analysis.Theorem.Goal.Prop prop }
-  | MAX expr=nexp   { Symbolic_metric_analysis.Theorem.Goal.Optimize {strategy = Protocols.Gen_z3.Optimizer.Strategy.Maximize; expr} }
-  | MIN expr=nexp   { Symbolic_metric_analysis.Theorem.Goal.Optimize {strategy = Protocols.Gen_z3.Optimizer.Strategy.Minimize; expr} }
+  | PROVE prop=bexp SEMICOLON { Symbolic_metric_analysis.Theorem.Goal.Prop prop }
+  | MAX expr=nexp SEMICOLON   { Symbolic_metric_analysis.Theorem.Goal.Optimize {strategy = Protocols.Gen_z3.Optimizer.Strategy.Maximize; expr} }
+  | MIN expr=nexp SEMICOLON   { Symbolic_metric_analysis.Theorem.Goal.Optimize {strategy = Protocols.Gen_z3.Optimizer.Strategy.Minimize; expr} }
 
 dim3_object:
   | LBRACE l=separated_list(COMMA, dim3_field) RBRACE {

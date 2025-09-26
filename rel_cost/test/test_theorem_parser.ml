@@ -44,7 +44,7 @@ let benchmark_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      prove ua(2 * tidx) == 2
+      prove ua(2 * tidx) == 2;
     |}
       {
         threads_per_warp = Some 32;
@@ -69,7 +69,7 @@ let benchmark_tests =
       locals : [];
       local_context : true;
       global_context : x >= 1 && x <= 10;
-      prove ua(x * tidx) == x
+      prove ua(x * tidx) == x;
     |}
       {
         threads_per_warp = Some 32;
@@ -99,7 +99,7 @@ let benchmark_tests =
       locals : [];
       local_context : true;
       global_context : x >= 1 && x <= 32;
-      prove ua(x * tidx) == x
+      prove ua(x * tidx) == x;
     |}
       {
         threads_per_warp = Some 32;
@@ -133,7 +133,7 @@ let field_order_tests =
       threads_per_warp : 16;
       local_context : x > 0;
       block_dim : {y: 2, x: 16, z: 1};
-      prove ua(x + y) == 2
+      prove ua(x + y) == 2;
     |}
       {
         global_context = Some (Bool true);
@@ -158,7 +158,7 @@ let field_order_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      prove ua(tidx) == 1
+      prove ua(tidx) == 1;
     |}
       {
         threads_per_warp = Some 8;
@@ -179,7 +179,7 @@ let relational_operator_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      prove ua(x) != 0
+      prove ua(x) != 0;
     |}
       {
         threads_per_warp = Some 32;
@@ -196,7 +196,7 @@ let relational_operator_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      prove ua(x) < 10
+      prove ua(x) < 10;
     |}
       {
         threads_per_warp = Some 32;
@@ -213,7 +213,7 @@ let relational_operator_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      prove ua(x + 1) >= x
+      prove ua(x + 1) >= x;
     |}
       {
         threads_per_warp = Some 32;
@@ -241,7 +241,7 @@ let complex_expression_tests =
       locals : [x, y, stride];
       local_context : stride > 0 && x < 100;
       global_context : y >= 0;
-      prove ua((x + y) * stride + tidx % 32) == x * stride
+      prove ua((x + y) * stride + tidx % 32) == x * stride;
     |}
       {
         threads_per_warp = Some 32;
@@ -284,7 +284,7 @@ let complex_expression_tests =
       locals : [mask];
       local_context : true;
       global_context : (mask & 255) == mask;
-      prove ua(tidx & mask) <= mask
+      prove ua(tidx & mask) <= mask;
     |}
       {
         threads_per_warp = Some 32;
@@ -362,7 +362,7 @@ let round_trip_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      prove ua(2 * tidx) == 2
+      prove ua(2 * tidx) == 2;
     |};
     test_round_trip "variable with constraints round-trip"
       {|
@@ -371,7 +371,7 @@ let round_trip_tests =
       locals : [];
       local_context : true;
       global_context : x >= 1 && x <= 10;
-      prove ua(x * tidx) == x
+      prove ua(x * tidx) == x;
     |};
     test_round_trip "ua on both sides comparison round-trip"
       {|
@@ -380,7 +380,7 @@ let round_trip_tests =
       locals : [offset];
       local_context : offset > 0;
       global_context : true;
-      prove ua(tidx) <= ua(tidx + offset)
+      prove ua(tidx) <= ua(tidx + offset);
     |};
     test_round_trip "minimize goal round-trip"
       {|
@@ -389,7 +389,7 @@ let round_trip_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      min ua(tidx * 2 + 1)
+      min ua(tidx * 2 + 1);
     |};
     test_round_trip "maximize goal round-trip"
       {|
@@ -398,7 +398,7 @@ let round_trip_tests =
       locals : [x];
       local_context : x > 0;
       global_context : true;
-      max ua(x * tidx)
+      max ua(x * tidx);
     |};
     test_round_trip "multiple goals round-trip"
       {|
@@ -407,9 +407,9 @@ let round_trip_tests =
       locals : [x, y];
       local_context : x > 0 && y >= 0;
       global_context : x <= 100;
-      prove ua(x * tidx) >= 1
-      max ua(y + tidx)
-      min x + y
+      prove ua(x * tidx) >= 1;
+      max ua(y + tidx);
+      min x + y;
     |};
     test_round_trip "complex arithmetic expression round-trip"
       {|
@@ -418,7 +418,7 @@ let round_trip_tests =
       locals : [x, y, stride];
       local_context : stride > 0 && x < 100;
       global_context : y >= 0;
-      prove ua((x + y) * stride + tidx % 32) == x * stride
+      prove ua((x + y) * stride + tidx % 32) == x * stride;
     |};
     test_round_trip "bitwise operations round-trip"
       {|
@@ -427,7 +427,7 @@ let round_trip_tests =
       locals : [mask];
       local_context : true;
       global_context : (mask & 255) == mask;
-      prove ua(tidx & mask) <= mask
+      prove ua(tidx & mask) <= mask;
     |};
     test_round_trip "different field order round-trip"
       {|
@@ -436,7 +436,7 @@ let round_trip_tests =
       threads_per_warp : 16;
       local_context : x > 0;
       block_dim : {y: 2, x: 16, z: 1};
-      prove ua(x + y) == 2
+      prove ua(x + y) == 2;
     |};
     test_round_trip "different dim3 field order round-trip"
       {|
@@ -445,7 +445,7 @@ let round_trip_tests =
       locals : [];
       local_context : true;
       global_context : true;
-      prove ua(tidx) == 1
+      prove ua(tidx) == 1;
     |};
   ]
 

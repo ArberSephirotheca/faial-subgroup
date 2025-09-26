@@ -77,11 +77,11 @@ let to_string (file : t) : string =
     let open Symbolic_metric_analysis.Theorem.Goal in
     List.map
       (function
-        | Prop bexp -> "prove " ^ b_to_string bexp
+        | Prop bexp -> "prove " ^ b_to_string bexp ^ ";"
         | Optimize { strategy = Gen_z3.Optimizer.Strategy.Maximize; expr } ->
-            "max " ^ n_to_string expr
+            "max " ^ n_to_string expr ^ ";"
         | Optimize { strategy = Gen_z3.Optimizer.Strategy.Minimize; expr } ->
-            "min " ^ n_to_string expr)
+            "min " ^ n_to_string expr ^ ";")
       file.goals
     |> String.concat "\n"
   in
