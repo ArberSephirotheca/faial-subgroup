@@ -78,34 +78,22 @@ let load_tactic_from_file = function
             (Printf.sprintf "Failed to parse tactic file '%s': %s" filename msg)
       )
 
-(* Benchmark theorem proving *)
-let benchmark_prove ~generator ~tactic ~debug ~solver ~theorem =
+(* Print theorem execution result with consistent formatting *)
+let print_theorem_result = function
+  | Ok (TheoremResult.ProofResult ProofResult.Proved) ->
+      print_endline "✓ Proof succeeded"
+  | Ok (TheoremResult.ProofResult (ProofResult.Counterexample model)) ->
+      print_endline
+        ("✗ Proof failed with counterexample:\n" ^ Z3.Model.to_string model)
+  | Ok (TheoremResult.OptimizationResult value) ->
+      print_endline ("Optimization result: " ^ string_of_int value)
+  | Error msg -> print_endline ("Error: " ^ msg)
+
+(* Unified benchmark function for all theorem execution modes *)
+let benchmark_execution ~generator ~tactic ~debug ~solver ~theorem =
   time_it (fun () ->
       let results = Theorem.execute ~generator ~tactic ~debug ~solver theorem in
-      List.iter
-        (function
-          | Ok (TheoremResult.ProofResult ProofResult.Proved) -> ()
-          | Ok (TheoremResult.ProofResult (ProofResult.Counterexample model)) ->
-              print_endline
-                ("Proof failed with counterexample:\n"
-               ^ Z3.Model.to_string model)
-          | Ok (TheoremResult.OptimizationResult value) ->
-              print_endline ("Optimization result: " ^ string_of_int value)
-          | Error msg -> print_endline ("Proof failed with error: " ^ msg))
-        results)
-
-(* Benchmark cost optimization *)
-let benchmark_optimize ~generator ~theorem =
-  time_it (fun () ->
-      let results = Theorem.execute ~generator theorem in
-      List.iter
-        (function
-          | Ok (TheoremResult.OptimizationResult cost) ->
-              Printf.printf "Optimized cost: %d\n" cost
-          | Ok (TheoremResult.ProofResult _) ->
-              print_endline "Expected optimization but got proof result"
-          | Error msg -> Printf.printf "Optimization failed: %s\n" msg)
-        results)
+      List.iter print_theorem_result results)
 
 let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
     ~(all : bool) ~(filename : string) ~(mode : RunMode.t)
@@ -140,12 +128,8 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
     (fun generator ->
       Printf.printf "Strategy: %s\n" (Constraints.to_string generator);
       let time =
-        match mode with
-        | RunMode.Prove ->
-            benchmark_prove ~generator ~tactic ~debug ~solver:solver_module
-              ~theorem
-        | RunMode.Max -> benchmark_optimize ~generator ~theorem
-        | RunMode.Min -> benchmark_optimize ~generator ~theorem
+        benchmark_execution ~generator ~tactic ~debug ~solver:solver_module
+          ~theorem
       in
       Printf.printf "Time: %.3fs\n\n" time)
     strategies
