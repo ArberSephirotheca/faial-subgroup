@@ -15,8 +15,8 @@ open Rel_cost
 %token EQ NEQ LT LE GT GE
 %token L_AND L_OR L_NOT
 %token QUESTION COLON
-%token CAST_INT CAST_BOOL LOCALS X Y Z LBRACKET RBRACKET COMMA LOCAL_CONTEXT
-%token GLOBAL_CONTEXT LBRACE THREADS_PER_WARP SEMICOLON RBRACE
+%token CAST_INT CAST_BOOL LOCALS X Y Z LBRACKET RBRACKET COMMA ACTIVE_THREADS
+%token ASSUMPTIONS LBRACE THREADS_PER_WARP SEMICOLON RBRACE
 %token BLOCK_DIM PROVE MAX MIN
 %token EOF
 
@@ -51,8 +51,8 @@ var:
   | THREADS_PER_WARP { Variable.from_name "threads_per_warp" }
   | BLOCK_DIM { Variable.from_name "block_dim" }
   | LOCALS { Variable.from_name "locals" }
-  | LOCAL_CONTEXT { Variable.from_name "local_context" }
-  | GLOBAL_CONTEXT { Variable.from_name "global_context" }
+  | ACTIVE_THREADS { Variable.from_name "active_threads" }
+  | ASSUMPTIONS { Variable.from_name "assumptions" }
   | X { Variable.from_name "x" }
   | Y { Variable.from_name "y" }
   | Z { Variable.from_name "z" }
@@ -132,8 +132,8 @@ field:
   | THREADS_PER_WARP COLON value=INT { set_threads_per_warp value }
   | BLOCK_DIM COLON dim=dim3_object { set_block_dim dim }
   | LOCALS COLON vars=variable_list { set_locals vars }
-  | LOCAL_CONTEXT COLON expr=bexp { set_local_context expr }
-  | GLOBAL_CONTEXT COLON expr=bexp { set_global_context expr }
+  | ACTIVE_THREADS COLON expr=bexp { set_active_threads expr }
+  | ASSUMPTIONS COLON expr=bexp { set_assumptions expr }
 
 theorem_statement:
   | PROVE prop=bexp SEMICOLON { Symbolic_metric_analysis.Theorem.Goal.Prop prop }

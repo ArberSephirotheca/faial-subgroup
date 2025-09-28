@@ -6,8 +6,8 @@ type t = {
   threads_per_warp : int option;
   block_dim : Dim3.t option;
   locals : Variable.t list option;
-  local_context : bexp option;
-  global_context : bexp option;
+  active_threads : bexp option;
+  assumptions : bexp option;
   goals : Symbolic_metric_analysis.Theorem.Goal.t list;
 }
 
@@ -16,8 +16,8 @@ let make =
     threads_per_warp = None;
     block_dim = None;
     locals = None;
-    local_context = None;
-    global_context = None;
+    active_threads = None;
+    assumptions = None;
     goals = [];
   }
 
@@ -35,16 +35,16 @@ let to_theorem (config : Config.t) (s : t) : Symbolic_metric_analysis.Theorem.t
   {
     cfg = update_config config s;
     locals = Option.value ~default:[] s.locals |> Variable.Set.of_list;
-    local_context = Option.value ~default:b_true s.local_context;
-    global_context = Option.value ~default:b_true s.global_context;
+    active_threads = Option.value ~default:b_true s.active_threads;
+    assumptions = Option.value ~default:b_true s.assumptions;
     goals = s.goals;
   }
 
 let set_threads_per_warp v file = { file with threads_per_warp = Some v }
 let set_block_dim dim file = { file with block_dim = Some dim }
 let set_locals vars file = { file with locals = Some vars }
-let set_local_context expr file = { file with local_context = Some expr }
-let set_global_context expr file = { file with global_context = Some expr }
+let set_active_threads expr file = { file with active_threads = Some expr }
+let set_assumptions expr file = { file with assumptions = Some expr }
 let add_goal goal file = { file with goals = file.goals @ [ goal ] }
 
 let of_theorem (thm : Symbolic_metric_analysis.Theorem.t) : t =
@@ -53,8 +53,8 @@ let of_theorem (thm : Symbolic_metric_analysis.Theorem.t) : t =
     threads_per_warp = Some thm.cfg.threads_per_warp;
     block_dim = Some thm.cfg.block_dim;
     locals = Some (Variable.Set.elements thm.locals);
-    local_context = Some thm.local_context;
-    global_context = Some thm.global_context;
+    active_threads = Some thm.active_threads;
+    assumptions = Some thm.assumptions;
     goals = thm.goals;
   }
 
@@ -66,8 +66,8 @@ let to_string (file : t) : string =
     Option.value ~default:[] file.locals
     |> List.map Variable.name |> String.concat ", "
   in
-  let local_context = Option.value ~default:b_true file.local_context in
-  let global_context = Option.value ~default:b_true file.global_context in
+  let active_threads = Option.value ~default:b_true file.active_threads in
+  let assumptions = Option.value ~default:b_true file.assumptions in
   let block_dim_str =
     Printf.sprintf "{x: %d, y: %d, z: %d}" block_dim.x block_dim.y block_dim.z
   in
@@ -90,10 +90,9 @@ let to_string (file : t) : string =
     "threads_per_warp: %d;\n\
      block_dim: %s;\n\
      locals: [%s];\n\
-     local_context: %s;\n\
-     global_context: %s;\n\
+     active_threads: %s;\n\
+     assumptions: %s;\n\
      %s"
     threads_per_warp block_dim_str locals_list
-    (b_to_string local_context)
-    (b_to_string global_context)
-    goals_str
+    (b_to_string active_threads)
+    (b_to_string assumptions) goals_str

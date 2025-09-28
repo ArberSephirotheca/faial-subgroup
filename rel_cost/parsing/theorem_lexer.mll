@@ -56,8 +56,8 @@ rule read = parse
   | "threads_per_warp"    { THREADS_PER_WARP }
   | "block_dim"           { BLOCK_DIM }
   | "locals"              { LOCALS }
-  | "local_context"       { LOCAL_CONTEXT }
-  | "global_context"      { GLOBAL_CONTEXT }
+  | "active_threads"      { ACTIVE_THREADS }
+  | "assumptions"         { ASSUMPTIONS }
   | "x"                   { X }
   | "y"                   { Y }
   | "z"                   { Z }

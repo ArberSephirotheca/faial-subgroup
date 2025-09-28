@@ -21,7 +21,7 @@ let test_encode_count_active_threads (name : string) (threads_per_warp : int)
     `Quick,
     fun () ->
       let cfg = make_config threads_per_warp in
-      let actual = encode_count_active_threads cfg locals (Num 0) cond in
+      let actual = encode_count_active_threads cfg locals cond (Num 0) in
       if actual = expected then ()
       else
         Alcotest.failf
@@ -87,14 +87,18 @@ let solver_result_testable : Gen_z3.Solver.t Alcotest.testable =
 let assert_replicate ~(expected : (bexp * nexp) list) ~(threads_per_warp : int)
     ~(locals : Variable.Set.t) ~(cond : bexp) ~(index : nexp) : unit =
   let cfg = make_config threads_per_warp in
-  let result = Proj.run_pair cfg locals cond index in
+  let result =
+    Stage0.Common.zip
+      (Proj.b_split cfg locals cond)
+      (Proj.n_split cfg locals index)
+  in
   Alcotest.check replicate_result_testable "replicate result" expected result
 
 (* Utility function that wraps encode_ua and provides better error messages *)
 let assert_encode_ua ~(expected : nexp) ~(threads_per_warp : int)
     ~(locals : Variable.Set.t) ~(cond : bexp) ~(index : nexp) : unit =
   let cfg = make_config threads_per_warp in
-  let result = encode_ua cfg locals index cond in
+  let result = encode_ua cfg locals cond index in
   let detailed_msg =
     Printf.sprintf
       "encode_ua failed\n\
@@ -136,16 +140,16 @@ let encode_count_active_threads_tests =
       (Variable.Set.singleton Variable.tid_x)
       (is_even (Var Variable.tid_x))
       (n_plus
-         (n_if (is_even (var_ "threadIdx.x$1")) (Num 1) (Num 0))
-         (n_if (is_even (var_ "threadIdx.x$0")) (Num 1) (Num 0)));
+         (n_if (is_even (var_ "threadIdx.x$0")) (Num 1) (Num 0))
+         (n_if (is_even (var_ "threadIdx.x$1")) (Num 1) (Num 0)));
     test_encode_count_active_threads "even threadIdx.x condition" 3
       (Variable.Set.singleton Variable.tid_x)
       (is_even (Var Variable.tid_x))
       (n_plus
-         (n_if (is_even (var_ "threadIdx.x$2")) (Num 1) (Num 0))
          (n_plus
-            (n_if (is_even (var_ "threadIdx.x$1")) (Num 1) (Num 0))
-            (n_if (is_even (var_ "threadIdx.x$0")) (Num 1) (Num 0))));
+            (n_if (is_even (var_ "threadIdx.x$0")) (Num 1) (Num 0))
+            (n_if (is_even (var_ "threadIdx.x$1")) (Num 1) (Num 0)))
+         (n_if (is_even (var_ "threadIdx.x$2")) (Num 1) (Num 0)));
   ]
 
 (* Test cases for count_active_threads *)
@@ -334,8 +338,8 @@ let test_theorem_prove_exact_cost () : unit =
     {
       cfg;
       locals = Variable.Set.singleton Variable.tid_x;
-      local_context = b_true;
-      global_context = b_true;
+      active_threads = b_true;
+      assumptions = b_true;
       goals = [ goal ];
     };
   ()
@@ -350,8 +354,8 @@ let test_constraints_bug1 () : unit =
     {
       Theorem.cfg;
       locals = Variable.Set.empty;
-      local_context = b_true;
-      global_context = b_true;
+      active_threads = b_true;
+      assumptions = b_true;
       goals = [ goal ];
     }
   in

@@ -153,6 +153,7 @@ let n_mult n1 n2 =
   | _, _ -> Binary (Mult, n1, n2)
 
 let n_uminus (n : nexp) : nexp = Unary (N_unary.Negate, n)
+let sum : nexp list -> nexp = List.fold_left n_plus (Num 0)
 
 let n_div n1 n2 =
   match (n1, n2) with

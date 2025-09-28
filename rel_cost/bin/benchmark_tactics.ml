@@ -17,8 +17,8 @@ let thm2 (cfg : Config.t) : Theorem.t =
   {
     cfg;
     locals = Variable.Set.empty;
-    local_context = b_true;
-    global_context = opt;
+    active_threads = b_true;
+    assumptions = opt;
     goals = [ Prop (Exp.n_eq (n_mult x (Var Variable.tid_x)) x) ];
   }
 

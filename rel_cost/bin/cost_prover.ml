@@ -223,14 +223,16 @@ let print_theorem_result (theorem : Theorem.t) = function
   | Error msg -> print_endline ("Error: " ^ msg)
 
 (* Unified benchmark function for all theorem execution modes *)
-let benchmark_execution ~generator ~tactic ~debug ~solver ~theorem =
+let benchmark_execution ~generator ~tactic ~debug ~verbose ~solver ~theorem =
   time_it (fun () ->
-      let results = Theorem.execute ~generator ~tactic ~debug ~solver theorem in
+      let results =
+        Theorem.execute ~generator ~tactic ~debug ~verbose ~solver theorem
+      in
       List.iter (print_theorem_result theorem) results)
 
 let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
     ~(all : bool) ~(filename : string) ~(mode : RunMode.t)
-    ~(tactic_file : string option) ~(debug : bool)
+    ~(tactic_file : string option) ~(debug : bool) ~(verbose : bool)
     ~(solver_backend : SolverBackend.t) ~(block_dim : Dim3.t) =
   let strategies = if all then Constraints.values else [ strategy ] in
   let cfg = make_config threads_per_warp block_dim in
@@ -261,8 +263,8 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
     (fun generator ->
       Printf.printf "Strategy: %s\n" (Constraints.to_string generator);
       let time =
-        benchmark_execution ~generator ~tactic ~debug ~solver:solver_module
-          ~theorem
+        benchmark_execution ~generator ~tactic ~debug ~verbose
+          ~solver:solver_module ~theorem
       in
       Printf.printf "Time: %.3fs\n\n" time)
     strategies
@@ -270,9 +272,10 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
 (* Main benchmark function *)
 let main (strategy : Constraints.t) (threads_per_warp : int) (filename : string)
     (all : bool) (mode : RunMode.t) (tactic_file : string option) (debug : bool)
-    (solver_backend : SolverBackend.t) (block_dim : Dim3.t) : unit =
+    (verbose : bool) (solver_backend : SolverBackend.t) (block_dim : Dim3.t) :
+    unit =
   run_benchmarks ~strategy ~all ~threads_per_warp ~filename ~mode ~tactic_file
-    ~debug ~solver_backend ~block_dim
+    ~debug ~verbose ~solver_backend ~block_dim
 
 let constraints_conv : Constraints.t Arg.conv =
   let parse s =
@@ -323,6 +326,10 @@ let all_arg =
 let debug_arg =
   let doc = "Enable debug output from Z3 solver" in
   Arg.(value & flag & info [ "debug" ] ~doc)
+
+let verbose_arg =
+  let doc = "Enable verbose output for optimization formulas" in
+  Arg.(value & flag & info [ "verbose" ] ~doc)
 
 let solver_backend_conv : SolverBackend.t Arg.conv =
   let parse s =
@@ -396,7 +403,8 @@ let main_cmd =
   Cmd.v info
     Term.(
       const main $ strategy_arg $ threads_arg $ filename_arg $ all_arg
-      $ mode_arg $ tactic_file_arg $ debug_arg $ solver_arg $ block_dim_arg)
+      $ mode_arg $ tactic_file_arg $ debug_arg $ verbose_arg $ solver_arg
+      $ block_dim_arg)
 
 (* Main entry point *)
 let () = Cmd.eval main_cmd |> exit

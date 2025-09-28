@@ -42,16 +42,16 @@ let benchmark_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
-      local_context : true;
-      global_context : true;
+      active_threads : true;
+      assumptions : true;
       prove ua(2 * tidx) == 2;
     |}
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
         locals = Some [];
-        local_context = Some (Bool true);
-        global_context = Some (Bool true);
+        active_threads = Some (Bool true);
+        assumptions = Some (Bool true);
         goals =
           [
             Goal.Prop
@@ -67,16 +67,16 @@ let benchmark_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
-      local_context : true;
-      global_context : x >= 1 && x <= 10;
+      active_threads : true;
+      assumptions : x >= 1 && x <= 10;
       prove ua(x * tidx) == x;
     |}
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
         locals = Some [];
-        local_context = Some (Bool true);
-        global_context =
+        active_threads = Some (Bool true);
+        assumptions =
           Some
             (BRel
                ( B_rel.BAnd,
@@ -97,16 +97,16 @@ let benchmark_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
-      local_context : true;
-      global_context : x >= 1 && x <= 32;
+      active_threads : true;
+      assumptions : x >= 1 && x <= 32;
       prove ua(x * tidx) == x;
     |}
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
         locals = Some [];
-        local_context = Some (Bool true);
-        global_context =
+        active_threads = Some (Bool true);
+        assumptions =
           Some
             (BRel
                ( B_rel.BAnd,
@@ -128,18 +128,18 @@ let field_order_tests =
     (* Test that fields can appear in any order *)
     test_theorem_parse "fields in different order"
       {|
-      global_context : true;
+      assumptions : true;
       locals : [x, y];
       threads_per_warp : 16;
-      local_context : x > 0;
+      active_threads : x > 0;
       block_dim : {y: 2, x: 16, z: 1};
       prove ua(x + y) == 2;
     |}
       {
-        global_context = Some (Bool true);
+        assumptions = Some (Bool true);
         locals = Some [ Variable.from_name "x"; Variable.from_name "y" ];
         threads_per_warp = Some 16;
-        local_context = Some (NRel (N_rel.Gt, var "x", Num 0));
+        active_threads = Some (NRel (N_rel.Gt, var "x", Num 0));
         block_dim = Some (Dim3.make ~x:16 ~y:2 ~z:1 ());
         goals =
           [
@@ -156,16 +156,16 @@ let field_order_tests =
       threads_per_warp : 8;
       block_dim : {z: 4, y: 2, x: 8};
       locals : [];
-      local_context : true;
-      global_context : true;
+      active_threads : true;
+      assumptions : true;
       prove ua(tidx) == 1;
     |}
       {
         threads_per_warp = Some 8;
         block_dim = Some (Dim3.make ~x:8 ~y:2 ~z:4 ());
         locals = Some [];
-        local_context = Some (Bool true);
-        global_context = Some (Bool true);
+        active_threads = Some (Bool true);
+        assumptions = Some (Bool true);
         goals = [ Goal.Prop (NRel (N_rel.Eq, NCall ("ua", var "tidx"), Num 1)) ];
       };
   ]
@@ -177,16 +177,16 @@ let relational_operator_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
-      local_context : true;
-      global_context : true;
+      active_threads : true;
+      assumptions : true;
       prove ua(x) != 0;
     |}
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
         locals = Some [];
-        local_context = Some (Bool true);
-        global_context = Some (Bool true);
+        active_threads = Some (Bool true);
+        assumptions = Some (Bool true);
         goals = [ Goal.Prop (NRel (N_rel.Neq, NCall ("ua", var "x"), Num 0)) ];
       };
     test_theorem_parse "less than relation"
@@ -194,16 +194,16 @@ let relational_operator_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
-      local_context : true;
-      global_context : true;
+      active_threads : true;
+      assumptions : true;
       prove ua(x) < 10;
     |}
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
         locals = Some [];
-        local_context = Some (Bool true);
-        global_context = Some (Bool true);
+        active_threads = Some (Bool true);
+        assumptions = Some (Bool true);
         goals = [ Goal.Prop (NRel (N_rel.Lt, NCall ("ua", var "x"), Num 10)) ];
       };
     test_theorem_parse "greater equal relation"
@@ -211,16 +211,16 @@ let relational_operator_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
-      local_context : true;
-      global_context : true;
+      active_threads : true;
+      assumptions : true;
       prove ua(x + 1) >= x;
     |}
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
         locals = Some [];
-        local_context = Some (Bool true);
-        global_context = Some (Bool true);
+        active_threads = Some (Bool true);
+        assumptions = Some (Bool true);
         goals =
           [
             Goal.Prop
@@ -239,8 +239,8 @@ let complex_expression_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [x, y, stride];
-      local_context : stride > 0 && x < 100;
-      global_context : y >= 0;
+      active_threads : stride > 0 && x < 100;
+      assumptions : y >= 0;
       prove ua((x + y) * stride + tidx % 32) == x * stride;
     |}
       {
@@ -253,13 +253,13 @@ let complex_expression_tests =
               Variable.from_name "y";
               Variable.from_name "stride";
             ];
-        local_context =
+        active_threads =
           Some
             (BRel
                ( B_rel.BAnd,
                  NRel (N_rel.Gt, var "stride", Num 0),
                  NRel (N_rel.Lt, var "x", Num 100) ));
-        global_context = Some (NRel (N_rel.Ge, var "y", Num 0));
+        assumptions = Some (NRel (N_rel.Ge, var "y", Num 0));
         goals =
           [
             Goal.Prop
@@ -282,16 +282,16 @@ let complex_expression_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [mask];
-      local_context : true;
-      global_context : (mask & 255) == mask;
+      active_threads : true;
+      assumptions : (mask & 255) == mask;
       prove ua(tidx & mask) <= mask;
     |}
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
         locals = Some [ Variable.from_name "mask" ];
-        local_context = Some (Bool true);
-        global_context =
+        active_threads = Some (Bool true);
+        assumptions =
           Some
             (NRel
                ( N_rel.Eq,
@@ -360,8 +360,8 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
-      local_context : true;
-      global_context : true;
+      active_threads : true;
+      assumptions : true;
       prove ua(2 * tidx) == 2;
     |};
     test_round_trip "variable with constraints round-trip"
@@ -369,8 +369,8 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
-      local_context : true;
-      global_context : x >= 1 && x <= 10;
+      active_threads : true;
+      assumptions : x >= 1 && x <= 10;
       prove ua(x * tidx) == x;
     |};
     test_round_trip "ua on both sides comparison round-trip"
@@ -378,8 +378,8 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [offset];
-      local_context : offset > 0;
-      global_context : true;
+      active_threads : offset > 0;
+      assumptions : true;
       prove ua(tidx) <= ua(tidx + offset);
     |};
     test_round_trip "minimize goal round-trip"
@@ -387,8 +387,8 @@ let round_trip_tests =
       threads_per_warp : 8;
       block_dim : {x: 8, y: 2, z: 1};
       locals : [];
-      local_context : true;
-      global_context : true;
+      active_threads : true;
+      assumptions : true;
       min ua(tidx * 2 + 1);
     |};
     test_round_trip "maximize goal round-trip"
@@ -396,8 +396,8 @@ let round_trip_tests =
       threads_per_warp : 16;
       block_dim : {x: 16, y: 1, z: 1};
       locals : [x];
-      local_context : x > 0;
-      global_context : true;
+      active_threads : x > 0;
+      assumptions : true;
       max ua(x * tidx);
     |};
     test_round_trip "multiple goals round-trip"
@@ -405,8 +405,8 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [x, y];
-      local_context : x > 0 && y >= 0;
-      global_context : x <= 100;
+      active_threads : x > 0 && y >= 0;
+      assumptions : x <= 100;
       prove ua(x * tidx) >= 1;
       max ua(y + tidx);
       min x + y;
@@ -416,8 +416,8 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [x, y, stride];
-      local_context : stride > 0 && x < 100;
-      global_context : y >= 0;
+      active_threads : stride > 0 && x < 100;
+      assumptions : y >= 0;
       prove ua((x + y) * stride + tidx % 32) == x * stride;
     |};
     test_round_trip "bitwise operations round-trip"
@@ -425,16 +425,16 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [mask];
-      local_context : true;
-      global_context : (mask & 255) == mask;
+      active_threads : true;
+      assumptions : (mask & 255) == mask;
       prove ua(tidx & mask) <= mask;
     |};
     test_round_trip "different field order round-trip"
       {|
-      global_context : true;
+      assumptions : true;
       locals : [x, y];
       threads_per_warp : 16;
-      local_context : x > 0;
+      active_threads : x > 0;
       block_dim : {y: 2, x: 16, z: 1};
       prove ua(x + y) == 2;
     |};
@@ -443,8 +443,8 @@ let round_trip_tests =
       threads_per_warp : 8;
       block_dim : {z: 4, y: 2, x: 8};
       locals : [];
-      local_context : true;
-      global_context : true;
+      active_threads : true;
+      assumptions : true;
       prove ua(tidx) == 1;
     |};
   ]
@@ -466,8 +466,8 @@ let comment_tests =
       threads_per_warp : 32; // line comment
       block_dim : {x: 32, y: 1, z: 1}; // another comment
       locals : []; // empty locals
-      local_context : true; // always true
-      global_context : true; // global true
+      active_threads : true; // always true
+      assumptions : true; // global true
       prove ua(tidx) == 1; // goal comment
     |};
     test_comment_parsing "block comments"
@@ -478,8 +478,8 @@ let comment_tests =
          spanning multiple lines */
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
-      local_context : true;
-      global_context : true;
+      active_threads : true;
+      assumptions : true;
       prove ua(tidx) == 1;
     |};
     test_comment_parsing "mixed comments"
@@ -487,8 +487,8 @@ let comment_tests =
       threads_per_warp : 32; // line comment
       /* block comment */ block_dim : {x: 32, y: 1, z: 1};
       locals : []; /* inline block */
-      local_context : true; // another line comment
-      global_context : true;
+      active_threads : true; // another line comment
+      assumptions : true;
       prove ua(tidx) == 1; // final comment
     |};
     test_comment_parsing "comments in expressions"
@@ -496,8 +496,8 @@ let comment_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [x, y];
-      local_context : x > 0 /* greater than zero */ && y >= 0;
-      global_context : true;
+      active_threads : x > 0 /* greater than zero */ && y >= 0;
+      assumptions : true;
       prove ua(x + y) == 2; // sum should be 2
     |};
     test_comment_parsing "comments everywhere"
@@ -511,8 +511,8 @@ let comment_tests =
       locals : [mask, offset]; // local variables
 
       /* Context definitions */
-      local_context : mask > 0 && /* positive mask */ offset >= 0;
-      global_context : true; // always true
+      active_threads : mask > 0 && /* positive mask */ offset >= 0;
+      assumptions : true; // always true
 
       // Goals section
       prove ua(tidx + offset) <= mask; // prove statement
@@ -528,8 +528,8 @@ let comment_tests =
          but no nested comments */
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
-      local_context : true;
-      global_context : true;
+      active_threads : true;
+      assumptions : true;
       prove ua(tidx) == 1;
     |};
   ]
@@ -561,8 +561,8 @@ let comment_error_tests =
       /* This comment is never closed
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
-      local_context : true;
-      global_context : true;
+      active_threads : true;
+      assumptions : true;
       prove ua(tidx) == 1;
     |};
   ]

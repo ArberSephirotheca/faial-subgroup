@@ -385,8 +385,8 @@ module TheoremExporter = struct
     {
       cfg;
       locals;
-      local_context;
-      global_context = Exp.b_true;
+      active_threads = local_context;
+      assumptions = Exp.b_true;
       goals = [ goal ];
     }
 

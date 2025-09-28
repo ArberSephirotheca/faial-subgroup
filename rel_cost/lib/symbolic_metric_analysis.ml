@@ -43,7 +43,7 @@ module Proj = struct
   (*
     General algorithm to replicate an element as a list of elements
     *)
-  let run (count : int) (locals : Variable.Set.t) (f : t -> 'a) : 'a list =
+  let split (count : int) (locals : Variable.Set.t) (f : t -> 'a) : 'a list =
     let rec loop (idx : int) (accum : 'a list) : 'a list =
       if idx < 0 then accum
       else
@@ -52,13 +52,15 @@ module Proj = struct
     in
     loop (count - 1) []
 
-  (* Project a condition and an index *)
-  let run_pair (cfg : Config.t) (locals : Variable.Set.t) (cond : bexp)
-      (index : nexp) : (bexp * nexp) list =
-    run cfg.threads_per_warp locals (fun ctx ->
-        (proj_b cond ctx, proj_n index ctx))
+  let b_split (cfg : Config.t) (locals : Variable.Set.t) (e : bexp) : bexp list
+      =
+    e |> proj_b |> split cfg.threads_per_warp locals
 
-  let split_local_global (locals : Variable.Set.t) (b : Exp.bexp) :
+  let n_split (cfg : Config.t) (locals : Variable.Set.t) (e : nexp) : nexp list
+      =
+    e |> proj_n |> split cfg.threads_per_warp locals
+
+  let extract_global (locals : Variable.Set.t) (b : Exp.bexp) :
       Exp.bexp * Exp.bexp =
     b |> Exp.b_and_split |> List.partition (b_intersects locals)
     |> fun (l, r) -> (Exp.b_and_ex l, Exp.b_and_ex r)
@@ -169,8 +171,7 @@ module Constraints = struct
         in
         (* n_plus elides (Num 0) from the expression *)
         n_plus tid_x (n_plus tid_y tid_z) (* tid_x + tid_y + tid_z *)
-        |> Proj.proj_n
-        |> Proj.run cfg.threads_per_warp (Config.warp_divergent_tid_set cfg)
+        |> Proj.n_split cfg (Config.warp_divergent_tid_set cfg)
       in
       (* 3 different versions generate equivalent unique_tid constraints *)
       let unique_tid =
@@ -279,14 +280,11 @@ let print_optimize (pre : bexp) (formula : nexp) : unit =
   prerr_endline
     (Printf.sprintf "optimize {\n  pre: %s\n  cost: %s\n}" pre formula)
 
-
 (** Optimizes a formula *)
-let optimize ?(verbose = false)
-    ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
+let optimize ?(verbose = false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
-    (formula : nexp) :
-    int option =
+    (formula : nexp) : int option =
   let module S = (val solver) in
   (* pre: the generated runtime constraints (eg, tid is unique) *)
   let pre = Constraints.to_bexp cfg generator in
@@ -299,44 +297,39 @@ let optimize ?(verbose = false)
     solve (Predicates.n_inline formula)
 
 (* Calculates the cost of a metric analysis *)
-let cost (cfg: Config.t) (locals : Variable.Set.t)
-    (metric : nexp -> bexp -> nexp) (cond : bexp) (index : nexp) :
+let cost (cfg : Config.t) (locals : Variable.Set.t)
+    (metric : bexp -> nexp -> nexp) (active_threads : bexp) (index : nexp) :
     nexp =
-  let local_cond, global_cond = Proj.split_local_global locals cond in
+  let active_threads, cond = Proj.extract_global locals active_threads in
   (* Add non-negative index constraint *)
-  let valid_index =
+  let valid_index : bexp =
     n_ge index (Num 0)
-    |> Proj.proj_b
-    |> Proj.run cfg.threads_per_warp (Config.warp_divergent_tid_set cfg)
+    |> Proj.b_split cfg (Config.warp_divergent_tid_set cfg)
     |> Exp.b_and_ex
   in
   (* the final formula must handle the case where the global condition and valid index both hold,
      thus returning the default value of 0 otherwise. *)
-  n_if (b_and global_cond valid_index) (metric index local_cond) (Num 0)
+  n_if (b_and cond valid_index) (metric active_threads index) (Num 0)
 
 (** Optimizes an encoding *)
 let optimize_cost ?(verbose = false)
     ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
-    (locals : Variable.Set.t) (metric : nexp -> bexp -> nexp) (cond : bexp) (index : nexp) :
-    int option =
+    (locals : Variable.Set.t) (metric : bexp -> nexp -> nexp)
+    (active_threads : bexp) (index : nexp) : int option =
   index
-  |> cost cfg locals metric cond
+  |> cost cfg locals metric active_threads
   |> optimize ~verbose ~strategy ~generator ~solver cfg
 
 let encode_count_active_threads (cfg : Config.t) (locals : Variable.Set.t)
-    (_index : nexp) (cond : bexp) : nexp =
+    (cond : bexp) (_index : nexp) : nexp =
   (* replicate index per each thread *)
-  cond
-  |> Proj.proj_b
-  |> Proj.run cfg.threads_per_warp locals
-  (* for each replicated index *)
-  |> List.fold_left
-       (fun (accum : nexp) (cond : bexp) ->
-         n_plus (n_if cond (Num 1) (Num 0)) accum)
-       (* total cost = 0, visited = [] *)
-       (Num 0)
+  cond |> Proj.b_split cfg locals
+  (* Count 1 if thread is active *)
+  |> List.map (fun e -> n_if e (Num 1) (Num 0))
+  (* Add all 1s *)
+  |> Exp.sum
 
 let count_active_threads ?(verbose = false)
     ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
@@ -344,14 +337,16 @@ let count_active_threads ?(verbose = false)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
     (locals : Variable.Set.t) (cond : bexp) (index : nexp) : int option =
   optimize_cost ~verbose ~strategy ~generator ~solver cfg locals
-    (encode_count_active_threads cfg locals) cond index
+    (encode_count_active_threads cfg locals)
+    cond index
 
-let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (index : nexp)
-    (cond : bexp) : nexp =
+let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (active_threads : bexp)
+    (index : nexp) : nexp =
   let index = n_div index (Num (Config.memory_segments_bits cfg)) in
   (* replicate index per each thread *)
-  Proj.run cfg.threads_per_warp locals (fun ctx ->
-      (Proj.proj_b cond ctx, Proj.proj_n index ctx))
+  Stage0.Common.zip
+    (Proj.b_split cfg locals active_threads)
+    (Proj.n_split cfg locals index)
   (* for each replicated index *)
   |> List.fold_left
        (fun ((accum, visited) : nexp * (bexp * nexp) list) (p : bexp * nexp) ->
@@ -359,16 +354,16 @@ let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (index : nexp)
            p :: visited ))
        (* total cost = 0, visited = [] *)
        (Num 0, [])
-  |>
   (* take only the accumulated value *)
-  fst
+  |> fst
 
 let ua ?(verbose = true) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
-    (locals : Variable.Set.t) (cond : bexp) (index : nexp) : int option =
+    (locals : Variable.Set.t) (active_threads : bexp) (index : nexp) :
+    int option =
   optimize_cost ~verbose ~strategy ~generator ~solver cfg locals
-    (encode_ua cfg locals) cond index
+    (encode_ua cfg locals) active_threads index
 
 module ProofResult = struct
   type t =
@@ -412,16 +407,18 @@ module Theorem = struct
   type t = {
     cfg : Config.t;
     locals : Variable.Set.t;
-    local_context : bexp;
-    global_context : bexp;
+    active_threads : bexp;
+    assumptions : bexp;
     goals : Goal.t list;
   }
 
+  let cost (thm : t) (metric : bexp -> nexp -> nexp) : nexp -> nexp =
+    cost thm.cfg thm.locals metric thm.active_threads
+
   (* Inline ua() function calls in expressions *)
-  let n_inline_cost ~config ~locals ~context : nexp -> nexp =
+  let n_inline_cost (thm : t) : nexp -> nexp =
     let rec loop : nexp -> nexp = function
-      | NCall ("ua", index) ->
-        cost config locals (encode_ua config locals) context index
+      | NCall ("ua", index) -> cost thm (encode_ua thm.cfg thm.locals) index
       | (Var _ | Num _) as e -> e
       | Other e -> Other (loop e)
       | Binary (op, e1, e2) -> Binary (op, loop e1, loop e2)
@@ -432,32 +429,37 @@ module Theorem = struct
     in
     loop
 
-  let b_inline_cost ~config ~locals ~context : bexp -> bexp =
-    Exp.b_map (n_inline_cost ~config ~locals ~context)
+  let b_inline_cost (thm : t) : bexp -> bexp = Exp.b_map (n_inline_cost thm)
 
   let to_string (thm : t) : string =
     Printf.sprintf
-      "config: %s\nlocals: [%s]\nlocal_context: %s;\nglobal_context: %s;\n⊢ %s"
+      "config: %s\nlocals: [%s]\nactive_threads: %s;\nassumptions: %s;\n⊢ %s"
       (Config.to_string thm.cfg)
       (Variable.set_to_string thm.locals)
-      (b_to_string thm.local_context)
-      (b_to_string thm.global_context)
+      (b_to_string thm.active_threads)
+      (b_to_string thm.assumptions)
       (List.map Goal.to_string thm.goals |> String.concat "\n")
 
-  let _prove ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
-      ?(debug = true) ?(generator = Constraints.default)
-      ?(tactic : Gen_z3.Tactic.t option = None) (cfg : Config.t)
-      (locals : Variable.Set.t) (local_context : bexp) (global_context : bexp)
-      (proposition : bexp) : (ProofResult.t, string) Result.t =
+  let b_to_string ?(indent = "    ") (e : Exp.bexp) : string =
+    e |> Exp.b_and_split |> List.map Exp.b_to_string
+    |> String.concat ("\n" ^ indent ^ "&& ")
+
+  let prove ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
+      ?(debug = true) ?(verbose = false) ?(generator = Constraints.default)
+      ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) (goal : bexp) :
+      (ProofResult.t, string) Result.t =
     let module S = (val solver) in
-    let combined_context = b_and local_context global_context in
-    let goal =
-      b_inline_cost ~config:cfg ~locals ~context:combined_context proposition
-    in
+    let goal = b_inline_cost thm goal in
+    if verbose then prerr_endline ("BEFORE GOAL: " ^ b_to_string goal);
     (* Prove that NOT(goal) is UNSAT *)
     let constraint_system =
-      b_and_ex [ global_context; Constraints.to_bexp cfg generator; b_not goal ]
+      b_and_ex
+        [ Constraints.to_bexp thm.cfg generator; thm.assumptions; b_not goal ]
     in
+    if verbose then (
+      prerr_endline "\n=== PROOF CONSTRAINT SYSTEM DEBUG ===";
+      prerr_endline ("GOAL: " ^ b_to_string goal);
+      prerr_endline "=====================================\n");
     let result =
       match tactic with
       | Some tactic_strategy ->
@@ -469,46 +471,38 @@ module Theorem = struct
     | Sat model -> Ok (ProofResult.Counterexample model)
     | Unknown msg -> Error ("Proof inconclusive: " ^ msg)
 
-  let _optimize_cost ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
-      ?(generator = Constraints.default)
-      ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
-      (locals : Variable.Set.t) (local_context : bexp) (global_context : bexp)
+  let optimize_cost ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
+      ?(verbose = false) ?(generator = Constraints.default)
+      ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (thm : t)
       (expr : nexp) : (int, string) Result.t =
-    let pre = b_and local_context global_context in
-    let formula =
-      n_inline_cost ~config:cfg ~locals ~context:pre expr
-    in
-    match
-      optimize ~strategy ~generator ~solver cfg formula
-    with
+    let expr = n_inline_cost thm expr in
+    match optimize ~verbose ~strategy ~generator ~solver thm.cfg expr with
     | Some value -> Ok value
     | None -> Error "Optimization failed"
 
   (* Execute a single goal *)
   let execute_goal ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
-      ?(debug = true) ?(generator = Constraints.default)
+      ?(debug = true) ?(verbose = false) ?(generator = Constraints.default)
       ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) (goal : Goal.t) :
       (TheoremResult.t, string) Result.t =
     match goal with
     | Goal.Optimize { strategy; expr } -> (
-        match
-          _optimize_cost ~strategy ~generator ~solver thm.cfg thm.locals
-            thm.local_context thm.global_context expr
-        with
+        match optimize_cost ~strategy ~verbose ~generator ~solver thm expr with
         | Ok value -> Ok (TheoremResult.OptimizationResult value)
         | Error msg -> Error msg)
     | Goal.Prop proposition -> (
         match
-          _prove ~solver ~debug ~generator ~tactic thm.cfg thm.locals
-            thm.local_context thm.global_context proposition
+          prove ~solver ~debug ~verbose ~generator ~tactic thm proposition
         with
         | Ok proof_result -> Ok (TheoremResult.ProofResult proof_result)
         | Error msg -> Error msg)
 
   (* Execute all goals in a theorem *)
   let execute ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
-      ?(debug = true) ?(generator = Constraints.default)
+      ?(debug = true) ?(verbose = false) ?(generator = Constraints.default)
       ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) :
       (TheoremResult.t, string) Result.t list =
-    List.map (execute_goal ~solver ~debug ~generator ~tactic thm) thm.goals
+    List.map
+      (execute_goal ~solver ~debug ~verbose ~generator ~tactic thm)
+      thm.goals
 end
