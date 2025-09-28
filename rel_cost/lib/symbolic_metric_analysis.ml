@@ -1,3 +1,4 @@
+open Stage0
 open Protocols
 open Exp
 
@@ -284,10 +285,10 @@ let print_optimize (pre : bexp) (formula : nexp) : unit =
 let optimize ?(verbose = false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (cfg : Config.t)
-    (formula : nexp) : int option =
+    ((pre, formula) : bexp * nexp) : int option =
   let module S = (val solver) in
   (* pre: the generated runtime constraints (eg, tid is unique) *)
-  let pre = Constraints.to_bexp cfg generator in
+  let pre = b_and (Constraints.to_bexp cfg generator) pre in
   let solve formula =
     S.optimize_expr strategy ~pre formula |> Result.to_option
   in
@@ -299,17 +300,13 @@ let optimize ?(verbose = false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
 (* Calculates the cost of a metric analysis *)
 let cost (cfg : Config.t) (locals : Variable.Set.t)
     (metric : bexp -> nexp -> nexp) (active_threads : bexp) (index : nexp) :
-    nexp =
+    bexp * nexp =
   let active_threads, cond = Proj.extract_global locals active_threads in
   (* Add non-negative index constraint *)
   let valid_index : bexp =
-    n_ge index (Num 0)
-    |> Proj.b_split cfg (Config.warp_divergent_tid_set cfg)
-    |> Exp.b_and_ex
+    n_ge index (Num 0) |> Proj.b_split cfg locals |> Exp.b_and_ex
   in
-  (* the final formula must handle the case where the global condition and valid index both hold,
-     thus returning the default value of 0 otherwise. *)
-  n_if (b_and cond valid_index) (metric active_threads index) (Num 0)
+  (valid_index, n_if (b_and cond b_true) (metric active_threads index) (Num 0))
 
 (** Optimizes an encoding *)
 let optimize_cost ?(verbose = false)
@@ -344,7 +341,7 @@ let encode_ua (cfg : Config.t) (locals : Variable.Set.t) (active_threads : bexp)
     (index : nexp) : nexp =
   let index = n_div index (Num (Config.memory_segments_bits cfg)) in
   (* replicate index per each thread *)
-  Stage0.Common.zip
+  Common.zip
     (Proj.b_split cfg locals active_threads)
     (Proj.n_split cfg locals index)
   (* for each replicated index *)
@@ -412,24 +409,69 @@ module Theorem = struct
     goals : Goal.t list;
   }
 
-  let cost (thm : t) (metric : bexp -> nexp -> nexp) : nexp -> nexp =
-    cost thm.cfg thm.locals metric thm.active_threads
+  let cost (thm : t) (metric : bexp -> nexp -> nexp) :
+      nexp -> (bexp, nexp) State.t =
+   fun index ->
+    let constraint_part, expression_part =
+      cost thm.cfg thm.locals metric thm.active_threads index
+    in
+    let open State.Syntax in
+    let* current_constraints = State.get in
+    let* () = State.put (b_and current_constraints constraint_part) in
+    State.return expression_part
 
   (* Inline ua() function calls in expressions *)
-  let n_inline_cost (thm : t) : nexp -> nexp =
-    let rec loop : nexp -> nexp = function
+  let rec n_inline_cost (thm : t) : nexp -> (bexp, nexp) State.t =
+    let open State.Syntax in
+    function
       | NCall ("ua", index) -> cost thm (encode_ua thm.cfg thm.locals) index
-      | (Var _ | Num _) as e -> e
-      | Other e -> Other (loop e)
-      | Binary (op, e1, e2) -> Binary (op, loop e1, loop e2)
-      | Unary (op, e) -> Unary (op, loop e)
-      | NCall (name, e) -> NCall (name, loop e)
-      | NIf (b, e1, e2) -> NIf (Exp.b_map loop b, loop e1, loop e2)
-      | CastInt b -> CastInt (Exp.b_map loop b)
-    in
-    loop
+      | (Var _ | Num _) as e -> return e
+      | Other e ->
+          let* e' = n_inline_cost thm e in
+          return (Other e')
+      | Binary (op, e1, e2) ->
+          let* e1' = n_inline_cost thm e1 in
+          let* e2' = n_inline_cost thm e2 in
+          return (Binary (op, e1', e2'))
+      | Unary (op, e) ->
+          let* e' = n_inline_cost thm e in
+          return (Unary (op, e'))
+      | NCall (name, e) ->
+          let* e' = n_inline_cost thm e in
+          return (NCall (name, e'))
+      | NIf (b, e1, e2) ->
+          let* b' = b_inline_cost thm b in
+          let* e1' = n_inline_cost thm e1 in
+          let* e2' = n_inline_cost thm e2 in
+          return (NIf (b', e1', e2'))
+      | CastInt b ->
+          let* b' = b_inline_cost thm b in
+          return (CastInt b')
 
-  let b_inline_cost (thm : t) : bexp -> bexp = Exp.b_map (n_inline_cost thm)
+  and b_inline_cost (thm : t) : bexp -> (bexp, bexp) State.t =
+    let open State.Syntax in
+    function
+      | CastBool e ->
+          let* e' = n_inline_cost thm e in
+          return (CastBool e')
+      | Pred (x, n) ->
+          let* n' = n_inline_cost thm n in
+          return (Pred (x, n'))
+      | Bool _ as b -> return b
+      | BNot b ->
+          let* b' = b_inline_cost thm b in
+          return (BNot b')
+      | BRel (o, b1, b2) ->
+          let* b1' = b_inline_cost thm b1 in
+          let* b2' = b_inline_cost thm b2 in
+          return (BRel (o, b1', b2'))
+      | NRel (o, n1, n2) ->
+          let* n1' = n_inline_cost thm n1 in
+          let* n2' = n_inline_cost thm n2 in
+          return (NRel (o, n1', n2'))
+      | Distinct exprs ->
+          let* exprs' = State.list_map (n_inline_cost thm) exprs in
+          return (Distinct exprs')
 
   let to_string (thm : t) : string =
     Printf.sprintf
@@ -444,21 +486,32 @@ module Theorem = struct
     e |> Exp.b_and_split |> List.map Exp.b_to_string
     |> String.concat ("\n" ^ indent ^ "&& ")
 
+  let flatten_assumptions (thm : t) : bexp =
+    let locals, globals = Proj.extract_global thm.locals thm.assumptions in
+    let locals = Proj.b_split thm.cfg thm.locals locals |> Exp.b_and_ex in
+    b_and globals locals
+
   let prove ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
       ?(debug = true) ?(verbose = false) ?(generator = Constraints.default)
       ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) (goal : bexp) :
       (ProofResult.t, string) Result.t =
     let module S = (val solver) in
-    let goal = b_inline_cost thm goal in
-    if verbose then prerr_endline ("BEFORE GOAL: " ^ b_to_string goal);
+    let (assumptions, goal) = b_inline_cost thm goal |> State.run b_true in
+    if verbose then prerr_endline ("POST GOAL: " ^ b_to_string goal);
     (* Prove that NOT(goal) is UNSAT *)
     let constraint_system =
       b_and_ex
-        [ Constraints.to_bexp thm.cfg generator; thm.assumptions; b_not goal ]
+        [
+          Constraints.to_bexp thm.cfg generator;
+          assumptions;
+          flatten_assumptions thm;
+          b_not goal;
+        ]
     in
     if verbose then (
       prerr_endline "\n=== PROOF CONSTRAINT SYSTEM DEBUG ===";
-      prerr_endline ("GOAL: " ^ b_to_string goal);
+      prerr_endline ("assumptions: " ^ (flatten_assumptions thm |> b_to_string));
+      prerr_endline ("GOAL: " ^ b_to_string constraint_system);
       prerr_endline "=====================================\n");
     let result =
       match tactic with
@@ -475,8 +528,8 @@ module Theorem = struct
       ?(verbose = false) ?(generator = Constraints.default)
       ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (thm : t)
       (expr : nexp) : (int, string) Result.t =
-    let expr = n_inline_cost thm expr in
-    match optimize ~verbose ~strategy ~generator ~solver thm.cfg expr with
+    let p = n_inline_cost thm expr |> State.run b_true in
+    match optimize ~verbose ~strategy ~generator ~solver thm.cfg p with
     | Some value -> Ok value
     | None -> Error "Optimization failed"
 
