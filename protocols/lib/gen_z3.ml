@@ -166,26 +166,25 @@ let decl_to_variable (d : Z3.FuncDecl.func_decl) : Variable.t =
 module Solver = struct
   open Z3
 
-  type t = Sat of Model.model | Unsat | Unknown of string
+  type t = Sat of Model.model | Unsat
 
   let to_string : t -> string = function
     | Sat m -> Printf.sprintf "SAT(%s)" (Model.to_string m)
     | Unsat -> "UNSAT"
-    | Unknown s -> Printf.sprintf "UNKNOWN(%s)" s
 
-  let of_status (solver : Z3.Solver.solver) : Z3.Solver.status -> t = function
+  let of_status (solver : Z3.Solver.solver) : Z3.Solver.status -> (t, string) Result.t = function
     | SATISFIABLE -> (
         match Solver.get_model solver with
-        | Some model -> Sat model
+        | Some model -> Ok (Sat model)
         | None ->
             raise
               (Invalid_argument
                  "Satisfiable result but no model available - check solver \
                   configuration"))
-    | UNSATISFIABLE -> Unsat
-    | UNKNOWN -> Unknown (Solver.get_reason_unknown solver)
+    | UNSATISFIABLE -> Ok Unsat
+    | UNKNOWN -> Error (Solver.get_reason_unknown solver)
 
-  let run (solver : Solver.solver) : t =
+  let run (solver : Solver.solver) : (t, string) Result.t =
     Solver.check solver [] |> of_status solver
 end
 
@@ -421,9 +420,8 @@ module Optimizer = struct
   type t =
     | Sat of { model : Model.model; optimal : Expr.expr }
     | Unsat
-    | Unknown of string
 
-  let run (opt : Optimize.optimize) (strategy : Strategy.t) (n : Expr.expr) : t
+  let run (opt : Optimize.optimize) (strategy : Strategy.t) (n : Expr.expr) : (t, string) Result.t
       =
     let handle =
       match strategy with
@@ -435,28 +433,28 @@ module Optimizer = struct
         match Optimize.get_model opt with
         | Some model ->
             let optimal = Optimize.get_lower handle in
-            Sat { model; optimal }
+            Ok (Sat { model; optimal })
         | None ->
             raise
               (Invalid_argument
                  "Satisfiable result but no model available - check optimizer \
                   configuration"))
-    | UNSATISFIABLE -> Unsat
-    | UNKNOWN -> Unknown (Optimize.get_reason_unknown opt)
+    | UNSATISFIABLE -> Ok Unsat
+    | UNKNOWN -> Error (Optimize.get_reason_unknown opt)
 end
 
 module type Z3_SOLVER = sig
-  val solve : ?timeout:int -> Exp.bexp -> Solver.t
+  val solve : ?timeout:int -> Exp.bexp -> (Solver.t, string) Result.t
 
   val solve_with_tactic :
-    ?timeout:int -> ?debug:bool -> Tactic.t -> Exp.bexp -> Solver.t
+    ?timeout:int -> ?debug:bool -> Tactic.t -> Exp.bexp -> (Solver.t, string) Result.t
 
   val optimize_expr :
     ?timeout:int ->
     ?pre:Exp.bexp ->
     Optimizer.Strategy.t ->
     Exp.nexp ->
-    (int, string) Result.t
+    (int option, string) Result.t
 end
 
 module CodeGen (N : NUMERIC_OPS) = struct
@@ -560,7 +558,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     *)
   let optimize ?(timeout = 0) (* By default no timeout is given *)
       (strategy : Optimizer.Strategy.t) (pre : Exp.bexp) (n : Exp.nexp) :
-      Optimizer.t =
+      (Optimizer.t, string) Result.t =
     let open Z3 in
     let args =
       if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
@@ -573,14 +571,14 @@ module CodeGen (N : NUMERIC_OPS) = struct
 
   let optimize_expr ?(timeout = 0) (* By default no timeout is given *)
       ?(pre = Bool true) (strategy : Optimizer.Strategy.t) (n : Exp.nexp) :
-      (int, string) Result.t =
-    let res = optimize ~timeout strategy pre n in
-    match res with
-    | Sat { optimal; model } -> Ok (get_int model optimal |> Option.get)
-    | Unsat -> Error "unsat"
-    | Unknown m -> Error m
+      (int option, string) Result.t =
+    optimize ~timeout strategy pre n
+    |> Result.map (function
+    | Optimizer.Sat { optimal; model } -> Some (get_int model optimal |> Option.get)
+    | Unsat -> None
+    )
 
-  let solve ?(timeout = 0) (pre : Exp.bexp) : Solver.t =
+  let solve ?(timeout = 0) (pre : Exp.bexp) : (Solver.t, string) Result.t =
     let args =
       if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
     in
@@ -590,7 +588,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     Solver.run solver
 
   let solve_with_tactic ?(timeout = 0) ?(debug = false) (tactic : Tactic.t)
-      (pre : Exp.bexp) : Solver.t =
+      (pre : Exp.bexp) : (Solver.t, string) Result.t =
     let args =
       if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
     in
@@ -604,7 +602,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
         Debugger.debug ctx solver goal tactic |> Solver.of_status solver
       with Z3.Error msg ->
         (* Z3 tactic failure - convert to proper Unknown result *)
-        Solver.Unknown
+        Error
           ("Tactic '" ^ Tactic.to_string tactic ^ "' failed: " ^ msg)
     else
       (* Production mode: Direct tactic-to-solver conversion *)
@@ -615,7 +613,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
         Solver.run solver
       with Z3.Error msg ->
         (* Z3 tactic creation/solving failure *)
-        Solver.Unknown
+        Error
           ("Tactic '" ^ Tactic.to_string tactic ^ "' failed: " ^ msg)
 end
 

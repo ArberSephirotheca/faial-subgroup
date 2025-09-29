@@ -6,15 +6,15 @@ let test_optimize_expr_simple () : unit =
   (* Test maximizing a simple constant *)
   let result = IntGen.optimize_expr Optimizer.Strategy.Maximize (Num 42) in
   Alcotest.check
-    Alcotest.(result int string)
-    "maximize constant 42" (Ok 42) result
+    Alcotest.(result (option int) string)
+    "maximize constant 42" (Ok (Some 42)) result
 
 let test_optimize_expr_minimize () : unit =
   (* Test minimizing a constant *)
   let result = IntGen.optimize_expr Optimizer.Strategy.Minimize (Num 10) in
   Alcotest.check
-    Alcotest.(result int string)
-    "minimize constant 10" (Ok 10) result
+    Alcotest.(result (option int) string)
+    "minimize constant 10" (Ok (Some 10)) result
 
 let test_optimize_expr_with_variable () : unit =
   (* Test maximizing a variable x with constraint x <= 5 *)
@@ -22,8 +22,8 @@ let test_optimize_expr_with_variable () : unit =
   let pre = NRel (N_rel.Le, Var x, Num 5) in
   let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize (Var x) in
   Alcotest.check
-    Alcotest.(result int string)
-    "maximize x where x <= 5" (Ok 5) result
+    Alcotest.(result (option int) string)
+    "maximize x where x <= 5" (Ok (Some 5)) result
 
 let test_optimize_expr_arithmetic () : unit =
   (* Test maximizing x + 3 where x <= 2 *)
@@ -32,8 +32,8 @@ let test_optimize_expr_arithmetic () : unit =
   let expr = Binary (N_binary.Plus, Var x, Num 3) in
   let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize expr in
   Alcotest.check
-    Alcotest.(result int string)
-    "maximize x + 3 where x <= 2" (Ok 5) result
+    Alcotest.(result (option int) string)
+    "maximize x + 3 where x <= 2" (Ok (Some 5)) result
 
 let test_optimize_expr_minimize_with_constraint () : unit =
   (* Test minimizing x where x >= 10 *)
@@ -41,8 +41,8 @@ let test_optimize_expr_minimize_with_constraint () : unit =
   let pre = NRel (N_rel.Ge, Var x, Num 10) in
   let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Minimize (Var x) in
   Alcotest.check
-    Alcotest.(result int string)
-    "minimize x where x >= 10" (Ok 10) result
+    Alcotest.(result (option int) string)
+    "minimize x where x >= 10" (Ok (Some 10)) result
 
 let test_optimize_expr_unsat () : unit =
   (* Test with contradictory constraints: x > 5 and x < 5 *)
@@ -53,8 +53,8 @@ let test_optimize_expr_unsat () : unit =
   in
   let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize (Var x) in
   Alcotest.check
-    Alcotest.(result int string)
-    "contradictory constraints should be unsat" (Error "unsat") result
+    Alcotest.(result (option int) string)
+    "contradictory constraints should be unsat" (Ok None) result
 
 let test_optimize_expr_multiplication () : unit =
   (* Test maximizing x * 2 where x <= 3 *)
@@ -63,8 +63,8 @@ let test_optimize_expr_multiplication () : unit =
   let expr = Binary (N_binary.Mult, Var x, Num 2) in
   let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize expr in
   Alcotest.check
-    Alcotest.(result int string)
-    "maximize x * 2 where x <= 3" (Ok 6) result
+    Alcotest.(result (option int) string)
+    "maximize x * 2 where x <= 3" (Ok (Some 6)) result
 
 let test_optimize_expr_with_timeout () : unit =
   (* Test with timeout parameter *)
@@ -72,8 +72,8 @@ let test_optimize_expr_with_timeout () : unit =
     IntGen.optimize_expr ~timeout:1000 Optimizer.Strategy.Maximize (Num 7)
   in
   Alcotest.check
-    Alcotest.(result int string)
-    "maximize with timeout" (Ok 7) result
+    Alcotest.(result (option int) string)
+    "maximize with timeout" (Ok (Some 7)) result
 
 let test_tactic_fail () : unit =
   (* Test Fail tactic in debugging mode - should always fail with detailed info *)
@@ -81,10 +81,9 @@ let test_tactic_fail () : unit =
   [ true; false ]
   |> List.iter (fun debug ->
          let result = IntGen.solve_with_tactic ~debug Tactic.Fail tautology in
-         let open Solver in
          match result with
-         | Unknown _ -> ()
-         | e ->
+         | Error _ -> () (* Expected - tactic should fail *)
+         | Ok e ->
              Printf.sprintf "debug=%b, unexpected: %s" debug
                (Solver.to_string e)
              |> Alcotest.fail)
@@ -96,12 +95,15 @@ let test_tactic_skip () : unit =
   |> List.iter (fun debug ->
          let result = IntGen.solve_with_tactic ~debug Tactic.Skip tautology in
          match result with
-         | Solver.Sat _ ->
+         | Ok (Solver.Sat _) ->
              ()
              (* Expected - skip should leave goal unchanged, tautology should be sat *)
-         | e ->
+         | Ok e ->
              Printf.sprintf "debug=%b, unexpected: %s" debug
                (Solver.to_string e)
+             |> Alcotest.fail
+         | Error msg ->
+             Printf.sprintf "debug=%b, solver error: %s" debug msg
              |> Alcotest.fail)
 
 let tests : unit Alcotest.test_case list =

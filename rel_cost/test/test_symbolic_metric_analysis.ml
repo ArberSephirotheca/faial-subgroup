@@ -78,7 +78,6 @@ let solver_result_testable : Gen_z3.Solver.t Alcotest.testable =
    fun fmt -> function
      | Gen_z3.Solver.Sat _ -> Format.fprintf fmt "Sat"
      | Gen_z3.Solver.Unsat -> Format.fprintf fmt "Unsat"
-     | Gen_z3.Solver.Unknown msg -> Format.fprintf fmt "Unknown(%s)" msg
   in
   let equal : Gen_z3.Solver.t -> Gen_z3.Solver.t -> bool = ( = ) in
   Alcotest.testable pp equal
@@ -116,7 +115,7 @@ let assert_cost ~(expected : nexp) ~(expected_constraints : bexp) ~(threads_per_
     ~(locals : Variable.Set.t) ~(metric : bexp -> nexp -> nexp)
     ~(active_threads : bexp) ~(index : nexp) () : unit =
   let cfg = make_config threads_per_warp in
-  let constraints, result = cost cfg locals metric active_threads index in
+  let constraints, result = cost cfg locals metric active_threads index |> run in
   let detailed_msg =
     Printf.sprintf
       "cost(threads_per_warp=%d, locals=%s, active_threads=%s, index=%s) \
@@ -294,8 +293,11 @@ let test_warp_constraints_enforces_bounds_and_uniqueness () : unit =
               unsatisfiable when considering block bounds (%s)"
              (Constraints.to_string gen)
          in
-         Alcotest.check solver_result_testable test_msg Gen_z3.Solver.Unsat
-           result)
+         match result with
+         | Ok solver_result ->
+             Alcotest.check solver_result_testable test_msg Gen_z3.Solver.Unsat
+               solver_result
+         | Error msg -> Alcotest.failf "Solver error: %s" msg)
 
 let test_cross_warp_unsoundness_test () : unit =
   (* Test to expose unsoundness: threads from different warps should not be allowed *)
@@ -331,8 +333,11 @@ let test_cross_warp_unsoundness_test () : unit =
              (Constraints.to_string gen)
          in
          (* This test SHOULD fail (return Sat) with current constraints, exposing the bug *)
-         Alcotest.check solver_result_testable test_msg Gen_z3.Solver.Unsat
-           result)
+         match result with
+         | Ok solver_result ->
+             Alcotest.check solver_result_testable test_msg Gen_z3.Solver.Unsat
+               solver_result
+         | Error msg -> Alcotest.failf "Solver error: %s" msg)
 
 let prove_thorem (msg : string) (thm : Theorem.t) : unit =
   print_endline (Theorem.to_string thm);
@@ -433,7 +438,11 @@ let test_extract_global (name : string) (expression : bexp)
   ( name,
     `Quick,
     fun () ->
-      let actual_local, actual_global = Proj.extract_global locals expression in
+      let (with_locals, with_globals) =
+        expression |> Exp.b_and_split |> List.partition (b_intersects locals)
+      in
+      let actual_local = Exp.b_and_ex with_locals in
+      let actual_global = Exp.b_and_ex with_globals in
       let local_matches = actual_local = expected_local in
       let global_matches = actual_global = expected_global in
       if not local_matches then
@@ -504,7 +513,7 @@ let test_cost_simple_metric () : unit =
   (* First, let's see what the actual result is by running it *)
   let cfg = make_config 2 in
   let constraints, result =
-    cost cfg locals unit_metric b_true (n_plus (Var e) (Var passnum))
+    cost cfg locals unit_metric b_true (n_plus (Var e) (Var passnum)) |> run
   in
   Printf.printf "Cost result: %s\n" (n_to_string result);
   Printf.printf "Cost constraints: %s\n" (b_to_string constraints);
