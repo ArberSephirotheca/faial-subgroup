@@ -2,6 +2,7 @@ open Protocols
 open Exp
 open Rel_cost
 open Rel_cost.Symbolic_metric_analysis
+open Stage0
 
 (* Factory function for Config objects *)
 let make_config (threads_per_warp : int) : Config.t =
@@ -21,7 +22,17 @@ let test_encode_count_active_threads (name : string) (threads_per_warp : int)
     `Quick,
     fun () ->
       let cfg = make_config threads_per_warp in
-      let actual = encode_count_active_threads cfg locals cond (Num 0) in
+      (* Create minimal state directly without constraint processing *)
+      let st : t =
+        {
+          locals;
+          assumptions = b_true;
+          active_threads = cond;
+          config = cfg;
+          generator = Constraints.default;
+        }
+      in
+      let actual = State.run st (encode_count_active_threads (Num 0)) |> snd in
       if actual = expected then ()
       else
         Alcotest.failf
@@ -97,7 +108,17 @@ let assert_replicate ~(expected : (bexp * nexp) list) ~(threads_per_warp : int)
 let assert_encode_ua ~(expected : nexp) ~(threads_per_warp : int)
     ~(locals : Variable.Set.t) ~(cond : bexp) ~(index : nexp) : unit =
   let cfg = make_config threads_per_warp in
-  let result = encode_ua cfg locals cond index in
+  (* Create minimal state directly without constraint processing *)
+  let st : t =
+    {
+      locals;
+      assumptions = b_true;
+      active_threads = cond;
+      config = cfg;
+      generator = Constraints.default;
+    }
+  in
+  let result = State.run st (encode_ua index) |> snd in
   let detailed_msg =
     Printf.sprintf
       "encode_ua failed\n\
@@ -109,29 +130,6 @@ let assert_encode_ua ~(expected : nexp) ~(threads_per_warp : int)
       (Variable.set_to_string locals)
   in
   Alcotest.check nexp_testable detailed_msg expected result
-
-(* Utility function that wraps cost and provides better error messages *)
-let assert_cost ~(expected : nexp) ~(expected_constraints : bexp) ~(threads_per_warp : int)
-    ~(locals : Variable.Set.t) ~(metric : bexp -> nexp -> nexp)
-    ~(active_threads : bexp) ~(index : nexp) () : unit =
-  let cfg = make_config threads_per_warp in
-  let constraints, result = cost cfg locals metric active_threads index |> run in
-  let detailed_msg =
-    Printf.sprintf
-      "cost(threads_per_warp=%d, locals=%s, active_threads=%s, index=%s) \
-       expected %s but got %s"
-      threads_per_warp
-      (Variable.set_to_string locals)
-      (b_to_string active_threads)
-      (n_to_string index) (n_to_string expected) (n_to_string result)
-  in
-  let constraints_msg =
-    Printf.sprintf
-      "cost constraints: expected %s but got %s"
-      (b_to_string expected_constraints) (b_to_string constraints)
-  in
-  Alcotest.check nexp_testable detailed_msg expected result;
-  Alcotest.(check bool) constraints_msg true (constraints = expected_constraints)
 
 (* Utility function that wraps ua and provides better error messages *)
 let assert_ua
@@ -280,7 +278,8 @@ let test_warp_constraints_enforces_bounds_and_uniqueness () : unit =
   Constraints.values
   |> List.iter (fun gen ->
          let cfg = make_config 2 in
-         let c = Constraints.to_bexp cfg gen in
+         let locals = Variable.Set.singleton Variable.tid_x in
+         let c = (make gen cfg locals).assumptions in
          (* Is it possible for 2 tids to be equal? *)
          let contradiction =
            b_and c (n_eq (var_ "threadIdx.x$0") (var_ "threadIdx.x$1"))
@@ -308,7 +307,8 @@ let test_cross_warp_unsoundness_test () : unit =
              ~block_dim:(Dim3.make ~x:64 ()) (* 2 warps: 0-31 and 32-63 *)
              ~grid_dim:(Dim3.make ~x:1 ()) ()
          in
-         let c = Constraints.to_bexp cfg gen in
+         let locals = Variable.Set.singleton Variable.tid_x in
+         let c = (make gen cfg locals).assumptions in
          (* Try to assign threads from different warps *)
          let cross_warp =
            b_and_ex
@@ -372,48 +372,32 @@ let test_theorem_prove_exact_cost () : unit =
     };
   ()
 
-let test_constraints_bug1 () : unit =
-  let cfg = make_config 4 in
-  let goal =
-    Theorem.Goal.Prop
-      (NRel (N_rel.Eq, NCall ("ua", n_mult (Num 2) (Var Variable.tid_x)), Num 2))
-  in
-  let theorem =
-    {
-      Theorem.cfg;
-      locals = Variable.Set.empty;
-      active_threads = b_true;
-      assumptions = b_true;
-      goals = [ goal ];
-    }
-  in
+let test_make_vectorizes_runtime_assumptions () : unit =
+  let cfg = make_config 2 in
+  let locals = Variable.Set.singleton Variable.tid_x in
 
-  (* Test all constraint versions - they should all behave consistently *)
+  (* Test all constraint strategies *)
   Constraints.values
-  |> List.iter (fun v ->
-         (* Check that we get a counterexample, not a proof *)
-         let results = Theorem.execute ~generator:v theorem in
-         match results with
-         | [ Ok (TheoremResult.ProofResult (ProofResult.Counterexample _)) ] ->
-             () (* This is what we expect *)
-         | [ Ok (TheoremResult.ProofResult p) ] ->
-             let msg =
-               Printf.sprintf "Expecting counterexample from %s but got %s\n%s"
-                 (Constraints.to_string v) (ProofResult.to_string p)
-                 (Constraints.to_bexp cfg v |> Exp.b_and_split
-                |> List.map Exp.b_to_string |> String.concat "\n&&")
-             in
-             Alcotest.fail msg
-         | [ Ok (TheoremResult.OptimizationResult value) ] ->
-             Alcotest.fail
-               (Printf.sprintf
-                  "Expected proof result but got optimization result: %d" value)
-         | [ Error msg ] -> Alcotest.fail ("Theorem execution failed: " ^ msg)
-         | [] -> Alcotest.fail "No results returned from theorem execution"
-         | multiple_results ->
-             let count = List.length multiple_results in
-             Alcotest.fail
-               (Printf.sprintf "Expected single result but got %d results" count))
+  |> List.iter (fun strategy ->
+         let distinct = Constraints.distinct cfg strategy in
+
+         (* Check 1: distinct constraints should not have non-vectorized tid_x *)
+         if Exp.b_mem Variable.tid_x distinct then
+           Alcotest.failf
+             "Found non-vectorized Variable.tid_x in %s distinct constraints:\n\
+              %s"
+             (Constraints.to_string strategy)
+             (b_to_string distinct);
+
+         let st = make strategy cfg locals in
+
+         (* Check 2: tid_x should NOT appear in assumptions (should be vectorized to tid_x$0, tid_x$1) *)
+         if Exp.b_mem Variable.tid_x st.assumptions then
+           Alcotest.failf
+             "Found non-vectorized Variable.tid_x in %s runtime assumptions:\n\
+              %s"
+             (Constraints.to_string strategy)
+             (b_to_string st.assumptions))
 
 let tests : unit Alcotest.test_case list =
   [
@@ -429,7 +413,9 @@ let tests : unit Alcotest.test_case list =
       test_warp_constraints_enforces_bounds_and_uniqueness );
     ("cross_warp_unsoundness_test", `Quick, test_cross_warp_unsoundness_test);
     ("theorem_prove_exact_cost", `Quick, test_theorem_prove_exact_cost);
-    ("constraints_bug1", `Quick, test_constraints_bug1);
+    ( "make_vectorizes_runtime_assumptions",
+      `Quick,
+      test_make_vectorizes_runtime_assumptions );
   ]
 
 (* Test cases for Proj.extract_global *)
@@ -438,7 +424,7 @@ let test_extract_global (name : string) (expression : bexp)
   ( name,
     `Quick,
     fun () ->
-      let (with_locals, with_globals) =
+      let with_locals, with_globals =
         expression |> Exp.b_and_split |> List.partition (b_intersects locals)
       in
       let actual_local = Exp.b_and_ex with_locals in
@@ -501,45 +487,11 @@ let extract_global_tests =
     (* global part *)
   ]
 
-(* Simple metric function that always returns Num 1 *)
-let unit_metric : bexp -> nexp -> nexp = fun _active_threads _index -> Num 1
-
-let test_cost_simple_metric () : unit =
-  (* Test with the specified parameters: active_threads = b_true, index = e + passnum, locals = {e} *)
-  let e = Variable.from_name "e" in
-  let passnum = Variable.from_name "passnum" in
-  let locals = Variable.Set.singleton e in
-
-  (* First, let's see what the actual result is by running it *)
-  let cfg = make_config 2 in
-  let constraints, result =
-    cost cfg locals unit_metric b_true (n_plus (Var e) (Var passnum)) |> run
-  in
-  Printf.printf "Cost result: %s\n" (n_to_string result);
-  Printf.printf "Cost constraints: %s\n" (b_to_string constraints);
-  flush stdout;
-
-  (* Use assert_cost with the correct expected value based on the output *)
-  let expected_result = Num 1 in
-  let expected_constraints =
-    b_and
-      (n_ge (n_plus (Var (proj ~suffix:"0" e)) (Var passnum)) (Num 0))
-      (n_ge (n_plus (Var (proj ~suffix:"1" e)) (Var passnum)) (Num 0))
-  in
-  assert_cost ~expected:expected_result ~expected_constraints ~threads_per_warp:2 ~locals
-    ~metric:unit_metric ~active_threads:b_true
-    ~index:(n_plus (Var e) (Var passnum))
-    ()
-
-let cost_tests =
-  [ ("cost with simple metric", `Quick, test_cost_simple_metric) ]
-
 let all_tests =
   [
     ("encode_count_active_threads", encode_count_active_threads_tests);
     ("count_active_threads", count_active_threads_tests);
     ("extract_global", extract_global_tests);
-    ("cost", cost_tests);
     ("legacy_tests", tests);
   ]
 

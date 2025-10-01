@@ -93,12 +93,6 @@ module Defaults = struct
 
   let to_bexp (e : t) : bexp = b_and e.distinct base
 
-  (* Generate constraints when we know the used variables, bdim and gdim *)
-  let to_dyn_bexp ~gdim ~bdim (e : t) : bexp =
-    let used =
-      Variable.Set.union (Params.to_set e.locals) (Params.to_set e.globals)
-    in
-    b_and e.distinct (dyn_base ~used ~gdim ~bdim)
 end
 
 let to_defaults : t -> Defaults.t = function
