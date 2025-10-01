@@ -24,6 +24,10 @@ make clean        # Clean build artifacts
 make test         # Run unit tests with dune
 make sys-test     # Run system tests
 make build-test   # Build test suite
+
+# Check test status: just check exit status of `dune test`
+# No need to grep output - exit status 0 means all tests passed
+dune test         # Run tests directly (silent if all pass)
 ```
 
 ### Individual Binary Targets
