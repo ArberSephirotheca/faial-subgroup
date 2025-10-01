@@ -417,12 +417,10 @@ module Optimizer = struct
       | Minimize -> "min"
   end
 
-  type t =
-    | Sat of { model : Model.model; optimal : Expr.expr }
-    | Unsat
+  type t = Sat of { model : Model.model; optimal : Expr.expr } | Unsat
 
-  let run (opt : Optimize.optimize) (strategy : Strategy.t) (n : Expr.expr) : (t, string) Result.t
-      =
+  let run (opt : Optimize.optimize) (strategy : Strategy.t) (n : Expr.expr) :
+      (t, string) Result.t =
     let handle =
       match strategy with
       | Maximize -> Optimize.maximize opt n
@@ -447,7 +445,11 @@ module type Z3_SOLVER = sig
   val solve : ?timeout:int -> Exp.bexp -> (Solver.t, string) Result.t
 
   val solve_with_tactic :
-    ?timeout:int -> ?debug:bool -> Tactic.t -> Exp.bexp -> (Solver.t, string) Result.t
+    ?timeout:int ->
+    ?debug:bool ->
+    Tactic.t ->
+    Exp.bexp ->
+    (Solver.t, string) Result.t
 
   val optimize_expr :
     ?timeout:int ->
@@ -574,9 +576,9 @@ module CodeGen (N : NUMERIC_OPS) = struct
       (int option, string) Result.t =
     optimize ~timeout strategy pre n
     |> Result.map (function
-    | Optimizer.Sat { optimal; model } -> Some (get_int model optimal |> Option.get)
-    | Unsat -> None
-    )
+         | Optimizer.Sat { optimal; model } ->
+             Some (get_int model optimal |> Option.get)
+         | Unsat -> None)
 
   let solve ?(timeout = 0) (pre : Exp.bexp) : (Solver.t, string) Result.t =
     let args =
@@ -602,8 +604,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
         Debugger.debug ctx solver goal tactic |> Solver.of_status solver
       with Z3.Error msg ->
         (* Z3 tactic failure - convert to proper Unknown result *)
-        Error
-          ("Tactic '" ^ Tactic.to_string tactic ^ "' failed: " ^ msg)
+        Error ("Tactic '" ^ Tactic.to_string tactic ^ "' failed: " ^ msg)
     else
       (* Production mode: Direct tactic-to-solver conversion *)
       try
@@ -613,8 +614,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
         Solver.run solver
       with Z3.Error msg ->
         (* Z3 tactic creation/solving failure *)
-        Error
-          ("Tactic '" ^ Tactic.to_string tactic ^ "' failed: " ^ msg)
+        Error ("Tactic '" ^ Tactic.to_string tactic ^ "' failed: " ^ msg)
 end
 
 module SignedBitVectorOps (W : WordSize) = struct
