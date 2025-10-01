@@ -172,7 +172,11 @@ module Solver = struct
     | Sat m -> Printf.sprintf "SAT(%s)" (Model.to_string m)
     | Unsat -> "UNSAT"
 
-  let of_status (solver : Z3.Solver.solver) : Z3.Solver.status -> (t, string) Result.t = function
+  let is_sat : t -> bool = function Sat _ -> true | Unsat -> false
+  let is_unsat : t -> bool = function Sat _ -> false | Unsat -> true
+
+  let of_status (solver : Z3.Solver.solver) :
+      Z3.Solver.status -> (t, string) Result.t = function
     | SATISFIABLE -> (
         match Solver.get_model solver with
         | Some model -> Ok (Sat model)
