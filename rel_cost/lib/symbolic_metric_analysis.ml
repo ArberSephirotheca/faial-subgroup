@@ -346,9 +346,27 @@ let architecture_constraints (st : t) : bexp Vectorizer.t =
   in
   let locals = Config.warp_divergent_tid_set st.config in
   let used = Variable.Set.union locals globals in
+  (* Generate runtime constraints on demand *)
+  let dyn_base : bexp =
+    let bdim = st.config.block_dim in
+    let gdim = st.config.grid_dim in
+    [
+      (Variable.tid_x, bdim.x);
+      (Variable.tid_y, bdim.y);
+      (Variable.tid_z, bdim.z);
+      (Variable.bid_x, gdim.x);
+      (Variable.bid_y, gdim.y);
+      (Variable.bid_z, gdim.z);
+    ]
+    |> List.filter_map (fun (x, dim) ->
+           if Variable.Set.mem x used then
+             (* 0 <= x <= dim *)
+             Some (b_and (n_le (Num 0) (Var x)) (n_lt (Var x) (Num dim)))
+           else None)
+    |> b_and_ex
+  in
   Vectorizer.b_split st.config.threads_per_warp st.locals (
-    Architecture.Defaults.dyn_base ~used ~bdim:st.config.block_dim
-      ~gdim:st.config.grid_dim
+    dyn_base
   )
 
 (*
@@ -373,7 +391,7 @@ let make (generator : Constraints.t) (config : Config.t)
 
 let to_string (st : t) : string =
   Printf.sprintf
-    "Context {\n\
+    "SymbolicMetric {\n\
     \  config: %s\n\
     \  generator: %s\n\
     \  locals: [%s]\n\
@@ -446,7 +464,7 @@ let cost_of (metric : nexp -> t -> nexp) (index : nexp) : nexp state =
     (st, metric index st)
   )
 
-let to_int (e : bexp) : nexp = n_if e (Num 1) (Num 0)
+let to_int (e : bexp) : nexp = CastInt e
 
 let encode_count_active_threads (_index : nexp) (st:t) : nexp =
   st.active_threads
