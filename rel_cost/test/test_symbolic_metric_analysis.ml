@@ -27,12 +27,12 @@ let test_encode_count_active_threads (name : string) (threads_per_warp : int)
         {
           locals;
           assumptions = b_true;
-          active_threads = cond;
+          active_threads = Vectorizer.of_bexp cfg.threads_per_warp locals cond;
           config = cfg;
           generator = Constraints.default;
         }
       in
-      let actual = State.run st (encode_count_active_threads (Num 0)) |> snd in
+      let actual = encode_count_active_threads (Num 0) st in
       if actual = expected then ()
       else
         Alcotest.failf
@@ -96,11 +96,10 @@ let solver_result_testable : Gen_z3.Solver.t Alcotest.testable =
 (* Utility function that wraps replicate and provides better error messages *)
 let assert_replicate ~(expected : (bexp * nexp) list) ~(threads_per_warp : int)
     ~(locals : Variable.Set.t) ~(cond : bexp) ~(index : nexp) : unit =
-  let cfg = make_config threads_per_warp in
   let result =
-    Stage0.Common.zip
-      (Proj.b_split cfg locals cond)
-      (Proj.n_split cfg locals index)
+    Common.zip
+      (Proj.b_split threads_per_warp locals cond)
+      (Proj.n_split threads_per_warp locals index)
   in
   Alcotest.check replicate_result_testable "replicate result" expected result
 
@@ -113,12 +112,12 @@ let assert_encode_ua ~(expected : nexp) ~(threads_per_warp : int)
     {
       locals;
       assumptions = b_true;
-      active_threads = cond;
+      active_threads = Vectorizer.of_bexp cfg.threads_per_warp locals cond;
       config = cfg;
       generator = Constraints.default;
     }
   in
-  let result = State.run st (encode_ua index) |> snd in
+  let result = encode_ua index st in
   let detailed_msg =
     Printf.sprintf
       "encode_ua failed\n\
