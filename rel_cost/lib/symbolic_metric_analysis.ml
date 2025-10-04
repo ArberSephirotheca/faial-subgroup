@@ -295,6 +295,7 @@ end
 
 type t = {
   locals : Variable.Set.t;
+  globals : Variable.Set.t;
   assumptions : bexp;
   active_threads : bexp Vectorizer.t;
   config : Config.t;
@@ -329,27 +330,13 @@ let set_active_threads (active_threads : bexp) (st : t) : t =
 let n_split (e : nexp) (st:t) : nexp list =
   Proj.n_split st.config.threads_per_warp st.locals e
 
-(*
-  TODO: These assumptions are currently not using the locals, we should revise this
-  code to use the locals. In order to do that, we must also have globals in our context,
-  which we're lacking. The current solution is to have get_architecture_constraints to be
-  self-contained (self-consistent), but means that we now have to fix bugs in multiple
-  places.
-*)
 let architecture_constraints (st : t) : bexp Vectorizer.t =
   (* tidx < bdim.x && bidx < gdim.x && ... *)
-  let globals =
-    Variable.Set.empty
-    |> Variable.Set.union Variable.bid_set
-    |> Variable.Set.union Variable.bdim_set
-    |> Variable.Set.union Variable.gdim_set
-  in
-  let locals = Config.warp_divergent_tid_set st.config in
-  let used = Variable.Set.union locals globals in
+  let b_split = Vectorizer.b_split st.config.threads_per_warp st.locals in
+  let bdim = st.config.block_dim in
+  let gdim = st.config.grid_dim in
   (* Generate runtime constraints on demand *)
-  let dyn_base : bexp =
-    let bdim = st.config.block_dim in
-    let gdim = st.config.grid_dim in
+  Scalar (
     [
       (Variable.tid_x, bdim.x);
       (Variable.tid_y, bdim.y);
@@ -359,31 +346,29 @@ let architecture_constraints (st : t) : bexp Vectorizer.t =
       (Variable.bid_z, gdim.z);
     ]
     |> List.filter_map (fun (x, dim) ->
-           if Variable.Set.mem x used then
-             (* 0 <= x <= dim *)
+           if Variable.Set.mem x st.locals then
+             let e = b_and (n_le (Num 0) (Var x)) (n_lt (Var x) (Num dim)) in
+             Some (b_split e |> Vectorizer.to_bexp)
+           else if Variable.Set.mem x st.globals then
+             (* 0 <= x < dim *)
              Some (b_and (n_le (Num 0) (Var x)) (n_lt (Var x) (Num dim)))
            else None)
     |> b_and_ex
-  in
-  Vectorizer.b_split st.config.threads_per_warp st.locals (
-    dyn_base
   )
 
 (*
-  TODO: These assumptions are currently not using the locals, we should revise this
-  code to use the locals. In order to do that, we must also have globals in our context,
-  which we're lacking. The current solution is to have Constraints.distinct to be
-  self-contained (self-consistent), but means that we now have to fix bugs in multiple
-  places.
+  TODO: This function doesn't yet use st.locals or st.globals. The distinct
+  constraint generation is self-contained within Constraints.distinct.
+  Consider refactoring to use user-provided locals/globals.
 *)
 let distinct_constraints (st : t) : bexp Vectorizer.t =
   (* distinct(tidx$0, tidx$1, tidx$2, ...) *)
   Scalar (Constraints.distinct st.config st.generator)
 
 let make (generator : Constraints.t) (config : Config.t)
-    (locals : Variable.Set.t) : t =
+    (locals : Variable.Set.t) (globals : Variable.Set.t) : t =
   let st : t =
-    { assumptions = b_true; active_threads = Scalar b_true; locals; generator; config }
+    { assumptions = b_true; active_threads = Scalar b_true; locals; globals; generator; config }
   in
   st
   |> add_assumption (architecture_constraints st)
@@ -395,12 +380,14 @@ let to_string (st : t) : string =
     \  config: %s\n\
     \  generator: %s\n\
     \  locals: [%s]\n\
+    \  globals: [%s]\n\
     \  active_threads: %s\n\
     \  assumptions: %s\n\
      }"
     (Config.to_string st.config)
     (Constraints.to_string st.generator)
     (Variable.set_to_string st.locals)
+    (Variable.set_to_string st.globals)
     (Vectorizer.to_string Exp.b_to_string st.active_threads)
     (Exp.b_to_string st.assumptions)
 
@@ -464,7 +451,9 @@ let cost_of (metric : nexp -> t -> nexp) (index : nexp) : nexp state =
     (st, metric index st)
   )
 
-let to_int (e : bexp) : nexp = CastInt e
+let to_int : bexp -> nexp = function
+  | Bool b -> Num (if b then 1 else 0)
+  | e -> CastInt e
 
 let encode_count_active_threads (_index : nexp) (st:t) : nexp =
   st.active_threads
@@ -481,8 +470,16 @@ let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (config : Config.t)
     (locals : Variable.Set.t) (active_threads : bexp) (index : nexp) :
     int option =
+  (* Compute free names from active_threads and index *)
+  let fns =
+    Exp.b_free_names active_threads Variable.Set.empty
+    |> Exp.n_free_names index
+  in
+  (* Compute globals as: free_names - locals *)
+  let globals = Variable.Set.diff fns locals in
+
   State.run
-    (make generator config locals |> set_active_threads active_threads)
+    (make generator config locals globals |> set_active_threads active_threads)
     (let* n = cost_of metric index in
      let* st = State.get in
      return (optimize ~verbose ~strategy ~solver ~default_cost:0 n st))
@@ -613,6 +610,7 @@ module Theorem = struct
   type t = {
     cfg : Config.t;
     locals : Variable.Set.t;
+    globals : Variable.Set.t;
     active_threads : bexp;
     assumptions : bexp;
     goals : Goal.t list;
@@ -624,7 +622,7 @@ module Theorem = struct
       ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) :
       (TheoremResult.t, string) Result.t list =
     let st : context =
-      make generator thm.cfg thm.locals
+      make generator thm.cfg thm.locals thm.globals
       (* set active threads *)
       |> set_active_threads thm.active_threads
       |> (fun st ->
@@ -650,9 +648,10 @@ module Theorem = struct
 
   let to_string (thm : t) : string =
     Printf.sprintf
-      "config: %s\nlocals: [%s]\nactive_threads: %s;\nassumptions: %s;\n⊢ %s"
+      "config: %s\nlocals: [%s]\nglobals: [%s]\nactive_threads: %s;\nassumptions: %s;\n⊢ %s"
       (Config.to_string thm.cfg)
       (Variable.set_to_string thm.locals)
+      (Variable.set_to_string thm.globals)
       (b_to_string thm.active_threads)
       (b_to_string thm.assumptions)
       (List.map Goal.to_string thm.goals |> String.concat "\n")

@@ -49,7 +49,8 @@ let benchmark_tests =
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
-        locals = Some [];
+        locals = [];
+        globals = [];
         active_threads = Some (Bool true);
         assumptions = Some (Bool true);
         goals =
@@ -74,7 +75,8 @@ let benchmark_tests =
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
-        locals = Some [];
+        locals = [];
+        globals = [];
         active_threads = Some (Bool true);
         assumptions =
           Some
@@ -104,7 +106,8 @@ let benchmark_tests =
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
-        locals = Some [];
+        locals = [];
+        globals = [];
         active_threads = Some (Bool true);
         assumptions =
           Some
@@ -137,7 +140,8 @@ let field_order_tests =
     |}
       {
         assumptions = Some (Bool true);
-        locals = Some [ Variable.from_name "x"; Variable.from_name "y" ];
+        locals = [ Variable.from_name "x"; Variable.from_name "y" ];
+        globals = [];
         threads_per_warp = Some 16;
         active_threads = Some (NRel (N_rel.Gt, var "x", Num 0));
         block_dim = Some (Dim3.make ~x:16 ~y:2 ~z:1 ());
@@ -163,7 +167,8 @@ let field_order_tests =
       {
         threads_per_warp = Some 8;
         block_dim = Some (Dim3.make ~x:8 ~y:2 ~z:4 ());
-        locals = Some [];
+        locals = [];
+        globals = [];
         active_threads = Some (Bool true);
         assumptions = Some (Bool true);
         goals = [ Goal.Prop (NRel (N_rel.Eq, NCall ("ua", var "tidx"), Num 1)) ];
@@ -184,7 +189,8 @@ let relational_operator_tests =
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
-        locals = Some [];
+        locals = [];
+        globals = [];
         active_threads = Some (Bool true);
         assumptions = Some (Bool true);
         goals = [ Goal.Prop (NRel (N_rel.Neq, NCall ("ua", var "x"), Num 0)) ];
@@ -201,7 +207,8 @@ let relational_operator_tests =
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
-        locals = Some [];
+        locals = [];
+        globals = [];
         active_threads = Some (Bool true);
         assumptions = Some (Bool true);
         goals = [ Goal.Prop (NRel (N_rel.Lt, NCall ("ua", var "x"), Num 10)) ];
@@ -218,7 +225,8 @@ let relational_operator_tests =
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
-        locals = Some [];
+        locals = [];
+        globals = [];
         active_threads = Some (Bool true);
         assumptions = Some (Bool true);
         goals =
@@ -247,12 +255,12 @@ let complex_expression_tests =
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
         locals =
-          Some
-            [
-              Variable.from_name "x";
-              Variable.from_name "y";
-              Variable.from_name "stride";
-            ];
+          [
+            Variable.from_name "x";
+            Variable.from_name "y";
+            Variable.from_name "stride";
+          ];
+        globals = [];
         active_threads =
           Some
             (BRel
@@ -289,7 +297,8 @@ let complex_expression_tests =
       {
         threads_per_warp = Some 32;
         block_dim = Some (Dim3.make ~x:32 ~y:1 ~z:1 ());
-        locals = Some [ Variable.from_name "mask" ];
+        locals = [ Variable.from_name "mask" ];
+        globals = [];
         active_threads = Some (Bool true);
         assumptions =
           Some
@@ -360,6 +369,7 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
+      globals : [];
       active_threads : true;
       assumptions : true;
       prove ua(2 * tidx) == 2;
@@ -369,6 +379,7 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [];
+      globals : [];
       active_threads : true;
       assumptions : x >= 1 && x <= 10;
       prove ua(x * tidx) == x;
@@ -378,6 +389,7 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [offset];
+      globals : [];
       active_threads : offset > 0;
       assumptions : true;
       prove ua(tidx) <= ua(tidx + offset);
@@ -387,6 +399,7 @@ let round_trip_tests =
       threads_per_warp : 8;
       block_dim : {x: 8, y: 2, z: 1};
       locals : [];
+      globals : [];
       active_threads : true;
       assumptions : true;
       min ua(tidx * 2 + 1);
@@ -396,6 +409,7 @@ let round_trip_tests =
       threads_per_warp : 16;
       block_dim : {x: 16, y: 1, z: 1};
       locals : [x];
+      globals : [];
       active_threads : x > 0;
       assumptions : true;
       max ua(x * tidx);
@@ -405,6 +419,7 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [x, y];
+      globals : [];
       active_threads : x > 0 && y >= 0;
       assumptions : x <= 100;
       prove ua(x * tidx) >= 1;
@@ -416,6 +431,7 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [x, y, stride];
+      globals : [];
       active_threads : stride > 0 && x < 100;
       assumptions : y >= 0;
       prove ua((x + y) * stride + tidx % 32) == x * stride;
@@ -425,6 +441,7 @@ let round_trip_tests =
       threads_per_warp : 32;
       block_dim : {x: 32, y: 1, z: 1};
       locals : [mask];
+      globals : [];
       active_threads : true;
       assumptions : (mask & 255) == mask;
       prove ua(tidx & mask) <= mask;
@@ -433,6 +450,7 @@ let round_trip_tests =
       {|
       assumptions : true;
       locals : [x, y];
+      globals : [];
       threads_per_warp : 16;
       active_threads : x > 0;
       block_dim : {y: 2, x: 16, z: 1};
@@ -443,6 +461,7 @@ let round_trip_tests =
       threads_per_warp : 8;
       block_dim : {z: 4, y: 2, x: 8};
       locals : [];
+      globals : [];
       active_threads : true;
       assumptions : true;
       prove ua(tidx) == 1;

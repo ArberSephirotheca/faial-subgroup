@@ -17,7 +17,7 @@ let var_ (name : string) : nexp = Var (Variable.from_name name)
 
 (* Helper functions for count_active_threads tests *)
 let test_encode_count_active_threads (name : string) (threads_per_warp : int)
-    (locals : Variable.Set.t) (cond : bexp) (expected : nexp) =
+    (locals : Variable.Set.t) (globals : Variable.Set.t) (cond : bexp) (expected : nexp) =
   ( name,
     `Quick,
     fun () ->
@@ -26,6 +26,7 @@ let test_encode_count_active_threads (name : string) (threads_per_warp : int)
       let st : t =
         {
           locals;
+          globals;
           assumptions = b_true;
           active_threads = Vectorizer.of_bexp cfg.threads_per_warp locals cond;
           config = cfg;
@@ -105,12 +106,13 @@ let assert_replicate ~(expected : (bexp * nexp) list) ~(threads_per_warp : int)
 
 (* Utility function that wraps encode_ua and provides better error messages *)
 let assert_encode_ua ~(expected : nexp) ~(threads_per_warp : int)
-    ~(locals : Variable.Set.t) ~(cond : bexp) ~(index : nexp) : unit =
+    ~(locals : Variable.Set.t) ~(globals : Variable.Set.t) ~(cond : bexp) ~(index : nexp) : unit =
   let cfg = make_config threads_per_warp in
   (* Create minimal state directly without constraint processing *)
   let st : t =
     {
       locals;
+      globals;
       assumptions = b_true;
       active_threads = Vectorizer.of_bexp cfg.threads_per_warp locals cond;
       config = cfg;
@@ -147,28 +149,31 @@ let assert_ua
 let encode_count_active_threads_tests =
   [
     test_encode_count_active_threads "always true, 2 threads" 2
-      Variable.Set.empty b_true (Num 2);
+      Variable.Set.empty Variable.Set.empty b_true (Num 2);
     test_encode_count_active_threads "always true, 4 threads" 4
-      Variable.Set.empty b_true (Num 4);
+      Variable.Set.empty Variable.Set.empty b_true (Num 4);
     test_encode_count_active_threads "always false, 2 threads" 2
-      Variable.Set.empty b_false (Num 0);
+      Variable.Set.empty Variable.Set.empty b_false (Num 0);
     test_encode_count_active_threads "with local variable x" 2
       (Variable.Set.singleton (Variable.from_name "x"))
+      Variable.Set.empty
       b_true (Num 2);
     test_encode_count_active_threads "even threadIdx.x condition" 2
       (Variable.Set.singleton Variable.tid_x)
+      Variable.Set.empty
       (is_even (Var Variable.tid_x))
       (n_plus
-         (n_if (is_even (var_ "threadIdx.x$0")) (Num 1) (Num 0))
-         (n_if (is_even (var_ "threadIdx.x$1")) (Num 1) (Num 0)));
+         (CastInt (is_even (var_ "threadIdx.x$0")))
+         (CastInt (is_even (var_ "threadIdx.x$1"))));
     test_encode_count_active_threads "even threadIdx.x condition" 3
       (Variable.Set.singleton Variable.tid_x)
+      Variable.Set.empty
       (is_even (Var Variable.tid_x))
       (n_plus
          (n_plus
-            (n_if (is_even (var_ "threadIdx.x$0")) (Num 1) (Num 0))
-            (n_if (is_even (var_ "threadIdx.x$1")) (Num 1) (Num 0)))
-         (n_if (is_even (var_ "threadIdx.x$2")) (Num 1) (Num 0)));
+            (CastInt (is_even (var_ "threadIdx.x$0")))
+            (CastInt (is_even (var_ "threadIdx.x$1"))))
+         (CastInt (is_even (var_ "threadIdx.x$2"))));
   ]
 
 (* Test cases for count_active_threads *)
@@ -219,8 +224,8 @@ let test_replicate_with_local_variable () : unit =
 
 let test_encode_ua_empty_locals () : unit =
   (* Test encode_ua with empty locals, 2 threads accessing same index *)
-  assert_encode_ua ~threads_per_warp:2 ~locals:Variable.Set.empty ~cond:b_true
-    ~index:(Num 0) ~expected:(Num 1)
+  assert_encode_ua ~threads_per_warp:2 ~locals:Variable.Set.empty
+    ~globals:Variable.Set.empty ~cond:b_true ~index:(Num 0) ~expected:(Num 1)
 
 let test_encode_ua_with_local_variable () : unit =
   (* Test encode_ua with local variable x *)
@@ -228,13 +233,11 @@ let test_encode_ua_with_local_variable () : unit =
   let locals = Variable.Set.singleton x in
   let expected =
     n_plus (Num 1)
-      (NIf
-         ( n_neq (n_div (var_ "x$1") (Num 32)) (n_div (var_ "x$0") (Num 32)),
-           Num 1,
-           Num 0 ))
+      (CastInt
+         (n_neq (n_div (var_ "x$1") (Num 32)) (n_div (var_ "x$0") (Num 32))))
   in
-  assert_encode_ua ~expected ~threads_per_warp:2 ~locals ~cond:b_true
-    ~index:(var_ "x")
+  assert_encode_ua ~expected ~threads_per_warp:2 ~locals
+    ~globals:Variable.Set.empty ~cond:b_true ~index:(var_ "x")
 
 let test_ua_empty_locals () : unit =
   (* Test ua with empty locals, 2 threads accessing same index *)
@@ -278,7 +281,8 @@ let test_warp_constraints_enforces_bounds_and_uniqueness () : unit =
   |> List.iter (fun gen ->
          let cfg = make_config 2 in
          let locals = Variable.Set.singleton Variable.tid_x in
-         let c = (make gen cfg locals).assumptions in
+         let globals = Variable.Set.empty in
+         let c = (make gen cfg locals globals).assumptions in
          (* Is it possible for 2 tids to be equal? *)
          let contradiction =
            b_and c (n_eq (var_ "threadIdx.x$0") (var_ "threadIdx.x$1"))
@@ -307,7 +311,8 @@ let test_cross_warp_unsoundness_test () : unit =
              ~grid_dim:(Dim3.make ~x:1 ()) ()
          in
          let locals = Variable.Set.singleton Variable.tid_x in
-         let c = (make gen cfg locals).assumptions in
+         let globals = Variable.Set.empty in
+         let c = (make gen cfg locals globals).assumptions in
          (* Try to assign threads from different warps *)
          let cross_warp =
            b_and_ex
@@ -365,6 +370,7 @@ let test_theorem_prove_exact_cost () : unit =
     {
       cfg;
       locals = Variable.Set.singleton Variable.tid_x;
+      globals = Variable.Set.empty;
       active_threads = b_true;
       assumptions = b_true;
       goals = [ goal ];
@@ -388,7 +394,8 @@ let test_make_vectorizes_runtime_assumptions () : unit =
              (Constraints.to_string strategy)
              (b_to_string distinct);
 
-         let st = make strategy cfg locals in
+         let globals = Variable.Set.empty in
+         let st = make strategy cfg locals globals in
 
          (* Check 2: tid_x should NOT appear in assumptions (should be vectorized to tid_x$0, tid_x$1) *)
          if Exp.b_mem Variable.tid_x st.assumptions then

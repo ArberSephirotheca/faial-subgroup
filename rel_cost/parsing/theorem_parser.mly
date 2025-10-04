@@ -15,7 +15,7 @@ open Rel_cost
 %token EQ NEQ LT LE GT GE
 %token L_AND L_OR L_NOT
 %token QUESTION COLON
-%token CAST_INT CAST_BOOL LOCALS X Y Z LBRACKET RBRACKET COMMA ACTIVE_THREADS
+%token CAST_INT CAST_BOOL LOCALS GLOBALS X Y Z LBRACKET RBRACKET COMMA ACTIVE_THREADS
 %token ASSUMPTIONS LBRACE THREADS_PER_WARP SEMICOLON RBRACE
 %token BLOCK_DIM PROVE MAX MIN
 %token EOF
@@ -51,6 +51,7 @@ var:
   | THREADS_PER_WARP { Variable.from_name "threads_per_warp" }
   | BLOCK_DIM { Variable.from_name "block_dim" }
   | LOCALS { Variable.from_name "locals" }
+  | GLOBALS { Variable.from_name "globals" }
   | ACTIVE_THREADS { Variable.from_name "active_threads" }
   | ASSUMPTIONS { Variable.from_name "assumptions" }
   | X { Variable.from_name "x" }
@@ -132,6 +133,7 @@ field:
   | THREADS_PER_WARP COLON value=INT { set_threads_per_warp value }
   | BLOCK_DIM COLON dim=dim3_object { set_block_dim dim }
   | LOCALS COLON vars=variable_list { set_locals vars }
+  | GLOBALS COLON vars=variable_list { set_globals vars }
   | ACTIVE_THREADS COLON expr=bexp { set_active_threads expr }
   | ASSUMPTIONS COLON expr=bexp { set_assumptions expr }
 
