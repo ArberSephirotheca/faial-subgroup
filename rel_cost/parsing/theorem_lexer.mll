@@ -66,8 +66,8 @@ rule read = parse
   | "max"                 { MAX }
   | "min"                 { MIN }
   
-  (* Identifiers (C-style + dots) *)
-  | ['a'-'z' 'A'-'Z' '_']['a'-'z' 'A'-'Z' '_' '.' '0'-'9']* as id { IDENT(id) }
+  (* Identifiers (C-style + dots + dollar signs) *)
+  | ['a'-'z' 'A'-'Z' '_' '$']['a'-'z' 'A'-'Z' '_' '.' '$' '0'-'9']* as id { IDENT(id) }
   
   (* Punctuation *)
   | '('                   { LPAREN }

@@ -343,21 +343,24 @@ let test_cross_warp_unsoundness_test () : unit =
                solver_result
          | Error msg -> Alcotest.failf "Solver error: %s" msg)
 
-let prove_thorem (msg : string) (thm : Theorem.t) : unit =
-  print_endline (Theorem.to_string thm);
-  flush stdout;
-  let results = Theorem.execute thm in
-  (* Expect the first goal to be a successful proof *)
-  match results with
-  | [ Ok (TheoremResult.ProofResult ProofResult.Proved) ] ->
-      Alcotest.check proof_result_testable msg ProofResult.Proved
-        ProofResult.Proved
-  | [ Ok (TheoremResult.ProofResult result) ] ->
-      Alcotest.check proof_result_testable msg ProofResult.Proved result
-  | [ Error msg ] -> Alcotest.fail ("Theorem execution failed: " ^ msg)
-  | _ -> Alcotest.fail "Unexpected number of results or result type"
+let prove_thorem (msg : string) (thm : Theorem.t) =
+  ( msg,
+    `Quick,
+    fun () ->
+      print_endline (Theorem.to_string thm);
+      flush stdout;
+      let results = Theorem.execute thm in
+      (* Expect the first goal to be a successful proof *)
+      match results with
+      | [ Ok (TheoremResult.ProofResult ProofResult.Proved) ] ->
+          Alcotest.check proof_result_testable msg ProofResult.Proved
+            ProofResult.Proved
+      | [ Ok (TheoremResult.ProofResult result) ] ->
+          Alcotest.check proof_result_testable msg ProofResult.Proved result
+      | [ Error msg ] -> Alcotest.fail ("Theorem execution failed: " ^ msg)
+      | _ -> Alcotest.fail "Unexpected number of results or result type" )
 
-let test_theorem_prove_exact_cost () : unit =
+let test_theorem_prove_exact_cost =
   let open Theorem in
   let cfg = make_config 32 in
   let k = 2 in
@@ -374,8 +377,98 @@ let test_theorem_prove_exact_cost () : unit =
       active_threads = b_true;
       assumptions = b_true;
       goals = [ goal ];
-    };
-  ()
+    }
+
+let test_count_active_threads_block_dim_16 =
+  let open Theorem in
+  let cfg =
+    Config.make ~threads_per_warp:32 ~block_dim:(Dim3.make ~x:16 ())
+      ~grid_dim:(Dim3.make ~x:1 ()) ()
+  in
+  (* Test theorem: count_active(0) == 16 when block_dim.x = 16, threads_per_warp = 32 *)
+  let goal =
+    Goal.Prop
+      (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 16))
+  in
+  prove_thorem "count_active(0) == 16 with block_dim.x=16"
+    {
+      cfg;
+      locals = Variable.Set.singleton Variable.tid_x;
+      globals = Variable.Set.empty;
+      active_threads = b_true;
+      assumptions = b_true;
+      goals = [ goal ];
+    }
+
+let test_count_active_threads_block_dim_16x16 =
+  let open Theorem in
+  let cfg =
+    Config.make ~threads_per_warp:32 ~block_dim:(Dim3.make ~x:16 ~y:16 ())
+      ~grid_dim:(Dim3.make ~x:1 ()) ()
+  in
+  (* Test theorem: count_active(0) == 32 when block_dim = {x:16, y:16}, threads_per_warp = 32 *)
+  let goal =
+    Goal.Prop
+      (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 32))
+  in
+  prove_thorem "count_active(0) == 32 with block_dim={x:16,y:16}"
+    {
+      cfg;
+      locals = Variable.Set.of_list [ Variable.tid_x; Variable.tid_y ];
+      globals = Variable.Set.empty;
+      active_threads = b_true;
+      assumptions = b_true;
+      goals = [ goal ];
+    }
+
+let test_count_active_threads_block_dim_32 =
+  let open Theorem in
+  let cfg =
+    Config.make ~threads_per_warp:32 ~block_dim:(Dim3.make ~x:32 ())
+      ~grid_dim:(Dim3.make ~x:1 ()) ()
+  in
+  (* Test theorem: count_active(0) == 32 when block_dim.x = 32, threads_per_warp = 32 *)
+  let goal =
+    Goal.Prop
+      (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 32))
+  in
+  prove_thorem "count_active(0) == 32 with block_dim.x=32"
+    {
+      cfg;
+      locals = Variable.Set.singleton Variable.tid_x;
+      globals = Variable.Set.empty;
+      active_threads = b_true;
+      assumptions = b_true;
+      goals = [ goal ];
+    }
+
+let test_count_active_threads_block_dim_40 =
+  let open Theorem in
+  let cfg =
+    Config.make ~threads_per_warp:32 ~block_dim:(Dim3.make ~x:40 ())
+      ~grid_dim:(Dim3.make ~x:1 ()) ()
+  in
+  (* Test theorem: count_active(0) depends on warp_id
+     warp_id=0 => count_active=32 (first warp)
+     warp_id=1 => count_active=8 (second warp has only 8 threads) *)
+  let warp_id = Variable.from_name "$warp_id" in
+  let goal =
+    Goal.Prop
+      (b_and
+         (b_impl (n_eq (Var warp_id) (Num 0))
+            (n_eq (NCall ("count_active", Num 0)) (Num 32)))
+         (b_impl (n_eq (Var warp_id) (Num 1))
+            (n_eq (NCall ("count_active", Num 0)) (Num 8))))
+  in
+  prove_thorem "count_active depends on warp_id with block_dim.x=40"
+    {
+      cfg;
+      locals = Variable.Set.singleton Variable.tid_x;
+      globals = Variable.Set.singleton warp_id;
+      active_threads = b_true;
+      assumptions = b_true;
+      goals = [ goal ];
+    }
 
 let test_make_vectorizes_runtime_assumptions () : unit =
   let cfg = make_config 2 in
@@ -418,7 +511,11 @@ let tests : unit Alcotest.test_case list =
       `Quick,
       test_warp_constraints_enforces_bounds_and_uniqueness );
     ("cross_warp_unsoundness_test", `Quick, test_cross_warp_unsoundness_test);
-    ("theorem_prove_exact_cost", `Quick, test_theorem_prove_exact_cost);
+    test_theorem_prove_exact_cost;
+    test_count_active_threads_block_dim_16;
+    test_count_active_threads_block_dim_16x16;
+    test_count_active_threads_block_dim_32;
+    test_count_active_threads_block_dim_40;
     ( "make_vectorizes_runtime_assumptions",
       `Quick,
       test_make_vectorizes_runtime_assumptions );

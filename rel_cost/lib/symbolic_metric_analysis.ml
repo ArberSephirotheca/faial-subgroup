@@ -198,12 +198,21 @@ module Constraints = struct
       let tid_generators =
         [
           ( Variable.tid_x,
-            fun thread_id -> n_mod thread_id (Num cfg.block_dim.x) );
+            fun thread_id ->
+                if Config.tid_y_is_warp_uniform cfg && Config.tid_z_is_warp_uniform cfg then
+                  thread_id
+                else
+                  n_mod thread_id (Num cfg.block_dim.x)
+               );
           ( Variable.tid_y,
             fun thread_id ->
-              n_mod
-                (n_div thread_id (Num cfg.block_dim.x))
-                (Num cfg.block_dim.y) );
+              if Config.tid_z_is_warp_uniform cfg then
+                n_div thread_id (Num cfg.block_dim.x)
+              else
+                n_mod
+                  (n_div thread_id (Num cfg.block_dim.x))
+                  (Num cfg.block_dim.y)
+          );
           ( Variable.tid_z,
             fun thread_id ->
               n_div thread_id (Num (cfg.block_dim.x * cfg.block_dim.y)) );
