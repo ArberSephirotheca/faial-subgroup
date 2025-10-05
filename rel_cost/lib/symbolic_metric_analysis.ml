@@ -286,6 +286,21 @@ module Vectorizer = struct
   let vectorize (count:int) (locals:Variable.Set.t) (e: bexp) : bexp =
     of_bexp count locals e |> to_bexp
 
+  let rec b_and (e1: bexp t) (e2: bexp t) : bexp t =
+    match e1, e2 with
+    | Vector e1, Vector e2 ->
+      if List.length e1 <> List.length e2 then
+      raise (failwith ("unexpected different lengths"));
+      Vector (Common.zip e1 e2 |> List.map (fun (e1, e2) -> Exp.b_and e1 e2))
+    | Scalar e1, Scalar e2 ->
+      Scalar (Exp.b_and e1 e2)
+    | Scalar e1, Vector e2  ->
+      let n = List.length e2 in
+      b_and (Vector (List.init n (fun _ -> e1))) (Vector e2)
+    | Vector e1, Scalar e2 ->
+      let n = List.length e1 in
+      b_and (Vector e1) (Vector (List.init n (fun _ -> e2)))
+
   let to_string (f: 'a -> string) : 'a t -> string = function
     | Scalar x -> Printf.sprintf "Scalar[%s]" (f x)
     | Vector xs ->
@@ -321,58 +336,16 @@ let extract_assumptions (b : Exp.bexp) : bexp state =
     (add_assumption (Scalar with_globals) st, with_locals)
   )
 
-let set_active_threads (active_threads : bexp) (st : t) : t =
+let add_active_threads_vec (e : bexp Vectorizer.t) (st : t) : t =
+  { st with active_threads = Vectorizer.b_and e st.active_threads }
+
+let add_active_threads (active_threads : bexp) (st : t) : t =
   let st, active_threads = extract_assumptions active_threads st in
-  let active_threads = of_bexp active_threads st in
-  { st with active_threads }
+  add_active_threads_vec (of_bexp active_threads st) st
 
 (* e -> [e$0; e$1; ...] *)
 let n_split (e : nexp) (st:t) : nexp list =
   Proj.n_split st.config.threads_per_warp st.locals e
-
-let architecture_constraints (st : t) : bexp Vectorizer.t =
-  (* tidx < bdim.x && bidx < gdim.x && ... *)
-  let b_split = Vectorizer.b_split st.config.threads_per_warp st.locals in
-  let bdim = st.config.block_dim in
-  let gdim = st.config.grid_dim in
-  (* Generate runtime constraints on demand *)
-  Scalar (
-    [
-      (Variable.tid_x, bdim.x);
-      (Variable.tid_y, bdim.y);
-      (Variable.tid_z, bdim.z);
-      (Variable.bid_x, gdim.x);
-      (Variable.bid_y, gdim.y);
-      (Variable.bid_z, gdim.z);
-    ]
-    |> List.filter_map (fun (x, dim) ->
-           if Variable.Set.mem x st.locals then
-             let e = b_and (n_le (Num 0) (Var x)) (n_lt (Var x) (Num dim)) in
-             Some (b_split e |> Vectorizer.to_bexp)
-           else if Variable.Set.mem x st.globals then
-             (* 0 <= x < dim *)
-             Some (b_and (n_le (Num 0) (Var x)) (n_lt (Var x) (Num dim)))
-           else None)
-    |> b_and_ex
-  )
-
-(*
-  TODO: This function doesn't yet use st.locals or st.globals. The distinct
-  constraint generation is self-contained within Constraints.distinct.
-  Consider refactoring to use user-provided locals/globals.
-*)
-let distinct_constraints (st : t) : bexp Vectorizer.t =
-  (* distinct(tidx$0, tidx$1, tidx$2, ...) *)
-  Scalar (Constraints.distinct st.config st.generator)
-
-let make (generator : Constraints.t) (config : Config.t)
-    (locals : Variable.Set.t) (globals : Variable.Set.t) : t =
-  let st : t =
-    { assumptions = b_true; active_threads = Scalar b_true; locals; globals; generator; config }
-  in
-  st
-  |> add_assumption (architecture_constraints st)
-  |> add_assumption (distinct_constraints st)
 
 let to_string (st : t) : string =
   Printf.sprintf
@@ -390,6 +363,53 @@ let to_string (st : t) : string =
     (Variable.set_to_string st.globals)
     (Vectorizer.to_string Exp.b_to_string st.active_threads)
     (Exp.b_to_string st.assumptions)
+
+let add_architecture_constraints (st : t) : t =
+  (* tidx < bdim.x && bidx < gdim.x && ... *)
+  (*let b_split = Vectorizer.b_split st.config.threads_per_warp st.locals in*)
+  let bdim = st.config.block_dim in
+  let gdim = st.config.grid_dim in
+  (* Generate runtime constraints on demand *)
+  [
+    (Variable.tid_x, bdim.x);
+    (Variable.tid_y, bdim.y);
+    (Variable.tid_z, bdim.z);
+    (Variable.bid_x, gdim.x);
+    (Variable.bid_y, gdim.y);
+    (Variable.bid_z, gdim.z);
+  ]
+  |> List.fold_left (fun st (x, dim) : t ->
+      if Variable.Set.mem x st.locals then
+        (* thread-level constraints must be added to the correct place *)
+        (* 0 <= x < dim *)
+        let e = b_and (n_le (Num 0) (Var x)) (n_lt (Var x) (Num dim)) in
+        add_active_threads_vec (of_bexp e st) st
+      else if Variable.Set.mem x st.globals then
+        (* global constraints are added elsewhere *)
+        (* 0 <= x < dim *)
+        let e = b_and (n_le (Num 0) (Var x)) (n_lt (Var x) (Num dim)) in
+        add_assumption (Scalar e) st
+      else st
+    )
+    st
+
+(*
+  TODO: This function doesn't yet use st.locals or st.globals. The distinct
+  constraint generation is self-contained within Constraints.distinct.
+  Consider refactoring to use user-provided locals/globals.
+*)
+let distinct_constraints (st : t) : bexp Vectorizer.t =
+  (* distinct(tidx$0, tidx$1, tidx$2, ...) *)
+  Scalar (Constraints.distinct st.config st.generator)
+
+let make (generator : Constraints.t) (config : Config.t)
+    (locals : Variable.Set.t) (globals : Variable.Set.t) : t =
+  let st : t =
+    { assumptions = b_true; active_threads = Scalar b_true; locals; globals; generator; config }
+  in
+  st
+  |> add_architecture_constraints
+  |> add_assumption (distinct_constraints st)
 
 let print_optimize (pre : bexp) (formula : nexp) : unit =
   let pre =
@@ -456,6 +476,7 @@ let to_int : bexp -> nexp = function
   | e -> CastInt e
 
 let encode_count_active_threads (_index : nexp) (st:t) : nexp =
+  print_endline (to_string st);
   st.active_threads
   (* count how many threads are active *)
   |> Vectorizer.to_list st.config.threads_per_warp
@@ -479,7 +500,7 @@ let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
   let globals = Variable.Set.diff fns locals in
 
   State.run
-    (make generator config locals globals |> set_active_threads active_threads)
+    (make generator config locals globals |> add_active_threads active_threads)
     (let* n = cost_of metric index in
      let* st = State.get in
      return (optimize ~verbose ~strategy ~solver ~default_cost:0 n st))
@@ -624,7 +645,7 @@ module Theorem = struct
     let st : context =
       make generator thm.cfg thm.locals thm.globals
       (* set active threads *)
-      |> set_active_threads thm.active_threads
+      |> add_active_threads thm.active_threads
       |> (fun st ->
         add_assumption (of_bexp thm.assumptions st) st
       )
