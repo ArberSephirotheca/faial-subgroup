@@ -80,6 +80,9 @@ let cond_dissimilar ((cnd, e) : bexp * nexp) (l : (bexp * nexp) list) : bexp =
 let clamp ~lower ~value ~upper : bexp =
   b_and (n_ge value lower) (n_lt value upper)
 
+let warp_id_var : Variable.t = Variable.from_name "$warp_id"
+let warp_id : Exp.nexp = Var warp_id_var
+
 (* This module holds the constraint-generation code. *)
 module Constraints = struct
   type t = V1 | V2 | V3 | V4
@@ -192,21 +195,60 @@ module Constraints = struct
   (* Constraint generation 2.0: define threadIdx directly *)
   module V4Gen = struct
     let make (cfg : Config.t) : bexp =
-      let warp_id_var = Variable.from_name "$warp_id" in
+      if Config.total_threads_per_block cfg <= cfg.threads_per_warp then
+        (* Single warp: directly calculate tid values from uid *)
+        let thread_constraints =
+          List.init cfg.threads_per_warp (fun uid ->
+              let suffix = string_of_int uid in
 
+              (* Calculate tid_x, tid_y, tid_z directly from uid *)
+              let constraints = [] in
+
+              (* tid_x = uid % block_dim.x *)
+              let constraints =
+                if Config.tid_x_is_warp_divergent cfg then
+                  let tid_x = proj ~suffix Variable.tid_x in
+                  let tid_x_val = uid mod cfg.block_dim.x in
+                  n_eq (Var tid_x) (Num tid_x_val) :: constraints
+                else constraints
+              in
+
+              (* tid_y = (uid / block_dim.x) % block_dim.y *)
+              let constraints =
+                if Config.tid_y_is_warp_divergent cfg then
+                  let tid_y = proj ~suffix Variable.tid_y in
+                  let tid_y_val = (uid / cfg.block_dim.x) mod cfg.block_dim.y in
+                  n_eq (Var tid_y) (Num tid_y_val) :: constraints
+                else constraints
+              in
+
+              (* tid_z = uid / (block_dim.x * block_dim.y) *)
+              let constraints =
+                if Config.tid_z_is_warp_divergent cfg then
+                  let tid_z = proj ~suffix Variable.tid_z in
+                  let tid_z_val = uid / (cfg.block_dim.x * cfg.block_dim.y) in
+                  n_eq (Var tid_z) (Num tid_z_val) :: constraints
+                else constraints
+              in
+
+              b_and_ex constraints)
+        in
+
+        b_and_ex thread_constraints
+      else
       (* Hoisted: determine which coordinates need constraints *)
       let tid_generators =
         [
           ( Variable.tid_x,
             fun thread_id ->
-                if Config.tid_y_is_warp_uniform cfg && Config.tid_z_is_warp_uniform cfg then
+                if Config.tid_x_is_last_warp_divergent cfg then
                   thread_id
                 else
                   n_mod thread_id (Num cfg.block_dim.x)
                );
           ( Variable.tid_y,
             fun thread_id ->
-              if Config.tid_z_is_warp_uniform cfg then
+              if Config.tid_y_is_last_warp_divergent cfg then
                 n_div thread_id (Num cfg.block_dim.x)
               else
                 n_mod
@@ -388,17 +430,30 @@ let add_architecture_constraints (st : t) : t =
     (Variable.bid_z, gdim.z);
   ]
   |> List.fold_left (fun st (x, dim) : t ->
-      if Variable.Set.mem x st.locals then
-        (* thread-level constraints must be added to the correct place *)
-        (* 0 <= x < dim *)
+      if Variable.Set.mem x st.locals || Variable.Set.mem x st.globals then (
+        let unif_warps, rem_threads = Config.divide_total_threads_per_warp st.config in
         let e = b_and (n_le (Num 0) (Var x)) (n_lt (Var x) (Num dim)) in
-        add_active_threads_vec (of_bexp e st) st
-      else if Variable.Set.mem x st.globals then
-        (* global constraints are added elsewhere *)
-        (* 0 <= x < dim *)
-        let e = b_and (n_le (Num 0) (Var x)) (n_lt (Var x) (Num dim)) in
-        add_assumption (Scalar e) st
-      else st
+        if rem_threads > 0 && unif_warps = 0 then
+          let e = of_bexp e st in
+          add_active_threads_vec e st
+        else if rem_threads = 0 && unif_warps > 0 then
+          let e = of_bexp e st in
+          add_assumption e st
+        else
+          let st =
+            if rem_threads > 0 then (
+              let e = of_bexp (b_impl (n_eq warp_id (Num unif_warps)) e) st in
+              add_active_threads_vec e st
+              (* only assumptions *)
+            ) else
+              st
+          in
+          if unif_warps > 0 then
+            let e = of_bexp (b_impl (n_lt warp_id (Num unif_warps)) e) st in
+            add_assumption e st
+          else
+            st
+      ) else st
     )
     st
 
@@ -413,6 +468,9 @@ let distinct_constraints (st : t) : bexp Vectorizer.t =
 
 let make (generator : Constraints.t) (config : Config.t)
     (locals : Variable.Set.t) (globals : Variable.Set.t) : t =
+  let locals = Variable.Set.union locals (Config.warp_divergent_tid_set config) in
+  let total_threads = Config.total_threads_per_block config in
+  let config = { config with threads_per_warp = min config.threads_per_warp total_threads } in
   let st : t =
     { assumptions = b_true; active_threads = Scalar b_true; locals; globals; generator; config }
   in
@@ -485,7 +543,6 @@ let to_int : bexp -> nexp = function
   | e -> CastInt e
 
 let encode_count_active_threads (_index : nexp) (st:t) : nexp =
-  print_endline (to_string st);
   st.active_threads
   (* count how many threads are active *)
   |> Vectorizer.to_list st.config.threads_per_warp
