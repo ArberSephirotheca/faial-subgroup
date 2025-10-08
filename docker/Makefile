@@ -31,4 +31,7 @@ dev:
 push:
 	$(DOCKER_COMPOSE) push ci
 
-.PHONY: build run test all build-ci build-dev build-tools build-base
+push-base:
+	$(DOCKER_COMPOSE) push base
+
+.PHONY: build run test all build-ci build-dev build-tools build-base push push-base

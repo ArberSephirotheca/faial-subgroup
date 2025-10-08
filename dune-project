@@ -20,14 +20,15 @@
   (license "MIT")
   (depends
     ; Runtime dependencies
-    (ocaml (>= 5.3))
-    (cmdliner (>= 1.3.0))
-    (ANSITerminal (>= 0.8.5))
-    (otoml (>= 1.0.5))
-    (yojson (>= 2.2.2))
-    (printbox-text (>= 0.11))
-    (fpath (>= 0.7.3))
-    (z3 (>= 4.15.2))
+    (ocaml (= 5.3.0))
+    (cmdliner (= 1.3.0))
+    (ANSITerminal (= 0.8.5))
+    (otoml (= 1.0.5))
+    (yojson (= 2.2.2))
+    (printbox-text (= 0.12))
+    (fpath (= 0.7.3))
+    (z3 (= 4.15.2))
+    (menhir (= 20240715))
     
     ; Build dependencies
     (dune (>= 3.17))

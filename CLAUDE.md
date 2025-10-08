@@ -164,6 +164,70 @@ Dependencies are managed through `dune-project` and the committed `faial.opam` f
 - **Local development**: Use `./configure.sh --local` for isolated environment
 - **CI/shared systems**: Use `./configure.sh --system` to install in current switch
 
+#### Updating Dependency Versions
+
+When updating dependency versions (e.g., upgrading libraries or OCaml), follow this workflow to ensure local, Docker, and CI environments all work correctly:
+
+**1. Test current setup works:**
+```bash
+dune clean && dune build && dune test
+```
+
+**2. Update version constraints:**
+- Check installed versions: `opam list --installed --columns=package,version`
+- Update `dune-project`:
+  - Runtime dependencies: use `=` for exact version pinning
+  - Build/test/dev dependencies: use `>=` for flexibility
+- Regenerate opam file: `dune build faial.opam`
+
+**3. Update local environment and test:**
+```bash
+./configure.sh --local --yes  # or --system if not using local switch
+dune clean && dune build && dune test
+```
+
+**4. Test in Docker locally:**
+```bash
+cd docker
+make build-ci
+
+# Option 1: Using gitlab-runner (if installed)
+cd ..
+make gitlab-test
+
+# Option 2: Direct docker run
+docker run --rm -v $PWD/..:/workspace -w /workspace \
+  registry.gitlab.com/umb-svl/faial/faial:ci dune build
+```
+
+**5. Push CI container:**
+```bash
+cd docker
+make push
+```
+
+**6. Commit and push to GitLab:**
+```bash
+git add dune-project faial.opam
+git commit -m "Update dependencies: <brief description>"
+git push
+```
+
+**Special case: OCaml version changes**
+
+If the OCaml version changes (e.g., 5.2.0 → 5.3.0), you must also update and push the base Docker image:
+
+1. Update `docker/base.Dockerfile`: Change `ARG OCAML_VERSION=X.Y.Z`
+2. Rebuild and push base image:
+   ```bash
+   cd docker
+   make build-base
+   make push-base
+   ```
+3. Follow the standard workflow above (steps 1-6)
+
+The CI image depends on the base image, so the base must be pushed before the CI image is rebuilt in CI or locally.
+
 ## Git Commit Guidelines
 
 When creating commits, do NOT include:
