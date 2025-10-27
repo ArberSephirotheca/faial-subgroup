@@ -139,27 +139,22 @@ with external symbolic cost solvers.
 
 ---
 
-## Module Organization
+## Using Pico (aka faial-cost)
 
-See **[ARCHITECTURE.md](ARCHITECTURE.md)** for detailed module dependency graphs, dataflow diagrams,
-and step-by-step analysis flow explanation.
-
-## Using the Framework
-
-### Basic Analysis
+The binary `faial-cost` can be executed directly via dune as follows.
 
 ```bash
 # Analyze a GPU kernel for bank conflicts
-bin/cost.exe -m bc kernel.cu
+dune exec bin/cost.exe -m bc kernel.cu
 
 # With external solver (Maxima)
-bin/cost.exe -m bc --maxima kernel.cu
+dune exec bin/cost.exe -m bc --maxima kernel.cu
 
 # Specify grid and block dimensions
-bin/cost.exe -m bc --gridDim=64 --blockDim=256 kernel.cu
+dune exec bin/cost.exe -m bc --gridDim=64 --blockDim=256 kernel.cu
 
 # Output in JSON format
-bin/cost.exe -m bc --json kernel.cu
+dune exec bin/cost.exe -m bc --json kernel.cu
 ```
 
 ### Available Metrics
