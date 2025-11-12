@@ -109,8 +109,7 @@ module Make (L : Logger.Logger) = struct
         parsed.kernels
         |> Imp.Compiler.compile_all ~inline_calls
         |> List.filter (fun k ->
-               (not only_globals)
-               || (only_globals && Protocols.Kernel.is_global k));
+            (not only_globals) || (only_globals && Protocols.Kernel.is_global k));
     }
 end
 

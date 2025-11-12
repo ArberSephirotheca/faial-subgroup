@@ -217,9 +217,7 @@ let arr_to_proto (vm : Memory.t VarMap.t) (g : Generator.t) : string list =
   in
   VarMap.bindings vm
   |> List.map (fun (k, v) ->
-         modifiers
-         ^ arr_type v ~strip_const:true
-         ^ " " ^ var_to_dummy k ^ "_w();")
+      modifiers ^ arr_type v ~strip_const:true ^ " " ^ var_to_dummy k ^ "_w();")
 
 (* Helper functions for making kernel parameters *)
 let global_arr_to_l (vm : Memory.t VarMap.t) : string list =
@@ -234,11 +232,11 @@ let global_var_to_l (vs : VarSet.t) : string list =
 let arr_to_shared (vm : Memory.t VarMap.t) : Indent.t list =
   VarMap.bindings vm
   |> List.map (fun (k, v) ->
-         Indent.Line
-           ((if v.Memory.size = [] then "extern " else "")
-           ^ "__shared__ " ^ arr_type v ^ " " ^ Variable.name k
-           ^ idx_to_s string_of_int v.Memory.size
-           ^ ";"))
+      Indent.Line
+        ((if v.Memory.size = [] then "extern " else "")
+        ^ "__shared__ " ^ arr_type v ^ " " ^ Variable.name k
+        ^ idx_to_s string_of_int v.Memory.size
+        ^ ";"))
 
 let local_var_to_l (vs : VarSet.t) (g : Generator.t) : Indent.t list =
   (* Use a single dummy array/function to initialize all local variables *)
@@ -256,7 +254,7 @@ let local_var_to_l (vs : VarSet.t) (g : Generator.t) : Indent.t list =
 let arr_to_dummy (vm : Memory.t VarMap.t) : Indent.t list =
   VarMap.bindings vm
   |> List.map (fun (k, v) ->
-         Indent.Line (arr_type v ~strip_const:true ^ " " ^ var_to_dummy k ^ ";"))
+      Indent.Line (arr_type v ~strip_const:true ^ " " ^ var_to_dummy k ^ ";"))
 
 (* Serialization of the kernel header *)
 let header_to_s (g : Generator.t) (gv : Gv_parser.t) (k : Kernel.t) : Indent.t =

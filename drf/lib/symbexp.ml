@@ -62,9 +62,9 @@ module Gen = struct
     *)
     range (dim - 1)
     |> List.map (fun i ->
-           let t1 = index Task1 i in
-           let t2 = index Task2 i in
-           b_and_ex [ n_eq t1 t2; n_ge t1 (Num 0) ])
+        let t1 = index Task1 i in
+        let t2 = index Task2 i in
+        b_and_ex [ n_eq t1 t2; n_ge t1 (Num 0) ])
     |> b_and_ex
 
   let project (t : Task.t) (x : Variable.t) : Variable.t =

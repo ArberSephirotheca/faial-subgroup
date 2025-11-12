@@ -471,8 +471,8 @@ module Signature = struct
   let from_function (f : Function.t) : t =
     f.arguments
     |> List.map (fun a ->
-           let open FunctionArgument in
-           (a.name, a.ty))
+        let open FunctionArgument in
+        (a.name, a.ty))
 end
 
 module Typing = struct

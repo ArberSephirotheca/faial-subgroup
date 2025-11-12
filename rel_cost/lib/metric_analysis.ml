@@ -213,11 +213,11 @@ module Make (L : Logger.Logger) = struct
     let vec = to_vectorized ctx in
     let index = bc_remove_offset ctx in
     (match Vectorized.to_cost Metric.BankConflicts index vec with
-    | Ok cost -> cost
-    | Error msg ->
-        L.info
-          ("BC: could not simulate cost " ^ Exp.n_to_string index ^ ": " ^ msg);
-        Vectorized.max_cost Metric.BankConflicts vec)
+      | Ok cost -> cost
+      | Error msg ->
+          L.info
+            ("BC: could not simulate cost " ^ Exp.n_to_string index ^ ": " ^ msg);
+          Vectorized.max_cost Metric.BankConflicts vec)
     |> IndexCost.from_cost
 
   let run_ua (ctx : t) : IndexCost.t =
@@ -237,21 +237,21 @@ module Make (L : Logger.Logger) = struct
     else
       let to_cost index =
         (match Vectorized.to_cost UncoalescedAccesses index vec with
-        | Ok cost ->
-            if ty = UA.Inc then (
+          | Ok cost ->
+              if ty = UA.Inc then (
+                L.info
+                  ("UA: incrementing approximated cost: " ^ Cost.to_string cost);
+                let v =
+                  min (cost.value + 1)
+                    (Vectorized.max_cost UncoalescedAccesses vec |> Cost.value)
+                in
+                Cost.set_value v cost)
+              else cost
+          | Error msg ->
               L.info
-                ("UA: incrementing approximated cost: " ^ Cost.to_string cost);
-              let v =
-                min (cost.value + 1)
-                  (Vectorized.max_cost UncoalescedAccesses vec |> Cost.value)
-              in
-              Cost.set_value v cost)
-            else cost
-        | Error msg ->
-            L.info
-              ("UA: could not simulate cost " ^ Exp.n_to_string index ^ ": "
-             ^ msg);
-            Vectorized.max_cost UncoalescedAccesses vec)
+                ("UA: could not simulate cost " ^ Exp.n_to_string index ^ ": "
+               ^ msg);
+              Vectorized.max_cost UncoalescedAccesses vec)
         |> IndexCost.from_cost
       in
       let fns = Exp.n_free_names index Variable.Set.empty in
@@ -284,8 +284,8 @@ module Make (L : Logger.Logger) = struct
        Symbolic_metric_analysis.ua ~verbose ctx.config ctx.locals ctx.divergence
          ctx.index
      with
-    | Some i -> Cost.from_int ~value:i ~exact:true ()
-    | None -> Vectorized.max_cost Metric.UncoalescedAccesses vec)
+      | Some i -> Cost.from_int ~value:i ~exact:true ()
+      | None -> Vectorized.max_cost Metric.UncoalescedAccesses vec)
     |> IndexCost.from_cost
 
   let run_count_active_threads ~verbose (ctx : t) : IndexCost.t =
@@ -294,8 +294,8 @@ module Make (L : Logger.Logger) = struct
        Symbolic_metric_analysis.count_active_threads ~verbose ctx.config
          ctx.locals ctx.divergence (Num 0)
      with
-    | Some i -> Cost.from_int ~value:i ~exact:true ()
-    | None -> Vectorized.max_cost Metric.ActiveThreads vec)
+      | Some i -> Cost.from_int ~value:i ~exact:true ()
+      | None -> Vectorized.max_cost Metric.ActiveThreads vec)
     |> IndexCost.from_cost
 
   let run_count (_ctx : t) : IndexCost.t =

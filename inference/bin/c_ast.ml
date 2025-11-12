@@ -28,8 +28,8 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
         | Declaration _ | Typedef _ | Enum _ -> ());
   k3
   |> List.iter (fun k ->
-         let open Imp.Kernel in
-         Hashtbl.add k3_ht k.name k);
+      let open Imp.Kernel in
+      Hashtbl.add k3_ht k.name k);
   let l =
     List.fold_left
       (fun ((decls : Decl.t list), js) ->

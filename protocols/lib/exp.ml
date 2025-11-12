@@ -374,15 +374,13 @@ let b_to_s : bexp -> Indent.t list =
         b
         |> (if in_and then b_and_split else b_or_split)
         |> List.map (fun b ->
-               match to_s (not in_and) b with
-               | [ Line b ] -> Line b
-               | l -> Block l)
+            match to_s (not in_and) b with [ Line b ] -> Line b | l -> Block l)
         |> List.mapi (fun i ->
-               let op = if i = 0 then "" else op ^ " " in
-               function
-               | Line s -> [ Line (op ^ s) ]
-               | Block l -> [ Line (op ^ "("); Block l; Line ")" ]
-               | Nil -> [])
+            let op = if i = 0 then "" else op ^ " " in
+            function
+            | Line s -> [ Line (op ^ s) ]
+            | Block l -> [ Line (op ^ "("); Block l; Line ")" ]
+            | Nil -> [])
         |> List.concat
   in
   to_s true

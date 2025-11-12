@@ -1079,8 +1079,7 @@ module Stmt = struct
         | Decl d ->
             List.to_seq d
             |> Seq.concat_map (fun d ->
-                   Decl.init d |> Option.to_seq
-                   |> Seq.concat_map Init.to_expr_seq)
+                Decl.init d |> Option.to_seq |> Seq.concat_map Init.to_expr_seq)
         | While { cond = c; body = b }
         | Do { cond = c; body = b }
         | Switch { cond = c; body = b }
@@ -1570,9 +1569,9 @@ module Def = struct
         let attrs =
           attrs
           |> List.filter_map (fun j ->
-                 parse_attr j
-                 >>= (fun a -> Ok (Some a))
-                 |> Result.value ~default:None)
+              parse_attr j
+              >>= (fun a -> Ok (Some a))
+              |> Result.value ~default:None)
         in
         let _params, _ =
           inner |> List.partition (j_filter_kind (fun k -> k = "ParmVarDecl"))
@@ -1701,18 +1700,18 @@ module Program = struct
       else
         e
         |> Expr.Visit.map (fun e ->
-               match e with
-               | Ident x ->
-                   if Variable.Set.mem x.name vars then
-                     ArraySubscriptExpr
-                       {
-                         lhs = Ident x;
-                         rhs = IntegerLiteral 0;
-                         ty = x.ty;
-                         location = Variable.location x.name;
-                       }
-                   else e
-               | _ -> e)
+            match e with
+            | Ident x ->
+                if Variable.Set.mem x.name vars then
+                  ArraySubscriptExpr
+                    {
+                      lhs = Ident x;
+                      rhs = IntegerLiteral 0;
+                      ty = x.ty;
+                      location = Variable.location x.name;
+                    }
+                else e
+            | _ -> e)
     in
     (* When rewriting a variable declaration, we must return as the side-effect
       the shadowing of the available variables when it makes sense *)

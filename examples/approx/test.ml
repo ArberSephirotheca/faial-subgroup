@@ -69,14 +69,14 @@ let () =
   |> List.filter (Fpath.has_ext ".cu")
   |> List.sort Fpath.compare
   |> List.iter (fun f ->
-         print_string (" - " ^ Fpath.filename f);
-         Stdlib.flush_all ();
-         (match run ~data_dep ~faial_drf f with
-         | None -> print_endline " ✔"
-         | Some e ->
-             print_endline " ✘\n";
-             print_endline ("faial-drf --show-flat-acc " ^ Fpath.filename f);
-             print_endline e;
-             print_endline "";
-             exit 1);
-         Stdlib.flush_all ())
+      print_string (" - " ^ Fpath.filename f);
+      Stdlib.flush_all ();
+      (match run ~data_dep ~faial_drf f with
+      | None -> print_endline " ✔"
+      | Some e ->
+          print_endline " ✘\n";
+          print_endline ("faial-drf --show-flat-acc " ^ Fpath.filename f);
+          print_endline e;
+          print_endline "";
+          exit 1);
+      Stdlib.flush_all ())

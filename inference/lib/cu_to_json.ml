@@ -9,8 +9,8 @@ let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
   let r, j =
     Unix.open_process_in cmd
     |> Subprocess.with_process_in (fun ic ->
-           try Ok (Yojson.Basic.from_channel ic)
-           with Yojson.Json_error e -> Error e)
+        try Ok (Yojson.Basic.from_channel ic)
+        with Yojson.Json_error e -> Error e)
   in
   match (r, j) with
   | Unix.WEXITED 0, Ok j -> Ok j

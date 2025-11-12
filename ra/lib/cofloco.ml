@@ -106,8 +106,8 @@ let from_stmt (s : Stmt.t) : t list =
 let to_string (env : Environ.t) (x : t list) : string =
   x
   |> List.map (function
-       | Comment c -> "% " ^ c
-       | Rule r -> Rule.to_string env r)
+    | Comment c -> "% " ^ c
+    | Rule r -> Rule.to_string env r)
   |> String.concat "\n"
 
 let parse_cost (env : Environ.t) (x : string) : string option =

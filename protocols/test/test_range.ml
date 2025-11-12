@@ -194,18 +194,18 @@ let test_all () : unit =
         [ 10; 11; 12; 13; 74; 75; 76; 77; 100 ])
     [ 0; 1; 2; 3; 4; 5; 6; 7 ]
   |> List.concat_map (fun (lb, ub, s) ->
-         (if s > 1 then [ (*range ~lb ~ub ~step:(Div, s), div_range lb ub s*) ]
-          else [])
-         @ (if s > 1 && lb > 0 then
-              [ (range ~lb ~ub ~step:(Mult, s), mult_range lb ub s) ]
-            else [])
-         @ [
-             (range ~lb ~ub ~step:(Plus, s), plus_range lb ub s);
-             (range ~lb ~ub ~step:(Minus, s), minus_range lb ub s);
-           ])
+      (if s > 1 then [ (*range ~lb ~ub ~step:(Div, s), div_range lb ub s*) ]
+       else [])
+      @ (if s > 1 && lb > 0 then
+           [ (range ~lb ~ub ~step:(Mult, s), mult_range lb ub s) ]
+         else [])
+      @ [
+          (range ~lb ~ub ~step:(Plus, s), plus_range lb ub s);
+          (range ~lb ~ub ~step:(Minus, s), minus_range lb ub s);
+        ])
   |> List.iter (fun (r, l) ->
-         assert_first r (list_first l);
-         assert_last r (list_last l))
+      assert_first r (list_first l);
+      assert_last r (list_last l))
 
 let tests : unit Alcotest.test_case list =
   [

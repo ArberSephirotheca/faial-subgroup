@@ -110,24 +110,24 @@ let all_tests () : unit =
   let assigns = [ ("x", x) ] in
   i_tests
   |> List.iter (fun (code, expected) ->
-         unit_test ~given_expr:(Reals.to_string code)
-           ~given_maxima:(Maxima.i_to_string code)
-           ~expected_output:(int_s expected) ~assigns);
+      unit_test ~given_expr:(Reals.to_string code)
+        ~given_maxima:(Maxima.i_to_string code)
+        ~expected_output:(int_s expected) ~assigns);
   b_tests
   |> List.iter (fun (code, expected) ->
-         unit_test ~given_expr:(Reals.b_to_string code)
-           ~given_maxima:("is(" ^ Maxima.b_to_string code ^ ")")
-           ~expected_output:(bool_s expected) ~assigns:[]);
+      unit_test ~given_expr:(Reals.b_to_string code)
+        ~given_maxima:("is(" ^ Maxima.b_to_string code ^ ")")
+        ~expected_output:(bool_s expected) ~assigns:[]);
   f_tests
   |> List.iter (fun (code, expected) ->
-         unit_test ~given_expr:(Reals.f_to_string code)
-           ~given_maxima:("bfloat(" ^ Maxima.f_to_string code ^ ")")
-           ~expected_output:expected ~assigns:[]);
+      unit_test ~given_expr:(Reals.f_to_string code)
+        ~given_maxima:("bfloat(" ^ Maxima.f_to_string code ^ ")")
+        ~expected_output:expected ~assigns:[]);
   s_tests
   |> List.iter (fun (code, expected) ->
-         unit_test ~given_expr:(Summation.to_string code)
-           ~given_maxima:(Maxima.from_summation code)
-           ~expected_output:(int_s expected) ~assigns:[])
+      unit_test ~given_expr:(Summation.to_string code)
+        ~given_maxima:(Maxima.from_summation code)
+        ~expected_output:(int_s expected) ~assigns:[])
 
 let () =
   match Subprocess.make "maxima" [ "--version" ] |> Subprocess.check_output with

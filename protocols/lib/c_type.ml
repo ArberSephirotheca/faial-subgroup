@@ -19,8 +19,8 @@ let parse_dim (x : string) : int list =
   *)
   String.split_on_char '[' x
   |> List.concat_map (fun (x : string) ->
-         if String.length x = 0 then []
-         else [ String.sub x 0 (String.length x - 1) ])
+      if String.length x = 0 then []
+      else [ String.sub x 0 (String.length x - 1) ])
   |> List.map int_of_string
 
 let parse_array_type_opt (x : string) : string list option =

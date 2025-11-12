@@ -2719,7 +2719,7 @@ module Expression = struct
             we must expand each vector component *)
               c
               |> List.concat_map (fun e ->
-                     match to_vector e with Some (l, _) -> l | None -> [ e ])
+                  match to_vector e with Some (l, _) -> l | None -> [ e ])
           | _, _, _ -> components
         in
         Compose { ty; components }
@@ -2780,7 +2780,7 @@ module Expression = struct
               Stage0.Common.zip3 (List.map simplify c) (List.map simplify a)
                 (List.map simplify r)
               |> List.map (fun (c, a, r) : t ->
-                     Select { condition = c; accept = a; reject = r })
+                  Select { condition = c; accept = a; reject = r })
             in
             Compose { ty; components }
         | _, _, _ -> map simplify e)
@@ -3140,7 +3140,7 @@ module Statement = struct
           let cases =
             cases
             |> List.map (function { value; body; fall_through } ->
-                   { value; body = List.map map body; fall_through })
+                { value; body = List.map map body; fall_through })
           in
           Switch { selector = f s; cases }
       | Loop { body; continuing; break_if } ->

@@ -226,7 +226,7 @@ module Params = struct
   let to_string (param_list : t) : string =
     param_list
     |> List.map (fun (name, value) ->
-           Printf.sprintf "%s=%s" name (Value.to_string value))
+        Printf.sprintf "%s=%s" name (Value.to_string value))
     |> String.concat ", " |> Printf.sprintf "{%s}"
 end
 
@@ -338,7 +338,7 @@ module Debugger = struct
     let goals =
       st.goals
       |> List.mapi (fun i g ->
-             Printf.sprintf "Goal %d:\n%s" i (Z3.Goal.to_string g))
+          Printf.sprintf "Goal %d:\n%s" i (Z3.Goal.to_string g))
       |> String.concat "\n"
     in
     let work = st.work |> List.map Tactic.to_string |> String.concat ";" in
@@ -553,11 +553,11 @@ module CodeGen (N : NUMERIC_OPS) = struct
     (* Go through all declarations of the model *)
     Z3.Model.get_const_decls m
     |> List.filter_map (fun d ->
-           let x = decl_to_variable d in
-           if Variable.Set.mem x vars then
-             let* v = get_int_decl m d in
-             Some (x, v)
-           else None)
+        let x = decl_to_variable d in
+        if Variable.Set.mem x vars then
+          let* v = get_int_decl m d in
+          Some (x, v)
+        else None)
 
   (*
     Optimizes a numeric expression given a boolean expression.
@@ -580,9 +580,9 @@ module CodeGen (N : NUMERIC_OPS) = struct
       (int option, string) Result.t =
     optimize ~timeout strategy pre n
     |> Result.map (function
-         | Optimizer.Sat { optimal; model } ->
-             Some (get_int model optimal |> Option.get)
-         | Unsat -> None)
+      | Optimizer.Sat { optimal; model } ->
+          Some (get_int model optimal |> Option.get)
+      | Unsat -> None)
 
   let solve ?(timeout = 0) (pre : Exp.bexp) : (Solver.t, string) Result.t =
     let args =

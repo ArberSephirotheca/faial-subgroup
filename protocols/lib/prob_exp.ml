@@ -123,22 +123,21 @@ let infer_dom ?(timeout = 100) (x : Variable.t) (goal : Exp.bexp) :
     Model.get_const_decls m
     (* Search for the declaration of x *)
     |> List.find_map (fun d ->
-           (* Convert the declaration to a variable *)
-           let y : Variable.t =
-             d |> FuncDecl.get_name |> Symbol.get_string |> Variable.from_name
-           in
-           if Variable.equal y x then
-             (* Evaluate the value: Variables in the model are actually functions
+        (* Convert the declaration to a variable *)
+        let y : Variable.t =
+          d |> FuncDecl.get_name |> Symbol.get_string |> Variable.from_name
+        in
+        if Variable.equal y x then
+          (* Evaluate the value: Variables in the model are actually functions
            with 0 args, so we create a function call *)
-             Model.eval m (FuncDecl.apply d []) true
-             |> Option.map (fun v ->
-                    (* Try to cast value to an integer *)
-                    try
-                      Expr.to_string v |> parse_num |> Int32.of_string
-                      |> Option.some
-                    with Failure _ -> None)
-             |> Option.join
-           else None)
+          Model.eval m (FuncDecl.apply d []) true
+          |> Option.map (fun v ->
+              (* Try to cast value to an integer *)
+              try
+                Expr.to_string v |> parse_num |> Int32.of_string |> Option.some
+              with Failure _ -> None)
+          |> Option.join
+        else None)
   in
   let solve (op : Z3.Optimize.optimize -> Expr.expr -> Z3.Optimize.handle) :
       Int32.t option =
@@ -186,15 +185,15 @@ let make_doms ?(timeout = 100) (fns : Variable.t list) (goal : Exp.bexp) :
     (Int32.t * Int32.t) Variable.Map.t =
   fns
   |> List.map (fun x ->
-         let r =
-           (* If there no value can be obtained, then let us
+      let r =
+        (* If there no value can be obtained, then let us
            that means that any value is possible, so let us
            pick the smallest set possible.
            *)
-           infer_dom ~timeout x goal
-           |> Option.value ~default:(Int32.zero, Int32.one)
-         in
-         (x, r))
+        infer_dom ~timeout x goal
+        |> Option.value ~default:(Int32.zero, Int32.one)
+      in
+      (x, r))
   |> Variable.Map.of_list
 
 let make_sample_var (doms : (Int32.t * Int32.t) Variable.Map.t) (x : Variable.t)

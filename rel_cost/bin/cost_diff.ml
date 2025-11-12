@@ -82,7 +82,7 @@ module Solver = struct
        if app.show_code then print_endline s;
        Ok s)
     |> Result.map (fun c ->
-           { amount = c; analysis_duration = Unix.gettimeofday () -. start })
+        { amount = c; analysis_duration = Unix.gettimeofday () -. start })
     |> Result.map_error Errors.to_string
 
   let get_ra (a : t) (k : kernel) : (Ra.Stmt.t, string) Result.t =
@@ -121,13 +121,13 @@ module Solver = struct
             List.map (Protocols.Kernel.filter_access retain_acc)
           else fun x -> x)
       |> List.map (fun k ->
-             if s.metric = CountAccesses then k
-             else
-               let vs : Variable.Set.t =
-                 let open Protocols.Kernel in
-                 Metric.supported_arrays k.arrays s.metric
-               in
-               Protocols.Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
+          if s.metric = CountAccesses then k
+          else
+            let vs : Variable.Set.t =
+              let open Protocols.Kernel in
+              Metric.supported_arrays k.arrays s.metric
+            in
+            Protocols.Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
       |> List.map
            (Protocols.Kernel.inline_all ~block_dim:(Some s.block_dim)
               ~grid_dim:(Some s.grid_dim) ~globals:s.params)

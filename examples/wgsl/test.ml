@@ -74,41 +74,37 @@ let () =
   print_endline "Checking examples for DRF:";
   tests
   |> List.iter (fun (filename, args, expected_status) ->
-         let str_args =
-           if args = [] then "" else String.concat " " args ^ " "
-         in
-         let bullet =
-           match expected_status with
-           | 0 -> "DRF:   "
-           | 1 -> "RACY:  "
-           | 2 -> "PARSE: "
-           | _ -> "?:     "
-         in
-         print_string (bullet ^ "faial-drf " ^ str_args ^ filename);
-         Stdlib.flush_all ();
-         let given = faial_drf ~args (v filename) |> Subprocess.run_split in
-         (if given.status = Unix.WEXITED expected_status then print_endline " ✔"
-          else
-            let exit_code =
-              Subprocess.exit_code given.status |> string_of_int
-            in
-            print_endline " ✘";
-            print_endline
-              "------------------------ OUTPUT ------------------------";
-            print_endline given.stdout;
-            print_endline given.stderr;
-            print_endline
-              ("ERROR: Expected return code "
-              ^ string_of_int expected_status
-              ^ " but got " ^ exit_code);
-            exit 1);
-         Stdlib.flush_all ());
+      let str_args = if args = [] then "" else String.concat " " args ^ " " in
+      let bullet =
+        match expected_status with
+        | 0 -> "DRF:   "
+        | 1 -> "RACY:  "
+        | 2 -> "PARSE: "
+        | _ -> "?:     "
+      in
+      print_string (bullet ^ "faial-drf " ^ str_args ^ filename);
+      Stdlib.flush_all ();
+      let given = faial_drf ~args (v filename) |> Subprocess.run_split in
+      (if given.status = Unix.WEXITED expected_status then print_endline " ✔"
+       else
+         let exit_code = Subprocess.exit_code given.status |> string_of_int in
+         print_endline " ✘";
+         print_endline
+           "------------------------ OUTPUT ------------------------";
+         print_endline given.stdout;
+         print_endline given.stderr;
+         print_endline
+           ("ERROR: Expected return code "
+           ^ string_of_int expected_status
+           ^ " but got " ^ exit_code);
+         exit 1);
+      Stdlib.flush_all ());
   unsupported
   |> List.iter (fun f ->
-         if not (Files.exists f) then (
-           print_endline ("Missing unsupported file: " ^ Fpath.to_string f);
-           exit 1)
-         else print_endline ("TODO:  " ^ Fpath.to_string f));
+      if not (Files.exists f) then (
+        print_endline ("Missing unsupported file: " ^ Fpath.to_string f);
+        exit 1)
+      else print_endline ("TODO:  " ^ Fpath.to_string f));
   let missed = missed_files (v ".") in
   if not (Fpath.Set.is_empty missed) then (
     let missed =

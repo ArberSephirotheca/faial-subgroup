@@ -80,31 +80,28 @@ let test_tactic_fail () : unit =
   let tautology = Bool true in
   [ true; false ]
   |> List.iter (fun debug ->
-         let result = IntGen.solve_with_tactic ~debug Tactic.Fail tautology in
-         match result with
-         | Error _ -> () (* Expected - tactic should fail *)
-         | Ok e ->
-             Printf.sprintf "debug=%b, unexpected: %s" debug
-               (Solver.to_string e)
-             |> Alcotest.fail)
+      let result = IntGen.solve_with_tactic ~debug Tactic.Fail tautology in
+      match result with
+      | Error _ -> () (* Expected - tactic should fail *)
+      | Ok e ->
+          Printf.sprintf "debug=%b, unexpected: %s" debug (Solver.to_string e)
+          |> Alcotest.fail)
 
 let test_tactic_skip () : unit =
   (* Test Skip tactic in production mode - should solve tautology *)
   let tautology = Bool true in
   [ true; false ]
   |> List.iter (fun debug ->
-         let result = IntGen.solve_with_tactic ~debug Tactic.Skip tautology in
-         match result with
-         | Ok (Solver.Sat _) ->
-             ()
-             (* Expected - skip should leave goal unchanged, tautology should be sat *)
-         | Ok e ->
-             Printf.sprintf "debug=%b, unexpected: %s" debug
-               (Solver.to_string e)
-             |> Alcotest.fail
-         | Error msg ->
-             Printf.sprintf "debug=%b, solver error: %s" debug msg
-             |> Alcotest.fail)
+      let result = IntGen.solve_with_tactic ~debug Tactic.Skip tautology in
+      match result with
+      | Ok (Solver.Sat _) ->
+          ()
+          (* Expected - skip should leave goal unchanged, tautology should be sat *)
+      | Ok e ->
+          Printf.sprintf "debug=%b, unexpected: %s" debug (Solver.to_string e)
+          |> Alcotest.fail
+      | Error msg ->
+          Printf.sprintf "debug=%b, solver error: %s" debug msg |> Alcotest.fail)
 
 let tests : unit Alcotest.test_case list =
   [

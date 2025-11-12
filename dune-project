@@ -21,7 +21,7 @@
   (depends
     ; Runtime dependencies
     (ocaml (= 5.3.0))
-    (cmdliner (= 1.3.0))
+    (cmdliner (= 2.0.0))
     (ANSITerminal (= 0.8.5))
     (otoml (= 1.0.5))
     (yojson (= 2.2.2))

@@ -106,8 +106,8 @@ let inline_kernels (kernels : StringSet.t) (s : t) : t =
   let to_inline : StringSet.t =
     s.targets
     |> StringMap.filter (fun _ x ->
-           (* any kernel that depends on a leaf *)
-           not (StringSet.is_empty (StringSet.inter leaf_set x)))
+        (* any kernel that depends on a leaf *)
+        not (StringSet.is_empty (StringSet.inter leaf_set x)))
     |> key_set
   in
   {

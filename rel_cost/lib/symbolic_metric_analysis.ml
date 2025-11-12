@@ -53,12 +53,10 @@ module Proj = struct
     in
     loop (count - 1) []
 
-  let b_split (count : int) (locals : Variable.Set.t) (e : bexp) : bexp list
-      =
+  let b_split (count : int) (locals : Variable.Set.t) (e : bexp) : bexp list =
     e |> proj_b |> split count locals
 
-  let n_split (count : int) (locals : Variable.Set.t) (e : nexp) : nexp list
-      =
+  let n_split (count : int) (locals : Variable.Set.t) (e : nexp) : nexp list =
     e |> proj_n |> split count locals
 end
 
@@ -217,7 +215,7 @@ module Constraints = struct
               let constraints =
                 if Config.tid_y_is_warp_divergent cfg then
                   let tid_y = proj ~suffix Variable.tid_y in
-                  let tid_y_val = (uid / cfg.block_dim.x) mod cfg.block_dim.y in
+                  let tid_y_val = uid / cfg.block_dim.x mod cfg.block_dim.y in
                   n_eq (Var tid_y) (Num tid_y_val) :: constraints
                 else constraints
               in
@@ -236,58 +234,54 @@ module Constraints = struct
 
         b_and_ex thread_constraints
       else
-      (* Hoisted: determine which coordinates need constraints *)
-      let tid_generators =
-        [
-          ( Variable.tid_x,
-            fun thread_id ->
-                if Config.tid_x_is_last_warp_divergent cfg then
-                  thread_id
+        (* Hoisted: determine which coordinates need constraints *)
+        let tid_generators =
+          [
+            ( Variable.tid_x,
+              fun thread_id ->
+                if Config.tid_x_is_last_warp_divergent cfg then thread_id
+                else n_mod thread_id (Num cfg.block_dim.x) );
+            ( Variable.tid_y,
+              fun thread_id ->
+                if Config.tid_y_is_last_warp_divergent cfg then
+                  n_div thread_id (Num cfg.block_dim.x)
                 else
-                  n_mod thread_id (Num cfg.block_dim.x)
-               );
-          ( Variable.tid_y,
-            fun thread_id ->
-              if Config.tid_y_is_last_warp_divergent cfg then
-                n_div thread_id (Num cfg.block_dim.x)
-              else
-                n_mod
-                  (n_div thread_id (Num cfg.block_dim.x))
-                  (Num cfg.block_dim.y)
-          );
-          ( Variable.tid_z,
-            fun thread_id ->
-              n_div thread_id (Num (cfg.block_dim.x * cfg.block_dim.y)) );
-        ]
-        |> List.filter (fun (var, _) -> Config.is_warp_divergent var cfg)
-      in
+                  n_mod
+                    (n_div thread_id (Num cfg.block_dim.x))
+                    (Num cfg.block_dim.y) );
+            ( Variable.tid_z,
+              fun thread_id ->
+                n_div thread_id (Num (cfg.block_dim.x * cfg.block_dim.y)) );
+          ]
+          |> List.filter (fun (var, _) -> Config.is_warp_divergent var cfg)
+        in
 
-      (* Generate constraints for each thread *)
-      let thread_constraints =
-        List.init cfg.threads_per_warp (fun uid ->
-            let suffix = string_of_int uid in
-            (* Thread id within a block *)
-            let tid_expr =
-              n_plus
-                (n_mult (Var warp_id_var) (Num cfg.threads_per_warp))
-                (Num uid)
-            in
+        (* Generate constraints for each thread *)
+        let thread_constraints =
+          List.init cfg.threads_per_warp (fun uid ->
+              let suffix = string_of_int uid in
+              (* Thread id within a block *)
+              let tid_expr =
+                n_plus
+                  (n_mult (Var warp_id_var) (Num cfg.threads_per_warp))
+                  (Num uid)
+              in
 
-            tid_generators
-            |> List.map (fun (tid_var, make_expr) ->
-                   (* tid for a certain suffix *)
-                   let tid_var = proj ~suffix tid_var in
-                   n_eq (Var tid_var) (make_expr tid_expr))
-            |> b_and_ex)
-      in
+              tid_generators
+              |> List.map (fun (tid_var, make_expr) ->
+                  (* tid for a certain suffix *)
+                  let tid_var = proj ~suffix tid_var in
+                  n_eq (Var tid_var) (make_expr tid_expr))
+              |> b_and_ex)
+        in
 
-      (* Add warp_id bounds constraint: 0 <= warp_id < total_warps *)
-      let warp_bounds =
-        clamp ~lower:(Num 0) ~value:(Var warp_id_var)
-          ~upper:(Num (Config.total_warps cfg))
-      in
+        (* Add warp_id bounds constraint: 0 <= warp_id < total_warps *)
+        let warp_bounds =
+          clamp ~lower:(Num 0) ~value:(Var warp_id_var)
+            ~upper:(Num (Config.total_warps cfg))
+        in
 
-      b_and_ex (warp_bounds :: thread_constraints)
+        b_and_ex (warp_bounds :: thread_constraints)
   end
 
   let distinct (cfg : Config.t) : t -> bexp = function
@@ -297,34 +291,29 @@ end
 
 open State.Syntax
 
-
-let var (i:int) (x:Variable.t) : Variable.t =
+let var (i : int) (x : Variable.t) : Variable.t =
   proj ~suffix:(string_of_int i) x
 
 module Vectorizer = struct
-
   type 'a t = Vector of 'a list | Scalar of 'a
 
-  let of_bexp (count:int) (locals:Variable.Set.t) (e: Exp.bexp) : Exp.bexp t =
-    if b_intersects locals e then
-      Vector (Proj.b_split count locals e)
-    else
-      Scalar e
+  let of_bexp (count : int) (locals : Variable.Set.t) (e : Exp.bexp) :
+      Exp.bexp t =
+    if b_intersects locals e then Vector (Proj.b_split count locals e)
+    else Scalar e
 
-  let of_nexp (count:int) (locals:Variable.Set.t) (e: Exp.nexp) : Exp.nexp t =
-    if n_intersects locals e then
-      Vector (Proj.n_split count locals e)
-    else
-      Scalar e
+  let of_nexp (count : int) (locals : Variable.Set.t) (e : Exp.nexp) :
+      Exp.nexp t =
+    if n_intersects locals e then Vector (Proj.n_split count locals e)
+    else Scalar e
 
-  let b_split (count:int) (locals:Variable.Set.t) (e: bexp) : bexp t =
+  let b_split (count : int) (locals : Variable.Set.t) (e : bexp) : bexp t =
     Vector (Proj.b_split count locals e)
 
-  let n_split (count:int) (locals:Variable.Set.t) (e: nexp) : nexp t =
+  let n_split (count : int) (locals : Variable.Set.t) (e : nexp) : nexp t =
     Vector (Proj.n_split count locals e)
 
-  let to_list (count: int) : 'a t -> 'a list =
-    function
+  let to_list (count : int) : 'a t -> 'a list = function
     | Scalar s -> List.init count (fun _ -> s)
     | Vector l -> l
 
@@ -334,29 +323,27 @@ module Vectorizer = struct
     | Vector l -> Exp.b_and_ex l
 
   (* Vectorize a boolean expression: e -> e$1 && e$2 && .. *)
-  let vectorize (count:int) (locals:Variable.Set.t) (e: bexp) : bexp =
+  let vectorize (count : int) (locals : Variable.Set.t) (e : bexp) : bexp =
     of_bexp count locals e |> to_bexp
 
-  let rec b_and (e1: bexp t) (e2: bexp t) : bexp t =
-    match e1, e2 with
+  let rec b_and (e1 : bexp t) (e2 : bexp t) : bexp t =
+    match (e1, e2) with
     | Vector e1, Vector e2 ->
-      if List.length e1 <> List.length e2 then
-      raise (failwith ("unexpected different lengths"));
-      Vector (Common.zip e1 e2 |> List.map (fun (e1, e2) -> Exp.b_and e1 e2))
-    | Scalar e1, Scalar e2 ->
-      Scalar (Exp.b_and e1 e2)
-    | Scalar e1, Vector e2  ->
-      let n = List.length e2 in
-      b_and (Vector (List.init n (fun _ -> e1))) (Vector e2)
+        if List.length e1 <> List.length e2 then
+          raise (failwith "unexpected different lengths");
+        Vector (Common.zip e1 e2 |> List.map (fun (e1, e2) -> Exp.b_and e1 e2))
+    | Scalar e1, Scalar e2 -> Scalar (Exp.b_and e1 e2)
+    | Scalar e1, Vector e2 ->
+        let n = List.length e2 in
+        b_and (Vector (List.init n (fun _ -> e1))) (Vector e2)
     | Vector e1, Scalar e2 ->
-      let n = List.length e1 in
-      b_and (Vector e1) (Vector (List.init n (fun _ -> e2)))
+        let n = List.length e1 in
+        b_and (Vector e1) (Vector (List.init n (fun _ -> e2)))
 
-  let to_string (f: 'a -> string) : 'a t -> string = function
+  let to_string (f : 'a -> string) : 'a t -> string = function
     | Scalar x -> Printf.sprintf "Scalar[%s]" (f x)
     | Vector xs ->
-        Printf.sprintf "Vector[%s]"
-          (xs |> List.map f |> String.concat ", ")
+        Printf.sprintf "Vector[%s]" (xs |> List.map f |> String.concat ", ")
 end
 
 type t = {
@@ -370,22 +357,21 @@ type t = {
 
 type 'a state = (t, 'a) State.t
 
-let of_bexp (b: bexp) (st: t) : bexp Vectorizer.t =
+let of_bexp (b : bexp) (st : t) : bexp Vectorizer.t =
   Vectorizer.of_bexp st.config.threads_per_warp st.locals b
 
-let add_assumption (b : bexp Vectorizer.t) (st: t) : t =
+let add_assumption (b : bexp Vectorizer.t) (st : t) : t =
   let b = Vectorizer.to_bexp b in
   { st with assumptions = Exp.b_and st.assumptions b }
 
 let extract_assumptions (b : Exp.bexp) : bexp state =
   State.update_return (fun (st : t) ->
-    let with_locals, with_globals =
-      b |> Exp.b_and_split |> List.partition (b_intersects st.locals)
-    in
-    let with_locals = Exp.b_and_ex with_locals in
-    let with_globals = Exp.b_and_ex with_globals in
-    (add_assumption (Scalar with_globals) st, with_locals)
-  )
+      let with_locals, with_globals =
+        b |> Exp.b_and_split |> List.partition (b_intersects st.locals)
+      in
+      let with_locals = Exp.b_and_ex with_locals in
+      let with_globals = Exp.b_and_ex with_globals in
+      (add_assumption (Scalar with_globals) st, with_locals))
 
 let add_active_threads_vec (e : bexp Vectorizer.t) (st : t) : t =
   { st with active_threads = Vectorizer.b_and e st.active_threads }
@@ -395,7 +381,7 @@ let add_active_threads (active_threads : bexp) (st : t) : t =
   add_active_threads_vec (of_bexp active_threads st) st
 
 (* e -> [e$0; e$1; ...] *)
-let n_split (e : nexp) (st:t) : nexp list =
+let n_split (e : nexp) (st : t) : nexp list =
   Proj.n_split st.config.threads_per_warp st.locals e
 
 let to_string (st : t) : string =
@@ -429,33 +415,34 @@ let add_architecture_constraints (st : t) : t =
     (Variable.bid_y, gdim.y);
     (Variable.bid_z, gdim.z);
   ]
-  |> List.fold_left (fun st (x, dim) : t ->
-      if Variable.Set.mem x st.locals || Variable.Set.mem x st.globals then (
-        let unif_warps, rem_threads = Config.divide_total_threads_per_warp st.config in
-        let e = b_and (n_le (Num 0) (Var x)) (n_lt (Var x) (Num dim)) in
-        if rem_threads > 0 && unif_warps = 0 then
-          let e = of_bexp e st in
-          add_active_threads_vec e st
-        else if rem_threads = 0 && unif_warps > 0 then
-          let e = of_bexp e st in
-          add_assumption e st
-        else
-          let st =
-            if rem_threads > 0 then (
-              let e = of_bexp (b_impl (n_eq warp_id (Num unif_warps)) e) st in
-              add_active_threads_vec e st
-              (* only assumptions *)
-            ) else
-              st
-          in
-          if unif_warps > 0 then
-            let e = of_bexp (b_impl (n_lt warp_id (Num unif_warps)) e) st in
-            add_assumption e st
-          else
-            st
-      ) else st
-    )
-    st
+  |> List.fold_left
+       (fun st (x, dim) : t ->
+         if Variable.Set.mem x st.locals || Variable.Set.mem x st.globals then
+           let unif_warps, rem_threads =
+             Config.divide_total_threads_per_warp st.config
+           in
+           let e = b_and (n_le (Num 0) (Var x)) (n_lt (Var x) (Num dim)) in
+           if rem_threads > 0 && unif_warps = 0 then
+             let e = of_bexp e st in
+             add_active_threads_vec e st
+           else if rem_threads = 0 && unif_warps > 0 then
+             let e = of_bexp e st in
+             add_assumption e st
+           else
+             let st =
+               if rem_threads > 0 then
+                 let e =
+                   of_bexp (b_impl (n_eq warp_id (Num unif_warps)) e) st
+                 in
+                 add_active_threads_vec e st (* only assumptions *)
+               else st
+             in
+             if unif_warps > 0 then
+               let e = of_bexp (b_impl (n_lt warp_id (Num unif_warps)) e) st in
+               add_assumption e st
+             else st
+         else st)
+       st
 
 (*
   TODO: This function doesn't yet use st.locals or st.globals. The distinct
@@ -468,15 +455,24 @@ let distinct_constraints (st : t) : bexp Vectorizer.t =
 
 let make (generator : Constraints.t) (config : Config.t)
     (locals : Variable.Set.t) (globals : Variable.Set.t) : t =
-  let locals = Variable.Set.union locals (Config.warp_divergent_tid_set config) in
-  let total_threads = Config.total_threads_per_block config in
-  let config = { config with threads_per_warp = min config.threads_per_warp total_threads } in
-  let st : t =
-    { assumptions = b_true; active_threads = Scalar b_true; locals; globals; generator; config }
+  let locals =
+    Variable.Set.union locals (Config.warp_divergent_tid_set config)
   in
-  st
-  |> add_architecture_constraints
-  |> add_assumption (distinct_constraints st)
+  let total_threads = Config.total_threads_per_block config in
+  let config =
+    { config with threads_per_warp = min config.threads_per_warp total_threads }
+  in
+  let st : t =
+    {
+      assumptions = b_true;
+      active_threads = Scalar b_true;
+      locals;
+      globals;
+      generator;
+      config;
+    }
+  in
+  st |> add_architecture_constraints |> add_assumption (distinct_constraints st)
 
 let print_optimize (pre : bexp) (formula : nexp) : unit =
   let pre =
@@ -504,8 +500,8 @@ let optimize ?(verbose = false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
   in
   if verbose then print_optimize pre formula;
   try solve formula
-    with Protocols.Gen_z3.Preprocessing_error _ ->
-      solve (Predicates.n_inline formula)
+  with Protocols.Gen_z3.Preprocessing_error _ ->
+    solve (Predicates.n_inline formula)
 
 let print_prove (pre : bexp) (formula : bexp) : unit =
   let pre =
@@ -519,8 +515,8 @@ let print_prove (pre : bexp) (formula : bexp) : unit =
   prerr_endline (Printf.sprintf "prove {\n  pre: %s\n  goal: %s\n}" pre formula)
 
 let prove ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(debug = true)
-    ?(verbose = false) ?(tactic : Gen_z3.Tactic.t option = None) (goal : bexp) (st : t):
-    (Gen_z3.Solver.t, string) Result.t =
+    ?(verbose = false) ?(tactic : Gen_z3.Tactic.t option = None) (goal : bexp)
+    (st : t) : (Gen_z3.Solver.t, string) Result.t =
   let module S = (val solver) in
   let pre = st.assumptions in
   let goal = b_and pre (b_not goal) in
@@ -532,17 +528,16 @@ let prove ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(debug = true)
 (* Calculates the cost of a metric analysis *)
 let cost_of (metric : nexp -> t -> nexp) (index : nexp) : nexp state =
   State.update_return (fun st ->
-    (* Add non-negative index constraint *)
-    let n_ge_index_0 = of_bexp (n_ge index (Num 0)) st in
-    let st = add_assumption n_ge_index_0 st in
-    (st, metric index st)
-  )
+      (* Add non-negative index constraint *)
+      let n_ge_index_0 = of_bexp (n_ge index (Num 0)) st in
+      let st = add_assumption n_ge_index_0 st in
+      (st, metric index st))
 
 let to_int : bexp -> nexp = function
   | Bool b -> Num (if b then 1 else 0)
   | e -> CastInt e
 
-let encode_count_active_threads (_index : nexp) (st:t) : nexp =
+let encode_count_active_threads (_index : nexp) (st : t) : nexp =
   st.active_threads
   (* count how many threads are active *)
   |> Vectorizer.to_list st.config.threads_per_warp
@@ -559,8 +554,7 @@ let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
     int option =
   (* Compute free names from active_threads and index *)
   let fns =
-    Exp.b_free_names active_threads Variable.Set.empty
-    |> Exp.n_free_names index
+    Exp.b_free_names active_threads Variable.Set.empty |> Exp.n_free_names index
   in
   (* Compute globals as: free_names - locals *)
   let globals = Variable.Set.diff fns locals in
@@ -574,19 +568,20 @@ let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
 
 let count_active_threads = optimize_metric encode_count_active_threads
 
-let encode_ua (index : nexp) (st:t) : nexp =
+let encode_ua (index : nexp) (st : t) : nexp =
   let index = n_div index (Num (Config.memory_segments_bits st.config)) in
   let index = n_split index st in
-  let active_threads = st.active_threads |> Vectorizer.to_list st.config.threads_per_warp in
+  let active_threads =
+    st.active_threads |> Vectorizer.to_list st.config.threads_per_warp
+  in
   Common.zip active_threads index
   (* for each replicated index *)
   |> List.fold_left
-        (fun ((accum, visited) : nexp * (bexp * nexp) list) (p : bexp * nexp)
-          ->
-          (* cond_dissimilar p visited + accum *)
-          (n_plus (to_int (cond_dissimilar p visited)) accum, p :: visited))
-        (* total cost = 0, visited = [] *)
-        (Num 0, [])
+       (fun ((accum, visited) : nexp * (bexp * nexp) list) (p : bexp * nexp) ->
+         (* cond_dissimilar p visited + accum *)
+         (n_plus (to_int (cond_dissimilar p visited)) accum, p :: visited))
+       (* total cost = 0, visited = [] *)
+       (Num 0, [])
   (* take only the accumulated value *)
   |> fst
 
@@ -712,30 +707,32 @@ module Theorem = struct
       make generator thm.cfg thm.locals thm.globals
       (* set active threads *)
       |> add_active_threads thm.active_threads
-      |> (fun st ->
-        add_assumption (of_bexp thm.assumptions st) st
-      )
+      |> fun st -> add_assumption (of_bexp thm.assumptions st) st
     in
     thm.goals
     |> List.map (fun g ->
-           State.run st
-             (match g with
-             | Goal.Optimize { strategy; expr } ->
-                 let* expr = n_inline_cost expr in
-                 let* st = State.get in
-                 let r = optimize ~verbose ~strategy ~solver expr st in
-                 return (r |> Result.map TheoremResult.optimization)
-             | Prop g ->
-                 let* g = b_inline_cost g in
-                 let* st = State.get in
-                 let r = prove ~solver ~debug ~verbose ~tactic g st in
-                 return (r |> Result.map TheoremResult.of_solver))
-           |> snd)
-
+        State.run st
+          (match g with
+          | Goal.Optimize { strategy; expr } ->
+              let* expr = n_inline_cost expr in
+              let* st = State.get in
+              let r = optimize ~verbose ~strategy ~solver expr st in
+              return (r |> Result.map TheoremResult.optimization)
+          | Prop g ->
+              let* g = b_inline_cost g in
+              let* st = State.get in
+              let r = prove ~solver ~debug ~verbose ~tactic g st in
+              return (r |> Result.map TheoremResult.of_solver))
+        |> snd)
 
   let to_string (thm : t) : string =
     Printf.sprintf
-      "config: %s\nlocals: [%s]\nglobals: [%s]\nactive_threads: %s;\nassumptions: %s;\n⊢ %s"
+      "config: %s\n\
+       locals: [%s]\n\
+       globals: [%s]\n\
+       active_threads: %s;\n\
+       assumptions: %s;\n\
+       ⊢ %s"
       (Config.to_string thm.cfg)
       (Variable.set_to_string thm.locals)
       (Variable.set_to_string thm.globals)
@@ -746,5 +743,4 @@ module Theorem = struct
   let b_to_string ?(indent = "    ") (e : Exp.bexp) : string =
     e |> Exp.b_and_split |> List.map Exp.b_to_string
     |> String.concat ("\n" ^ indent ^ "&& ")
-
 end

@@ -17,7 +17,8 @@ let var_ (name : string) : nexp = Var (Variable.from_name name)
 
 (* Helper functions for count_active_threads tests *)
 let test_encode_count_active_threads (name : string) (threads_per_warp : int)
-    (locals : Variable.Set.t) (globals : Variable.Set.t) (cond : bexp) (expected : nexp) =
+    (locals : Variable.Set.t) (globals : Variable.Set.t) (cond : bexp)
+    (expected : nexp) =
   ( name,
     `Quick,
     fun () ->
@@ -106,7 +107,8 @@ let assert_replicate ~(expected : (bexp * nexp) list) ~(threads_per_warp : int)
 
 (* Utility function that wraps encode_ua and provides better error messages *)
 let assert_encode_ua ~(expected : nexp) ~(threads_per_warp : int)
-    ~(locals : Variable.Set.t) ~(globals : Variable.Set.t) ~(cond : bexp) ~(index : nexp) : unit =
+    ~(locals : Variable.Set.t) ~(globals : Variable.Set.t) ~(cond : bexp)
+    ~(index : nexp) : unit =
   let cfg = make_config threads_per_warp in
   (* Create minimal state directly without constraint processing *)
   let st : t =
@@ -156,8 +158,7 @@ let encode_count_active_threads_tests =
       Variable.Set.empty Variable.Set.empty b_false (Num 0);
     test_encode_count_active_threads "with local variable x" 2
       (Variable.Set.singleton (Variable.from_name "x"))
-      Variable.Set.empty
-      b_true (Num 2);
+      Variable.Set.empty b_true (Num 2);
     test_encode_count_active_threads "even threadIdx.x condition" 2
       (Variable.Set.singleton Variable.tid_x)
       Variable.Set.empty
@@ -279,69 +280,69 @@ let test_warp_constraints_enforces_bounds_and_uniqueness () : unit =
   (* Test that warp_constraints prevents threads from having same coordinates within bounds *)
   Constraints.values
   |> List.iter (fun gen ->
-         let cfg = make_config 2 in
-         let locals = Variable.Set.singleton Variable.tid_x in
-         let globals = Variable.Set.empty in
-         let c = (make gen cfg locals globals).assumptions in
-         (* Is it possible for 2 tids to be equal? *)
-         let contradiction =
-           b_and c (n_eq (var_ "threadIdx.x$0") (var_ "threadIdx.x$1"))
-         in
-         let open Gen_z3.IntGen in
-         let result = solve contradiction in
-         let test_msg =
-           Printf.sprintf
-             "warp_constraints should make threadIdx.x$0 = threadIdx.x$1 \
-              unsatisfiable when considering block bounds (%s)"
-             (Constraints.to_string gen)
-         in
-         match result with
-         | Ok solver_result ->
-             Alcotest.check solver_result_testable test_msg Gen_z3.Solver.Unsat
-               solver_result
-         | Error msg -> Alcotest.failf "Solver error: %s" msg)
+      let cfg = make_config 2 in
+      let locals = Variable.Set.singleton Variable.tid_x in
+      let globals = Variable.Set.empty in
+      let c = (make gen cfg locals globals).assumptions in
+      (* Is it possible for 2 tids to be equal? *)
+      let contradiction =
+        b_and c (n_eq (var_ "threadIdx.x$0") (var_ "threadIdx.x$1"))
+      in
+      let open Gen_z3.IntGen in
+      let result = solve contradiction in
+      let test_msg =
+        Printf.sprintf
+          "warp_constraints should make threadIdx.x$0 = threadIdx.x$1 \
+           unsatisfiable when considering block bounds (%s)"
+          (Constraints.to_string gen)
+      in
+      match result with
+      | Ok solver_result ->
+          Alcotest.check solver_result_testable test_msg Gen_z3.Solver.Unsat
+            solver_result
+      | Error msg -> Alcotest.failf "Solver error: %s" msg)
 
 let test_cross_warp_unsoundness_test () : unit =
   (* Test to expose unsoundness: threads from different warps should not be allowed *)
   Constraints.values
   |> List.iter (fun gen ->
-         let cfg =
-           Config.make ~threads_per_warp:32
-             ~block_dim:(Dim3.make ~x:64 ()) (* 2 warps: 0-31 and 32-63 *)
-             ~grid_dim:(Dim3.make ~x:1 ()) ()
-         in
-         let locals = Variable.Set.singleton Variable.tid_x in
-         let globals = Variable.Set.empty in
-         let c = (make gen cfg locals globals).assumptions in
-         (* Try to assign threads from different warps *)
-         let cross_warp =
-           b_and_ex
-             [
-               c;
-               n_eq (var_ "threadIdx.x$0") (Num 0);
-               (* thread 0 = warp 0 *)
-               n_eq (var_ "threadIdx.x$1") (Num 32);
-               (* thread 32 = warp 1 *)
-               n_eq (var_ "threadIdx.y$0") (Num 0);
-               n_eq (var_ "threadIdx.y$1") (Num 0);
-               n_eq (var_ "threadIdx.z$0") (Num 0);
-               n_eq (var_ "threadIdx.z$1") (Num 0);
-             ]
-         in
-         let open Gen_z3.IntGen in
-         let result = solve cross_warp in
-         let test_msg =
-           Printf.sprintf
-             "EXPECTED TO FAIL: Current constraints allow threads from \
-              different warps (this exposes unsoundness) (%s)"
-             (Constraints.to_string gen)
-         in
-         (* This test SHOULD fail (return Sat) with current constraints, exposing the bug *)
-         match result with
-         | Ok solver_result ->
-             Alcotest.check solver_result_testable test_msg Gen_z3.Solver.Unsat
-               solver_result
-         | Error msg -> Alcotest.failf "Solver error: %s" msg)
+      let cfg =
+        Config.make ~threads_per_warp:32
+          ~block_dim:(Dim3.make ~x:64 ()) (* 2 warps: 0-31 and 32-63 *)
+          ~grid_dim:(Dim3.make ~x:1 ()) ()
+      in
+      let locals = Variable.Set.singleton Variable.tid_x in
+      let globals = Variable.Set.empty in
+      let c = (make gen cfg locals globals).assumptions in
+      (* Try to assign threads from different warps *)
+      let cross_warp =
+        b_and_ex
+          [
+            c;
+            n_eq (var_ "threadIdx.x$0") (Num 0);
+            (* thread 0 = warp 0 *)
+            n_eq (var_ "threadIdx.x$1") (Num 32);
+            (* thread 32 = warp 1 *)
+            n_eq (var_ "threadIdx.y$0") (Num 0);
+            n_eq (var_ "threadIdx.y$1") (Num 0);
+            n_eq (var_ "threadIdx.z$0") (Num 0);
+            n_eq (var_ "threadIdx.z$1") (Num 0);
+          ]
+      in
+      let open Gen_z3.IntGen in
+      let result = solve cross_warp in
+      let test_msg =
+        Printf.sprintf
+          "EXPECTED TO FAIL: Current constraints allow threads from different \
+           warps (this exposes unsoundness) (%s)"
+          (Constraints.to_string gen)
+      in
+      (* This test SHOULD fail (return Sat) with current constraints, exposing the bug *)
+      match result with
+      | Ok solver_result ->
+          Alcotest.check solver_result_testable test_msg Gen_z3.Solver.Unsat
+            solver_result
+      | Error msg -> Alcotest.failf "Solver error: %s" msg)
 
 let prove_thorem (msg : string) (thm : Theorem.t) =
   ( msg,
@@ -387,8 +388,7 @@ let test_count_active_threads_block_dim_16 =
   in
   (* Test theorem: count_active(0) == 16 when block_dim.x = 16, threads_per_warp = 32 *)
   let goal =
-    Goal.Prop
-      (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 16))
+    Goal.Prop (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 16))
   in
   prove_thorem "count_active(0) == 16 with block_dim.x=16"
     {
@@ -408,8 +408,7 @@ let test_count_active_threads_block_dim_16x16 =
   in
   (* Test theorem: count_active(0) == 32 when block_dim = {x:16, y:16}, threads_per_warp = 32 *)
   let goal =
-    Goal.Prop
-      (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 32))
+    Goal.Prop (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 32))
   in
   prove_thorem "count_active(0) == 32 with block_dim={x:16,y:16}"
     {
@@ -429,8 +428,7 @@ let test_count_active_threads_block_dim_32 =
   in
   (* Test theorem: count_active(0) == 32 when block_dim.x = 32, threads_per_warp = 32 *)
   let goal =
-    Goal.Prop
-      (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 32))
+    Goal.Prop (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 32))
   in
   prove_thorem "count_active(0) == 32 with block_dim.x=32"
     {
@@ -455,9 +453,11 @@ let test_count_active_threads_block_dim_40 =
   let goal =
     Goal.Prop
       (b_and
-         (b_impl (n_eq (Var warp_id) (Num 0))
+         (b_impl
+            (n_eq (Var warp_id) (Num 0))
             (n_eq (NCall ("count_active", Num 0)) (Num 32)))
-         (b_impl (n_eq (Var warp_id) (Num 1))
+         (b_impl
+            (n_eq (Var warp_id) (Num 1))
             (n_eq (NCall ("count_active", Num 0)) (Num 8))))
   in
   prove_thorem "count_active depends on warp_id with block_dim.x=40"
@@ -477,26 +477,24 @@ let test_make_vectorizes_runtime_assumptions () : unit =
   (* Test all constraint strategies *)
   Constraints.values
   |> List.iter (fun strategy ->
-         let distinct = Constraints.distinct cfg strategy in
+      let distinct = Constraints.distinct cfg strategy in
 
-         (* Check 1: distinct constraints should not have non-vectorized tid_x *)
-         if Exp.b_mem Variable.tid_x distinct then
-           Alcotest.failf
-             "Found non-vectorized Variable.tid_x in %s distinct constraints:\n\
-              %s"
-             (Constraints.to_string strategy)
-             (b_to_string distinct);
+      (* Check 1: distinct constraints should not have non-vectorized tid_x *)
+      if Exp.b_mem Variable.tid_x distinct then
+        Alcotest.failf
+          "Found non-vectorized Variable.tid_x in %s distinct constraints:\n%s"
+          (Constraints.to_string strategy)
+          (b_to_string distinct);
 
-         let globals = Variable.Set.empty in
-         let st = make strategy cfg locals globals in
+      let globals = Variable.Set.empty in
+      let st = make strategy cfg locals globals in
 
-         (* Check 2: tid_x should NOT appear in assumptions (should be vectorized to tid_x$0, tid_x$1) *)
-         if Exp.b_mem Variable.tid_x st.assumptions then
-           Alcotest.failf
-             "Found non-vectorized Variable.tid_x in %s runtime assumptions:\n\
-              %s"
-             (Constraints.to_string strategy)
-             (b_to_string st.assumptions))
+      (* Check 2: tid_x should NOT appear in assumptions (should be vectorized to tid_x$0, tid_x$1) *)
+      if Exp.b_mem Variable.tid_x st.assumptions then
+        Alcotest.failf
+          "Found non-vectorized Variable.tid_x in %s runtime assumptions:\n%s"
+          (Constraints.to_string strategy)
+          (b_to_string st.assumptions))
 
 let tests : unit Alcotest.test_case list =
   [

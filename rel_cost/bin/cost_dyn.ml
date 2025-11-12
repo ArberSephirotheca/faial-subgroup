@@ -52,7 +52,7 @@ module Env = struct
       let j = from_file ~fname fname in
       j |> Util.to_assoc
       |> List.filter_map (fun (k, v) ->
-             v |> Data.from_json |> Option.map (fun v -> (k, v)))
+          v |> Data.from_json |> Option.map (fun v -> (k, v)))
     with Yojson.Json_error e | Sys_error e ->
       prerr_endline ("Error parsing '" ^ fname ^ "': " ^ e);
       []

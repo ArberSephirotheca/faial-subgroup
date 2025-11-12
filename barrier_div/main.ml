@@ -11,20 +11,19 @@ module JUI = struct
       `List
         (kernels
         |> List.map (fun k ->
-               let is_unif = Barrier.Kernel.is_uniform k in
-               let divs =
-                 Barrier.Kernel.divergent k
-                 |> List.filter_map (fun loc ->
-                        loc
-                        |> Option.map (fun loc ->
-                               `String (Location.to_string loc)))
-               in
-               `Assoc
-                 [
-                   ("name", `String k.name);
-                   ("is_uniform", `Bool is_unif);
-                   ("divergent", `List divs);
-                 ]))
+            let is_unif = Barrier.Kernel.is_uniform k in
+            let divs =
+              Barrier.Kernel.divergent k
+              |> List.filter_map (fun loc ->
+                  loc
+                  |> Option.map (fun loc -> `String (Location.to_string loc)))
+            in
+            `Assoc
+              [
+                ("name", `String k.name);
+                ("is_uniform", `Bool is_unif);
+                ("divergent", `List divs);
+              ]))
     in
     `Assoc
       [
@@ -44,13 +43,12 @@ module TUI = struct
   let run (protocol_kernels : Protocols.Kernel.t list) : unit =
     protocol_kernels
     |> List.iter (fun k ->
-           let k = Barrier.Kernel.from_proto k in
-           let is_unif = Barrier.Kernel.is_uniform k in
-           print_endline (k.name ^ ": " ^ if is_unif then "true" else "false");
-           Barrier.Kernel.divergent k
-           |> List.iter (fun l ->
-                  l
-                  |> Option.iter (fun i -> Stage0.Tui_helper.LocationUI.print i)))
+        let k = Barrier.Kernel.from_proto k in
+        let is_unif = Barrier.Kernel.is_uniform k in
+        print_endline (k.name ^ ": " ^ if is_unif then "true" else "false");
+        Barrier.Kernel.divergent k
+        |> List.iter (fun l ->
+            l |> Option.iter (fun i -> Stage0.Tui_helper.LocationUI.print i)))
 end
 
 let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool) :

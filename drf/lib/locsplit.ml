@@ -41,20 +41,20 @@ module Kernel = struct
     Variable.Set.elements k.arrays
     |> Streamutil.from_list
     |> Streamutil.filter_map (fun x ->
-           (* For every location *)
-           match Unsync.filter_by_location x k.code with
-           | Some p ->
-               (* Filter out code that does not touch location x *)
-               Some
-                 {
-                   array_name = Variable.name x;
-                   name = k.name;
-                   ranges = k.ranges;
-                   local_variables = k.local_variables;
-                   global_variables = k.global_variables;
-                   code = p;
-                 }
-           | None -> None (* No locations being used, so ignore *))
+        (* For every location *)
+        match Unsync.filter_by_location x k.code with
+        | Some p ->
+            (* Filter out code that does not touch location x *)
+            Some
+              {
+                array_name = Variable.name x;
+                name = k.name;
+                ranges = k.ranges;
+                local_variables = k.local_variables;
+                global_variables = k.global_variables;
+                code = p;
+              }
+        | None -> None (* No locations being used, so ignore *))
 end
 (* ------------------------ THIRD STAGE OF TRANSLATION ---------------------- *)
 

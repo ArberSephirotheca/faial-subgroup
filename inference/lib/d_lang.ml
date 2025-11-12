@@ -554,9 +554,9 @@ module SignatureDB = struct
     let curr =
       db |> StringMap.bindings |> List.map snd
       |> List.concat_map (fun tys ->
-             tys |> StringMap.bindings |> List.map snd
-             |> List.map Signature.from_kernel
-             |> List.map Signature.to_string)
+          tys |> StringMap.bindings |> List.map snd
+          |> List.map Signature.from_kernel
+          |> List.map Signature.to_string)
       |> String.concat ", "
     in
     "[" ^ curr ^ "]"
@@ -564,15 +564,15 @@ module SignatureDB = struct
   let get ~kernel ~ty ~arg_count (db : t) : Kernel.t option =
     db |> StringMap.find_opt kernel
     |> Option.map (fun sigs ->
-           match StringMap.find_opt ty sigs with
-           | Some e -> Some e
-           | None ->
-               (* iterate over all kernels and try finding one with
+        match StringMap.find_opt ty sigs with
+        | Some e -> Some e
+        | None ->
+            (* iterate over all kernels and try finding one with
            the same number of parameters *)
-               sigs |> StringMap.bindings |> List.map snd
-               |> List.find_opt (fun k ->
-                      let open Kernel in
-                      List.length k.params = arg_count))
+            sigs |> StringMap.bindings |> List.map snd
+            |> List.find_opt (fun k ->
+                let open Kernel in
+                List.length k.params = arg_count))
     |> Option.join
 
   let lookup (e : Expr.t) (arg_count : int) (db : t) : Signature.t option =

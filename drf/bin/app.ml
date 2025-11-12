@@ -203,23 +203,23 @@ let only_kernel (a : t) (ks : Protocols.Kernel.t list) : Protocols.Kernel.t list
 let check_unreachable (a : t) : unit =
   a.kernels |> only_kernel a
   |> List.iter (fun kernel ->
-         let report =
-           kernel
-           |> translate Architecture.Block a
-           |> Symbexp.sanity_check Architecture.Block
-           |> show a.show_symbexp Symbexp.print_kernels
-           |> Streamutil.map (fun b ->
-                  (b, Solve_drf.solve ~timeout:a.timeout ~logic:a.logic b))
-           |> Streamutil.to_list
-         in
-         Stdlib.flush_all ();
-         report
-         |> List.iter (fun (p, s) ->
-                let open Z3.Solver in
-                match s with
-                | UNSATISFIABLE | UNKNOWN ->
-                    Symbexp.Proof.to_string p |> print_endline
-                | SATISFIABLE -> ()))
+      let report =
+        kernel
+        |> translate Architecture.Block a
+        |> Symbexp.sanity_check Architecture.Block
+        |> show a.show_symbexp Symbexp.print_kernels
+        |> Streamutil.map (fun b ->
+            (b, Solve_drf.solve ~timeout:a.timeout ~logic:a.logic b))
+        |> Streamutil.to_list
+      in
+      Stdlib.flush_all ();
+      report
+      |> List.iter (fun (p, s) ->
+          let open Z3.Solver in
+          match s with
+          | UNSATISFIABLE | UNKNOWN ->
+              Symbexp.Proof.to_string p |> print_endline
+          | SATISFIABLE -> ()))
 
 let run (a : t) : Analysis.t list =
   let check_kernel arch (kernel : Protocols.Kernel.t) : Analysis.t =
@@ -239,12 +239,12 @@ let run (a : t) : Analysis.t list =
   in
   a.kernels |> only_kernel a
   |> List.map (fun kernel ->
-         let rec check_until (archs : Architecture.t list) : Analysis.t =
-           match archs with
-           | [] -> Analysis.{ kernel; report = [] }
-           | [ arch ] -> check_kernel arch kernel
-           | arch :: archs ->
-               let a = check_kernel arch kernel in
-               if Analysis.is_safe a then check_until archs else a
-         in
-         check_until a.archs)
+      let rec check_until (archs : Architecture.t list) : Analysis.t =
+        match archs with
+        | [] -> Analysis.{ kernel; report = [] }
+        | [ arch ] -> check_kernel arch kernel
+        | arch :: archs ->
+            let a = check_kernel arch kernel in
+            if Analysis.is_safe a then check_until archs else a
+      in
+      check_until a.archs)

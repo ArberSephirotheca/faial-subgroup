@@ -58,11 +58,11 @@ module Make (L : Logger.Logger) = struct
       array_size Variable.Map.t =
     mem
     |> Variable.Map.filter_map (fun _ v ->
-           let open Memory in
-           let ty = String.concat " " v.data_type |> C_type.make in
-           match C_type.sizeof ty with
-           | Some n -> Some { byte_count = n; dim = v.size }
-           | None -> Some { byte_count = bytes_per_word; dim = v.size })
+        let open Memory in
+        let ty = String.concat " " v.data_type |> C_type.make in
+        match C_type.sizeof ty with
+        | Some n -> Some { byte_count = n; dim = v.size }
+        | None -> Some { byte_count = bytes_per_word; dim = v.size })
 
   (* Flatten n-dimensional array and apply word size *)
   let linearize (cfg : Config.t) (mem : Memory.t Variable.Map.t) :
@@ -71,12 +71,12 @@ module Make (L : Logger.Logger) = struct
     fun x l ->
       Variable.Map.find_opt x sizes
       |> Option.map (fun a ->
-             l
-             |> (if Variable.Map.find x mem |> Memory.is_shared then
-                   shared_multiplier ~bytes_per_word:cfg.bytes_per_word
-                     ~byte_count:a.byte_count
-                 else global_multiplier ~byte_count:a.byte_count)
-             |> flatten_multi_dim a.dim |> Constfold.n_opt)
+          l
+          |> (if Variable.Map.find x mem |> Memory.is_shared then
+                shared_multiplier ~bytes_per_word:cfg.bytes_per_word
+                  ~byte_count:a.byte_count
+              else global_multiplier ~byte_count:a.byte_count)
+          |> flatten_multi_dim a.dim |> Constfold.n_opt)
 end
 
 module Silent = Make (Logger.Silent)

@@ -25,8 +25,8 @@ module Phased = struct
             binding *)
           phase q
           |> Streamutil.map (fun bi ->
-                 (* For every phase in q, prefix it with variable in r *)
-                 add r bi)
+              (* For every phase in q, prefix it with variable in r *)
+              add r bi)
       | Seq (p, q) ->
           (* Rule:
           P |> p      Q |> q
@@ -69,11 +69,11 @@ module Kernel = struct
     in
     Phased.from_aligned k.pre k.code
     |> filter_map (fun b ->
-           (* Get locations of u_prog *)
-           let locations =
-             Unsync.write_locations b.Phased.code Variable.Set.empty
-           in
-           if Variable.Set.is_empty locations then None else Some (b, locations))
+        (* Get locations of u_prog *)
+        let locations =
+          Unsync.write_locations b.Phased.code Variable.Set.empty
+        in
+        if Variable.Set.is_empty locations then None else Some (b, locations))
     |> Streamutil.map p_to_k
 
   let to_s (k : t) : Indent.t list =

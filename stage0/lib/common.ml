@@ -56,12 +56,12 @@ let rec repeat (s : string) (n : int) : string =
 let rsplit (c : char) (s : string) : (string * string) option =
   String.rindex_opt s c
   |> Option.map (fun idx ->
-         (String.sub s 0 idx, String.sub s (idx + 1) (String.length s - idx - 1)))
+      (String.sub s 0 idx, String.sub s (idx + 1) (String.length s - idx - 1)))
 
 let split (c : char) (s : string) : (string * string) option =
   String.index_opt s c
   |> Option.map (fun idx ->
-         (String.sub s 0 idx, String.sub s (idx + 1) (String.length s - idx - 1)))
+      (String.sub s 0 idx, String.sub s (idx + 1) (String.length s - idx - 1)))
 
 let last (l : 'a list) : ('a list * 'a) option =
   match l with

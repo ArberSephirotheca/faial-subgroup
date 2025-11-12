@@ -49,34 +49,33 @@ module Variables = struct
     let open Expr.Visit in
     e
     |> map (function
-         | MemberExpr { base = Ident x; name = f; _ } ->
-             Ident (Decl_expr.update_name (fun n -> n ^ "." ^ f) x)
-         | e' -> e')
+      | MemberExpr { base = Ident x; name = f; _ } ->
+          Ident (Decl_expr.update_name (fun n -> n ^ "." ^ f) x)
+      | e' -> e')
 
   (* Returns all variables present in an expression *)
   let from_expr (e : Expr.t) : Variable.t Seq.t =
     let open Expr.Visit in
     e
     |> fold (function
-         | Ident v when v.kind = Var || v.kind = ParmVar -> Seq.return v.name
-         | CXXBoolLiteral _ | SizeOf _ | Recovery _ | CharacterLiteral _
-         | FloatingLiteral _ | IntegerLiteral _ | UnresolvedLookup _ | Ident _
-           ->
-             Seq.empty
-         | UnaryOperator { child = e; _ }
-         | Member { base = e; _ }
-         | CXXNew { arg = e; _ }
-         | CXXDelete { arg = e; _ } ->
-             e
-         | ArraySubscript { lhs = s1; rhs = s2; _ }
-         | BinaryOperator { lhs = s1; rhs = s2; _ } ->
-             Seq.append s1 s2
-         | ConditionalOperator e ->
-             e.cond |> Seq.append e.then_expr |> Seq.append e.else_expr
-         | CXXOperatorCall { func = a; args = l; _ }
-         | Call { func = a; args = l; _ } ->
-             List.to_seq l |> Seq.concat |> Seq.append a
-         | CXXConstruct l -> List.to_seq l.args |> Seq.concat)
+      | Ident v when v.kind = Var || v.kind = ParmVar -> Seq.return v.name
+      | CXXBoolLiteral _ | SizeOf _ | Recovery _ | CharacterLiteral _
+      | FloatingLiteral _ | IntegerLiteral _ | UnresolvedLookup _ | Ident _ ->
+          Seq.empty
+      | UnaryOperator { child = e; _ }
+      | Member { base = e; _ }
+      | CXXNew { arg = e; _ }
+      | CXXDelete { arg = e; _ } ->
+          e
+      | ArraySubscript { lhs = s1; rhs = s2; _ }
+      | BinaryOperator { lhs = s1; rhs = s2; _ } ->
+          Seq.append s1 s2
+      | ConditionalOperator e ->
+          e.cond |> Seq.append e.then_expr |> Seq.append e.else_expr
+      | CXXOperatorCall { func = a; args = l; _ }
+      | Call { func = a; args = l; _ } ->
+          List.to_seq l |> Seq.concat |> Seq.append a
+      | CXXConstruct l -> List.to_seq l.args |> Seq.concat)
 
   (* Given a sequence of c_var, generate a set of variables *)
   let to_set (s : Variable.t Seq.t) : VarSet.t =
@@ -104,20 +103,20 @@ module Declarations = struct
   let to_seq (s : Stmt.t) : Decl.t Seq.t =
     s
     |> Stmt.Visit.fold (function
-         | For { init = Some (ForInit.Decls l); body = s; _ } ->
-             List.to_seq l |> Seq.append s
-         | Decl l -> List.to_seq l
-         | Skip | Break | Goto | Return _ | Continue | SExpr _ -> Seq.empty
-         | Seq (s1, s2) | If { then_stmt = s1; else_stmt = s2; _ } ->
-             Seq.append s1 s2
-         | Do { body = s; _ }
-         | Switch { body = s; _ }
-         | While { body = s; _ }
-         | Default s
-         | Case { body = s; _ }
-         | For { init = Some (ForInit.Expr _); body = s; _ }
-         | For { init = None; body = s; _ } ->
-             s)
+      | For { init = Some (ForInit.Decls l); body = s; _ } ->
+          List.to_seq l |> Seq.append s
+      | Decl l -> List.to_seq l
+      | Skip | Break | Goto | Return _ | Continue | SExpr _ -> Seq.empty
+      | Seq (s1, s2) | If { then_stmt = s1; else_stmt = s2; _ } ->
+          Seq.append s1 s2
+      | Do { body = s; _ }
+      | Switch { body = s; _ }
+      | While { body = s; _ }
+      | Default s
+      | Case { body = s; _ }
+      | For { init = Some (ForInit.Expr _); body = s; _ }
+      | For { init = None; body = s; _ } ->
+          s)
 
   let shared_arrays (s : Stmt.t) : VarSet.t =
     to_seq s |> Seq.filter Decl.is_shared |> Seq.map Decl.var
@@ -194,25 +193,25 @@ module Calls = struct
   let calls_using_array (c : Stmt.t) : t Seq.t =
     to_seq c
     |> Seq.filter (fun c ->
-           c.args
-           |> List.exists (fun e ->
-                  Expr.to_type e |> J_type.matches C_type.is_array))
+        c.args
+        |> List.exists (fun e ->
+            Expr.to_type e |> J_type.matches C_type.is_array))
 
   let count (c : Stmt.t) : int StringMap.t =
     to_seq c
     (* Only get function calls that have a function name
        in the position of the function *)
     |> Seq.concat_map (fun c ->
-           match c.func with
-           | Ident x when x.kind = Function -> Seq.return (Variable.name x.name)
-           | _ -> Seq.empty)
+        match c.func with
+        | Ident x when x.kind = Function -> Seq.return (Variable.name x.name)
+        | _ -> Seq.empty)
     (* Count how many times each name is used *)
     |> Seq.fold_left
          (fun wc name ->
            wc
            |> StringMap.update name (function
-                | Some n -> Some (n + 1)
-                | None -> Some 1))
+             | Some n -> Some (n + 1)
+             | None -> Some 1))
          StringMap.empty
 
   (* Returns true if it contains thread synchronization *)
@@ -338,7 +337,7 @@ module NestedLoops = struct
     let rec filter (l : t) : t =
       l
       |> List.filter_map (fun (e : loop) ->
-             if keep e then Some (filter1 e) else None)
+          if keep e then Some (filter1 e) else None)
     and filter1 (x : loop) : loop =
       match x with
       | While w -> While { w with body = filter w.body }
@@ -446,9 +445,9 @@ module MutatedVar = struct
       let typecheck_e ?(scope = scope) (e : Expr.t) : VarSet.t =
         get_writes e VarSet.empty
         |> VarSet.filter (fun x ->
-               match VarMap.find_opt x env with
-               | Some n -> scope > n
-               | None -> false)
+            match VarMap.find_opt x env with
+            | Some n -> scope > n
+            | None -> false)
       in
       let typecheck_o ?(scope = scope) (e : Expr.t option) : VarSet.t =
         match e with Some e -> typecheck_e ~scope e | None -> VarSet.empty
@@ -517,8 +516,8 @@ module Conditionals = struct
     let count =
       to_seq s
       |> Seq.filter (fun x ->
-             let open Stmt in
-             Calls.has_sync x.then_stmt || Calls.has_sync x.else_stmt)
+          let open Stmt in
+          Calls.has_sync x.then_stmt || Calls.has_sync x.else_stmt)
       |> Seq.length
     in
     `Assoc
@@ -553,8 +552,8 @@ module Loops = struct
          | DoStmt _ | ForStmt _ | WhileStmt _ -> Skip
          | s -> s)
     |> Stmt.member (function
-         | BreakStmt | GotoStmt | ReturnStmt _ | ContinueStmt -> true
-         | _ -> false)
+      | BreakStmt | GotoStmt | ReturnStmt _ | ContinueStmt -> true
+      | _ -> false)
 
   let from_stmt : Stmt.t -> t Seq.t =
     let f : Stmt.t -> t option = function
@@ -744,14 +743,14 @@ module Kernel = struct
     let arrays =
       k.global_arrays |> Variable.Map.bindings
       |> List.map (fun ((k : Variable.t), a) ->
-             let open Memory in
-             `Assoc
-               [
-                 ("name", `String (Variable.name k));
-                 ("hierarchy", `String (a.hierarchy |> Mem_hierarchy.to_string));
-                 ("size", `List (List.map (fun x -> `Int x) a.size));
-                 ("data_type", `List (List.map (fun x -> `String x) a.data_type));
-               ])
+          let open Memory in
+          `Assoc
+            [
+              ("name", `String (Variable.name k));
+              ("hierarchy", `String (a.hierarchy |> Mem_hierarchy.to_string));
+              ("size", `List (List.map (fun x -> `Int x) a.size));
+              ("data_type", `List (List.map (fun x -> `String x) a.data_type));
+            ])
     in
     `Assoc [ ("name", `String k.name); ("arrays", `List arrays) ]
 end

@@ -142,9 +142,9 @@ module Solver = struct
             ~compact:app.compact)
      else Ok (r |> Summation.run ~show_code:app.show_code))
     |> Result.map (fun amount ->
-           Analysis_cost.make ~amount
-             ~analysis_duration:(Unix.gettimeofday () -. start) (* ~approx *)
-             ~metrics ())
+        Analysis_cost.make ~amount
+          ~analysis_duration:(Unix.gettimeofday () -. start) (* ~approx *)
+          ~metrics ())
     |> Result.map_error Errors.to_string
 
   let get_ra (a : t) (k : kernel) :
@@ -192,9 +192,9 @@ module Solver = struct
        if a.show_code then print_endline s;
        Ok s)
     |> Result.map (fun amount ->
-           Analysis_cost.make ~amount
-             ~analysis_duration:(Unix.gettimeofday () -. start)
-             ~metrics:Ra_compiler.Stats.empty ())
+        Analysis_cost.make ~amount
+          ~analysis_duration:(Unix.gettimeofday () -. start)
+          ~metrics:Ra_compiler.Stats.empty ())
     |> Result.map_error Errors.to_string
 
   let total_cost (a : t) (k : kernel) : r_cost =
@@ -218,18 +218,18 @@ module Solver = struct
             List.map (Protocols.Kernel.filter_access retain_acc)
           else fun x -> x)
       |> List.map (fun k ->
-             let vs : Variable.Set.t =
-               let open Protocols.Kernel in
-               Metric.supported_arrays k.arrays s.metric
-             in
-             Protocols.Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
+          let vs : Variable.Set.t =
+            let open Protocols.Kernel in
+            Metric.supported_arrays k.arrays s.metric
+          in
+          Protocols.Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
       |> List.map
            (Protocols.Kernel.inline_all ~block_dim:(Some s.block_dim)
               ~grid_dim:(Some s.grid_dim) ~globals:s.params)
       |> List.map Protocols.Kernel.opt
       |> List.map (fun p ->
-             if s.show_map then Protocols.Kernel.print p;
-             p)
+          if s.show_map then Protocols.Kernel.print p;
+          p)
     in
     let cost =
       match s.goal with Total -> total_cost | Approx -> approx_cost

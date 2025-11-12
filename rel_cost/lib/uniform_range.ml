@@ -49,34 +49,33 @@ let optimize ?(timeout = 100) (strategy : t) (block_dim : Dim3.t)
     ];
   solve opt (n_to_expr x)
   |> Option.map (fun m ->
-         (* Go through all declarations of the model *)
-         Model.get_const_decls m
-         |> List.map (fun d ->
-                (* Convert the declaration to a variable *)
-                let tid : Variable.t =
-                  d |> FuncDecl.get_name |> Symbol.get_string
-                  |> Variable.from_name
-                in
-                (d, tid))
-         (* Only keep tids *)
-         |> List.filter (fun (_, tid) -> Variable.is_tid tid)
-         (* Evaluate the value *)
-         |> List.filter_map (fun (d, tid) ->
-                (* Replace each tid by the value in the model *)
-                (* Variables in the model are actually functions with
+      (* Go through all declarations of the model *)
+      Model.get_const_decls m
+      |> List.map (fun d ->
+          (* Convert the declaration to a variable *)
+          let tid : Variable.t =
+            d |> FuncDecl.get_name |> Symbol.get_string |> Variable.from_name
+          in
+          (d, tid))
+      (* Only keep tids *)
+      |> List.filter (fun (_, tid) -> Variable.is_tid tid)
+      (* Evaluate the value *)
+      |> List.filter_map (fun (d, tid) ->
+          (* Replace each tid by the value in the model *)
+          (* Variables in the model are actually functions with
         0 args, so we create a function call *)
-                (* We then evaluate the function call *)
-                Model.eval m (FuncDecl.apply d []) true
-                |> Option.map (fun tid_val -> (tid, tid_val)))
-         |> List.filter_map (fun (tid, tid_val) ->
-                (* Try to cast tid to an integer and then substitute *)
-                (* Try to cast a value to a string, if we fail, return None *)
-                try
-                  let tid_val : int =
-                    Expr.to_string tid_val |> parse_num |> int_of_string
-                  in
-                  Some (tid, Num tid_val)
-                with Failure _ -> None))
+          (* We then evaluate the function call *)
+          Model.eval m (FuncDecl.apply d []) true
+          |> Option.map (fun tid_val -> (tid, tid_val)))
+      |> List.filter_map (fun (tid, tid_val) ->
+          (* Try to cast tid to an integer and then substitute *)
+          (* Try to cast a value to a string, if we fail, return None *)
+          try
+            let tid_val : int =
+              Expr.to_string tid_val |> parse_num |> int_of_string
+            in
+            Some (tid, Num tid_val)
+          with Failure _ -> None))
 
 (*
   Given a range, makes that range uniform according to tids.

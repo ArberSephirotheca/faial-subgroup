@@ -90,8 +90,8 @@ module Kernel = struct
     else
       let ids =
         (match arch with
-        | Grid -> Variable.bid_set
-        | Block -> Variable.Set.empty)
+          | Grid -> Variable.bid_set
+          | Block -> Variable.Set.empty)
         |> Variable.Set.union Variable.tid_set
       in
       let approx_local_variables =

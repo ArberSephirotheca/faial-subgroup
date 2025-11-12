@@ -132,19 +132,19 @@ let to_cond (r : t) : bexp =
   let lb = r.lower_bound in
   let ub = r.upper_bound in
   (match r.step with
-  | Plus (Num 1) -> []
-  | Plus n ->
-      [
-        (* (x + lb) % step  == 0 *)
-        n_eq (n_mod (n_minus x lb) n) (Num 0);
-        (* Ensure that the step is positive *)
-        (* n > 0 *)
-        n_gt n (Num 0);
-      ]
-  | Mult (Num base) -> [ pow ~base x; (* base > 1 *) n_gt (Num base) (Num 1) ]
-  | Mult e ->
-      prerr_endline ("range_to_cond: unsupported range: " ^ Exp.n_to_string e);
-      [ (* Ensure that the step is positive *) n_gt e (Num 1) ])
+    | Plus (Num 1) -> []
+    | Plus n ->
+        [
+          (* (x + lb) % step  == 0 *)
+          n_eq (n_mod (n_minus x lb) n) (Num 0);
+          (* Ensure that the step is positive *)
+          (* n > 0 *)
+          n_gt n (Num 0);
+        ]
+    | Mult (Num base) -> [ pow ~base x; (* base > 1 *) n_gt (Num base) (Num 1) ]
+    | Mult e ->
+        prerr_endline ("range_to_cond: unsupported range: " ^ Exp.n_to_string e);
+        [ (* Ensure that the step is positive *) n_gt e (Num 1) ])
   @ [ (* lb <= x < ub *) n_le lb x; n_le x ub; decl_to_bexp r.var r.ty ]
   |> b_and_ex
 

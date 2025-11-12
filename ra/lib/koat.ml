@@ -107,8 +107,8 @@ let to_string (p : prog) : string =
   let rules =
     p.code
     |> List.map (function
-         | Comment c -> "# " ^ c
-         | Rule r -> Rule.to_string p.env r)
+      | Comment c -> "# " ^ c
+      | Rule r -> Rule.to_string p.env r)
     |> String.concat "\n"
   in
   "(GOAL COMPLEXITY)\n" ^ "(STARTTERM (FUNCTIONSYMBOLS inst_0))\n" ^ "(VAR "

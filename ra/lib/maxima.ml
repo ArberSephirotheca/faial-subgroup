@@ -132,14 +132,14 @@ let parse_maxima (x : string) : string option =
        let offsets =
          lines
          |> List.filter_map (fun line ->
-                String.to_seqi line
-                |> Seq.find (fun (_, a) -> a <> ' ')
-                |> Option.map fst)
+             String.to_seqi line
+             |> Seq.find (fun (_, a) -> a <> ' ')
+             |> Option.map fst)
        in
        let min_offset = List.fold_left Int.min max_len offsets in
        lines
        |> List.map (fun line ->
-              Slice.from_start min_offset |> Slice.substring line)
+           Slice.from_start min_offset |> Slice.substring line)
        |> String.concat "\n")
 
 let compile ?(compact = false) (code : string) : string =

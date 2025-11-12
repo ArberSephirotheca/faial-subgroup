@@ -218,7 +218,7 @@ module Make (L : Logger) = struct
   let parse_type (e : J_type.t) : C_type.t =
     e |> J_type.to_c_type_res
     |> Result.map_error (fun e ->
-           Stack_trace.RootCause (Rjson.error_to_string e))
+        Stack_trace.RootCause (Rjson.error_to_string e))
     |> unwrap
 
   let infer_arg (e : D_lang.Expr.t) : Infer_stmt.Arg.t =
@@ -237,8 +237,8 @@ module Make (L : Logger) = struct
           |> to_array_use
           (* add offset *)
           |> Option.map (fun arr ->
-                 let offset = infer_expr offset in
-                 Infer_stmt.Array_use.add offset arr)
+              let offset = infer_expr offset in
+              Infer_stmt.Array_use.add offset arr)
       | _ -> None
     in
     let ty = D_lang.Expr.to_type e |> parse_type in
@@ -527,12 +527,12 @@ module Make (L : Logger) = struct
           let init : Infer_stmt.t =
             s.init
             |> Option.map (fun (f : D_lang.ForInit.t) : Infer_stmt.t ->
-                   let s : D_lang.Stmt.t =
-                     match f with
-                     | Decls d -> D_lang.Stmt.DeclStmt d
-                     | Expr e -> SExpr e
-                   in
-                   infer s)
+                let s : D_lang.Stmt.t =
+                  match f with
+                  | Decls d -> D_lang.Stmt.DeclStmt d
+                  | Expr e -> SExpr e
+                in
+                infer s)
             |> Option.value ~default:Infer_stmt.Skip
           in
           let cond =

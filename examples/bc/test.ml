@@ -222,10 +222,10 @@ let () =
   print_endline "Skiped files:";
   unsupported
   |> List.iter (fun f ->
-         if not (Files.exists f) then (
-           print_endline ("Missing unsupported file: " ^ Fpath.to_string f);
-           exit 1)
-         else print_endline (" - " ^ Fpath.to_string f));
+      if not (Files.exists f) then (
+        print_endline ("Missing unsupported file: " ^ Fpath.to_string f);
+        exit 1)
+      else print_endline (" - " ^ Fpath.to_string f));
   let missed = missed_files (v ".") in
   if not (Fpath.Set.is_empty missed) then (
     let missed =

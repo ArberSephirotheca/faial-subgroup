@@ -112,44 +112,44 @@ module Solver = struct
   let sliced_cost (a : t) (k : Kernel.t) : Hotspot.t list =
     Bank.from_proto a.config k
     |> Seq.filter (fun bank ->
-           let open Bank in
-           let memory_match =
-             MemoryFilter.contains bank.hierarchy a.memory_filter
-           in
-           let loc = Bank.location bank in
-           let line_match =
-             match a.line_filter with
-             | None -> true
-             | Some target_line -> Index.to_base1 loc.line = target_line
-           in
-           let col_match =
-             match a.col_filter with
-             | None -> true
-             | Some target_col ->
-                 let start_col =
-                   loc.interval |> Interval.start |> Index.to_base1
-                 in
-                 start_col = target_col
-           in
-           memory_match && line_match && col_match)
+        let open Bank in
+        let memory_match =
+          MemoryFilter.contains bank.hierarchy a.memory_filter
+        in
+        let loc = Bank.location bank in
+        let line_match =
+          match a.line_filter with
+          | None -> true
+          | Some target_line -> Index.to_base1 loc.line = target_line
+        in
+        let col_match =
+          match a.col_filter with
+          | None -> true
+          | Some target_col ->
+              let start_col =
+                loc.interval |> Interval.start |> Index.to_base1
+              in
+              start_col = target_col
+        in
+        memory_match && line_match && col_match)
     |> Seq.map (fun bank ->
-           let bank = Bank.normalize bank |> Bank.trim_decls in
-           let bank = if a.erase_ctx then Bank.erase_context bank else bank in
-           if a.verbose then prerr_endline (Bank.to_string bank);
-           let to_cost value = Cost.from_int ~value ~exact:true () in
-           let max_cost = Metric.max_cost_from a.config a.metric |> to_cost in
-           let analysis_time_secs, r_cost =
-             time_analysis (fun () ->
-                 Bank.index_cost ~verbose:a.verbose a.config a.metric bank)
-           in
-           let _ = a.skip_zero in
-           let divergence = Divergence_analysis.from_bank bank in
-           let sim =
-             if a.simulate && Divergence_analysis.is_known divergence then
-               Bank.eval_res ~max_cost:max_cost.value a.config a.metric bank
-             else Error "Run with --simulate to output simulated cost."
-           in
-           Hotspot.{ index = r_cost; bank; divergence; sim; analysis_time_secs })
+        let bank = Bank.normalize bank |> Bank.trim_decls in
+        let bank = if a.erase_ctx then Bank.erase_context bank else bank in
+        if a.verbose then prerr_endline (Bank.to_string bank);
+        let to_cost value = Cost.from_int ~value ~exact:true () in
+        let max_cost = Metric.max_cost_from a.config a.metric |> to_cost in
+        let analysis_time_secs, r_cost =
+          time_analysis (fun () ->
+              Bank.index_cost ~verbose:a.verbose a.config a.metric bank)
+        in
+        let _ = a.skip_zero in
+        let divergence = Divergence_analysis.from_bank bank in
+        let sim =
+          if a.simulate && Divergence_analysis.is_known divergence then
+            Bank.eval_res ~max_cost:max_cost.value a.config a.metric bank
+          else Error "Run with --simulate to output simulated cost."
+        in
+        Hotspot.{ index = r_cost; bank; divergence; sim; analysis_time_secs })
     |> List.of_seq
 
   let run (s : t) : (Kernel.t * Hotspot.t list) list =
@@ -164,11 +164,11 @@ module Solver = struct
       s.kernels
       |> List.map (Kernel.filter_access retain_acc)
       |> List.map (fun k ->
-             let vs : Variable.Set.t =
-               let open Kernel in
-               Metric.supported_arrays k.arrays s.metric
-             in
-             Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
+          let vs : Variable.Set.t =
+            let open Kernel in
+            Metric.supported_arrays k.arrays s.metric
+          in
+          Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
       |> List.map
            (Kernel.inline_all ~block_dim:(Some s.block_dim)
               ~grid_dim:(Some s.grid_dim) ~globals:s.params)
@@ -187,98 +187,96 @@ module TUI = struct
       Stdlib.flush_all ();
       s
       |> List.iter (fun conflict ->
-             let open Hotspot in
-             let is_bc =
-               conflict |> Hotspot.hierarchy |> Mem_hierarchy.is_shared
-             in
-             let lbl =
-               if is_bc then "shared transactions" else "global transactions"
-             in
-             let bc =
-               match (conflict.index, conflict.sim) with
-               | _, Ok e ->
-                   let e = e.value |> string_of_int in
-                   let pot =
-                     if Divergence_analysis.is_known conflict.divergence then ""
-                     else " (potential)"
-                   in
-                   e ^ pot
-               | e, _ ->
-                   let e = e |> Metric_analysis.IndexCost.to_string in
-                   let pot =
-                     if
-                       Divergence_analysis.is_thread_uniform conflict.divergence
-                     then ""
-                     else " (potential)"
-                   in
-                   e ^ pot
-             in
-             let cost =
-               let open PrintBox in
-               ([
-                  [| text_with_style Style.bold ("Max " ^ lbl); text bc |];
+          let open Hotspot in
+          let is_bc =
+            conflict |> Hotspot.hierarchy |> Mem_hierarchy.is_shared
+          in
+          let lbl =
+            if is_bc then "shared transactions" else "global transactions"
+          in
+          let bc =
+            match (conflict.index, conflict.sim) with
+            | _, Ok e ->
+                let e = e.value |> string_of_int in
+                let pot =
+                  if Divergence_analysis.is_known conflict.divergence then ""
+                  else " (potential)"
+                in
+                e ^ pot
+            | e, _ ->
+                let e = e |> Metric_analysis.IndexCost.to_string in
+                let pot =
+                  if Divergence_analysis.is_thread_uniform conflict.divergence
+                  then ""
+                  else " (potential)"
+                in
+                e ^ pot
+          in
+          let cost =
+            let open PrintBox in
+            ([
+               [| text_with_style Style.bold ("Max " ^ lbl); text bc |];
+               [|
+                 text_with_style Style.bold "Thread-divergence";
+                 text (Divergence_analysis.to_string conflict.divergence);
+               |];
+               [|
+                 text_with_style Style.bold "Analysis time";
+                 text (format_time_sliding conflict.analysis_time_secs);
+               |];
+               [|
+                 text_with_style Style.bold "Context";
+                 text (conflict.bank |> Bank.trim_decls |> Bank.to_string);
+               |];
+             ]
+            @
+            let tsx =
+              if Result.is_ok conflict.sim then conflict.sim
+              else conflict.index |> Metric_analysis.IndexCost.to_cost
+            in
+            match tsx with
+            | Ok Cost.{ value; state = Some { accesses = accs; _ }; _ } ->
+                let b = string_of_int value in
+                let accs = accs |> List.sort compare in
+                let idx =
+                  accs
+                  |> List.map (fun (a : Transaction.Task.t) ->
+                      text (string_of_int a.index))
+                in
+                let tids =
+                  accs
+                  |> List.map (fun (a : Transaction.Task.t) ->
+                      let id =
+                        match a.id with
+                        | { x; y; z } ->
+                            "x:" ^ string_of_int x ^ ", " ^ "y:"
+                            ^ string_of_int y ^ ", " ^ "z:" ^ string_of_int z
+                      in
+                      text id)
+                in
+                let rows =
                   [|
-                    text_with_style Style.bold "Thread-divergence";
-                    text (Divergence_analysis.to_string conflict.divergence);
-                  |];
-                  [|
-                    text_with_style Style.bold "Analysis time";
-                    text (format_time_sliding conflict.analysis_time_secs);
-                  |];
-                  [|
-                    text_with_style Style.bold "Context";
-                    text (conflict.bank |> Bank.trim_decls |> Bank.to_string);
-                  |];
-                ]
-               @
-               let tsx =
-                 if Result.is_ok conflict.sim then conflict.sim
-                 else conflict.index |> Metric_analysis.IndexCost.to_cost
-               in
-               match tsx with
-               | Ok Cost.{ value; state = Some { accesses = accs; _ }; _ } ->
-                   let b = string_of_int value in
-                   let accs = accs |> List.sort compare in
-                   let idx =
-                     accs
-                     |> List.map (fun (a : Transaction.Task.t) ->
-                            text (string_of_int a.index))
-                   in
-                   let tids =
-                     accs
-                     |> List.map (fun (a : Transaction.Task.t) ->
-                            let id =
-                              match a.id with
-                              | { x; y; z } ->
-                                  "x:" ^ string_of_int x ^ ", " ^ "y:"
-                                  ^ string_of_int y ^ ", " ^ "z:"
-                                  ^ string_of_int z
-                            in
-                            text id)
-                   in
-                   let rows =
-                     [|
-                       text_with_style Style.bold "threadIdx";
-                       text_with_style Style.bold "Index";
-                     |]
-                     :: List.map2 (fun x y -> [| x; y |]) tids idx
-                     |> Array.of_list
-                   in
-                   [ [| text_with_style Style.bold ("Bank " ^ b); grid rows |] ]
-               | _ -> [])
-               |> Array.of_list |> grid |> frame
-             in
-             (* Flatten the expression *)
-             let problem =
-               if is_bc then "Bank-conflict" else "Uncoalesced access"
-             in
-             ANSITerminal.(
-               print_string [ Bold; Foreground Blue ]
-                 ("\n~~~~ " ^ problem ^ " ~~~~\n\n"));
-             conflict.bank |> Bank.location |> Tui_helper.LocationUI.print;
-             print_endline "";
-             PrintBox_text.output stdout cost;
-             print_endline "\n")
+                    text_with_style Style.bold "threadIdx";
+                    text_with_style Style.bold "Index";
+                  |]
+                  :: List.map2 (fun x y -> [| x; y |]) tids idx
+                  |> Array.of_list
+                in
+                [ [| text_with_style Style.bold ("Bank " ^ b); grid rows |] ]
+            | _ -> [])
+            |> Array.of_list |> grid |> frame
+          in
+          (* Flatten the expression *)
+          let problem =
+            if is_bc then "Bank-conflict" else "Uncoalesced access"
+          in
+          ANSITerminal.(
+            print_string [ Bold; Foreground Blue ]
+              ("\n~~~~ " ^ problem ^ " ~~~~\n\n"));
+          conflict.bank |> Bank.location |> Tui_helper.LocationUI.print;
+          print_endline "";
+          PrintBox_text.output stdout cost;
+          print_endline "\n")
     in
     Stdlib.flush_all ();
     let l = Solver.run s in
@@ -299,48 +297,47 @@ module JUI = struct
         `List
           (l
           |> List.map (fun c ->
-                 let open Hotspot in
-                 let loc = Bank.location c.bank in
-                 let loc =
-                   [
-                     ( "location",
-                       `Assoc
-                         [
-                           ("filename", `String loc.filename);
-                           ("line", `Int (Index.to_base1 loc.line));
-                           ( "col_start",
-                             `Int
-                               (loc.interval |> Interval.start |> Index.to_base1)
-                           );
-                           ( "col_finish",
-                             `Int
-                               (loc.interval |> Interval.finish
-                              |> Index.to_base1) );
-                         ] );
-                   ]
-                 in
-                 let cost =
-                   [
-                     ( "index_analysis",
-                       match c.index.code with
-                       | Tick value -> `Int value
-                       | e -> `String (Ra.Stmt.to_string e) );
-                     ( "access",
-                       `String (c.bank |> Bank.trim_decls |> Bank.to_string) );
-                     ( "thread_divergence_analysis",
-                       `String
-                         (c.bank |> Divergence_analysis.from_bank
-                        |> Divergence_analysis.to_string) );
-                     ("cond_size", `Int (c.bank |> Bank.cond_size));
-                     ("index_size", `Int (c.bank |> Bank.index_size));
-                     ("analysis_time_secs", `Float c.analysis_time_secs);
-                     ( "sim",
-                       match c.sim with
-                       | Ok { value; _ } -> `Int value
-                       | Error _ -> `Null );
-                   ]
-                 in
-                 `Assoc (loc @ cost)))
+              let open Hotspot in
+              let loc = Bank.location c.bank in
+              let loc =
+                [
+                  ( "location",
+                    `Assoc
+                      [
+                        ("filename", `String loc.filename);
+                        ("line", `Int (Index.to_base1 loc.line));
+                        ( "col_start",
+                          `Int (loc.interval |> Interval.start |> Index.to_base1)
+                        );
+                        ( "col_finish",
+                          `Int
+                            (loc.interval |> Interval.finish |> Index.to_base1)
+                        );
+                      ] );
+                ]
+              in
+              let cost =
+                [
+                  ( "index_analysis",
+                    match c.index.code with
+                    | Tick value -> `Int value
+                    | e -> `String (Ra.Stmt.to_string e) );
+                  ( "access",
+                    `String (c.bank |> Bank.trim_decls |> Bank.to_string) );
+                  ( "thread_divergence_analysis",
+                    `String
+                      (c.bank |> Divergence_analysis.from_bank
+                     |> Divergence_analysis.to_string) );
+                  ("cond_size", `Int (c.bank |> Bank.cond_size));
+                  ("index_size", `Int (c.bank |> Bank.index_size));
+                  ("analysis_time_secs", `Float c.analysis_time_secs);
+                  ( "sim",
+                    match c.sim with
+                    | Ok { value; _ } -> `Int value
+                    | Error _ -> `Null );
+                ]
+              in
+              `Assoc (loc @ cost)))
       in
       `Assoc [ ("kernel_name", `String k.name); ("accesses", accs) ]
     in

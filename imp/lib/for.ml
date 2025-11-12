@@ -59,22 +59,22 @@ module Infer = struct
       | Plus step ->
           l
           |> List.map (fun i ->
-                 let open Increment in
-                 match i.op with
-                 | Plus | Minus ->
-                     let iters =
-                       Exp.n_div (Exp.n_minus (Var r.var) r.lower_bound) step
-                     in
-                     let d =
-                       (* i = i.inc * ((r.var - r.init) / r.inc) + i.init *)
-                       let i_inc =
-                         if i.op = Plus then i.arg else Exp.n_uminus i.arg
-                       in
-                       Decl.set i.var
-                         (Exp.n_plus (Exp.n_mult i_inc iters) (Var i.var))
-                     in
-                     d
-                 | _ -> Decl.unset i.var)
+              let open Increment in
+              match i.op with
+              | Plus | Minus ->
+                  let iters =
+                    Exp.n_div (Exp.n_minus (Var r.var) r.lower_bound) step
+                  in
+                  let d =
+                    (* i = i.inc * ((r.var - r.init) / r.inc) + i.init *)
+                    let i_inc =
+                      if i.op = Plus then i.arg else Exp.n_uminus i.arg
+                    in
+                    Decl.set i.var
+                      (Exp.n_plus (Exp.n_mult i_inc iters) (Var i.var))
+                  in
+                  d
+              | _ -> Decl.unset i.var)
       | Mult _ -> l |> List.map (fun i -> Decl.unset i.var)
     in
     l |> List.map Stmt.decl |> Stmt.from_list
@@ -199,7 +199,7 @@ module Infer = struct
     |> iter []
     (* And if we find it, add the non-increments to post_body *)
     |> Option.map (fun x ->
-           { x with post_body = Stmt.seq x.post_body inc_stmt })
+        { x with post_body = Stmt.seq x.post_body inc_stmt })
 
   let infer_bounds (l : t) : Exp.nexp * Exp.nexp * Range.direction =
     let init = Option.value ~default:(Var l.name) l.init in

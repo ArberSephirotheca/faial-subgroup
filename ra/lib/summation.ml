@@ -84,8 +84,8 @@ let subst ((x, v) : Variable.t * Reals.t) : t -> t =
 let adapt_error (r : ('a, string) Result.t) : ('a, Errors.t) Result.t =
   r
   |> Result.map_error (fun e ->
-         let open Errors in
-         { output = e; reason = UnsupportedInput })
+      let open Errors in
+      { output = e; reason = UnsupportedInput })
 
 let range_sum (r : Range.t) (s : t) : t =
   if s = Const 0 then Const 0

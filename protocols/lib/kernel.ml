@@ -178,8 +178,8 @@ let inline_inferred (k : t) : t =
   let key_vals =
     constants k
     |> List.filter (fun (x, _) ->
-           (* Make sure we only replace thread-global variables *)
-           Params.mem (Variable.from_name x) k.global_variables)
+        (* Make sure we only replace thread-global variables *)
+        Params.mem (Variable.from_name x) k.global_variables)
   in
   assign_globals key_vals k
 
@@ -190,7 +190,17 @@ let inline_all ~globals ~block_dim ~grid_dim (k : t) : t =
   let to_dim k d =
     d |> Option.map (fun x -> [ (k, x) ]) |> Option.value ~default:[]
   in
-  k |> assign_globals globals
+  let extra =
+    [ (Variable.tid_list, block_dim); (Variable.bid_list, grid_dim) ]
+    |> List.concat_map (function
+      | [ x; y; z ], Some Dim3.{ x = v1; y = v2; z = v3 } ->
+          [ (x, v1); (y, v2); (z, v3) ]
+      | _, _ -> [])
+    |> List.filter_map (fun (k, v) ->
+        if v = 1 then Some (Variable.name k, 0) else None)
+  in
+  k
+  |> assign_globals (globals @ extra)
   |> inline_dims (to_dim "blockDim" block_dim @ to_dim "gridDim" grid_dim)
   |> inline_inferred
 

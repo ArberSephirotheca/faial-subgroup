@@ -4,7 +4,7 @@ open Protocols
 let pretty_location (x : Variable.t) : string =
   x |> Variable.location_opt
   |> Option.map (fun x ->
-         Location.to_string ~f:(fun x -> Fpath.(v x |> basename)) x ^ ": ")
+      Location.to_string ~f:(fun x -> Fpath.(v x |> basename)) x ^ ": ")
   |> Option.value ~default:""
 
 module UniformCond = struct
@@ -288,12 +288,12 @@ module Make (LOG : Logger.Logger) = struct
             (l
             |> lin x (* Returns None when the array is being ignored *)
             |> Option.map (fun index ->
-                   let cost =
-                     idx_analysis ~locals:ctx.locals ~index
-                       ~divergence:ctx.divergence ~verbose:false
-                   in
-                   (cost.code, Stats.make_index Accuracy.Exact))
-               (* When the array is ignored, return Skip *)
+                let cost =
+                  idx_analysis ~locals:ctx.locals ~index
+                    ~divergence:ctx.divergence ~verbose:false
+                in
+                (cost.code, Stats.make_index Accuracy.Exact))
+              (* When the array is ignored, return Skip *)
             |> Option.value ~default:(Ra.Stmt.Skip, Stats.empty))
       | Sync _ -> Ok (Skip, Stats.empty)
       | Decl { body = p; var; _ } -> from_p (Context.add_local var ctx) p

@@ -78,13 +78,13 @@ module Environ = struct
     let variables =
       Model.get_const_decls m
       |> List.map (fun d ->
-             let key : string = FuncDecl.get_name d |> Symbol.get_string in
-             let e : string =
-               FuncDecl.apply d []
-               |> (fun e -> Model.eval m e true)
-               |> Option.map Expr.to_string |> Option.value ~default:"?"
-             in
-             (key, parse_num e))
+          let key : string = FuncDecl.get_name d |> Symbol.get_string in
+          let e : string =
+            FuncDecl.apply d []
+            |> (fun e -> Model.eval m e true)
+            |> Option.map Expr.to_string |> Option.value ~default:"?"
+          in
+          (key, parse_num e))
     in
     let labels = StringMap.of_list labels in
     { labels; variables }
@@ -216,9 +216,9 @@ module Witness = struct
       List.split kvs |> fst
       |> List.filter (fun k -> Common.contains ~substring:"$idx$" k)
       |> List.map (fun k ->
-             match Common.rsplit '$' k with
-             | Some (_, idx) -> int_of_string idx
-             | None -> failwith "unexpected")
+          match Common.rsplit '$' k with
+          | Some (_, idx) -> int_of_string idx
+          | None -> failwith "unexpected")
       |> List.fold_left Int.max 0
     in
     (* Parse a single index, in this case 1 *)
@@ -336,8 +336,8 @@ let solve ?(timeout = None) ?(logic = None) (p : Symbexp.Proof.t) :
   let b_to_expr =
     logic
     |> Option.map (fun l ->
-           if String.ends_with ~suffix:"BV" l then Bv64Gen.b_to_expr
-           else IntGen.b_to_expr)
+        if String.ends_with ~suffix:"BV" l then Bv64Gen.b_to_expr
+        else IntGen.b_to_expr)
     |> Option.value ~default:IntGen.b_to_expr
   in
   (* Create a solver and try to solve, might fail with Not_Implemented *)
@@ -381,11 +381,11 @@ module Solution = struct
     let parse_num = ref IntGen.parse_num in
     logic
     |> Option.iter (fun l ->
-           if String.ends_with ~suffix:"BV" l then (
-             prerr_endline ("WARNING: user set bit-vector logic " ^ l);
-             b_to_expr := Bv64Gen.b_to_expr;
-             parse_num := Bv64Gen.parse_num)
-           else ());
+        if String.ends_with ~suffix:"BV" l then (
+          prerr_endline ("WARNING: user set bit-vector logic " ^ l);
+          b_to_expr := Bv64Gen.b_to_expr;
+          parse_num := Bv64Gen.parse_num)
+        else ());
     let logic = ref logic in
     let set_bv () : unit =
       prerr_endline "WARNING: using bit-vector logic.";

@@ -74,7 +74,6 @@ module Defaults = struct
     }
 
   let to_bexp (e : t) : bexp = b_and e.distinct base
-
 end
 
 let to_defaults : t -> Defaults.t = function

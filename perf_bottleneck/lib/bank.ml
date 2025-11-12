@@ -397,18 +397,18 @@ module Make (L : Logger.Logger) = struct
     |> Protocols.Code.subst_grid_dim cfg.grid_dim
     |> Code.from_proto k.arrays cfg local_variables
     |> Seq.map (fun (array, p) ->
-           let code = if k.pre = Bool true then p else Code.Cond (k.pre, p) in
-           let used = Code.free_names code Variable.Set.empty in
-           let local_variables = Variable.Set.inter used local_variables in
-           let global_variables = Variable.Set.inter used global_variables in
-           {
-             name = k.name;
-             hierarchy = Variable.Map.find array k.arrays |> Memory.hierarchy;
-             global_variables;
-             local_variables;
-             code;
-             array;
-           })
+        let code = if k.pre = Bool true then p else Code.Cond (k.pre, p) in
+        let used = Code.free_names code Variable.Set.empty in
+        let local_variables = Variable.Set.inter used local_variables in
+        let global_variables = Variable.Set.inter used global_variables in
+        {
+          name = k.name;
+          hierarchy = Variable.Map.find array k.arrays |> Memory.hierarchy;
+          global_variables;
+          local_variables;
+          code;
+          array;
+        })
 end
 
 let eval_res ?(max_cost = -1) (params : Config.t) (m : Metric.t) (k : t) :

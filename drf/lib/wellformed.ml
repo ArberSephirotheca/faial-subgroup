@@ -40,34 +40,34 @@ module Code = struct
           let branch b p =
             infer p
             |> flat_map (function
-                 (* TODO: why should we reject synchronized conditionals inside loops? *)
-                 | SInst p ->
-                     [ UInst (Assert (b_not b)); SInst (Sync.inline_cond b p) ]
-                     |> from_list
-                 | Both (p, c) ->
-                     [
-                       UInst (Assert (b_not b));
-                       Both (Sync.inline_cond b p, Opt.seq (Assert b) c);
-                     ]
-                     |> from_list
-                 | UInst c -> UInst (Opt.cond b c) |> one)
+              (* TODO: why should we reject synchronized conditionals inside loops? *)
+              | SInst p ->
+                  [ UInst (Assert (b_not b)); SInst (Sync.inline_cond b p) ]
+                  |> from_list
+              | Both (p, c) ->
+                  [
+                    UInst (Assert (b_not b));
+                    Both (Sync.inline_cond b p, Opt.seq (Assert b) c);
+                  ]
+                  |> from_list
+              | UInst c -> UInst (Opt.cond b c) |> one)
           in
           branch b p
           |> flat_map (fun p -> branch (Exp.b_not b) q |> map (seq p))
       | Loop { range; body = p } ->
           infer p
           |> map (function
-               | Both (p, c) -> SInst (SeqLoop (Skip, { range; body = (p, c) }))
-               | SInst p -> SInst (SeqLoop (Skip, { range; body = (p, Skip) }))
-               | UInst c -> UInst (Opt.loop range c))
+            | Both (p, c) -> SInst (SeqLoop (Skip, { range; body = (p, c) }))
+            | SInst p -> SInst (SeqLoop (Skip, { range; body = (p, Skip) }))
+            | UInst c -> UInst (Opt.loop range c))
       | Seq (p, q) -> infer p |> flat_map (fun p -> infer q |> map (seq p))
     in
     fun p ->
       infer p
       |> map (function
-           | SInst p -> p
-           | UInst c -> Sync c
-           | Both (p, c) -> Sync.Seq (p, Sync.Sync c))
+        | SInst p -> p
+        | UInst c -> Sync c
+        | Both (p, c) -> Sync.Seq (p, Sync.Sync c))
 end
 
 module Kernel = struct
