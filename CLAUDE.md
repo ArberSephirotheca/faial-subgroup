@@ -191,13 +191,9 @@ dune clean && dune build && dune test
 cd docker
 make build-ci
 
-# Option 1: Using gitlab-runner (if installed)
+# Then test using gitlab-runner from project root
 cd ..
 make gitlab-test
-
-# Option 2: Direct docker run
-docker run --rm -v $PWD/..:/workspace -w /workspace \
-  registry.gitlab.com/umb-svl/faial/faial:ci dune build
 ```
 
 **5. Push CI container:**
@@ -206,12 +202,9 @@ cd docker
 make push
 ```
 
-**6. Commit and push to GitLab:**
-```bash
-git add dune-project faial.opam
-git commit -m "Update dependencies: <brief description>"
-git push
-```
+**6. Review changes and commit:**
+
+At this point, review all changes and commit them manually to complete the dependency update.
 
 **Special case: OCaml version changes**
 
