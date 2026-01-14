@@ -1,4 +1,5 @@
 (lang dune 3.17)
+(name faial)
 (cram enable)
 (using menhir 2.0)
 ; Generate opam files automatically
