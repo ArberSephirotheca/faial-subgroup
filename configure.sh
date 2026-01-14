@@ -5,16 +5,17 @@
 set -e  # Exit on any error
 
 show_usage() {
-    echo "Usage: $0 [--local|--system] [opam install options]"
+    echo "Usage: $0 [--create-switch] [opam options...]"
     echo ""
     echo "Options:"
-    echo "  --local   Create/use local opam switch (isolated environment)"
-    echo "  --system  Install in current opam switch"
+    echo "  --create-switch   Create/use local opam switch (recommended)"
+    echo ""
+    echo "All other arguments are passed to 'opam install'."
     echo ""
     echo "Examples:"
-    echo "  $0 --local              # Create local switch and install deps"
-    echo "  $0 --system             # Install in current switch"
-    echo "  $0 --local --yes        # Auto-confirm installation"
+    echo "  $0 --create-switch              # Create local switch, install pinned deps"
+    echo "  $0 --create-switch --yes        # Auto-confirm installation"
+    echo "  $0 --yes                        # Install in current switch"
 }
 
 if ! which opam > /dev/null; then
@@ -22,23 +23,14 @@ if ! which opam > /dev/null; then
     exit 1
 fi
 
-# Parse arguments
-USE_LOCAL=false
-USE_SYSTEM=false
+# Parse --create-switch flag
+CREATE_SWITCH=false
 OPAM_ARGS=""
-
-if [ $# -eq 0 ]; then
-    show_usage
-    exit 1
-fi
 
 for arg in "$@"; do
     case $arg in
-        --local)
-            USE_LOCAL=true
-            ;;
-        --system)
-            USE_SYSTEM=true
+        --create-switch)
+            CREATE_SWITCH=true
             ;;
         --help|-h)
             show_usage
@@ -50,23 +42,9 @@ for arg in "$@"; do
     esac
 done
 
-# Validate arguments
-if [ "$USE_LOCAL" = true ] && [ "$USE_SYSTEM" = true ]; then
-    >&2 echo "ERROR: Cannot use both --local and --system"
-    exit 1
-fi
-
-if [ "$USE_LOCAL" = false ] && [ "$USE_SYSTEM" = false ]; then
-    >&2 echo "ERROR: Must specify either --local or --system"
-    show_usage
-    exit 1
-fi
-
 echo "Setting up Faial development environment..."
 
-if [ "$USE_SYSTEM" = true ]; then
-    echo "Using current opam switch: $(opam switch show)"
-else
+if [ "$CREATE_SWITCH" = true ]; then
     # Check if local switch already exists
     if [ -d "_opam" ] || opam switch show 2>/dev/null | grep -q "$(pwd)"; then
         echo "Local switch already exists, using it..."
@@ -76,14 +54,17 @@ else
         opam switch create . 5.3.0 --no-install
         eval $(opam env)
     fi
+else
+    echo "Using current opam switch: $(opam switch show)"
 fi
 
-# Install all dependencies from committed faial.opam file
-echo "Installing dependencies from faial.opam..."
-echo opam install --deps-only ./faial.opam $OPAM_ARGS
-opam install --deps-only ./faial.opam $OPAM_ARGS
+# Install dependencies using lock file for reproducibility
+echo "Installing dependencies from faial.opam.locked..."
+CMD="opam install . --locked --deps-only$OPAM_ARGS"
+echo "$ $CMD"
+opam install . --locked --deps-only $OPAM_ARGS
 
 echo "✅ Setup complete!"
-if [ "$USE_LOCAL" = true ]; then
+if [ "$CREATE_SWITCH" = true ]; then
     echo "To activate the environment, run: eval \$(opam env)"
 fi

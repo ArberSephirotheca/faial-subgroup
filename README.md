@@ -6,8 +6,9 @@ Faial is a static analysis tool for finding bugs in CUDA kernels, featuring **da
 # Binary distribution
 
 ### [Download `faial` for Linux x86-64bits](https://gitlab.com/umb-svl/faial/-/jobs/artifacts/main/raw/bundle/faial.tar.bz2?job=bundle-lin&inline=false)
+<!--
 ### [Download `faial` for macOS arm64 (M1/M2/M3)](https://gitlab.com/umb-svl/faial/-/jobs/artifacts/main/raw/bundle/faial.tar.bz2?job=bundle-mac&inline=false)
-
+-->
 Instructions:
 1. Create a directory to hold the binary distribution, say `/opt/faial`
 2. Extract the binary distribution archive `faial.tar.bz2`
@@ -38,6 +39,9 @@ Next, feel free to access the [`tutorial/`](tutorial/) directory!
 ./configure.sh
 ```
 
+> [!NOTE]
+> For an isolated environment, use `./configure.sh --create-switch` to create a local opam switch.
+
 ### 2. Build
 
 **Run this to build the binary.**
@@ -67,6 +71,8 @@ If you use Faial in your research, please cite our paper:
 }
 ```
 # Publications
+
+- [A Modular Static Cost Analysis for GPU Warp-Level Parallelism](https://dx.doi.org/10.1145/3776693). Gregory Blike, Hannah Zicarelli, Udaya Sathiyamoorthy, Julien Lange, Tiago Cogumbreiro. PACMPL, 10(POPL), 2026.
 
 - [Hidden assumptions in static verification of data-race free GPU programs](https://dx.doi.org/10.1007/978-3-031-97492-2_6). In Principles and Practices of Building Parallel Software. LNCS, vol 14564. Tiago Cogumbreiro, Julien Lange. 2025
 
