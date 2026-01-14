@@ -35,6 +35,8 @@ image: registry.gitlab.com/umb-svl/faial/faial:ci
     - brew install opam python@3.9 llvm@${LLVM_VERSION}
     # llvm is keg-only, so add it to PATH
     - export PATH="/opt/homebrew/opt/llvm@${LLVM_VERSION}/bin:$PATH"
+    # When you run brew install opam, it installs the binary, but the tool requires a one-time initialization (usually creating a ~/.opam directory) before it can manage any switches or install packages.
+    - opam init --reinit --bare --disable-sandboxing --yes
 
   cache:
     key: "macOS-$OCAML_VERSION"
