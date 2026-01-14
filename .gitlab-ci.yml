@@ -133,11 +133,11 @@ bundle-mac:
     - saas-macos-medium-m1
   script:
     - cd "$CI_PROJECT_DIR"
-    - brew install opam python@3.9
+    - brew install opam python llvm@17
     - if [ "$CLEAN_OPAM_CACHE" == "true" ]; then echo "cleaning _opam cache as explicitly requested"; rm -fR _opam; fi
     - if [ "$CLEAN_DUNE_CACHE" == "true" ]; then echo "cleaning _build cache as explicitly requested"; rm -fR _build; fi
     - if [ -d _opam ]; then echo "reusing local opam switch from CI cache"; fi
-    - if [ ! -d _opam ]; then echo "no local switch in CI cache, setting up new switch with OCaml ${OCAML_VERSION}"; opam init --bare --disable-sandboxing --yes; opam switch create . ${OCAML_VERSION} --yes; fi
+    - if [ ! -d _opam ]; then echo "no local switch in CI cache, setting up new switch with OCaml ${OCAML_VERSION}"; opam init --bare --disable-sandboxing --yes; opam switch create . ${OCAML_VERSION} --yes --confirm-level=unsafe-yes; fi
     - eval $(opam env)
     - ./configure.sh -y --confirm-level=unsafe-yes
     - ocamlc --version
