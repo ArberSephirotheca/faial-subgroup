@@ -9,7 +9,7 @@ case $(uname -s) in
     ;;
   Darwin)
     JOB=build-mac
-    Z3_ARCH=arm64-osx-11.0
+    Z3_ARCH=arm64-osx-13.7.6
     Z3_DLL=libz3.dylib
     ;;
 

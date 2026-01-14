@@ -17,6 +17,29 @@ image: registry.gitlab.com/umb-svl/faial/faial:ci
     paths:
     - _build
 
+.macos-cache: &macos_cache
+  image: macos-14-xcode-15
+  variables:
+    OCAML_VERSION: 5.3.0
+    LLVM_VERSION: 17
+    OPAM_ROOT: "${CI_PROJECT_DIR}/_opam"
+    CLEAN_OPAM_CACHE: "false"
+    CLEAN_DUNE_CACHE: "false"
+    HOMEBREW_NO_INSTALL_CLEANUP: 1
+    HOMEBREW_NO_AUTO_UPDATE: 1
+    # llvm@17 is keg-only, so set up environment for compilers to find it
+    LDFLAGS: "-L/opt/homebrew/opt/llvm@${LLVM_VERSION}/lib"
+    CPPFLAGS: "-I/opt/homebrew/opt/llvm@${LLVM_VERSION}/include"
+
+  cache:
+    key: "macOS-$OCAML_VERSION"
+    paths:
+      - _opam
+      - _build
+
+  tags:
+    - saas-macos-medium-m1
+
 check-opam-consistency:
   stage: validate
   <<: *global_cache
@@ -113,30 +136,10 @@ build-container:
     - docker logout $CI_REGISTRY
 
 
-bundle-mac:
+build-mac:
   when: manual
-  # macos doesn't depend on the linux container, so it can run on build time
   stage: build
-  image: macos-14-xcode-15
-  dependencies: []
-  variables:
-    OCAML_VERSION: 5.3.0
-    LLVM_VERSION: 17
-    OPAM_ROOT: "${CI_PROJECT_DIR}/_opam"
-    CLEAN_OPAM_CACHE: "false"
-    CLEAN_DUNE_CACHE: "false"
-    HOMEBREW_NO_INSTALL_CLEANUP: 1
-    HOMEBREW_NO_AUTO_UPDATE: 1
-    # llvm@17 is keg-only, so set up environment for compilers to find it
-    LDFLAGS: "-L/opt/homebrew/opt/llvm@${LLVM_VERSION}/lib"
-    CPPFLAGS: "-I/opt/homebrew/opt/llvm@${LLVM_VERSION}/include"
-  cache:
-    key: "macOS-$OCAML_VERSION"
-    paths:
-      - _opam
-      - _build
-  tags:
-    - saas-macos-medium-m1
+  <<: *macos_cache
   script:
     - cd "$CI_PROJECT_DIR"
     # python@3.9 is required by z3 via depext (conf-python-3)
@@ -152,9 +155,33 @@ bundle-mac:
     - ocamlc --version
     - dune build --release
     - cp -Lr _build/install/default/bin/* ./
+
+  artifacts:
+    paths:
+      - c-ast
+      - wgsl-ast
+      - faial-drf
+      - faial-bc
+      - faial-cost-dyn
+      - faial-cost
+      - README.md
+      - LICENSE
+
+bundle-mac:
+  stage: deploy
+  dependencies:
+    - build-mac
+  only:
+    - main
+  tags:
+    - saas-macos-medium-m1
+  image: macos-14-xcode-15
+  script:
+    - cd $CI_PROJECT_DIR
     - mkdir bundle
     - cd bundle
     - ../scripts/ci.sh
+
   artifacts:
     paths:
       - bundle/faial.tar.bz2
