@@ -22,7 +22,6 @@ image: registry.gitlab.com/umb-svl/faial/faial:ci
   variables:
     OCAML_VERSION: 5.3.0
     LLVM_VERSION: 17
-    OPAM_ROOT: "${CI_PROJECT_DIR}/_opam"
     CLEAN_OPAM_CACHE: "false"
     CLEAN_DUNE_CACHE: "false"
     HOMEBREW_NO_INSTALL_CLEANUP: 1
@@ -30,6 +29,12 @@ image: registry.gitlab.com/umb-svl/faial/faial:ci
     # llvm@17 is keg-only, so set up environment for compilers to find it
     LDFLAGS: "-L/opt/homebrew/opt/llvm@${LLVM_VERSION}/lib -L/opt/homebrew/opt/llvm@${LLVM_VERSION}/lib/c++"
     CPPFLAGS: "-I/opt/homebrew/opt/llvm@${LLVM_VERSION}/include"
+
+  before_script:
+    # python@3.9 is required by z3 via depext (conf-python-3)
+    - brew install opam python@3.9 llvm@${LLVM_VERSION}
+    # llvm is keg-only, so add it to PATH
+    - export PATH="/opt/homebrew/opt/llvm@${LLVM_VERSION}/bin:$PATH"
 
   cache:
     key: "macOS-$OCAML_VERSION"
@@ -142,14 +147,10 @@ build-mac:
   <<: *macos_cache
   script:
     - cd "$CI_PROJECT_DIR"
-    # python@3.9 is required by z3 via depext (conf-python-3)
-    - brew install opam python@3.9 llvm@${LLVM_VERSION}
-    # llvm is keg-only, so add it to PATH
-    - export PATH="/opt/homebrew/opt/llvm@${LLVM_VERSION}/bin:$PATH"
     - if [ "$CLEAN_OPAM_CACHE" == "true" ]; then echo "cleaning _opam cache as explicitly requested"; rm -fR _opam; fi
     - if [ "$CLEAN_DUNE_CACHE" == "true" ]; then echo "cleaning _build cache as explicitly requested"; rm -fR _build; fi
     - if [ -d _opam ]; then echo "reusing local opam switch from CI cache"; fi
-    - if [ ! -d _opam ]; then echo "no local switch in CI cache, setting up new switch with OCaml ${OCAML_VERSION}"; opam init --bare --disable-sandboxing --yes; opam switch create . ${OCAML_VERSION} --yes --no-install --confirm-level=unsafe-yes; fi
+    - if [ ! -d _opam ]; then echo "no local switch in CI cache, setting up new switch with OCaml ${OCAML_VERSION}"; opam switch create . ${OCAML_VERSION} --yes --no-install --confirm-level=unsafe-yes; fi
     - eval $(opam env)
     - opam install . --deps-only --locked --yes --confirm-level=unsafe-yes --assume-depexts
     - ocamlc --version
@@ -177,6 +178,8 @@ bundle-mac:
     - main
   script:
     - cd $CI_PROJECT_DIR
+    - if [ -d _opam ]; then echo "reusing local opam switch from CI cache"; fi
+    - if [ ! -d _opam ]; then echo "no local switch in CI cache, setting up new switch with OCaml ${OCAML_VERSION}"; opam switch create . ${OCAML_VERSION} --yes --no-install --confirm-level=unsafe-yes; fi
     - eval $(opam env)
     - mkdir bundle
     - cd bundle
