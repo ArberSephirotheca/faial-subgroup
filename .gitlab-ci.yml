@@ -118,7 +118,7 @@ bundle-mac:
   stage: deploy
   image: macos-14-xcode-15
   variables:
-    OCAML_VERSION: 5.2.0
+    OCAML_VERSION: 5.3.0
     HOMEBREW_NO_INSTALL_CLEANUP: 1
     HOMEBREW_NO_AUTO_UPDATE: 1
   tags:
@@ -129,9 +129,15 @@ bundle-mac:
     - >
       if [ ! -d ~/.opam ]; then
         echo "Initializing OPAM"
-        opam init --bare --disable-sandboxing &&
-        opam switch create main ${OCAML_VERSION}
+        opam init --bare --disable-sandboxing
       fi
+    - >
+      if opam switch list | grep -q "^main"; then
+        echo "Removing existing 'main' switch"
+        opam switch remove main -y
+      fi
+    - echo "Creating switch 'main' with OCaml ${OCAML_VERSION}"
+    - opam switch create main ${OCAML_VERSION}
     - eval $(opam env --switch=main)
     - ./configure.sh -y --confirm-level=unsafe-yes
     - ocamlc --version
