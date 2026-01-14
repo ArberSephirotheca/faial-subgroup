@@ -119,29 +119,30 @@ bundle-mac:
   image: macos-14-xcode-15
   variables:
     OCAML_VERSION: 5.3.0
+    OPAM_ROOT: "${CI_PROJECT_DIR}/_opam"
+    CLEAN_OPAM_CACHE: "false"
+    CLEAN_DUNE_CACHE: "false"
     HOMEBREW_NO_INSTALL_CLEANUP: 1
     HOMEBREW_NO_AUTO_UPDATE: 1
+  cache:
+    key: "macOS-$OCAML_VERSION"
+    paths:
+      - _opam
+      - _build
   tags:
     - saas-macos-medium-m1
   script:
     - cd "$CI_PROJECT_DIR"
     - brew install opam python@3.9
-    - >
-      if [ ! -d ~/.opam ]; then
-        echo "Initializing OPAM"
-        opam init --bare --disable-sandboxing
-      fi
-    - >
-      if opam switch list | grep -q "^main"; then
-        echo "Removing existing 'main' switch"
-        opam switch remove main -y
-      fi
-    - echo "Creating switch 'main' with OCaml ${OCAML_VERSION}"
-    - opam switch create main ${OCAML_VERSION}
-    - eval $(opam env --switch=main)
+    - if [ "$CLEAN_OPAM_CACHE" == "true" ]; then echo "cleaning _opam cache as explicitly requested"; rm -fR _opam; fi
+    - if [ "$CLEAN_DUNE_CACHE" == "true" ]; then echo "cleaning _build cache as explicitly requested"; rm -fR _build; fi
+    - if [ -d _opam ]; then echo "reusing local opam switch from CI cache"; fi
+    - if [ ! -d _opam ]; then echo "no local switch in CI cache, setting up new switch with OCaml ${OCAML_VERSION}"; opam init --bare --disable-sandboxing; opam switch create . ${OCAML_VERSION}; fi
+    - eval $(opam env)
     - ./configure.sh -y --confirm-level=unsafe-yes
     - ocamlc --version
-    - make
+    - dune build --release
+    - cp -Lr _build/install/default/bin/* ./
     - mkdir bundle
     - cd bundle
     - ../scripts/ci.sh
