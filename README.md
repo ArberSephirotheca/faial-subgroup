@@ -2,6 +2,14 @@
 
 Faial is a static analysis tool for finding bugs in CUDA kernels, featuring **data-race freedom (DRF) analysis** and **performance analysis**.
 
+# Quick start with Docker
+
+Run Faial instantly using Docker, no installation required:
+
+```bash
+$ docker run --rm -v $(pwd):/workspace registry.gitlab.com/umb-svl/faial/faial-tools:latest faial-drf ./tutorial/saxpy.cu
+Kernel 'saxpy' is DRF!
+```
 
 # Binary distribution
 
