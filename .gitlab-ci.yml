@@ -28,7 +28,7 @@ image: registry.gitlab.com/umb-svl/faial/faial:ci
     HOMEBREW_NO_INSTALL_CLEANUP: 1
     HOMEBREW_NO_AUTO_UPDATE: 1
     # llvm@17 is keg-only, so set up environment for compilers to find it
-    LDFLAGS: "-L/opt/homebrew/opt/llvm@${LLVM_VERSION}/lib"
+    LDFLAGS: "-L/opt/homebrew/opt/llvm@${LLVM_VERSION}/lib -L/opt/homebrew/opt/llvm@${LLVM_VERSION}/lib/c++"
     CPPFLAGS: "-I/opt/homebrew/opt/llvm@${LLVM_VERSION}/include"
 
   cache:
@@ -168,16 +168,16 @@ build-mac:
       - LICENSE
 
 bundle-mac:
+  when: manual
   stage: deploy
+  <<: *macos_cache
   dependencies:
     - build-mac
   only:
     - main
-  tags:
-    - saas-macos-medium-m1
-  image: macos-14-xcode-15
   script:
     - cd $CI_PROJECT_DIR
+    - eval $(opam env)
     - mkdir bundle
     - cd bundle
     - ../scripts/ci.sh
