@@ -115,16 +115,21 @@ build-container:
 
 bundle-mac:
   when: manual
-  stage: deploy
+  # macos doesn't depend on the linux container, so it can run on build time
+  stage: build
   image: macos-14-xcode-15
   dependencies: []
   variables:
     OCAML_VERSION: 5.3.0
+    LLVM_VERSION: 17
     OPAM_ROOT: "${CI_PROJECT_DIR}/_opam"
     CLEAN_OPAM_CACHE: "false"
     CLEAN_DUNE_CACHE: "false"
     HOMEBREW_NO_INSTALL_CLEANUP: 1
     HOMEBREW_NO_AUTO_UPDATE: 1
+    # llvm@17 is keg-only, so set up environment for compilers to find it
+    LDFLAGS: "-L/opt/homebrew/opt/llvm@${LLVM_VERSION}/lib"
+    CPPFLAGS: "-I/opt/homebrew/opt/llvm@${LLVM_VERSION}/include"
   cache:
     key: "macOS-$OCAML_VERSION"
     paths:
@@ -135,7 +140,9 @@ bundle-mac:
   script:
     - cd "$CI_PROJECT_DIR"
     # python@3.9 is required by z3 via depext (conf-python-3)
-    - brew install opam python@3.9 llvm@17
+    - brew install opam python@3.9 llvm@${LLVM_VERSION}
+    # llvm is keg-only, so add it to PATH
+    - export PATH="/opt/homebrew/opt/llvm@${LLVM_VERSION}/bin:$PATH"
     - if [ "$CLEAN_OPAM_CACHE" == "true" ]; then echo "cleaning _opam cache as explicitly requested"; rm -fR _opam; fi
     - if [ "$CLEAN_DUNE_CACHE" == "true" ]; then echo "cleaning _build cache as explicitly requested"; rm -fR _build; fi
     - if [ -d _opam ]; then echo "reusing local opam switch from CI cache"; fi
