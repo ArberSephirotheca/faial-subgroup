@@ -26,6 +26,86 @@ type t = {
 }
 
 let name (k : t) : string = k.name
+let global_set (k : t) : Variable.Set.t = Params.to_set k.global_variables
+let local_set (k : t) : Variable.Set.t = Params.to_set k.local_variables
+
+let parameter_set (k : t) : Variable.Set.t =
+  Variable.Set.union (local_set k) (global_set k)
+
+let kvs_to_string (kvs : (string * int) list) : string =
+  let kvs =
+    kvs
+    |> List.map (fun (k, v) -> k ^ ":" ^ string_of_int v)
+    |> String.concat ", "
+  in
+  "{" ^ kvs ^ "}"
+
+let subst_vars (kvs : (Variable.t * Exp.nexp) list) (k : t) : t =
+  let keys = List.map fst kvs |> Variable.Set.of_list in
+  let kvs =
+    kvs
+    |> List.map (fun (k, n) -> (Variable.name k, n))
+    |> Subst.SubstAssoc.make
+  in
+  {
+    k with
+    pre = Code.PSubstAssoc.M.b_subst kvs k.pre;
+    code = Code.PSubstAssoc.subst kvs k.code;
+    global_variables = Params.remove_all keys k.global_variables;
+    local_variables = Params.remove_all keys k.local_variables;
+  }
+
+let assign_globals (kvs : (string * int) list) (k : t) : t =
+  let keys =
+    List.map fst kvs |> List.map Variable.from_name |> Variable.Set.of_list
+  in
+  if Common.list_is_empty kvs then k
+  else
+    let global_set = global_set k in
+    let non_global_keys = Variable.Set.diff keys global_set in
+    if not (Variable.Set.is_empty non_global_keys) then
+      let local_kvs =
+        List.filter
+          (fun (k, _) ->
+            Variable.Set.mem (Variable.from_name k) non_global_keys)
+          kvs
+        |> kvs_to_string
+      in
+      let global_set = Variable.set_to_string global_set in
+      raise
+        (invalid_arg
+           ("The following keys are not thread-global parameters: locals="
+          ^ local_kvs ^ " globals={" ^ global_set ^ "}"))
+    else ();
+    let kvs = List.map (fun (x, n) -> (Variable.from_name x, Num n)) kvs in
+    subst_vars kvs k
+
+let inline_unit_var (x : Variable.t) (dim : int) (k : t) : t =
+  if dim = 1 then subst_vars [ (x, Num 0) ] k else k
+
+let inline_unit_dim ~x ~y ~z (d : Dim3.t) (k : t) : t =
+  k |> inline_unit_var x d.x |> inline_unit_var y d.y |> inline_unit_var z d.z
+
+let set_block_dim (d : Dim3.t) (k : t) : t =
+  { k with block_dim = Some d }
+  |> inline_unit_dim ~x:Variable.tid_x ~y:Variable.tid_y ~z:Variable.tid_z d
+
+let set_grid_dim (d : Dim3.t) (k : t) : t =
+  { k with grid_dim = Some d }
+  |> inline_unit_dim ~x:Variable.bid_x ~y:Variable.bid_y ~z:Variable.bid_z d
+
+let try_set_block_dim (d : Dim3.t option) (k : t) : t =
+  match d with Some d -> set_block_dim d k | None -> k
+
+let try_set_grid_dim (d : Dim3.t option) (k : t) : t =
+  match d with Some d -> set_grid_dim d k | None -> k
+
+let apply_arch_binders (d : Architecture.Defaults.t) (k : t) : t =
+  {
+    k with
+    global_variables = Params.union_right k.global_variables d.globals;
+    local_variables = Params.union_right k.local_variables d.locals;
+  }
 
 let apply_arch (a : Architecture.t) (k : t) : t =
   let d = Architecture.to_defaults a in
@@ -34,10 +114,9 @@ let apply_arch (a : Architecture.t) (k : t) : t =
     k with
     arrays = (match a with Grid -> arrays | Block -> k.arrays);
     code = Code.apply_arch (Variable.MapSetUtil.map_to_set arrays) a k.code;
-    global_variables = Params.union_right k.global_variables d.globals;
-    local_variables = Params.union_right k.local_variables d.locals;
     pre = b_and (Architecture.Defaults.to_bexp d) k.pre;
   }
+  |> apply_arch_binders d
 
 let is_global (k : t) : bool = k.visibility = Global
 let is_device (k : t) : bool = k.visibility = Device
@@ -102,39 +181,6 @@ let clear (k : t) : t =
 let opt (k : t) : t =
   { k with pre = Constfold.b_opt k.pre; code = Code.opt k.code }
 
-let global_set (k : t) : Variable.Set.t = Params.to_set k.local_variables
-let local_set (k : t) : Variable.Set.t = Params.to_set k.local_variables
-
-let parameter_set (k : t) : Variable.Set.t =
-  Variable.Set.union (local_set k) (global_set k)
-
-let assign_globals (kvs : (string * int) list) (k : t) : t =
-  if Common.list_is_empty kvs then k
-  else
-    (* retrieve a set of key-values *)
-    let keys =
-      kvs |> List.split |> fst
-      |> List.map Variable.from_name
-      |> Variable.Set.of_list
-    in
-    let non_global_keys = Variable.Set.diff keys (global_set k) in
-    if Variable.Set.is_empty non_global_keys then
-      raise
-        (invalid_arg
-           ("The following keys are not thread-global parameters: "
-           ^ Variable.set_to_string non_global_keys))
-    else ();
-    let kvs =
-      kvs |> List.map (fun (x, n) -> (x, Num n)) |> Subst.SubstAssoc.make
-    in
-    {
-      k with
-      pre = Code.PSubstAssoc.M.b_subst kvs k.pre;
-      code = Code.PSubstAssoc.subst kvs k.code;
-      global_variables = Params.remove_all keys k.global_variables;
-      local_variables = Params.remove_all keys k.local_variables;
-    }
-
 let vars_distinct (k : t) : t =
   { k with code = Code.vars_distinct k.code (parameter_set k) }
 
@@ -183,25 +229,12 @@ let inline_inferred (k : t) : t =
   in
   assign_globals key_vals k
 
-let inline_all ~globals ~block_dim ~grid_dim (k : t) : t =
-  let or_ o1 o2 = if Option.is_some o1 then o1 else o2 in
-  let block_dim = or_ k.block_dim block_dim in
-  let grid_dim = or_ k.grid_dim grid_dim in
+let inline_globals (globals : (string * int) list) (k : t) : t =
   let to_dim k d =
     d |> Option.map (fun x -> [ (k, x) ]) |> Option.value ~default:[]
   in
-  let extra =
-    [ (Variable.tid_list, block_dim); (Variable.bid_list, grid_dim) ]
-    |> List.concat_map (function
-      | [ x; y; z ], Some Dim3.{ x = v1; y = v2; z = v3 } ->
-          [ (x, v1); (y, v2); (z, v3) ]
-      | _, _ -> [])
-    |> List.filter_map (fun (k, v) ->
-        if v = 1 then Some (Variable.name k, 0) else None)
-  in
-  k
-  |> assign_globals (globals @ extra)
-  |> inline_dims (to_dim "blockDim" block_dim @ to_dim "gridDim" grid_dim)
+  k |> assign_globals globals
+  |> inline_dims (to_dim "blockDim" k.block_dim @ to_dim "gridDim" k.grid_dim)
   |> inline_inferred
 
 let used_variables (k : t) : Variable.Set.t =

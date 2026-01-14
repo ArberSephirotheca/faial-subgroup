@@ -162,17 +162,18 @@ module Solver = struct
     in
     let ks =
       s.kernels
-      |> List.map (Kernel.filter_access retain_acc)
-      |> List.map (fun k ->
-          let vs : Variable.Set.t =
-            let open Kernel in
-            Metric.supported_arrays k.arrays s.metric
+      |> List.map (fun (k : Protocols.Kernel.t) ->
+          let open Protocols.Kernel in
+          let k = Kernel.filter_access retain_acc k in
+          let k =
+            let vs : Variable.Set.t =
+              let open Kernel in
+              Metric.supported_arrays k.arrays s.metric
+            in
+            Kernel.filter_array (fun x -> Variable.Set.mem x vs) k
           in
-          Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
-      |> List.map
-           (Kernel.inline_all ~block_dim:(Some s.block_dim)
-              ~grid_dim:(Some s.grid_dim) ~globals:s.params)
-      |> List.map Kernel.opt
+          k |> set_block_dim s.block_dim |> set_grid_dim s.grid_dim
+          |> inline_globals s.params |> opt)
     in
     List.map (pair (sliced_cost s)) ks
 end

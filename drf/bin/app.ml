@@ -154,11 +154,12 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   match a.only_array with
   | Some arr -> Protocols.Kernel.filter_array (fun x -> Variable.name x = arr) k
   | None -> k)
-  (* 1. apply block-level/grid-level analysis constraints *)
+  (* 1. apply block-level/grid-level analysis constraints and set dimensions *)
+  |> Protocols.Kernel.try_set_block_dim a.block_dim
+  |> Protocols.Kernel.try_set_grid_dim a.grid_dim
   |> Protocols.Kernel.apply_arch arch
   (* 2. inline global assignments, including block_dim/grid_dim *)
-  |> Protocols.Kernel.inline_all ~grid_dim:a.grid_dim ~block_dim:a.block_dim
-       ~globals:a.params
+  |> Protocols.Kernel.inline_globals a.params
   (* 2.1 inline block_id as a constant when architecture is Grid *)
   |> (fun k ->
   match (arch, a.block_idx_1) with

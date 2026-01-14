@@ -115,23 +115,24 @@ module Solver = struct
       else if s.only_writes then Protocols.Access.is_write
       else fun a -> Protocols.Access.is_read a || Protocols.Access.is_write a
     in
-    let clean ks =
-      ks
-      |> (if s.only_reads || s.only_writes then
-            List.map (Protocols.Kernel.filter_access retain_acc)
-          else fun x -> x)
-      |> List.map (fun k ->
-          if s.metric = CountAccesses then k
-          else
-            let vs : Variable.Set.t =
-              let open Protocols.Kernel in
-              Metric.supported_arrays k.arrays s.metric
-            in
-            Protocols.Kernel.filter_array (fun x -> Variable.Set.mem x vs) k)
-      |> List.map
-           (Protocols.Kernel.inline_all ~block_dim:(Some s.block_dim)
-              ~grid_dim:(Some s.grid_dim) ~globals:s.params)
-      |> List.map Protocols.Kernel.opt
+    let clean =
+      List.map (fun (k : Protocols.Kernel.t) ->
+          let open Protocols.Kernel in
+          let k =
+            if s.only_reads || s.only_writes then filter_access retain_acc k
+            else k
+          in
+          let k =
+            if s.metric = CountAccesses then k
+            else
+              let vs : Variable.Set.t =
+                let open Protocols.Kernel in
+                Metric.supported_arrays k.arrays s.metric
+              in
+              filter_array (fun x -> Variable.Set.mem x vs) k
+          in
+          k |> set_block_dim s.block_dim |> set_grid_dim s.grid_dim
+          |> inline_globals s.params)
     in
     let kernels1 = clean s.kernels1 in
     let kernels2 =
