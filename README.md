@@ -14,9 +14,8 @@ Kernel 'saxpy' is DRF!
 # Binary distribution
 
 ### [Download `faial` for Linux x86-64bits](https://gitlab.com/umb-svl/faial/-/jobs/artifacts/main/raw/bundle/faial.tar.bz2?job=bundle-lin&inline=false)
-<!--
 ### [Download `faial` for macOS arm64 (M1/M2/M3)](https://gitlab.com/umb-svl/faial/-/jobs/artifacts/main/raw/bundle/faial.tar.bz2?job=bundle-mac&inline=false)
--->
+
 Instructions:
 1. Create a directory to hold the binary distribution, say `/opt/faial`
 2. Extract the binary distribution archive `faial.tar.bz2`

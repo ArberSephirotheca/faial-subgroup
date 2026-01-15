@@ -144,7 +144,6 @@ build-container:
 
 
 build-mac:
-  when: manual
   stage: build
   <<: *macos_cache
   script:
@@ -171,7 +170,6 @@ build-mac:
       - LICENSE
 
 bundle-mac:
-  when: manual
   stage: deploy
   <<: *macos_cache
   dependencies:
