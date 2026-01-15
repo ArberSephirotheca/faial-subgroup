@@ -29,6 +29,15 @@ cp \
   ../faial-cost \
   bin/ &&
 cp ../scripts/faial-drf ../README.md ../LICENSE  ./ &&
+# macOS-specific: copy GMP and update binary references
+if [ "$OSTYPE" == "darwin"* ] || [ "$Z3_DLL" == "libz3.dylib" ]; then
+  cp /opt/homebrew/opt/gmp/lib/libgmp.10.dylib bin/ &&
+  for binary in bin/faial-drf bin/faial-bc bin/c-ast bin/wgsl-ast bin/faial-cost-dyn bin/faial-cost; do
+    if [ -f "$binary" ]; then
+      install_name_tool -change /opt/homebrew/opt/gmp/lib/libgmp.10.dylib @loader_path/libgmp.10.dylib "$binary"
+    fi
+  done
+fi &&
 # download z3
 mkdir lib/ &&
 wget -nv --content-disposition "https://github.com/Z3Prover/z3/releases/download/z3-${Z3_VERSION}/z3-${Z3_VERSION}-${Z3_ARCH}.zip" &&
