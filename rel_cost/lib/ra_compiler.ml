@@ -189,7 +189,7 @@ end = struct
 end
 
 module Make (LOG : Logger.Logger) = struct
-  module I = Metric_analysis.Make (LOG)
+  module M = Metric_analysis.Make (LOG)
   module L = Linearize_index.Make (LOG)
 
   module Context = struct
@@ -270,7 +270,7 @@ module Make (LOG : Logger.Logger) = struct
     in
     let lin = L.linearize cfg k.arrays in
     let params = k.global_variables in
-    let idx_analysis = I.run m cfg ~strategy in
+    let idx_analysis = M.run m cfg ~strategy in
     let uniform_loop =
       Uniform_range.uniform (to_optimize strategy) params cfg.block_dim
     in
@@ -283,18 +283,21 @@ module Make (LOG : Logger.Logger) = struct
           let* p, metric1 = from_p ctx p in
           let* q, metric2 = from_p ctx q in
           Ok (Seq (p, q), Stats.add metric1 metric2)
-      | Access { array = x; index = l; _ } ->
-          Ok
-            (l
-            |> lin x (* Returns None when the array is being ignored *)
-            |> Option.map (fun index ->
-                let cost =
-                  idx_analysis ~locals:ctx.locals ~index
-                    ~divergence:ctx.divergence ~verbose:false
-                in
-                (cost.code, Stats.make_index Accuracy.Exact))
-              (* When the array is ignored, return Skip *)
-            |> Option.value ~default:(Ra.Stmt.Skip, Stats.empty))
+      | Access a ->
+          let* a = lin a in
+          let* index =
+            match a.index with
+            | [ n ] -> Ok n
+            | _ ->
+                Error
+                  (Printf.sprintf "Cannot analyze multi-dimensional access: %s"
+                     (Access.to_string a))
+          in
+          let cost =
+            idx_analysis ~locals:ctx.locals ~index ~divergence:ctx.divergence
+              ~verbose:false
+          in
+          Ok (cost.code, Stats.make_index Accuracy.Exact)
       | Sync _ -> Ok (Skip, Stats.empty)
       | Decl { body = p; var; _ } -> from_p (Context.add_local var ctx) p
       | If (b, p, q) ->

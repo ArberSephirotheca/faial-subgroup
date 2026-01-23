@@ -7,6 +7,14 @@ open Protocols
 
 type array_size = { byte_count : int; dim : int list }
 
+let no_linearization (a : Access.t) : (Exp.nexp, string) Result.t =
+  match a.index with
+  | [ n ] -> Ok n
+  | _ ->
+      Error
+        (Printf.sprintf "Unexpected multi-dimensional access: %s"
+           (Access.to_string a))
+
 module Make (L : Logger.Logger) = struct
   (* Given an n-dimensional array access apply type modifiers *)
   let shared_multiplier ~bytes_per_word ~byte_count (l : Exp.nexp list) :
@@ -66,17 +74,24 @@ module Make (L : Logger.Logger) = struct
 
   (* Flatten n-dimensional array and apply word size *)
   let linearize (cfg : Config.t) (mem : Memory.t Variable.Map.t) :
-      Variable.t -> Exp.nexp list -> Exp.nexp option =
+      Access.t -> (Access.t, string) Result.t =
     let sizes = get_sizes mem ~bytes_per_word:cfg.bytes_per_word in
-    fun x l ->
-      Variable.Map.find_opt x sizes
-      |> Option.map (fun a ->
-          l
-          |> (if Variable.Map.find x mem |> Memory.is_shared then
-                shared_multiplier ~bytes_per_word:cfg.bytes_per_word
-                  ~byte_count:a.byte_count
-              else global_multiplier ~byte_count:a.byte_count)
-          |> flatten_multi_dim a.dim |> Constfold.n_opt)
+    fun (a : Access.t) ->
+      Variable.Map.find_opt a.array sizes
+      |> Option.map (fun s ->
+          let idx =
+            a.index
+            |> (if Variable.Map.find a.array mem |> Memory.is_shared then
+                  shared_multiplier ~bytes_per_word:cfg.bytes_per_word
+                    ~byte_count:s.byte_count
+                else global_multiplier ~byte_count:s.byte_count)
+            |> flatten_multi_dim s.dim |> Constfold.n_opt
+          in
+          { a with index = [ idx ] })
+      |> Option.to_result
+           ~none:
+             (Printf.sprintf "linearize: Could not find a dimension of array %s"
+                (Variable.name a.array))
 end
 
 module Silent = Make (Logger.Silent)

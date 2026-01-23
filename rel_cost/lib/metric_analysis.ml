@@ -212,7 +212,7 @@ module Make (L : Logger.Logger) = struct
   let run_bc (ctx : t) : IndexCost.t =
     let vec = to_vectorized ctx in
     let index = bc_remove_offset ctx in
-    (match Vectorized.to_cost Metric.BankConflicts index vec with
+    (match Vectorized.bank_conflicts index vec with
       | Ok cost -> cost
       | Error msg ->
           L.info
@@ -236,7 +236,7 @@ module Make (L : Logger.Logger) = struct
       |> IndexCost.from_cost)
     else
       let to_cost index =
-        (match Vectorized.to_cost UncoalescedAccesses index vec with
+        (match Vectorized.uncoalesced index vec with
           | Ok cost ->
               if ty = UA.Inc then (
                 L.info

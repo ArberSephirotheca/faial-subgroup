@@ -2,10 +2,9 @@ open Stage0
 open Protocols
 open Inference
 open Rel_cost
+open Vectors
 
 module Data = struct
-  open Vectorized
-
   type t = Int of int | Vector of int list
 
   let from_json (j : Yojson.Basic.t) : t option =

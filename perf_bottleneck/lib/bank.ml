@@ -3,6 +3,7 @@ module IntMap = Common.IntMap
 module Variable = Protocols.Variable
 open Protocols
 open Rel_cost
+open Vectors
 
 module Code = struct
   type t =
@@ -216,9 +217,8 @@ module Code = struct
     in
     to_approx
 
-  let gen_random (_ : Variable.t) (ctx : Vectorized.t) :
-      Vectorized.NMap.t Option.t =
-    Some (Vectorized.NMap.random ctx.thread_count ())
+  let gen_random (_ : Variable.t) (ctx : Vectorized.t) : NMap.t Option.t =
+    Some (NMap.random ctx.thread_count ())
 
   let eval_res ?(max_cost = -1) (cfg : Config.t) (m : Metric.t) :
       Vectorized.t -> t -> (Cost.t, string) Result.t =
@@ -232,15 +232,19 @@ module Code = struct
       in
       let rec eval (c : Cost.t) (ctx : Vectorized.t) :
           t -> (Cost.t, string) Result.t = function
-        | Index a -> Vectorized.to_cost m a ctx
+        | Index a ->
+            let a =
+              let x = Variable.from_name "A" in
+              Access.read x [ a ]
+            in
+            Vectorized.to_cost m a ctx
         | Decl { body = a; _ } ->
             (* Ignore variables so that if eval uses an unknown variable it
            gets stuck. *)
             eval c ctx a
         | Cond (e, a) ->
             let* v = Vectorized.b_eval_res e ctx in
-            if Vectorized.BMap.some_true v then
-              eval c (Vectorized.restrict e ctx) a
+            if BMap.some_true v then eval c (Vectorized.restrict e ctx) a
             else Ok c
         | Loop { range = r; body = a } -> (
             let* l = Vectorized.iter_res r ctx in
@@ -270,10 +274,13 @@ module Code = struct
       let lin = L.linearize cfg arrays in
       let rec on_p (locals : Variable.Set.t) : Code.t -> (Variable.t * t) Seq.t
           = function
-        | Access { array = x; index = l; _ } ->
-            l |> lin x
-            |> Option.map (fun e -> Seq.return (x, Index e))
-            |> Option.value ~default:Seq.empty
+        | Access a ->
+            lin a
+            |> Result.map (fun (a : Access.t) ->
+                match a.index with
+                | [ e ] -> Seq.return (a.array, Index e)
+                | _ -> Seq.empty)
+            |> Result.value ~default:Seq.empty
         | Sync _ -> Seq.empty
         | Decl { body = p; var; ty } ->
             p

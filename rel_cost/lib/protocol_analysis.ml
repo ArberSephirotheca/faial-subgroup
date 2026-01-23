@@ -34,11 +34,7 @@ module Make (L : Logger.Logger) = struct
     let rec simpl : Protocols.Code.t -> Protocols.Code.t = function
       | Access a ->
           (* Flatten n-dimensional array and apply word size *)
-          let a =
-            a.index |> lin a.array
-            |> Option.map (fun e -> { a with index = [ e ] })
-            |> Option.value ~default:a
-          in
+          let a = a |> lin |> Result.value ~default:a in
           Access a
       | Skip -> Skip
       | If (b, p, q) -> If (b, simpl p, simpl q)
