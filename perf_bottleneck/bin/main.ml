@@ -137,7 +137,7 @@ module Solver = struct
         let bank = if a.erase_ctx then Bank.erase_context bank else bank in
         if a.verbose then prerr_endline (Bank.to_string bank);
         let to_cost value = Cost.from_int ~value ~exact:true () in
-        let max_cost = Metric.max_cost_from a.config a.metric |> to_cost in
+        let max_cost = Metric.max_cost a.config.threads_per_warp a.config a.metric |> to_cost in
         let analysis_time_secs, r_cost =
           time_analysis (fun () ->
               Bank.index_cost ~verbose:a.verbose a.config a.metric bank)

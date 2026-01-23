@@ -218,7 +218,7 @@ module Code = struct
     to_approx
 
   let gen_random (_ : Variable.t) (ctx : Vectorized.t) : NMap.t Option.t =
-    Some (NMap.random ctx.thread_count ())
+    Some (NMap.random ctx.config.threads_per_warp ())
 
   let eval_res ?(max_cost = -1) (cfg : Config.t) (m : Metric.t) :
       Vectorized.t -> t -> (Cost.t, string) Result.t =
@@ -226,7 +226,7 @@ module Code = struct
     fun ctx ->
       let max_cost : Cost.t =
         if max_cost < 0 then
-          Metric.max_cost_from cfg m |> fun value ->
+          Metric.max_cost cfg.threads_per_warp cfg m |> fun value ->
           Cost.from_int ~value ~exact:true ()
         else Cost.from_int ~value:max_cost ~exact:true ()
       in

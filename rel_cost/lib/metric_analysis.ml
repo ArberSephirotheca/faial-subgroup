@@ -232,7 +232,7 @@ module Make (L : Logger.Logger) = struct
       L.info
         ("UA: found coalesced access (warp-uniform): "
        ^ Exp.n_to_string ctx.index);
-      Cost.from_int ~value:Metric.min_uncoalesced_accesses ~exact:true ()
+      Cost.from_int ~value:Metric.UncoalescedAccesses.min_cost ~exact:true ()
       |> IndexCost.from_cost)
     else
       let to_cost index =

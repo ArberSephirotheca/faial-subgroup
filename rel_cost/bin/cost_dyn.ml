@@ -87,7 +87,7 @@ module Runner = struct
     in
     let vec : Vectorized.t =
       let ctx =
-        Vectorized.make ~bank_count ~thread_count:threads_per_warp
+        Vectorized.make config
         |> Vectorized.put_tids block_dim
       in
       List.fold_left

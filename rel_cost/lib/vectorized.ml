@@ -2,8 +2,7 @@ open Protocols
 open Vectors
 
 type t = {
-  bank_count : int;
-  thread_count : int;
+  config: Config.t;
   cond : Exp.bexp;
   env : NMap.t Variable.Map.t;
 }
@@ -16,8 +15,8 @@ let to_string (ctx : t) : string =
   in
   "cond: " ^ Exp.b_to_string ctx.cond ^ "\nenv:\n" ^ env
 
-let make ~bank_count ~thread_count : t =
-  { cond = Exp.Bool true; env = Variable.Map.empty; bank_count; thread_count }
+let make (config : Config.t) : t =
+  { cond = Exp.Bool true; env = Variable.Map.empty; config; }
 
 let restrict (b : Exp.bexp) (ctx : t) : t =
   let open Exp in
@@ -29,10 +28,10 @@ let put (x : Variable.t) (v : NMap.t) (ctx : t) : t =
 let get (x : Variable.t) (ctx : t) : NMap.t option =
   Variable.Map.find_opt x ctx.env
 
-let zero_cost (ctx : t) : NMap.t = NMap.constant ~count:ctx.bank_count ~value:0
+let zero_cost (ctx : t) : NMap.t = NMap.constant ~count:ctx.config.bank_count ~value:0
 
 let put_tids (block_dim : Dim3.t) (ctx : t) : t =
-  let wids = NMap.make ctx.thread_count (fun x -> x) in
+  let wids = NMap.make ctx.config.threads_per_warp (fun x -> x) in
   let n_tidx = NMap.map (fun id -> id mod block_dim.x) wids in
   let n_tidy = NMap.map (fun id -> id / block_dim.x mod block_dim.y) wids in
   let n_tidz =
@@ -53,7 +52,7 @@ let tid_opt (ctx : t) : Dim3.t array option =
 let tid (ctx : t) : Dim3.t array = tid_opt ctx |> Option.get
 
 let from_config (params : Config.t) : t =
-  make ~bank_count:params.bank_count ~thread_count:params.threads_per_warp
+  make params
   |> put_tids params.block_dim
 
 let ( let* ) = Result.bind
@@ -64,7 +63,7 @@ let rec n_eval_res (n : Exp.nexp) (ctx : t) : (NMap.t, string) Result.t =
       match Variable.Map.find_opt x ctx.env with
       | Some x -> Ok x
       | None -> Error ("undefined variable: " ^ Variable.name x))
-  | Num n -> Ok (NMap.constant ~count:ctx.thread_count ~value:n)
+  | Num n -> Ok (NMap.constant ~count:ctx.config.threads_per_warp ~value:n)
   | CastInt (CastBool n) -> n_eval_res n ctx
   | CastInt e ->
       let* e = b_eval_res e ctx in
@@ -91,7 +90,7 @@ let rec n_eval_res (n : Exp.nexp) (ctx : t) : (NMap.t, string) Result.t =
 
 and b_eval_res (b : Exp.bexp) (ctx : t) : (BMap.t, string) Result.t =
   match b with
-  | Bool b -> Ok (BMap.constant ~count:ctx.thread_count ~value:b)
+  | Bool b -> Ok (BMap.constant ~count:ctx.config.threads_per_warp ~value:b)
   | CastBool (CastInt e) -> b_eval_res e ctx
   | CastBool e ->
       let* e = n_eval_res e ctx in
@@ -119,16 +118,16 @@ let max_cost (m : Metric.t) (ctx : t) : Cost.t =
   let thread_count =
     match b_eval_res ctx.cond ctx with
     | Ok enabled -> BMap.count true enabled
-    | Error _ -> ctx.thread_count
+    | Error _ -> ctx.config.threads_per_warp
   in
   Cost.from_int
-    ~value:(Metric.max_cost ~thread_count ~bank_count:ctx.bank_count m)
+    ~value:(Metric.max_cost thread_count ctx.config m)
     ~exact:false ()
 
 let tid_count (ctx : t) : int =
   match b_eval_res ctx.cond ctx with
   | Ok enabled -> BMap.count true enabled
-  | Error _ -> ctx.thread_count
+  | Error _ -> ctx.config.threads_per_warp
 
 let to_cost ?(verbose = false) (m : Metric.t) (a : Access.t) (ctx : t) :
     (Cost.t, string) Result.t =
@@ -143,19 +142,19 @@ let to_cost ?(verbose = false) (m : Metric.t) (a : Access.t) (ctx : t) :
   let* idx = n_eval_res idx ctx in
   let* enabled = b_eval_res ctx.cond ctx in
   let tids = tid ctx in
-  Metric.run ~verbose ~bank_count:ctx.bank_count m idx enabled tids
+  Metric.run ~verbose ctx.config m idx enabled tids
 
 let bank_conflicts (index : Exp.nexp) (ctx : t) : (Cost.t, string) Result.t =
-  let* idx = n_eval_res index ctx |> Result.map NMap.to_array in
-  let* enabled = b_eval_res ctx.cond ctx |> Result.map BMap.to_array in
+  let* idx = n_eval_res index ctx in
+  let* enabled = b_eval_res ctx.cond ctx in
   let tids = tid ctx in
-  Ok (Metric.bank_conflicts ctx.bank_count idx enabled tids)
+  Ok (Metric.BankConflicts.run ctx.config idx enabled tids)
 
 let uncoalesced (index : Exp.nexp) (ctx : t) : (Cost.t, string) Result.t =
-  let* idx = n_eval_res index ctx |> Result.map NMap.to_array in
-  let* enabled = b_eval_res ctx.cond ctx |> Result.map BMap.to_array in
+  let* idx = n_eval_res index ctx in
+  let* enabled = b_eval_res ctx.cond ctx in
   let tids = tid ctx in
-  Ok (Metric.uncoalesced idx enabled tids)
+  Ok (Metric.UncoalescedAccesses.run ctx.config idx enabled tids)
 
 let add = NMap.pointwise ( + )
 
