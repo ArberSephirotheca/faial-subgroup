@@ -1,9 +1,12 @@
+open Stage0
 open Rel_cost
 open Protocols
 open Cmdliner
 open Symbolic_metric_analysis
 open Rel_cost_parsing.Parsers
 open Rel_cost_parsing
+
+module StringMap = Common.StringMap
 
 (* Factory function for Config objects *)
 let make_config (threads_per_warp : int) (block_dim : Dim3.t) : Config.t =
@@ -78,53 +81,51 @@ let load_tactic_from_file = function
             (Printf.sprintf "Failed to parse tactic file '%s': %s" filename msg)
       )
 
-(* Check if a variable name is thread-indexed (ends with $digit) *)
-let is_thread_indexed (var_name : string) : bool =
-  let parts = String.split_on_char '$' var_name in
-  match parts with
-  | [ _; suffix ] -> (
-      try
-        ignore (int_of_string suffix);
-        true
-      with _ -> false)
-  | _ -> false
+module ThreadVariable = struct
+  type t = {name: string; tid: int}
 
-(* Extract base name and thread index from thread-indexed variable *)
-let parse_thread_var (var_name : string) : (string * int) option =
-  let parts = String.split_on_char '$' var_name in
-  match parts with
-  | [ base; suffix ] -> (
-      try Some (base, int_of_string suffix) with _ -> None)
-  | _ -> None
+  (* Extract base name and thread index from thread-indexed variable *)
+  let of_string (var_name : string) : t option =
+    match String.split_on_char '$' var_name with
+    | [ name; suffix ] -> (
+        let ( let* ) = Option.bind in
+        let* tid = int_of_string_opt suffix in
+        Some {name; tid}
+      )
+    | _ -> None
+
+  let of_var (v: Variable.t) : t option =
+    of_string (Variable.name v)
+
+end
+
 
 (* Group variables by base name for thread-indexed variables *)
 let group_thread_variables (var_values : (Variable.t * int) list) :
-    (string * (int * int) list) list * (Variable.t * int) list =
-  let thread_vars = ref [] in
-  let regular_vars = ref [] in
-
-  List.iter
-    (fun (var, value) ->
-      let var_name = Variable.label var in
-      if is_thread_indexed var_name then
-        match parse_thread_var var_name with
-        | Some (base, thread_idx) ->
-            thread_vars := (base, thread_idx, value) :: !thread_vars
-        | None -> regular_vars := (var, value) :: !regular_vars
-      else regular_vars := (var, value) :: !regular_vars)
-    var_values;
-
-  (* Group by base name *)
-  let grouped =
-    List.fold_left
-      (fun acc (base, thread_idx, value) ->
-        let existing = try List.assoc base acc with Not_found -> [] in
-        let updated = (thread_idx, value) :: existing in
-        (base, updated) :: List.remove_assoc base acc)
-      [] !thread_vars
+    (int * int) list StringMap.t * (Variable.t * int) list =
+  (* Partition into thread-indexed and regular variables *)
+  let thread_vars, regular_vars =
+    List.partition_map
+      (fun (var, value) ->
+        match ThreadVariable.of_var var with
+        | Some tv -> Either.Left (tv, value)
+        | None -> Either.Right (var, value))
+      var_values
   in
 
-  (grouped, !regular_vars)
+  (* Group by base name *)
+  let grouped_map =
+    List.fold_left
+      (fun acc ((tv : ThreadVariable.t), value) ->
+        StringMap.update tv.name
+          (fun existing ->
+            let list = Option.value ~default:[] existing in
+            Some ((tv.tid, value) :: list))
+          acc)
+      StringMap.empty thread_vars
+  in
+
+  (grouped_map, regular_vars)
 
 (* Format counterexample with readable decimal values and tabular display *)
 let format_counterexample (theorem : Theorem.t) (model : Z3.Model.model) :
@@ -193,12 +194,12 @@ let format_counterexample (theorem : Theorem.t) (model : Z3.Model.model) :
     in
 
     let thread_output =
-      if List.length thread_groups > 0 then
-        (* Sort thread groups alphabetically by base name *)
+      if not (StringMap.is_empty thread_groups) then
+        (* Convert to bindings and sort alphabetically by base name *)
         let sorted_groups =
-          List.sort
-            (fun (name1, _) (name2, _) -> String.compare name1 name2)
-            thread_groups
+          thread_groups
+          |> StringMap.bindings
+          |> List.sort (fun (name1, _) (name2, _) -> String.compare name1 name2)
         in
         "Thread-indexed variables:\n\n"
         ^ (List.map format_thread_table sorted_groups |> String.concat "\n\n")
