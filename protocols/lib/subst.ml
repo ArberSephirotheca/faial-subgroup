@@ -99,4 +99,25 @@ module SubstAssoc = struct
     |> fun x -> "[" ^ x ^ "]"
 end
 
+module Vars = struct
+  type t = nexp Variable.Map.t
+
+  let make = Variable.Map.of_list
+
+  let find (m : t) (k : Variable.t) : nexp option =
+    Variable.Map.find_opt k m
+
+  let is_empty = Variable.Map.is_empty
+
+  let put (m : t) (k : Variable.t) (n : nexp) : t =
+    Variable.Map.add k n m
+
+  let remove (m : t) (k : Variable.t) : t option =
+    let m = Variable.Map.remove k m in
+    if is_empty m then None else Some m
+
+  let to_string = Variable.map_to_string n_to_string
+end
+
 module ReplaceAssoc = Make (SubstAssoc)
+module ReplaceVars = Make (Vars)

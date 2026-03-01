@@ -681,6 +681,10 @@ module Theorem = struct
       | Optimize of { strategy : Gen_z3.Optimizer.Strategy.t; expr : Exp.nexp }
       | Prop of Exp.bexp
 
+    let subst (kvs: Subst.Vars.t) : t -> t = function
+      | Optimize o -> Optimize { o with expr = Subst.ReplaceVars.n_subst kvs o.expr }
+      | Prop e -> Prop (Subst.ReplaceVars.b_subst kvs e)
+
     let to_string : t -> string = function
       | Optimize { strategy = s; expr = e } ->
           Gen_z3.Optimizer.Strategy.to_string s ^ " " ^ Exp.n_to_string e
@@ -698,11 +702,29 @@ module Theorem = struct
     goals : Goal.t list;
   }
 
+  let config_subst (e: t) : Subst.Vars.t =
+    [
+      Variable.from_name "$config.threads_per_warp", Num e.cfg.threads_per_warp;
+      Variable.from_name "$config.bank_count", Num e.cfg.bank_count;
+    ]
+    |> Subst.Vars.make
+
+  let inline_config (e : t) : t =
+    let kvs = config_subst e in
+    let b_subst = Subst.ReplaceVars.b_subst kvs in
+    {
+      e with
+      active_threads = b_subst e.active_threads;
+      assumptions = b_subst e.assumptions;
+      goals = List.map (Goal.subst kvs) e.goals;
+    }
+
   (* Execute all goals in a theorem *)
   let execute ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
       ?(debug = true) ?(verbose = false) ?(generator = Constraints.default)
       ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) :
       (TheoremResult.t, string) Result.t list =
+    let thm = inline_config thm in
     let st : context =
       make generator thm.cfg thm.locals thm.globals
       (* set active threads *)
