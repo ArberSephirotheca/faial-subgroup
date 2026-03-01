@@ -1,11 +1,7 @@
 open Protocols
 open Vectors
 
-type t = {
-  config: Config.t;
-  cond : Exp.bexp;
-  env : NMap.t Variable.Map.t;
-}
+type t = { config : Config.t; cond : Exp.bexp; env : NMap.t Variable.Map.t }
 
 let to_string (ctx : t) : string =
   let env =
@@ -16,7 +12,7 @@ let to_string (ctx : t) : string =
   "cond: " ^ Exp.b_to_string ctx.cond ^ "\nenv:\n" ^ env
 
 let make (config : Config.t) : t =
-  { cond = Exp.Bool true; env = Variable.Map.empty; config; }
+  { cond = Exp.Bool true; env = Variable.Map.empty; config }
 
 let restrict (b : Exp.bexp) (ctx : t) : t =
   let open Exp in
@@ -28,7 +24,8 @@ let put (x : Variable.t) (v : NMap.t) (ctx : t) : t =
 let get (x : Variable.t) (ctx : t) : NMap.t option =
   Variable.Map.find_opt x ctx.env
 
-let zero_cost (ctx : t) : NMap.t = NMap.constant ~count:ctx.config.bank_count ~value:0
+let zero_cost (ctx : t) : NMap.t =
+  NMap.constant ~count:ctx.config.bank_count ~value:0
 
 let put_tids (block_dim : Dim3.t) (ctx : t) : t =
   let wids = NMap.make ctx.config.threads_per_warp (fun x -> x) in
@@ -52,8 +49,7 @@ let tid_opt (ctx : t) : Dim3.t array option =
 let tid (ctx : t) : Dim3.t array = tid_opt ctx |> Option.get
 
 let from_config (params : Config.t) : t =
-  make params
-  |> put_tids params.block_dim
+  make params |> put_tids params.block_dim
 
 let ( let* ) = Result.bind
 

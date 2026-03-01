@@ -5,7 +5,6 @@ open Cmdliner
 open Symbolic_metric_analysis
 open Rel_cost_parsing.Parsers
 open Rel_cost_parsing
-
 module StringMap = Common.StringMap
 
 (* Factory function for Config objects *)
@@ -82,23 +81,19 @@ let load_tactic_from_file = function
       )
 
 module ThreadVariable = struct
-  type t = {name: string; tid: int}
+  type t = { name : string; tid : int }
 
   (* Extract base name and thread index from thread-indexed variable *)
   let of_string (var_name : string) : t option =
     match String.split_on_char '$' var_name with
-    | [ name; suffix ] -> (
+    | [ name; suffix ] ->
         let ( let* ) = Option.bind in
         let* tid = int_of_string_opt suffix in
-        Some {name; tid}
-      )
+        Some { name; tid }
     | _ -> None
 
-  let of_var (v: Variable.t) : t option =
-    of_string (Variable.name v)
-
+  let of_var (v : Variable.t) : t option = of_string (Variable.name v)
 end
-
 
 (* Group variables by base name for thread-indexed variables *)
 let group_thread_variables (var_values : (Variable.t * int) list) :
@@ -197,8 +192,7 @@ let format_counterexample (theorem : Theorem.t) (model : Z3.Model.model) :
       if not (StringMap.is_empty thread_groups) then
         (* Convert to bindings and sort alphabetically by base name *)
         let sorted_groups =
-          thread_groups
-          |> StringMap.bindings
+          thread_groups |> StringMap.bindings
           |> List.sort (fun (name1, _) (name2, _) -> String.compare name1 name2)
         in
         "Thread-indexed variables:\n\n"
@@ -224,35 +218,33 @@ let print_theorem_result (theorem : Theorem.t) = function
   | Error msg -> print_endline ("Error: " ^ msg)
 
 (* Unified benchmark function for all theorem execution modes *)
-let benchmark_execution ~generator ~tactic ~debug ~verbose ~solver ~theorem =
+let run ~generator ~tactic ~debug ~verbose ~solver ~theorem =
   time_it (fun () ->
       let results =
         Theorem.execute ~generator ~tactic ~debug ~verbose ~solver theorem
       in
       List.iter (print_theorem_result theorem) results)
 
-let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
-    ~(all : bool) ~(filename : string) ~(mode : RunMode.t)
-    ~(tactic_file : string option) ~(debug : bool) ~(verbose : bool)
-    ~(solver_backend : SolverBackend.t) ~(block_dim : Dim3.t) =
+let run_all ~(strategy : Constraints.t) ~(threads_per_warp : int) ~(all : bool)
+    ~(filename : string) ~(mode : RunMode.t) ~(tactic_file : string option)
+    ~(debug : bool) ~(verbose : bool) ~(solver_backend : SolverBackend.t)
+    ~(block_dim : Dim3.t) =
   let strategies = if all then Constraints.values else [ strategy ] in
   let cfg = make_config threads_per_warp block_dim in
   let theorem : Theorem.t = load_theorem_from_file filename cfg in
 
   (* Validate tactic file usage *)
   (match (mode, tactic_file) with
-  | (RunMode.Max | RunMode.Min), Some _ ->
+  | (Max | Min), Some _ ->
       Printf.printf
         "Warning: Tactic file ignored for %s mode (tactics only supported in \
          prove mode)\n\n"
         (RunMode.to_string mode)
-  | RunMode.Prove, Some tfile -> Printf.printf "Using tactic file: %s\n" tfile
+  | Prove, Some tfile -> Printf.printf "Using tactic file: %s\n" tfile
   | _ -> ());
 
   let tactic =
-    match mode with
-    | RunMode.Prove -> load_tactic_from_file tactic_file
-    | _ -> None
+    match mode with Prove -> load_tactic_from_file tactic_file | _ -> None
   in
 
   let solver_module = SolverBackend.to_module solver_backend in
@@ -264,8 +256,7 @@ let run_benchmarks ~(strategy : Constraints.t) ~(threads_per_warp : int)
     (fun generator ->
       Printf.printf "Strategy: %s\n" (Constraints.to_string generator);
       let time =
-        benchmark_execution ~generator ~tactic ~debug ~verbose
-          ~solver:solver_module ~theorem
+        run ~generator ~tactic ~debug ~verbose ~solver:solver_module ~theorem
       in
       Printf.printf "Time: %.3fs\n\n" time)
     strategies
@@ -275,8 +266,8 @@ let main (strategy : Constraints.t) (threads_per_warp : int) (filename : string)
     (all : bool) (mode : RunMode.t) (tactic_file : string option) (debug : bool)
     (verbose : bool) (solver_backend : SolverBackend.t) (block_dim : Dim3.t) :
     unit =
-  run_benchmarks ~strategy ~all ~threads_per_warp ~filename ~mode ~tactic_file
-    ~debug ~verbose ~solver_backend ~block_dim
+  run_all ~strategy ~all ~threads_per_warp ~filename ~mode ~tactic_file ~debug
+    ~verbose ~solver_backend ~block_dim
 
 let constraints_conv : Constraints.t Arg.conv =
   let parse s =
