@@ -11,18 +11,8 @@ type t = {
   use_dummy_array : bool;
 }
 
-let make
-    ~const_fold
-    ~distinct_vars
-    ~div_to_mult
-    ~expand_device
-    ~gen_params
-    ~mod_gv_args
-    ~racuda
-    ~simplify_kernel
-    ~toml
-    ~use_dummy_array
-  : t =
+let make ~const_fold ~distinct_vars ~div_to_mult ~expand_device ~gen_params
+    ~mod_gv_args ~racuda ~simplify_kernel ~toml ~use_dummy_array : t =
   {
     (* RaCUDA option enables all code generation flags *)
     const_fold = const_fold || racuda;

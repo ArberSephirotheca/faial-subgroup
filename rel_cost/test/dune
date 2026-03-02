@@ -1,0 +1,9 @@
+(tests
+ (names
+   test_metric_analysis
+   test_symbolic_metric_analysis
+   test_exp_parser
+   test_theorem_parser
+ )
+ (libraries stage0 protocols rel_cost rel_cost_parsing alcotest)
+)

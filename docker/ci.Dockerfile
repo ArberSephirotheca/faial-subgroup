@@ -6,9 +6,8 @@ FROM registry.gitlab.com/umb-svl/faial/faial:base
 USER faial
 
 # Install Ocaml dependencies
-ADD configure.sh /
-RUN eval $(opam config env) && \
-    sh /configure.sh -y
+ADD faial.opam /
+RUN cd / && opam install --deps-only /faial.opam --yes --with-test
 USER root
 RUN cd /usr/local && \
     wget -nv --content-disposition \
@@ -19,3 +18,5 @@ RUN cd /usr/local && \
     chmod a+xr /usr/local
 
 USER faial
+ENTRYPOINT ["opam", "exec", "--"]
+CMD ["/bin/bash", "--login"]

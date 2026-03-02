@@ -1,0 +1,10 @@
+(tests
+ (names
+   test_ctype
+   test_exp
+   test_gen_z3
+   test_gv_parser
+   test_range
+ )
+ (libraries stage0 protocols protocols_parsing alcotest)
+)

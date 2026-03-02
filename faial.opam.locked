@@ -1,0 +1,87 @@
+opam-version: "2.0"
+name: "faial"
+version: "dev"
+synopsis: "Static analysis tool for finding bugs in CUDA kernels"
+description:
+  "Faial is a static analysis tool for finding bugs in CUDA kernels, featuring data-race freedom (DRF) analysis and performance analysis."
+maintainer: "Tiago Cogumbreiro <cogumbreiro@users.sf.net>"
+authors: "Tiago Cogumbreiro <cogumbreiro@users.sf.net>"
+license: "MIT"
+homepage: "https://gitlab.com/umb-svl/faial"
+bug-reports: "https://gitlab.com/umb-svl/faial/-/issues"
+depends: [
+  "ANSITerminal" {= "0.8.5"}
+  "alcotest" {= "1.9.1" & with-test}
+  "astring" {= "0.8.5"}
+  "base" {= "v0.17.3" & dev}
+  "base-bigarray" {= "base"}
+  "base-bytes" {= "base"}
+  "base-domains" {= "base"}
+  "base-effects" {= "base"}
+  "base-nnp" {= "base"}
+  "base-threads" {= "base"}
+  "base-unix" {= "base"}
+  "camlp-streams" {= "5.0.1" & dev}
+  "cmdliner" {= "2.1.0"}
+  "conf-c++" {= "1.0"}
+  "conf-gmp" {= "5"}
+  "conf-pkg-config" {= "4"}
+  "conf-python-3" {= "9.0.0"}
+  "csexp" {= "1.5.2" & dev}
+  "dune" {= "3.20.2"}
+  "dune-build-info" {= "3.20.2" & dev}
+  "dune-configurator" {= "3.20.2" & dev}
+  "either" {= "1.0.0" & dev}
+  "fix" {= "20250919" & dev}
+  "fmt" {= "0.11.0" & with-test}
+  "fpath" {= "0.7.3"}
+  "menhir" {= "20250912"}
+  "menhirCST" {= "20250912"}
+  "menhirLib" {= "20250912"}
+  "menhirSdk" {= "20250912"}
+  "ocaml" {= "5.3.0"}
+  "ocaml-base-compiler" {= "5.3.0"}
+  "ocaml-compiler" {= "5.3.0"}
+  "ocaml-config" {= "3"}
+  "ocaml-options-vanilla" {= "1"}
+  "ocaml-syntax-shims" {= "1.0.0" & with-test}
+  "ocaml-version" {= "4.0.3" & dev}
+  "ocaml_intrinsics_kernel" {= "v0.17.1" & dev}
+  "ocamlbuild" {= "0.16.1"}
+  "ocamlfind" {= "1.9.8"}
+  "ocamlformat" {= "0.28.1" & dev}
+  "ocamlformat-lib" {= "0.28.1" & dev}
+  "ocp-indent" {= "1.9.0" & dev}
+  "otoml" {= "1.0.5"}
+  "ounit" {= "2.2.7" & with-test}
+  "ounit2" {= "2.2.7" & with-test}
+  "printbox" {= "0.12"}
+  "printbox-text" {= "0.12"}
+  "re" {= "1.14.0" & dev}
+  "seq" {= "base" & with-test}
+  "sexplib0" {= "v0.17.0" & dev}
+  "stdio" {= "v0.17.0" & dev}
+  "stdlib-shims" {= "0.3.0" & with-test}
+  "topkg" {= "1.1.1"}
+  "uucp" {= "17.0.0"}
+  "uuseg" {= "17.0.0" & dev}
+  "uutf" {= "1.0.4"}
+  "yojson" {= "3.0.0"}
+  "z3" {= "4.15.2"}
+  "zarith" {= "1.14"}
+]
+build: [
+  ["dune" "subst"] {dev}
+  [
+    "dune"
+    "build"
+    "-p"
+    name
+    "-j"
+    jobs
+    "@install"
+    "@runtest" {with-test}
+    "@doc" {with-doc}
+  ]
+]
+dev-repo: "git+https://gitlab.com/umb-svl/faial.git"

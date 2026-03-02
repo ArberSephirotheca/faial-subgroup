@@ -1,7 +1,0 @@
-(library
-  (name bank_conflicts)
-  (libraries
-    ; 3rd-party
-    z3 str
-    ; 1st-party
-    stage0 protocols ra approx))

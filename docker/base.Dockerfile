@@ -1,7 +1,7 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # python3 is required by `run-tests.py` and z3
-# python3-distutils is required by z3
+# python3-dev and python3-setuptools replace python3-distutils (deprecated/removed)
 
 RUN apt-get update && \
     apt-get install --yes \
@@ -14,7 +14,8 @@ RUN apt-get update && \
         libffi-dev \
         libgmp-dev \
         python3 \
-        python3-distutils \
+        python3-dev \
+        python3-setuptools \
         && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -24,11 +25,16 @@ USER faial
 
 WORKDIR /home/faial
 
-ARG OCAML_VERSION=5.1.1
-
-# Install OCaml
+ARG OCAML_VERSION=5.3.0
+# Source: https://stackoverflow.com/questions/72583938/
 RUN \
-    opam init --bare --disable-sandboxing && \
-    opam switch create main ${OCAML_VERSION} && \
-    eval $(opam env) 
+    opam init \
+        --yes \
+        --auto-setup \
+        --bare \
+        --disable-sandboxing \
+    && \
+    opam switch create main ${OCAML_VERSION}
 
+ENTRYPOINT ["opam", "exec", "--"]
+CMD ["/bin/bash", "--login"]

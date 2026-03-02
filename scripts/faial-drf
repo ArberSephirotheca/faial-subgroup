@@ -9,9 +9,20 @@ ensure_file () {
     do_abort "File not found: $DIR/$1"
   fi
 }
-ensure_file "lib/libz3.so"
+
+# Detect OS and set library path variable
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  # macOS
+  export DYLD_LIBRARY_PATH="$DIR/lib"
+  libname="libz3.dylib"
+else
+  # Linux and others
+  export LD_LIBRARY_PATH="$DIR/lib"
+  libname="libz3.so"
+fi
+
+ensure_file "lib/$libname"
 ensure_file "bin/cu-to-json"
 ensure_file "bin/faial-drf"
-export LD_LIBRARY_PATH="$DIR/lib"
-exec "$DIR/bin/"faial-drf --cu-to-json "$DIR/bin/cu-to-json" "$@"
+exec "$DIR/bin/faial-drf" --cu-to-json "$DIR/bin/cu-to-json" "$@"
 

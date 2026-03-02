@@ -1,21 +1,66 @@
 ---
 stages:
+- validate
 - build
 - test
 - deploy
+- containerize
 
 image: registry.gitlab.com/umb-svl/faial/faial:ci
-variables:
 
 .cache: &global_cache
   before_script:
     - export PATH="$PATH:$CI_PROJECT_DIR"
 
   cache:
-    key: "Ubuntu-$CI_COMMIT_REF_NAME-1"
+    key: "Ubuntu-$CI_COMMIT_REF_NAME-2"
     paths:
     - _build
 
+.macos-cache: &macos_cache
+  image: macos-14-xcode-15
+  variables:
+    OCAML_VERSION: 5.3.0
+    LLVM_VERSION: 17
+    CLEAN_OPAM_CACHE: "false"
+    CLEAN_DUNE_CACHE: "false"
+    HOMEBREW_NO_INSTALL_CLEANUP: 1
+    HOMEBREW_NO_AUTO_UPDATE: 1
+    # llvm@17 is keg-only, so set up environment for compilers to find it
+    LDFLAGS: "-L/opt/homebrew/opt/llvm@${LLVM_VERSION}/lib -L/opt/homebrew/opt/llvm@${LLVM_VERSION}/lib/c++"
+    CPPFLAGS: "-I/opt/homebrew/opt/llvm@${LLVM_VERSION}/include"
+
+  before_script:
+    # python@3.9 is required by z3 via depext (conf-python-3)
+    - brew install opam python@3.9 llvm@${LLVM_VERSION}
+    # llvm is keg-only, so add it to PATH
+    - export PATH="/opt/homebrew/opt/llvm@${LLVM_VERSION}/bin:$PATH"
+    # When you run brew install opam, it installs the binary, but the tool requires a one-time initialization (usually creating a ~/.opam directory) before it can manage any switches or install packages.
+    - opam init --reinit --bare --disable-sandboxing --yes
+
+  cache:
+    key: "macOS-$OCAML_VERSION"
+    paths:
+      - _opam
+      - _build
+
+  tags:
+    - saas-macos-medium-m1
+
+check-opam-consistency:
+  stage: validate
+  <<: *global_cache
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - eval $(opam config env)
+    - cp faial.opam faial.opam.backup
+    - dune build faial.opam
+    - |
+      diff faial.opam.backup faial.opam || (
+        echo "ERROR: Generated faial.opam differs from committed version. Run 'dune build faial.opam' and commit the changes."
+        exit 1
+      )
+    - echo "✅ faial.opam is consistent with dune-project"
 
 test:
   stage: test
@@ -34,6 +79,9 @@ build-dist:
   <<: *global_cache
   script:
     - cd "$CI_PROJECT_DIR"
+    - whoami
+    - pwd
+    - ls -l
     - rm -f ./target/*/faial
     - eval $(opam config env)
     - ocamlc --version
@@ -69,33 +117,74 @@ bundle-lin:
     paths:
       - bundle/faial.tar.bz2
 
-
-bundle-mac:
-  when: manual
-  stage: deploy
-  image: macos-14-xcode-15
+build-container:
+  stage: containerize
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  dependencies:
+    - bundle-lin
+  only:
+    - main
   variables:
-    OCAML_VERSION: 5.2.0
-    HOMEBREW_NO_INSTALL_CLEANUP: 1
-    HOMEBREW_NO_AUTO_UPDATE: 1
-  tags:
-    - saas-macos-medium-m1
+    DOCKER_TLS_CERTDIR: "/certs"
+    CONTAINER_IMAGE: $CI_REGISTRY_IMAGE/faial-tools
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - cp bundle/faial.tar.bz2 docker/faial.tar.bz2
+    - docker build -f docker/tools.Dockerfile -t $CONTAINER_IMAGE:$CI_COMMIT_SHA docker/
+    - docker build -f docker/tools.Dockerfile -t $CONTAINER_IMAGE:latest docker/
+    - echo "Testing container with tutorial/saxpy.cu"
+    - docker run --rm -v $CI_PROJECT_DIR:/workspace $CONTAINER_IMAGE:latest faial-drf tutorial/saxpy.cu
+    - docker push $CONTAINER_IMAGE:$CI_COMMIT_SHA
+    - docker push $CONTAINER_IMAGE:latest
+  after_script:
+    - docker logout $CI_REGISTRY
+
+
+build-mac:
+  stage: build
+  <<: *macos_cache
   script:
     - cd "$CI_PROJECT_DIR"
-    - brew install opam python@3.9
-    - >
-      if [ ! -d ~/.opam ]; then
-        echo "Initializing OPAM"
-        opam init --bare --disable-sandboxing &&
-        opam switch create main ${OCAML_VERSION}
-      fi
-    - eval $(opam env --switch=main)
-    - ./configure.sh -y --confirm-level=unsafe-yes
+    - if [ "$CLEAN_OPAM_CACHE" == "true" ]; then echo "cleaning _opam cache as explicitly requested"; rm -fR _opam; fi
+    - if [ "$CLEAN_DUNE_CACHE" == "true" ]; then echo "cleaning _build cache as explicitly requested"; rm -fR _build; fi
+    - if [ -d _opam ]; then echo "reusing local opam switch from CI cache"; fi
+    - if [ ! -d _opam ]; then echo "no local switch in CI cache, setting up new switch with OCaml ${OCAML_VERSION}"; opam switch create . ${OCAML_VERSION} --yes --no-install --confirm-level=unsafe-yes; fi
+    - eval $(opam env)
+    - opam install . --deps-only --locked --yes --confirm-level=unsafe-yes --assume-depexts
     - ocamlc --version
-    - make
+    - dune build --release
+    - cp -Lr _build/install/default/bin/* ./
+
+  artifacts:
+    paths:
+      - c-ast
+      - wgsl-ast
+      - faial-drf
+      - faial-bc
+      - faial-cost-dyn
+      - faial-cost
+      - README.md
+      - LICENSE
+
+bundle-mac:
+  stage: deploy
+  <<: *macos_cache
+  dependencies:
+    - build-mac
+  only:
+    - main
+  script:
+    - cd $CI_PROJECT_DIR
+    - if [ -d _opam ]; then echo "reusing local opam switch from CI cache"; fi
+    - if [ ! -d _opam ]; then echo "no local switch in CI cache, setting up new switch with OCaml ${OCAML_VERSION}"; opam switch create . ${OCAML_VERSION} --yes --no-install --confirm-level=unsafe-yes; fi
+    - eval $(opam env)
     - mkdir bundle
     - cd bundle
     - ../scripts/ci.sh
+
   artifacts:
     paths:
       - bundle/faial.tar.bz2

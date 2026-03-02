@@ -2,7 +2,7 @@
  (name cgen)
  (modules cgen tgen prep generator)
  (wrapped false)
- (libraries inference stage0 protocols otoml bank_conflicts))
+ (libraries inference stage0 protocols otoml rel_cost))
 
 (executable
  (public_name faial-gen)

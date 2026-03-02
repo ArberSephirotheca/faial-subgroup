@@ -1,0 +1,6 @@
+(tests
+ (names
+   test_maxima
+ )
+ (libraries stage0 protocols ra oUnit alcotest)
+)

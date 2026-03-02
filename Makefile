@@ -14,11 +14,12 @@ all: c-ast \
 	faial-cost \
 	faial-cost-diff \
 	faial-cost-dyn \
+	faial-cost-prover \
 	wgsl-ast
 
 clean:
 	$(DUNE) clean
-	rm -f faial-bin gen_kernels pico faial-gen faial-cost-diff
+	rm -f faial-bin gen_kernels pico faial-gen faial-cost-diff faial-cost-prover
 
 build:
 	$(DUNE) build
@@ -39,16 +40,16 @@ faial-drf: build
 	cp -f $(BUILD)/drf/bin/main.exe faial-drf
 
 faial-cost-dyn: build
-	cp -f $(BUILD)/total_cost/dyn.exe faial-cost-dyn
+	cp -f $(BUILD)/rel_cost/bin/cost_dyn.exe faial-cost-dyn
 
 faial-bc: build
-	cp -f $(BUILD)/bank_conflicts/bin/main.exe faial-bc
+	cp -f $(BUILD)/perf_bottleneck/bin/main.exe faial-bc
 
 faial-cost: build
-	cp -f $(BUILD)/total_cost/main.exe faial-cost
+	cp -f $(BUILD)/rel_cost/bin/cost.exe faial-cost
 
 faial-cost-diff: build
-	cp -f $(BUILD)/total_cost/diff.exe faial-cost-diff
+	cp -f $(BUILD)/rel_cost/bin/cost_diff.exe faial-cost-diff
 
 faial-sync: build
 	cp -f $(BUILD)/barrier_div/main.exe faial-sync
@@ -58,6 +59,9 @@ faial-gen: build
 
 gen_kernels: build
 	cp -f $(BUILD)/codegen/gen_kernels.exe gen_kernels
+
+faial-cost-prover: build
+	cp -f $(BUILD)/rel_cost/bin/cost_prover.exe faial-cost-prover
 
 test: build-test
 	$(DUNE) runtest
@@ -93,4 +97,5 @@ gitlab: gitlab-test gitlab-bin
 	faial-cost \
 	faial-cost-dyn \
 	faial-cost-diff \
+	faial-cost-prover \
 	wgsl-ast

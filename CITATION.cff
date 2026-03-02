@@ -1,0 +1,47 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Faial: finds bugs in CUDA kernels"
+authors:
+  - given-names: Tiago
+    family-names: Cogumbreiro
+    orcid: "https://orcid.org/0000-0003-1617-8316"
+  - given-names: Julien
+    family-names: Lange
+    orcid: "https://orcid.org/0000-0001-9697-1378"
+  - given-names: Dennis
+    family-names: Liew
+    orcid: "https://orcid.org/0000-0003-1002-5677"
+  - given-names: Hannah
+    family-names: Zicarelli
+repository-code: "https://gitlab.com/umb-svl/faial"
+url: "https://gitlab.com/umb-svl/faial"
+abstract: "Faial is a static analysis tool for finding bugs in CUDA kernels, particularly focused on data-race freedom (DRF) analysis and bank conflict detection."
+keywords:
+  - "CUDA"
+  - "static analysis"
+  - "data race detection"
+  - "GPU programming"
+  - "formal verification"
+license: "MIT"
+preferred-citation:
+  type: article
+  title: "Memory access protocols: certified data-race freedom for GPU kernels"
+  authors:
+    - given-names: Tiago
+      family-names: Cogumbreiro
+    - given-names: Julien
+      family-names: Lange
+    - given-names: Dennis
+      family-names: Liew
+    - given-names: Hannah
+      family-names: Zicarelli
+  journal: "Formal Methods in System Design"
+  volume: 63
+  issue: 1
+  start: 134
+  end: 171
+  year: 2024
+  publisher:
+    name: "Springer"
+  doi: "10.1007/s10703-023-00415-0"

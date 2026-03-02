@@ -1,0 +1,8 @@
+(tests
+ (names
+    test_dlang
+    test_queries
+    test_wgsl
+ )
+ (libraries stage0 protocols inference alcotest)
+)
