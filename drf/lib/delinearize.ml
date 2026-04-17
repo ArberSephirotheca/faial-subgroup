@@ -219,7 +219,6 @@ end = struct
 
   let of_atom (v : Atom.t): t = TermMap.singleton (VarMap.singleton v 1) 1
 
-
   let to_list t: Term.t list = t
     |> TermMap.bindings
     |> List.map (fun (t, c) -> (c, t))
@@ -327,6 +326,19 @@ module Make(L:Logger.Logger) = struct
       )
       |> List.map (Term.filter (fun v _ -> Atom.is_parameter v))
       |> List.sort_uniq (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
+  let size_params_all (ts : Expr.t list) : Term.t list = ts
+      |> List.map (fun t -> t
+        |> Expr.to_list
+        |> List.filter (fun t ->
+          Term.has_induction t && Term.has_parameter t
+        )
+        |> List.map (Term.filter (fun v _ -> Atom.is_parameter v))
+      )
+      |> List.flatten
+      (* TODO?: handle some kind of dimension selection. i need a deduplication then a size sort *)
+      (* deduplicate *)
+      |> List.sort_uniq Term.compare
+      |> List.sort (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
 
   (* Divides out size params *)
   let rec dims: Term.t list -> Term.t list option = function
@@ -366,6 +378,25 @@ module Make(L:Logger.Logger) = struct
       ) ds is 
     | _ -> failwith "unreachable?"
     in
+    L.warning ("Unchecked conditions = \n" ^ list_to_string Exp.b_to_string (conditions ds is));
+    Some {
+      indices = List.map Expr.to_nexp is;
+      dims = List.map Expr.Term.to_nexp ds;
+      conditions = conditions ds is
+    }
+
+  let from_exp2 (ds : Term.t list) (expr : Expr.t) : t option =
+    L.info ("Expr = \n" ^ Expr.to_string expr);
+    let is = accesses ds expr in
+    L.info ("Indices = \n" ^ list_to_string Expr.to_string is);
+    let conditions ds is = match ds, is with
+    | ds, _ :: is -> List.map2 (fun d i -> 
+        let open Exp in
+        NRel (Lt, Expr.to_nexp i, Expr.Term.to_nexp d)
+      ) ds is 
+    | _ -> failwith "unreachable?"
+    in
+    L.warning ("Unchecked conditions = \n" ^ list_to_string Exp.b_to_string (conditions ds is));
     Some {
       indices = List.map Expr.to_nexp is;
       dims = List.map Expr.Term.to_nexp ds;
@@ -382,8 +413,11 @@ module Make(L:Logger.Logger) = struct
   let loption_bind (x : 'a list option) (f : 'a -> 'b list option) : 'b list option =
     match x with  *)
 
+  (* let rewrite_access_with (dims : Term.t list) (acc : Access.t) : Acccess.t = *)
+    
 
   (* Throwing out conditions for now. eventually will use t as a sort of rewrite template *)
+
   let rewrite_access ~globals (acc : Access.t) : Access.t =
     let (let*) = Option.bind in
     (match acc with
@@ -396,12 +430,28 @@ module Make(L:Logger.Logger) = struct
         (Access.to_string out));
       Some out
     | _ -> 
-      L.info (Printf.sprintf "not rewriting\n  %s\n" (Access.to_string acc));
-      None
+      L.error (Printf.sprintf "already multidimensional access\n  %s\n" (Access.to_string acc));
+      failwith "multidimensional acccess"
+      (* None *)
     ) |>
     Option.value ~default:acc
   (* TODO: this should simply not rewrite if there is a failure *)
 
+  (* module NexpMap = Map.Make(struct
+    type t = Exp.nexp
+    let compare = Exp.n_compare
+  end) *)
+
+  let get_accesses (unsync : Unsync.t) : Exp.nexp list list Variable.Map.t =
+    let open Unsync in
+    let rec get_accesses_unsync = function
+      | Skip | Assert _ -> Fun.id
+      | Access {array; index; _} -> Variable.Map.add_to_list array index
+      | Cond (_, u) -> get_accesses_unsync u
+      | Loop (_, u) -> get_accesses_unsync u
+      | Seq (u, v) -> Fun.compose (get_accesses_unsync u) (get_accesses_unsync v)
+    (* QUESTION: we want to work on unsync, yes? *)
+    in get_accesses_unsync unsync Variable.Map.empty
 
   (* Global analysis not there yet. will need to collect all accesses in a block *)
   let rewrite_unsync ~(globals : Variable.Set.t) : Unsync.t -> Unsync.t =
@@ -416,21 +466,70 @@ module Make(L:Logger.Logger) = struct
     in
     rewrite_unsync
 
+  let rewrite_unsync2 ~(globals : Variable.Set.t) (unsync : Unsync.t) : Unsync.t =
+    let (let*) = Option.bind in
+    let open Unsync in
+    let dims = unsync
+      |> get_accesses
+      |> Variable.Map.filter_map (fun _ accesses -> accesses
+        |> List.map (List.map (Expr.from_nexp ~globals))
+        (* Only handle single index accesses for now *)
+        |> List.map (function
+          | [acc] -> acc 
+          | _ -> failwith "multidimensional TODO"
+        )
+        |> size_params_all
+        |> dims)
+    in
+    let rec rewrite_unsync : Unsync.t -> Unsync.t = function
+      | Access ({ array; index = [a]; _ } as acc) -> 
+        (match (
+          let a = Expr.from_nexp ~globals a in
+          let* dim = Variable.Map.find_opt array  dims in
+          let* rewritten = from_exp2 dim a in
+          Some rewritten.indices
+        ) with
+        | Some indices -> Access { acc with index = indices }
+        | None -> Access acc)
+      | Access _ -> failwith "multidimensional access TODO"
+      | Cond (p, b) -> Cond (p, rewrite_unsync b)
+      | Loop (r, b) -> Loop (r, rewrite_unsync b)
+      | Seq (a, b) -> Seq (rewrite_unsync a, rewrite_unsync b)
+      | code -> code
+    in
+    rewrite_unsync unsync
+
   let rec rewrite_aligned ~(globals : Variable.Set.t): Aligned.Code.t -> Aligned.Code.t =
     let open Aligned.Code in
+    (* TODO rewrite: get dimensionality *)
     function
     | Sync c -> Sync (rewrite_unsync ~globals c)
     | Loop ({ range = { var = x; _ }; body; _ } as loop) ->
       Loop { loop with body = rewrite_aligned ~globals:(Variable.Set.add x globals) body }
     | Seq (a, b) -> Seq (rewrite_aligned ~globals a, rewrite_aligned ~globals b)
+  
+  let rec rewrite_aligned2 ~(globals : Variable.Set.t): Aligned.Code.t -> Aligned.Code.t =
+    let open Aligned.Code in
+    (* TODO rewrite: get dimensionality *)
+    function
+    | Sync c -> Sync (rewrite_unsync2 ~globals c)
+    | Loop ({ range = { var = x; _ }; body; _ } as loop) ->
+      Loop { loop with body = rewrite_aligned2 ~globals:(Variable.Set.add x globals) body }
+    | Seq (a, b) -> Seq (rewrite_aligned2 ~globals a, rewrite_aligned2 ~globals b)
+
 
   let rewrite_kernel (kernel : Aligned.Kernel.t) : Aligned.Kernel.t =
     let globals = Params.to_set kernel.global_variables in
     { kernel with code = rewrite_aligned ~globals kernel.code }
+
+  let rewrite_kernel2 (kernel : Aligned.Kernel.t) : Aligned.Kernel.t =
+    let globals = Params.to_set kernel.global_variables in
+    { kernel with code = rewrite_aligned2 ~globals kernel.code }
   (* currently this thinks blockIdx is global *)
 end
 
 module Silent = Make(Logger.Silent)
+module Warnings = Make(Logger.Warnings)
 module Default = Make(Logger.Default)
 
 (* add function mapping aligned.code to proto *)

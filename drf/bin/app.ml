@@ -32,6 +32,7 @@ type t = {
   params : (string * int) list;
   macros : string list;
   ignore_asserts : bool;
+  log_delinearize : bool;
 }
 
 let to_string (app : t) : string =
@@ -80,6 +81,7 @@ let to_string (app : t) : string =
    macros;
    only_true_data_races;
    ignore_asserts;
+   log_delinearize;
   } ->
       let only_kernel = Option.value ~default:"(null)" only_kernel in
       let kernels = List.length kernels |> string_of_int in
@@ -95,13 +97,14 @@ let to_string (app : t) : string =
       ^ bool show_symbexp ^ "\nmacros = " ^ list_string macros
       ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
       ^ "\nignore_asserts = " ^ bool ignore_asserts ^ "\n"
+      ^ "\nlog_delinearize = " ^ bool log_delinearize ^ "\n"
 
 let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~show_phase_split ~show_loc_split ~show_flat_acc ~show_symbexp ~logic
     ~ge_index ~le_index ~eq_index ~only_array ~only_kernel ~only_true_data_races
     ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~block_dim ~grid_dim
     ~includes ~inline_calls ~archs ~ignore_parsing_errors ~params ~macros
-    ~cu_to_json ~all_dims ~ignore_asserts : t =
+    ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize : t =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
@@ -140,6 +143,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     only_true_data_races;
     macros;
     ignore_asserts;
+    log_delinearize;
   }
 
 let show (b : bool) (call : 'a -> unit) (x : 'a) : 'a =
@@ -179,7 +183,9 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   |> show a.show_wf Wellformed.print_kernels
   (* 5. align protocol *)
   |> Aligned.translate
-  |> Streamutil.map Delinearize.Silent.rewrite_kernel
+  |> Streamutil.map (if a.log_delinearize
+      then Delinearize.Default.rewrite_kernel2
+      else Delinearize.Warnings.rewrite_kernel2)
   |> show a.show_align Aligned.print_kernels
   (* 6. split per sync *)
   |> Phasesplit.translate

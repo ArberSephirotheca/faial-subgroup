@@ -1,4 +1,6 @@
-open Stage0
+(* THIS FILE IS DEFUNCT *)
+
+(* open Stage0
 
 let (@) = Common.append_tr
 
@@ -512,4 +514,4 @@ let b_to_s : bexp -> Indent.t list =
       |> List.concat
   in
   to_s true
-
+ *)

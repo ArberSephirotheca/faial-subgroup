@@ -237,6 +237,8 @@ let main =
              possible dimensions.")
   and+ ignore_asserts =
     Arg.(value & flag & info [ "ignore-asserts" ] ~doc:"Ignore asserts.")
+  and+ log_delinearize =
+    Arg.(value & flag & info [ "log-delinearize" ] ~doc:"Log delinearization info.")
   in
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then
     Error
@@ -255,7 +257,7 @@ let main =
         ~block_idx_1 ~block_idx_2 ~archs ~inline_calls:(not ignore_calls)
         ~ignore_parsing_errors ~includes ~block_dim ~grid_dim ~params
         ~only_kernel ~only_true_data_races ~macros ~cu_to_json ~all_dims
-        ~ignore_asserts
+        ~ignore_asserts ~log_delinearize
     in
     let ui = if output_json then Jui.render else Tui.render in
     if unreachable then App.check_unreachable app else App.run app |> ui;

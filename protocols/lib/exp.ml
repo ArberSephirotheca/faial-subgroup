@@ -21,6 +21,84 @@ and bexp =
   | CastBool of nexp
   | Distinct of nexp list
 
+
+
+  let rec n_compare a b =
+    match a, b with
+    | Var x, Var y -> Variable.compare x y
+    | Num x, Num y -> compare x y
+    | Binary (op1, l1, r1), Binary (op2, l2, r2) ->
+        let c = compare op1 op2 in
+        if c <> 0 then c else
+        let c = n_compare l1 l2 in
+        if c <> 0 then c else
+        n_compare r1 r2
+    | Unary (op1, e1), Unary (op2, e2) ->
+        let c = compare op1 op2 in
+        if c <> 0 then c else
+        n_compare e1 e2
+    | NCall (f1, e1), NCall (f2, e2) ->
+        let c = compare f1 f2 in
+        if c <> 0 then c else
+        n_compare e1 e2
+    | NIf (b1, t1, f1), NIf (b2, t2, f2) ->
+        let c = b_compare b1 b2 in
+        if c <> 0 then c else
+        let c = n_compare t1 t2 in
+        if c <> 0 then c else
+        n_compare f1 f2
+    | Other e1, Other e2 -> n_compare e1 e2
+    | CastInt b1, CastInt b2 -> b_compare b1 b2
+    | Var _, _ -> -1
+    | _, Var _ -> 1
+    | Num _, _ -> -1
+    | _, Num _ -> 1
+    | Binary _, _ -> -1
+    | _, Binary _ -> 1
+    | Unary _, _ -> -1
+    | _, Unary _ -> 1
+    | NCall _, _ -> -1
+    | _, NCall _ -> 1
+    | NIf _, _ -> -1
+    | _, NIf _ -> 1
+    | Other _, _ -> -1
+    | _, Other _ -> 1
+  
+  and b_compare a b =
+    match a, b with
+    | Bool x, Bool y -> compare x y
+    | NRel (op1, l1, r1), NRel (op2, l2, r2) ->
+        let c = compare op1 op2 in
+        if c <> 0 then c else
+        let c = n_compare l1 l2 in
+        if c <> 0 then c else
+        n_compare r1 r2
+    | BRel (op1, l1, r1), BRel (op2, l2, r2) ->
+        let c = compare op1 op2 in
+        if c <> 0 then c else
+        let c = b_compare l1 l2 in
+        if c <> 0 then c else
+        b_compare r1 r2
+    | BNot e1, BNot e2 -> b_compare e1 e2
+    | Pred (p1, e1), Pred (p2, e2) ->
+        let c = compare p1 p2 in
+        if c <> 0 then c else
+        n_compare e1 e2
+    | CastBool e1, CastBool e2 -> n_compare e1 e2
+    | Distinct l1, Distinct l2 -> List.compare n_compare l1 l2
+    | Bool _, _ -> -1
+    | _, Bool _ -> 1
+    | NRel _, _ -> -1
+    | _, NRel _ -> 1
+    | BRel _, _ -> -1
+    | _, BRel _ -> 1
+    | BNot _, _ -> -1
+    | _, BNot _ -> 1
+    | Pred _, _ -> -1
+    | _, Pred _ -> 1
+    | CastBool _, _ -> -1
+    | _, CastBool _ -> -1
+
 let rec n_eval_res (n : nexp) : (int, string) Result.t =
   let ( let* ) = Result.bind in
   match n with
@@ -333,16 +411,20 @@ let rec b_map (f : nexp -> nexp) : bexp -> bexp = function
   | CastBool e -> CastBool (f e)
   | Distinct l -> Distinct (List.map f l)
 
-let rec n_par (n : nexp) : string =
-  match n with
-  | Num _ | Var _ | NCall _ | Other _ | CastInt _ -> n_to_string n
-  | NIf _ | Unary _ | Binary _ -> "(" ^ n_to_string n ^ ")"
+type side = Left | Right
+
+let rec n_par ?context (* ?side *) (n : nexp) : string =
+  match context, n with
+  | Some N_binary.Plus, Binary ((N_binary.Plus | N_binary.Mult | N_binary.Div), _, _) 
+  | Some N_binary.Mult, Binary (N_binary.Mult, _, _) -> n_to_string n
+  | _, Num _ | _, Var _ | _, NCall _ | _, Other _ | _, CastInt _ -> n_to_string n
+  | _, NIf _ | _, Unary _ | _, Binary _ -> "(" ^ n_to_string n ^ ")"
 
 and n_to_string : nexp -> string = function
   | Num n -> string_of_int n
   | Var x -> Variable.name x
   | Unary (o, n) -> N_unary.to_string o ^ n_par n
-  | Binary (b, a1, a2) -> n_par a1 ^ " " ^ N_binary.to_string b ^ " " ^ n_par a2
+  | Binary (b, a1, a2) -> n_par ~context:b a1 ^ " " ^ N_binary.to_string b ^ " " ^ n_par ~context:b a2
   | NCall (x, arg) -> x ^ "(" ^ n_to_string arg ^ ")"
   | NIf (b, n1, n2) -> b_par b ^ " ? " ^ n_par n1 ^ " : " ^ n_par n2
   | Other e -> "other(" ^ n_to_string e ^ ")"
