@@ -179,7 +179,7 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   |> show a.show_wf Wellformed.print_kernels
   (* 5. align protocol *)
   |> Aligned.translate
-  |> Streamutil.map Delinearize.Silent.rewrite_kernel
+  |> Streamutil.map Delinearize.Warnings.rewrite_kernel
   |> show a.show_align Aligned.print_kernels
   (* 6. split per sync *)
   |> Phasesplit.translate

@@ -366,6 +366,7 @@ module Make(L:Logger.Logger) = struct
       ) ds is 
     | _ -> failwith "unreachable?"
     in
+    L.warning ("Unchecked conditions = \n" ^ list_to_string Exp.b_to_string (conditions ds is));
     Some {
       indices = List.map Expr.to_nexp is;
       dims = List.map Expr.Term.to_nexp ds;
@@ -431,6 +432,7 @@ module Make(L:Logger.Logger) = struct
 end
 
 module Silent = Make(Logger.Silent)
+module Warnings = Make(Logger.Warnings)
 module Default = Make(Logger.Default)
 
 (* add function mapping aligned.code to proto *)
