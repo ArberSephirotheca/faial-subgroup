@@ -362,11 +362,11 @@ module Make(L:Logger.Logger) = struct
     let conditions ds is = match ds, is with
     | ds, _ :: is -> List.map2 (fun d i -> 
         let open Exp in
-        NRel (Lt, Expr.to_nexp i, Expr.Term.to_nexp d)
+        b_or (n_ge (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Expr.Term.to_nexp d))
       ) ds is 
     | _ -> failwith "unreachable?"
     in
-    L.warning ("Unchecked conditions = \n" ^ list_to_string Exp.b_to_string (conditions ds is));
+    L.warning ("Unchecked conditions = \n" ^ (conditions ds is |> Exp.b_and_ex |> Exp.b_to_string));
     Some {
       indices = List.map Expr.to_nexp is;
       dims = List.map Expr.Term.to_nexp ds;
