@@ -145,7 +145,17 @@ let inc_to_s (r : Range.t) : string =
 (* Converts source instruction to a valid CUDA operation *)
 let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
   | Access e -> acc_expr_to_dummy e
-  | Sync _ -> [ Line "__syncthreads();" ]
+  | Sync s ->
+      (match (s.mode, s.id, s.count) with
+      | Sync, 0, None -> [ Line "__syncthreads();" ]
+      | mode, id, count ->
+          let mnem = Protocols.Sync.Mode.to_string mode in
+          let operands =
+            match count with
+            | None -> string_of_int id
+            | Some c -> Printf.sprintf "%d, %d" id c
+          in
+          [ Line (Printf.sprintf "asm volatile(\"bar.%s %s;\");" mnem operands) ])
   | If (b, p, q) ->
       [
         Line ("if (" ^ b_to_string b ^ ") {");

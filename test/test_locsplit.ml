@@ -19,18 +19,18 @@ let r =
     }
 
 let write a = Access.{ array = a; index = []; mode = Mode.Write None }
-let x_acc = Unsync.Access (write x)
-let y_acc = Unsync.Access (write y)
+let x_acc = Unsynced.Access (write x)
+let y_acc = Unsynced.Access (write y)
 
-let assert_filter i (expected : Unsync.t option) =
-  let given = Unsync.filter_by_location x i in
+let assert_filter i (expected : Unsynced.t option) =
+  let given = Unsynced.filter_by_location x i in
   let msg =
     match (expected, given) with
     | Some _, None -> "given none, expecting:"
     | None, Some _ -> "expecting none, given:"
     | Some l1, Some l2 ->
-        "expecting:\n" ^ Unsync.to_string l1 ^ "\ngiven:\n"
-        ^ Unsync.to_string l2
+        "expecting:\n" ^ Unsynced.to_string l1 ^ "\ngiven:\n"
+        ^ Unsynced.to_string l2
     | None, None -> ""
   in
   assert_equal given expected ~msg

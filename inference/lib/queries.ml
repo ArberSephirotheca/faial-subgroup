@@ -680,8 +680,8 @@ module Accesses = struct
   let cond_accesses (s : Stmt.t) : Access.t Seq.t =
     let rec cond_accesses (in_cond : bool) (s : Stmt.t) : Access.t Seq.t =
       match s with
-      | Skip | Call _ | Decl _ | Assign _ | Sync _ | NamedBarrier _ | Assert _
-      | LocationAlias _ ->
+      | Skip | Call _ | Decl _ | Assign _ | Sync _ | Assert _ | LocationAlias _
+        ->
           Seq.empty
       | Atomic a ->
           if in_cond then Seq.return (Imp.Atomic_write.to_access a)

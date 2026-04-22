@@ -432,12 +432,12 @@ module Make (L : Logger) = struct
           (CallExpr
              { func = Ident { name = n; kind = Function; _ }; args = []; _ })
         when Variable.name n = "__syncthreads" ->
-          Sync n.location
+          Sync (Sync.threadsync ?loc:n.location ())
       | SExpr
           (CallExpr
              { func = Ident { name = n; kind = Function; _ }; args = [ _ ]; _ })
         when Variable.name n = "sync" ->
-          Sync n.location
+          Sync (Sync.threadsync ?loc:n.location ())
           (* Static assert may have a message as second argument *)
       | SExpr
           (CallExpr
@@ -554,7 +554,7 @@ module Make (L : Logger) = struct
           infer s
       | AsmStmt a ->
           (match Ptx.parse a.asm_string with
-           | Some p -> Infer_stmt.NamedBarrier p
+           | Some s -> Infer_stmt.Sync s
            | None ->
                L.warning
                  ("asm: dropping (unrecognized PTX template): " ^ a.asm_string);

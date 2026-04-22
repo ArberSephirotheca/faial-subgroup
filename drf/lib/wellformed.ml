@@ -1,17 +1,17 @@
 open Stage0
 open Protocols
 open Exp
-module Opt = Unsync.Opt
+module Opt = Unsynced.Opt
 
 module Code = struct
-  type t = SInst of Sync.t | UInst of Unsync.t | Both of Sync.t * Unsync.t
+  type t = SInst of Synced.t | UInst of Unsynced.t | Both of Synced.t * Unsynced.t
 
-  let add_u (u : Unsync.t) : t -> t = function
-    | SInst s -> SInst (Sync.add u s)
+  let add_u (u : Unsynced.t) : t -> t = function
+    | SInst s -> SInst (Synced.add u s)
     | UInst u2 -> UInst (Opt.seq u u2)
-    | Both (p, u2) -> Both (Sync.add u p, u2)
+    | Both (p, u2) -> Both (Synced.add u p, u2)
 
-  let add_s (s : Sync.t) : t -> t = function
+  let add_s (s : Synced.t) : t -> t = function
     | SInst s2 -> SInst (Seq (s, s2))
     | UInst u -> Both (s, u)
     | Both (s2, u) -> Both (Seq (s, s2), u)
@@ -24,17 +24,17 @@ module Code = struct
 
   let free_names (p : t) (fns : Variable.Set.t) : Variable.Set.t =
     match p with
-    | SInst s -> Sync.free_names s fns
-    | UInst s -> Unsync.free_names s fns
-    | Both (p, q) -> Sync.free_names p fns |> Unsync.free_names q
+    | SInst s -> Synced.free_names s fns
+    | UInst s -> Unsynced.free_names s fns
+    | Both (p, q) -> Synced.free_names p fns |> Unsynced.free_names q
 
   (* Given a regular program, return a well-formed one *)
-  let from_proto : Protocols.Code.t -> Sync.t Streamutil.stream =
+  let from_proto : Protocols.Code.t -> Synced.t Streamutil.stream =
     let open Streamutil in
     let rec infer : Protocols.Code.t -> t Streamutil.stream = function
       | Skip -> UInst Skip |> one
       | Access a -> UInst (Access a) |> one
-      | Sync _ -> SInst Sync.skip |> one
+      | Sync _ -> SInst Synced.skip |> one
       | Decl _ -> failwith "Invoke Proto.hoist_decls first."
       | If (b, p, q) ->
           let branch b p =
@@ -42,12 +42,12 @@ module Code = struct
             |> flat_map (function
               (* TODO: why should we reject synchronized conditionals inside loops? *)
               | SInst p ->
-                  [ UInst (Assert (b_not b)); SInst (Sync.inline_cond b p) ]
+                  [ UInst (Assert (b_not b)); SInst (Synced.inline_cond b p) ]
                   |> from_list
               | Both (p, c) ->
                   [
                     UInst (Assert (b_not b));
-                    Both (Sync.inline_cond b p, Opt.seq (Assert b) c);
+                    Both (Synced.inline_cond b p, Opt.seq (Assert b) c);
                   ]
                   |> from_list
               | UInst c -> UInst (Opt.cond b c) |> one)
@@ -67,7 +67,7 @@ module Code = struct
       |> map (function
         | SInst p -> p
         | UInst c -> Sync c
-        | Both (p, c) -> Sync.Seq (p, Sync.Sync c))
+        | Both (p, c) -> Synced.Seq (p, Synced.Sync c))
 end
 
 module Kernel = struct
@@ -83,7 +83,7 @@ module Kernel = struct
     (* A thread-local pre-condition that is true on all phases. *)
     pre : bexp;
     (* The code of a kernel performs the actual memory accesses. *)
-    code : Sync.t;
+    code : Synced.t;
     (* The kernel's visibility *)
     visibility : Visibility.t;
     (* Number of blocks *)
@@ -102,14 +102,14 @@ module Kernel = struct
       Block (b_to_s k.pre);
       Line ";";
       Line "code:";
-      Block (Sync.to_s k.code);
+      Block (Synced.to_s k.code);
       Line "; end of code";
     ]
 
   let print (k : t) : unit = Indent.print (to_s k)
 
   let binders (k : t) : Variable.Set.t =
-    Sync.free_names k.code Variable.Set.empty |> Exp.b_free_names k.pre
+    Synced.free_names k.code Variable.Set.empty |> Exp.b_free_names k.pre
 
   let trim_binders (k : t) : t =
     let fns = binders k in
@@ -122,7 +122,7 @@ module Kernel = struct
   let from_protocol (k : Protocols.Kernel.t) : t Streamutil.stream =
     let k = Protocols.Kernel.hoist_decls k in
 
-    let from_protocol (code : Sync.t) : t =
+    let from_protocol (code : Synced.t) : t =
       {
         name = k.name;
         global_variables = k.global_variables;

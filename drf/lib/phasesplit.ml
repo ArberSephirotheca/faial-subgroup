@@ -6,7 +6,7 @@ open Streamutil
 (* ---------------- SECOND STAGE OF TRANSLATION ---------------------- *)
 
 module Phased = struct
-  type t = { code : Unsync.t; ranges : Range.t list }
+  type t = { code : Unsynced.t; ranges : Range.t list }
 
   let add (r : Range.t) (bi : t) : t = { bi with ranges = r :: bi.ranges }
 
@@ -53,7 +53,7 @@ module Kernel = struct
     (* Global ranges *)
     ranges : Range.t list;
     (* The code of a kernel performs the actual memory accesses. *)
-    code : Unsync.t;
+    code : Unsynced.t;
   }
 
   let from_aligned (k : Aligned.Kernel.t) : t stream =
@@ -71,7 +71,7 @@ module Kernel = struct
     |> filter_map (fun b ->
         (* Get locations of u_prog *)
         let locations =
-          Unsync.write_locations b.Phased.code Variable.Set.empty
+          Unsynced.write_locations b.Phased.code Variable.Set.empty
         in
         if Variable.Set.is_empty locations then None else Some (b, locations))
     |> Streamutil.map p_to_k
@@ -85,7 +85,7 @@ module Kernel = struct
       Line ("locals: " ^ Params.to_string k.local_variables ^ ";");
       Line ("ranges: " ^ ranges ^ ";");
       Line "{";
-      Block (Unsync.to_s k.code);
+      Block (Unsynced.to_s k.code);
       Line "}";
     ]
 end

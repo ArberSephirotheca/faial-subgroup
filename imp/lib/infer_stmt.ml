@@ -40,8 +40,7 @@ end
 type t =
   | Skip
   | Seq of t * t
-  | Sync of Location.t option
-  | NamedBarrier of Ptx.t
+  | Sync of Sync.t
   | Assert of Infer_exp.t
   | Read of {
       target : (C_type.t * Variable.t) option;
@@ -110,8 +109,7 @@ let rec to_stmt : t -> Stmt.t =
   function
   | Skip -> Skip
   | Seq (p, q) -> Seq (to_stmt p, to_stmt q)
-  | Sync l -> Sync l
-  | NamedBarrier p -> NamedBarrier p
+  | Sync s -> Sync s
   | Assert e -> ret_assert e Global
   | Read { array; target; index } ->
       Infer_exp.unknowns

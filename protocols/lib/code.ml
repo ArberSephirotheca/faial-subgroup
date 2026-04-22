@@ -7,7 +7,7 @@ open Exp
 (* The source instruction uses the base defined above *)
 type t =
   | Access of Access.t
-  | Sync of Location.t option
+  | Sync of Sync.t
   | If of bexp * t * t
   | Loop of { range : Range.t; body : t }
   | Seq of t * t
@@ -189,7 +189,7 @@ let rec used_arrays (i : t) (fns : Variable.Set.t) : Variable.Set.t =
 
 let rec to_s : t -> Indent.t list = function
   | Skip -> [ Line "skip;" ]
-  | Sync _ -> [ Line "sync;" ]
+  | Sync s -> [ Line (Sync.to_string s ^ ";") ]
   | Access a -> [ Line (Access.to_string a) ]
   | If (b, p, Skip) ->
       [ Line ("if (" ^ b_to_string b ^ ") {"); Block (to_s p); Line "}" ]

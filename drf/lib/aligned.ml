@@ -5,12 +5,12 @@ open Subst
 (** This code is syntactically limited so that PreCode.seq is a total function
 *)
 module PreCode = struct
-  type t = Sync of Unsync.t | SeqLoop of t * loop | Seq of t * t
+  type t = Sync of Unsynced.t | SeqLoop of t * loop | Seq of t * t
   and loop = { range : Range.t; body : t }
 
   module Make (S : SUBST) = struct
     module M = Subst.Make (S)
-    module U = Unsync.Make (S)
+    module U = Unsynced.Make (S)
 
     let rec subst (s : S.t) (i : t) : t =
       match i with
@@ -25,53 +25,53 @@ module PreCode = struct
 
   let subst = S1.subst
 
-  let rec seq (c : Unsync.t) : t -> t = function
-    | Sync c' -> Sync (Unsync.seq c c')
+  let rec seq (c : Unsynced.t) : t -> t = function
+    | Sync c' -> Sync (Unsynced.seq c c')
     | SeqLoop (p, l) -> SeqLoop (seq c p, l)
     | Seq (p, q) -> Seq (seq c p, q)
 
-  let rec align : Sync.t -> t * Unsync.t = function
+  let rec align : Synced.t -> t * Unsynced.t = function
     | Sync c -> (Sync c, Skip)
     | SeqLoop (before_loop, { range = r; body = s_body, u_body_post }) ->
         (* Rec yields the aligned body and leak *)
         let a_body, u_body_pre = align s_body in
         (* The unsynchronized body *)
-        let u_body = Unsync.seq u_body_pre u_body_post in
+        let u_body = Unsynced.seq u_body_pre u_body_post in
         (* First iteration: before_loop; aligned code (instantiated to first iter) *)
         let first_iter =
           seq before_loop (subst (r.var, Range.first r) a_body)
         in
         (* the leak of the previous iteration followed by the aligned *)
-        let body = seq (Unsync.subst (r.var, Range.prev r) u_body) a_body in
+        let body = seq (Unsynced.subst (r.var, Range.prev r) u_body) a_body in
         ( SeqLoop (first_iter, { range = Range.next r; body }),
           (* leaks the last iteration *)
-          Unsync.subst (r.var, Range.lossy_last r) u_body )
+          Unsynced.subst (r.var, Range.lossy_last r) u_body )
     | Seq (i, p) ->
         let i, c1 = align i in
         let q, c2 = align p in
         (Seq (i, seq c1 q), c2)
 
-  let align_ex (w : Sync.t) : t = match align w with p, c -> Seq (Sync c, p)
+  let align_ex (w : Synced.t) : t = match align w with p, c -> Seq (Sync c, p)
 end
 
 (** We first translate using PreCode and then we simplify the data-type. *)
 module Code : sig
   type t =
-    | Sync of Unsync.t
+    | Sync of Unsynced.t
     | Loop of { range : Range.t; body : t }
     | Seq of t * t
 
   val to_s : t -> Indent.t list
-  val from_sync : Sync.t -> t
+  val from_sync : Synced.t -> t
 end = struct
   type t =
-    | Sync of Unsync.t
+    | Sync of Unsynced.t
     | Loop of { range : Range.t; body : t }
     | Seq of t * t
 
   let rec to_s : t -> Indent.t list = function
     | Seq (p, q) -> to_s p @ to_s q
-    | Sync e -> Unsync.to_s e @ [ Line "sync;" ]
+    | Sync e -> Unsynced.to_s e @ [ Line "sync;" ]
     | Loop { range = r; body = q } ->
         [
           Line ("foreach* (" ^ Range.to_string r ^ ") {");
@@ -86,7 +86,7 @@ end = struct
     | Seq (p, q) -> Seq (from_pre p, from_pre q)
 
   (* Load a protocol without side effects *)
-  let rec from_pure : Sync.t -> t option =
+  let rec from_pure : Synced.t -> t option =
     let ( let* ) = Option.bind in
     function
     | Sync u -> Some (Sync u)
@@ -100,7 +100,7 @@ end = struct
         Some (Seq (p, q))
 
   (** Parse a pure protocol, or align a side-effect free protocol *)
-  let try_align (s : Sync.t) : t option =
+  let try_align (s : Synced.t) : t option =
     match from_pure s with
     | Some s -> Some s
     | None ->
@@ -108,12 +108,12 @@ end = struct
         if u = Skip then Some (from_pre s) else None
 
   (** Forcefully align a protocol *)
-  let align (s : Sync.t) : t = PreCode.align_ex s |> from_pre
+  let align (s : Synced.t) : t = PreCode.align_ex s |> from_pre
 
   (** Try identify already aligned loops and if possible avoid aligning
       protocols. This should improve the performance of already synchronized
       protocls. *)
-  let rec from_sync (s : Sync.t) : t =
+  let rec from_sync (s : Synced.t) : t =
     (*
       We try to infer pure syncs from left-to-right.
       Once we fail the first sync, we fall back to aligning the whole

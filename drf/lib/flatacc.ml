@@ -41,11 +41,11 @@ module Code = struct
   (* The dimention is the index count *)
   let dim (l : t) : int option = List.nth_opt l 0 |> Option.map CondAccess.dim
 
-  let from_unsync : Unsync.t -> t =
-    let rec flatten (accum : t) (b : bexp) : Unsync.t -> t = function
+  let from_unsync : Unsynced.t -> t =
+    let rec flatten (accum : t) (b : bexp) : Unsynced.t -> t = function
       | Skip -> accum
       | Assert _ ->
-          failwith "Internall error: call Unsync.inline_asserts first!"
+          failwith "Internall error: call Unsynced.inline_asserts first!"
       | Access e -> { access = e; cond = b } :: accum
       | Cond (b', p) -> flatten accum (b_and b' b) p
       | Loop (r, p) -> flatten accum (b_and (Range.to_cond r) b) p
@@ -53,7 +53,7 @@ module Code = struct
           let accum = flatten accum b p in
           flatten accum b q
     in
-    fun u -> flatten [] (Bool true) (Unsync.inline_asserts u)
+    fun u -> flatten [] (Bool true) (Unsynced.inline_asserts u)
 end
 
 module Kernel = struct
@@ -96,11 +96,11 @@ module Kernel = struct
       in
       let approx_local_variables =
         Variable.Set.diff (Params.to_set k.local_variables) ids
-        |> Unsync.unsafe_binders k.code
+        |> Unsynced.unsafe_binders k.code
       in
       let exact_local_variables =
         approx_local_variables
-        |> Variable.Set.diff (Unsync.binders k.code Variable.Set.empty)
+        |> Variable.Set.diff (Unsynced.binders k.code Variable.Set.empty)
         |> Variable.Set.union ids
       in
       let pre = b_and_ex (List.map Range.to_cond k.ranges) in

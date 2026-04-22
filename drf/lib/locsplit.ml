@@ -17,11 +17,11 @@ module Kernel = struct
     (* Global ranges *)
     ranges : Range.t list;
     (* The code of a kernel performs the actual memory accesses. *)
-    code : Unsync.t;
+    code : Unsynced.t;
   }
 
   let free_names (k : t) : Variable.Set.t =
-    Variable.Set.empty |> Unsync.free_names k.code
+    Variable.Set.empty |> Unsynced.free_names k.code
     |> List.fold_right Range.free_names k.ranges
 
   let to_s (k : t) : Indent.t list =
@@ -33,7 +33,7 @@ module Kernel = struct
       Line ("locals: " ^ Params.to_string k.local_variables ^ ";");
       Line ("ranges: " ^ ranges ^ ";");
       Line "{";
-      Block (Unsync.to_s k.code);
+      Block (Unsynced.to_s k.code);
       Line "}";
     ]
 
@@ -42,7 +42,7 @@ module Kernel = struct
     |> Streamutil.from_list
     |> Streamutil.filter_map (fun x ->
         (* For every location *)
-        match Unsync.filter_by_location x k.code with
+        match Unsynced.filter_by_location x k.code with
         | Some p ->
             (* Filter out code that does not touch location x *)
             Some

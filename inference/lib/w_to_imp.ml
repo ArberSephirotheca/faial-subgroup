@@ -737,7 +737,7 @@ module Statements = struct
                    body = tr (Block body);
                    inc = tr (Block c);
                  })
-        | Barrier _ -> Some (Infer_stmt.Sync None)
+        | Barrier _ -> Some (Infer_stmt.Sync (Sync.threadsync ()))
         | Call { result; function_ = kernel; arguments = args } ->
             let k = Context.lookup kernel ctx in
             Some
