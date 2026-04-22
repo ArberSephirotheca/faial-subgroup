@@ -77,7 +77,8 @@ let expect_kind (k : string) (o : j_object) : unit j_result =
 let parse_attr (j : Yojson.Basic.t) : string j_result =
   let open Rjson in
   let* o = cast_object j in
-  with_field "value" cast_string o
+  let* v = with_field "value" cast_string o in
+  Ok (String.trim v)
 
 let j_filter_kind (f : string -> bool) (j : Yojson.Basic.t) : bool =
   let open Rjson in
@@ -743,7 +744,7 @@ module Init = struct
         Ok (IExpr e)
 end
 
-let c_attr (k : string) : string = " __attribute__((" ^ k ^ "))"
+let c_attr (k : string) : string = "__attribute__((" ^ k ^ "))"
 let c_attr_shared = c_attr "shared"
 let c_attr_global = c_attr "global"
 let c_attr_device = c_attr "device"
@@ -935,6 +936,7 @@ module Stmt = struct
     | DefaultStmt of t
     | CaseStmt of t case_t
     | SExpr of Expr.t
+    | AsmStmt of Expr.t Asm.t
     | Seq of t * t
 
   type if_stmt = t if_t
@@ -992,6 +994,7 @@ module Stmt = struct
           Line "}";
         ]
     | SExpr e -> [ Line (Expr.to_string e ^ ";") ]
+    | AsmStmt a -> [ Line (Asm.to_string Expr.to_string a ^ ";") ]
     | Seq (s1, s2) -> to_s s1 @ to_s s2
     | Skip -> [ Line ";" ]
 
@@ -1017,6 +1020,7 @@ module Stmt = struct
       | Default of 'a
       | Case of 'a case_t
       | SExpr of Expr.t
+      | Asm of Expr.t Asm.t
       | Seq of ('a * 'a)
       | Skip
 
@@ -1049,6 +1053,7 @@ module Stmt = struct
       | DefaultStmt s -> f (Default (fold f s))
       | CaseStmt s -> f (Case { case = s.case; body = fold f s.body })
       | SExpr e -> f (SExpr e)
+      | AsmStmt a -> f (Asm a)
       | Seq (s1, s2) -> f (Seq (fold f s1, fold f s2))
       | Skip -> f Skip
 
@@ -1067,6 +1072,7 @@ module Stmt = struct
         | Default c -> f (DefaultStmt c)
         | Case c -> f (CaseStmt c)
         | SExpr e -> f (SExpr e)
+        | Asm a -> f (AsmStmt a)
         | Seq (s1, s2) -> f (Seq (s1, s2))
         | Skip -> f Skip)
 
@@ -1088,6 +1094,9 @@ module Stmt = struct
         | For s -> Option.to_seq s.init |> Seq.concat_map ForInit.to_expr_seq
         | Default s -> s
         | SExpr e -> Seq.return e
+        | Asm a ->
+            let operand_exprs os = List.to_seq os |> Seq.map (fun o -> o.Asm.expr) in
+            Seq.append (operand_exprs a.Asm.outputs) (operand_exprs a.Asm.inputs)
         | Seq (s1, s2) -> Seq.append s1 s2)
   end
 
@@ -1096,7 +1105,7 @@ module Stmt = struct
     else
       match s with
       | Skip | BreakStmt | GotoStmt | ReturnStmt _ | ContinueStmt | DeclStmt _
-      | SExpr _ ->
+      | SExpr _ | AsmStmt _ ->
           None
       | Seq (s1, s2) | IfStmt { then_stmt = s1; else_stmt = s2; _ } -> (
           match find f s1 with Some s -> Some s | None -> find f s2)
@@ -1115,7 +1124,7 @@ module Stmt = struct
     let init : 'a = f s init in
     match s with
     | Skip | BreakStmt | GotoStmt | ReturnStmt _ | ContinueStmt | DeclStmt _
-    | SExpr _ ->
+    | SExpr _ | AsmStmt _ ->
         init
     | IfStmt { then_stmt = s1; else_stmt = s2; _ } ->
         let init : 'a = fold f s1 init in
@@ -1387,6 +1396,9 @@ module Stmt = struct
                   j)
           o
     | Some "FullComment" | Some "NullStmt" -> Ok Skip
+    | Some "GCCAsmStmt" ->
+        let* a = Asm.parse Expr.parse j in
+        Ok (AsmStmt a)
     | Some _ ->
         let* e = Expr.parse j in
         Ok (SExpr e)
@@ -1806,6 +1818,14 @@ module Program = struct
         | SExpr e ->
             let* e = rw_e e in
             return (SExpr e)
+        | AsmStmt a ->
+            let rw_op (op : Expr.t Asm.operand) : Expr.t Asm.operand state =
+              let* expr = rw_e op.expr in
+              return { Asm.constr = op.constr; expr }
+            in
+            let* outputs = State.list_map rw_op a.outputs in
+            let* inputs = State.list_map rw_op a.inputs in
+            return (AsmStmt { a with outputs; inputs })
       in
       fun s -> s |> rw_s |> State.run vars |> snd
     in

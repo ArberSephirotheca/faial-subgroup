@@ -308,6 +308,7 @@ module Stmt = struct
     | DefaultStmt of t
     | CaseStmt of { case : Expr.t; body : t }
     | SExpr of Expr.t
+    | AsmStmt of Expr.t Asm.t
 
   and d_cond = { cond : Expr.t; body : t }
 
@@ -413,6 +414,7 @@ module Stmt = struct
           Line "}";
         ]
     | SExpr e -> [ Line (Expr.to_string e) ]
+    | AsmStmt a -> [ Line (Asm.to_string Expr.to_string a ^ ";") ]
 
   and to_string ?(inline = false) (s : t) : string =
     s |> to_s |> Indent.to_string |> fun s ->
@@ -450,6 +452,7 @@ module Stmt = struct
       | DeclStmt d ->
           "decl {" ^ String.concat ", " (List.map Decl.to_string d) ^ "}"
       | SExpr e -> Expr.to_string e
+      | AsmStmt a -> Asm.to_string Expr.to_string a
       | Skip -> ";"
       | Seq _ as s -> stmt_to_s (first s) ^ "; ..."
     in
@@ -980,6 +983,23 @@ let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
       run
         (let* e = rewrite_exp e in
          add (SExpr e))
+  | AsmStmt a ->
+      let rewrite_operand (op : C_lang.Expr.t Asm.operand) : Expr.t Asm.operand state =
+        let* expr = rewrite_exp op.expr in
+        State.return { Asm.constr = op.constr; expr }
+      in
+      run
+        (let* outputs = State.list_map rewrite_operand a.outputs in
+         let* inputs = State.list_map rewrite_operand a.inputs in
+         add
+           (AsmStmt
+              {
+                asm_string = a.asm_string;
+                is_volatile = a.is_volatile;
+                outputs;
+                inputs;
+                clobbers = a.clobbers;
+              }))
 
 let rewrite_kernel (k : C_lang.Kernel.t) : Kernel.t =
   {

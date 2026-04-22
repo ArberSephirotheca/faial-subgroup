@@ -552,6 +552,13 @@ module Make (L : Logger) = struct
           While (cond, body)
       | SwitchStmt { body = s; _ } | CaseStmt { body = s; _ } | DefaultStmt s ->
           infer s
+      | AsmStmt a ->
+          (match Ptx.parse a.asm_string with
+           | Some p -> Infer_stmt.NamedBarrier p
+           | None ->
+               L.warning
+                 ("asm: dropping (unrecognized PTX template): " ^ a.asm_string);
+               Skip)
       | Seq (s1, s2) -> Seq (infer s1, infer s2)
     in
     infer
@@ -599,7 +606,7 @@ module Make (L : Logger) = struct
             l
           |> Common.append_tr arrays
       | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _ | GotoStmt
-      | ReturnStmt _ | ContinueStmt | BreakStmt | SExpr _ | Skip ->
+      | ReturnStmt _ | ContinueStmt | BreakStmt | SExpr _ | AsmStmt _ | Skip ->
           arrays
       | Seq (s1, s2) | IfStmt { then_stmt = s1; else_stmt = s2; _ } ->
           let arrays = find_shared arrays s1 in

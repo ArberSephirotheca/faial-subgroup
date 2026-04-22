@@ -106,7 +106,8 @@ module Declarations = struct
       | For { init = Some (ForInit.Decls l); body = s; _ } ->
           List.to_seq l |> Seq.append s
       | Decl l -> List.to_seq l
-      | Skip | Break | Goto | Return _ | Continue | SExpr _ -> Seq.empty
+      | Skip | Break | Goto | Return _ | Continue | SExpr _ | Asm _ ->
+          Seq.empty
       | Seq (s1, s2) | If { then_stmt = s1; else_stmt = s2; _ } ->
           Seq.append s1 s2
       | Do { body = s; _ }
@@ -287,7 +288,7 @@ module NestedLoops = struct
               };
           ]
       | BreakStmt | GotoStmt | ReturnStmt _ | ContinueStmt | DeclStmt _
-      | SExpr _ | Skip ->
+      | SExpr _ | AsmStmt _ | Skip ->
           []
       | Seq (s1, s2) | IfStmt { then_stmt = s1; else_stmt = s2; _ } ->
           to_seq s1 @ to_seq s2
@@ -484,6 +485,13 @@ module MutatedVar = struct
           (env, vars)
       | Skip | BreakStmt | GotoStmt | ReturnStmt None | ContinueStmt ->
           (env, VarSet.empty)
+      | AsmStmt a ->
+          let operand_vars (ops : Expr.t Asm.operand list) : VarSet.t =
+            List.fold_left
+              (fun vs op -> VarSet.union vs (typecheck_e op.Asm.expr))
+              VarSet.empty ops
+          in
+          (env, VarSet.union (operand_vars a.outputs) (operand_vars a.inputs))
       | Seq (s1, s2) ->
           let env, vars1 = typecheck scope env s1 in
           let env, vars2 = typecheck scope env s2 in
@@ -672,8 +680,8 @@ module Accesses = struct
   let cond_accesses (s : Stmt.t) : Access.t Seq.t =
     let rec cond_accesses (in_cond : bool) (s : Stmt.t) : Access.t Seq.t =
       match s with
-      | Skip | Call _ | Decl _ | Assign _ | Sync _ | Assert _ | LocationAlias _
-        ->
+      | Skip | Call _ | Decl _ | Assign _ | Sync _ | NamedBarrier _ | Assert _
+      | LocationAlias _ ->
           Seq.empty
       | Atomic a ->
           if in_cond then Seq.return (Imp.Atomic_write.to_access a)

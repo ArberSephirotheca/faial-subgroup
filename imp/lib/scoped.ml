@@ -373,6 +373,10 @@ module Code = struct
           let* s2 = imp_to_scoped s2 in
           return (Seq (s1, s2))
       | Sync l -> return (Sync l)
+      (* Named barriers are dropped at the IMP->proto boundary for now.
+         When DRF learns to honor named barriers, translate them into the
+         appropriate proto form here. *)
+      | NamedBarrier _ -> return Skip
       | Write e ->
           return
             (Access { array = e.array; index = e.index; mode = Write e.payload })

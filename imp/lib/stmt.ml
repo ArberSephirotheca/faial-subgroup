@@ -8,6 +8,7 @@ type t =
   | Skip
   | Seq of t * t
   | Sync of Location.t option
+  | NamedBarrier of Ptx.t
   | Assert of Assert.t
   | Read of Read.t
   | Atomic of Atomic_write.t
@@ -29,8 +30,8 @@ let filter (f : t -> bool) : t -> t =
       | If (b, p, q) -> If (b, filter p, filter q)
       | For (r, p) -> For (r, filter p)
       | Star p -> Star (filter p)
-      | Sync _ | Read _ | Atomic _ | Write _ | LocationAlias _ | Decl _
-      | Assign _ | Call _ | Assert _ | Skip ->
+      | Sync _ | NamedBarrier _ | Read _ | Atomic _ | Write _ | LocationAlias _
+      | Decl _ | Assign _ | Call _ | Assert _ | Skip ->
           s
   in
   filter
@@ -43,6 +44,9 @@ let is_if : t -> bool = function If _ -> true | _ -> false
 
 let rec has_sync : t -> bool = function
   | Sync _ -> true
+  (* TODO: NamedBarrier is dropped at IMP->proto for now; when DRF learns to
+     honor named barriers, flip this to [true]. *)
+  | NamedBarrier _ -> false
   | Seq (p, q) | If (_, p, q) -> has_sync p || has_sync q
   | Atomic _ | Read _ | Write _ | Assert _ | LocationAlias _ | Decl _ | Call _
   | Assign _ | Skip ->
@@ -51,8 +55,8 @@ let rec has_sync : t -> bool = function
 
 let calls : t -> StringSet.t =
   let rec calls (cs : StringSet.t) : t -> StringSet.t = function
-    | Skip | Decl _ | LocationAlias _ | Sync _ | Assert _ | Read _ | Write _
-    | Atomic _ | Assign _ ->
+    | Skip | Decl _ | LocationAlias _ | Sync _ | NamedBarrier _ | Assert _
+    | Read _ | Write _ | Atomic _ | Assign _ ->
         cs
     | If (_, s1, s2) | Seq (s1, s2) -> calls (calls cs s1) s2
     | For (_, s) | Star s -> calls cs s
@@ -65,8 +69,8 @@ let fold : 'a. (t -> 'a -> 'a) -> t -> 'a -> 'a =
   let rec fold_i (s : t) (init : 'a) : 'a =
     let init : 'a = f s init in
     match s with
-    | Skip | Sync _ | Assert _ | Read _ | Atomic _ | Write _ | Decl _ | Assign _
-    | LocationAlias _ | Call _ ->
+    | Skip | Sync _ | NamedBarrier _ | Assert _ | Read _ | Atomic _ | Write _
+    | Decl _ | Assign _ | LocationAlias _ | Call _ ->
         init
     | Seq (s1, s2) | If (_, s1, s2) ->
         let init = fold_i s1 init in
@@ -116,8 +120,8 @@ let to_list ?(rev = true) : t -> t list =
   let rec loop (accum : t list) : t -> t list = function
     | Skip -> accum
     | Seq (s1, s2) -> loop (loop accum s1) s2
-    | ( Sync _ | Assert _ | Read _ | Write _ | LocationAlias _ | Atomic _
-      | Decl _ | Assign _ | If _ | For _ | Star _ | Call _ ) as s ->
+    | ( Sync _ | NamedBarrier _ | Assert _ | Read _ | Write _ | LocationAlias _
+      | Atomic _ | Decl _ | Assign _ | If _ | For _ | Star _ | Call _ ) as s ->
         s :: accum
   in
   fun s -> loop [] s |> if rev then List.rev else Fun.id
@@ -131,6 +135,7 @@ let to_s : t -> Indent.t list =
   let rec stmt_to_s : t -> Indent.t list = function
     | Call c -> [ Line (Call.to_string c) ]
     | Sync _ -> [ Line "sync;" ]
+    | NamedBarrier p -> [ Line (Ptx.to_string p ^ ";") ]
     | Assert b -> [ Line (Assert.to_string b ^ ";") ]
     | Atomic r ->
         [
