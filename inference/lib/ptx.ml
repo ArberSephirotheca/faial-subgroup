@@ -18,12 +18,14 @@ let re =
     "^[ \t]*\\(bar\\|barrier\\)\\.\\(sync\\|arrive\\)\\(\\.aligned\\)?[ \t]+\
      \\([0-9]+\\)\\([ \t]*,[ \t]*\\([0-9]+\\)\\)?[ \t]*;?[ \t]*$"
 
+let bar_array : Variable.t = Variable.from_name "bar"
+
 let parse ?(loc : Location.t option) (asm_string : string) : Sync.t option =
   if Str.string_match re asm_string 0 then
     let mnemonic = Str.matched_group 2 asm_string in
-    let id = int_of_string (Str.matched_group 4 asm_string) in
-    let count =
-      try Some (int_of_string (Str.matched_group 6 asm_string))
+    let id : Exp.nexp = Num (int_of_string (Str.matched_group 4 asm_string)) in
+    let count : Exp.nexp option =
+      try Some (Exp.Num (int_of_string (Str.matched_group 6 asm_string)))
       with Not_found -> None
     in
     let mode =
@@ -32,5 +34,5 @@ let parse ?(loc : Location.t option) (asm_string : string) : Sync.t option =
       | "arrive" -> Sync.Mode.Arrive
       | _ -> assert false
     in
-    Some Sync.{ mode; id; count; loc }
+    Some Sync.{ mode; array = bar_array; index = [ id ]; count; loc }
   else None

@@ -309,6 +309,12 @@ module Stmt = struct
     | CaseStmt of { case : Expr.t; body : t }
     | SExpr of Expr.t
     | AsmStmt of Expr.t Asm.t
+    | BarrierOp of {
+        op : C_lang.BarrierOp.t;
+        target : d_subscript;
+        args : Expr.t list;
+        loc : Location.t option;
+      }
 
   and d_cond = { cond : Expr.t; body : t }
 
@@ -415,6 +421,16 @@ module Stmt = struct
         ]
     | SExpr e -> [ Line (Expr.to_string e) ]
     | AsmStmt a -> [ Line (Asm.to_string Expr.to_string a ^ ";") ]
+    | BarrierOp { op; target; args; _ } ->
+        let args_s =
+          if args = [] then ""
+          else "(" ^ list_to_s Expr.to_string args ^ ")"
+        in
+        [
+          Line
+            (subscript_to_s target
+            ^ "." ^ C_lang.BarrierOp.to_string op ^ args_s ^ ";");
+        ]
 
   and to_string ?(inline = false) (s : t) : string =
     s |> to_s |> Indent.to_string |> fun s ->
@@ -453,6 +469,8 @@ module Stmt = struct
           "decl {" ^ String.concat ", " (List.map Decl.to_string d) ^ "}"
       | SExpr e -> Expr.to_string e
       | AsmStmt a -> Asm.to_string Expr.to_string a
+      | BarrierOp { op; target; _ } ->
+          subscript_to_s target ^ "." ^ C_lang.BarrierOp.to_string op ^ "(...)"
       | Skip -> ";"
       | Seq _ as s -> stmt_to_s (first s) ^ "; ..."
     in
@@ -1001,6 +1019,39 @@ let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
                 clobbers = a.clobbers;
                 loc = a.loc;
               }))
+  | BarrierOp { op; target; args; loc } ->
+      (* The receiver of a barrier method is an lvalue reference to a barrier
+         object; we must NOT hoist it as a memory read. Normalize all shapes
+         into a d_subscript (array + index list). *)
+      let rec target_to_subscript (e : C_lang.Expr.t)
+          (indices : Expr.t list) : d_subscript state =
+        match e with
+        | ArraySubscriptExpr a ->
+            let* idx = rewrite_exp a.rhs in
+            target_to_subscript a.lhs (idx :: indices)
+        | UnaryOperator { opcode = "&"; child; _ }
+        | UnaryOperator { opcode = "*"; child; _ } ->
+            target_to_subscript child indices
+        | BinaryOperator { opcode = "+"; lhs; rhs; _ } ->
+            let* idx = rewrite_exp rhs in
+            target_to_subscript lhs (idx :: indices)
+        | Ident { name; ty; _ } ->
+            State.return
+              {
+                name;
+                index = indices;
+                ty;
+                location = Variable.location name;
+              }
+        | _ ->
+            failwith
+              ("BarrierOp: unsupported target shape: "
+             ^ C_lang.Expr.to_string e)
+      in
+      run
+        (let* target = target_to_subscript target [] in
+         let* args = State.list_map rewrite_exp args in
+         add (BarrierOp { op; target; args; loc }))
 
 let rewrite_kernel (k : C_lang.Kernel.t) : Kernel.t =
   {

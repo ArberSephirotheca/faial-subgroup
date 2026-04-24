@@ -106,7 +106,8 @@ module Declarations = struct
       | For { init = Some (ForInit.Decls l); body = s; _ } ->
           List.to_seq l |> Seq.append s
       | Decl l -> List.to_seq l
-      | Skip | Break | Goto | Return _ | Continue | SExpr _ | Asm _ ->
+      | Skip | Break | Goto | Return _ | Continue | SExpr _ | Asm _
+      | Barrier _ ->
           Seq.empty
       | Seq (s1, s2) | If { then_stmt = s1; else_stmt = s2; _ } ->
           Seq.append s1 s2
@@ -288,7 +289,7 @@ module NestedLoops = struct
               };
           ]
       | BreakStmt | GotoStmt | ReturnStmt _ | ContinueStmt | DeclStmt _
-      | SExpr _ | AsmStmt _ | Skip ->
+      | SExpr _ | AsmStmt _ | BarrierOp _ | Skip ->
           []
       | Seq (s1, s2) | IfStmt { then_stmt = s1; else_stmt = s2; _ } ->
           to_seq s1 @ to_seq s2
@@ -492,6 +493,13 @@ module MutatedVar = struct
               VarSet.empty ops
           in
           (env, VarSet.union (operand_vars a.outputs) (operand_vars a.inputs))
+      | BarrierOp { target; args; _ } ->
+          let vars =
+            List.fold_left
+              (fun vs e -> VarSet.union vs (typecheck_e e))
+              (typecheck_e target) args
+          in
+          (env, vars)
       | Seq (s1, s2) ->
           let env, vars1 = typecheck scope env s1 in
           let env, vars2 = typecheck scope env s2 in

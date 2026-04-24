@@ -93,6 +93,31 @@ module Param = struct
     Ok (make ~is_used:(is_refed || is_used) ~ty_var ~is_shared)
 end
 
+module BarrierOp = struct
+  type t = Arrive | Wait | ArriveAndWait | ArriveAndDrop
+
+  let to_string : t -> string = function
+    | Arrive -> "arrive"
+    | Wait -> "wait"
+    | ArriveAndWait -> "arrive_and_wait"
+    | ArriveAndDrop -> "arrive_and_drop"
+
+  let of_method_name : string -> t option = function
+    | "arrive" -> Some Arrive
+    | "wait" -> Some Wait
+    | "arrive_and_wait" -> Some ArriveAndWait
+    | "arrive_and_drop" -> Some ArriveAndDrop
+    | _ -> None
+
+  (* Strict type guard on a resolved C type. *)
+  let is_barrier_c_type (ty : C_type.t) : bool =
+    Common.contains ~substring:"cuda::barrier" (C_type.to_string ty)
+
+  (* Strict type guard: the desugared base type must be cuda::barrier<_>. *)
+  let is_barrier_base_type (ty : J_type.t) : bool =
+    J_type.desugared_matches is_barrier_c_type ty
+end
+
 module Expr = struct
   type t =
     | SizeOfExpr of J_type.t
@@ -722,6 +747,8 @@ let c_attr (k : string) : string = "__attribute__((" ^ k ^ "))"
 let c_attr_shared = c_attr "shared"
 let c_attr_global = c_attr "global"
 let c_attr_device = c_attr "device"
+let c_attr_constant = c_attr "constant"
+let c_attr_managed = c_attr "managed"
 
 module Decl : sig
   type t = {
@@ -819,7 +846,9 @@ end = struct
              let* k = get_kind o in
              Ok
                (match k with
-               | "CUDASharedAttr" | "CUDADeviceAttr" -> true
+               | "CUDASharedAttr" | "CUDADeviceAttr" | "CUDAConstantAttr"
+               | "CUDAManagedAttr" ->
+                   true
                | _ -> false))
             |> Result.value ~default:false)
           inner
@@ -911,6 +940,12 @@ module Stmt = struct
     | CaseStmt of t case_t
     | SExpr of Expr.t
     | AsmStmt of Expr.t Asm.t
+    | BarrierOp of {
+        op : BarrierOp.t;
+        target : Expr.t;
+        args : Expr.t list;
+        loc : Location.t option;
+      }
     | Seq of t * t
 
   type if_stmt = t if_t
@@ -969,6 +1004,16 @@ module Stmt = struct
         ]
     | SExpr e -> [ Line (Expr.to_string e ^ ";") ]
     | AsmStmt a -> [ Line (Asm.to_string Expr.to_string a ^ ";") ]
+    | BarrierOp { op; target; args; _ } ->
+        let args_s =
+          if args = [] then ""
+          else "(" ^ list_to_s Expr.to_string args ^ ")"
+        in
+        [
+          Line
+            (Expr.to_string target
+            ^ "." ^ BarrierOp.to_string op ^ args_s ^ ";");
+        ]
     | Seq (s1, s2) -> to_s s1 @ to_s s2
     | Skip -> [ Line ";" ]
 
@@ -995,6 +1040,12 @@ module Stmt = struct
       | Case of 'a case_t
       | SExpr of Expr.t
       | Asm of Expr.t Asm.t
+      | Barrier of {
+          op : BarrierOp.t;
+          target : Expr.t;
+          args : Expr.t list;
+          loc : Location.t option;
+        }
       | Seq of ('a * 'a)
       | Skip
 
@@ -1028,6 +1079,8 @@ module Stmt = struct
       | CaseStmt s -> f (Case { case = s.case; body = fold f s.body })
       | SExpr e -> f (SExpr e)
       | AsmStmt a -> f (Asm a)
+      | BarrierOp { op; target; args; loc } ->
+          f (Barrier { op; target; args; loc })
       | Seq (s1, s2) -> f (Seq (fold f s1, fold f s2))
       | Skip -> f Skip
 
@@ -1047,6 +1100,8 @@ module Stmt = struct
         | Case c -> f (CaseStmt c)
         | SExpr e -> f (SExpr e)
         | Asm a -> f (AsmStmt a)
+        | Barrier { op; target; args; loc } ->
+            f (BarrierOp { op; target; args; loc })
         | Seq (s1, s2) -> f (Seq (s1, s2))
         | Skip -> f Skip)
 
@@ -1071,6 +1126,8 @@ module Stmt = struct
         | Asm a ->
             let operand_exprs os = List.to_seq os |> Seq.map (fun o -> o.Asm.expr) in
             Seq.append (operand_exprs a.Asm.outputs) (operand_exprs a.Asm.inputs)
+        | Barrier { target; args; _ } ->
+            Seq.cons target (List.to_seq args)
         | Seq (s1, s2) -> Seq.append s1 s2)
   end
 
@@ -1079,7 +1136,7 @@ module Stmt = struct
     else
       match s with
       | Skip | BreakStmt | GotoStmt | ReturnStmt _ | ContinueStmt | DeclStmt _
-      | SExpr _ | AsmStmt _ ->
+      | SExpr _ | AsmStmt _ | BarrierOp _ ->
           None
       | Seq (s1, s2) | IfStmt { then_stmt = s1; else_stmt = s2; _ } -> (
           match find f s1 with Some s -> Some s | None -> find f s2)
@@ -1098,7 +1155,7 @@ module Stmt = struct
     let init : 'a = f s init in
     match s with
     | Skip | BreakStmt | GotoStmt | ReturnStmt _ | ContinueStmt | DeclStmt _
-    | SExpr _ | AsmStmt _ ->
+    | SExpr _ | AsmStmt _ | BarrierOp _ ->
         init
     | IfStmt { then_stmt = s1; else_stmt = s2; _ } ->
         let init : 'a = fold f s1 init in
@@ -1214,6 +1271,50 @@ module Stmt = struct
           run
             (let* e = rewrite_expr e in
              add (SExpr e))
+      | s -> s
+    in
+    rw
+
+  (* Recognize barrier method calls and lift them out of expression position
+     into [BarrierOp] stmt nodes. Runs after comma rewriting so barrier args
+     have already been normalized. Strict type guard: only fires when the
+     method's receiver has desugared type [cuda::barrier<_>]. *)
+  let rewrite_barriers : t -> t =
+    let try_lift ?(loc : Location.t option = None) (e : Expr.t) : t option =
+      match e with
+      | CXXOperatorCallExpr
+          { func = MemberExpr { base; name; _ }; args; _ } -> (
+          match BarrierOp.of_method_name name with
+          | Some op when BarrierOp.is_barrier_base_type (Expr.to_type base) ->
+              Some (BarrierOp { op; target = base; args; loc })
+          | _ -> None)
+      | _ -> None
+    in
+    let rewrite_decl (d : Decl.t) : t =
+      match Decl.init d with
+      | Some (IExpr e) -> (
+          match try_lift e with
+          | Some b_stmt ->
+              (* Drop the token-binding decl; the [BarrierOp] replaces it. *)
+              b_stmt
+          | None -> DeclStmt [ d ])
+      | _ -> DeclStmt [ d ]
+    in
+    let rec rw : t -> t = function
+      | SExpr e -> (
+          match try_lift e with Some b -> b | None -> SExpr e)
+      | DeclStmt l ->
+          l |> List.map rewrite_decl |> from_list
+      | IfStmt { cond; then_stmt; else_stmt } ->
+          IfStmt { cond; then_stmt = rw then_stmt; else_stmt = rw else_stmt }
+      | WhileStmt { cond; body } -> WhileStmt { cond; body = rw body }
+      | DoStmt { cond; body } -> DoStmt { cond; body = rw body }
+      | ForStmt { init; cond; inc; body } ->
+          ForStmt { init; cond; inc = rw inc; body = rw body }
+      | SwitchStmt { cond; body } -> SwitchStmt { cond; body = rw body }
+      | CaseStmt { case; body } -> CaseStmt { case; body = rw body }
+      | DefaultStmt s -> DefaultStmt (rw s)
+      | Seq (s1, s2) -> Seq (rw s1, rw s2)
       | s -> s
     in
     rw
@@ -1458,6 +1559,9 @@ module Kernel = struct
   let attribute (x : t) : KernelAttr.t = x.attribute
   let rewrite_comma (k : t) : t = { k with code = Stmt.rewrite_comma k.code }
 
+  let rewrite_barriers (k : t) : t =
+    { k with code = Stmt.rewrite_barriers k.code }
+
   (* Returns whether the kernel has a __global__ modifier *)
   let is_global (k : t) : bool = KernelAttr.is_global k.attribute
 
@@ -1522,6 +1626,10 @@ module Def = struct
     | Kernel k -> Kernel (Kernel.rewrite_comma k)
     | Declaration d -> Declaration (Decl.map_expr Expr.remove_comma d)
     | (Typedef _ | Enum _) as d -> d
+
+  let rewrite_barriers : t -> t = function
+    | Kernel k -> Kernel (Kernel.rewrite_barriers k)
+    | (Declaration _ | Typedef _ | Enum _) as d -> d
 
   let to_s (d : t) : Indent.t list =
     match d with
@@ -1653,10 +1761,12 @@ module Def = struct
     | "LinkageSpecDecl" | "NamespaceDecl" ->
         let* defs = with_field_or "inner" (cast_map parse) [] o in
         Ok (List.concat defs)
-    | "TypedefDecl" -> (
+    | "TypedefDecl" | "TypeAliasDecl" -> (
         let* name = with_field "name" cast_string o in
         let* ty = get_field "type" o |> Result.map J_type.from_json in
-
+        (* Prefer the desugared form so aliases like
+           [using barrier_t = cuda::barrier<...>] resolve all the way. *)
+        let ty = J_type.from_c_type (J_type.to_desugared_c_type ty) in
         match J_type.to_c_type_res ty with
         | Ok ty ->
             if
@@ -1800,6 +1910,10 @@ module Program = struct
             let* outputs = State.list_map rw_op a.outputs in
             let* inputs = State.list_map rw_op a.inputs in
             return (AsmStmt { a with outputs; inputs })
+        | BarrierOp { op; target; args; loc } ->
+            let* target = rw_e target in
+            let* args = State.list_map rw_e args in
+            return (BarrierOp { op; target; args; loc })
       in
       fun s -> s |> rw_s |> State.run vars |> snd
     in
@@ -1820,6 +1934,7 @@ module Program = struct
     rw_p Variable.Set.empty
 
   let remove_comma : t -> t = List.map Def.remove_comma
+  let rewrite_barriers : t -> t = List.map Def.rewrite_barriers
 
   let to_s (p : t) : Indent.t list =
     List.concat_map (fun k -> Def.to_s k @ [ Line "" ]) p
@@ -1835,6 +1950,7 @@ module Program = struct
     let p = List.concat inner in
     let p = if rewrite_shared_variables then rewrite_shared_arrays p else p in
     let p = if remove_commas then remove_comma p else p in
+    let p = rewrite_barriers p in
     Ok p
 end
 
