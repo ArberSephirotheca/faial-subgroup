@@ -1,8 +1,8 @@
 open Stage0
 open Protocols
 
-[@@@warning "-unused-value-declaration"]
-[@@@warning "-unused-type-declaration"]
+(* [@@@warning "-unused-value-declaration"]
+[@@@warning "-unused-type-declaration"] *)
 
 
 let list_to_string (f : 'a -> string) (l : 'a list): string =
@@ -114,7 +114,7 @@ end = struct
     type t = int VarMap.t
 
     let compare = VarMap.compare Int.compare
-    let to_string t =
+    (* let to_string t =
       if VarMap.is_empty t
       then "TermInner.of_factors []"
       else
@@ -123,7 +123,7 @@ end = struct
         |> List.map (function
         | k, v -> Printf.sprintf "%s, %d" k v)
         |> String.concat "; "
-        |> Printf.sprintf "TermInner.of_factors [%s]"
+        |> Printf.sprintf "TermInner.of_factors [%s]" *)
 
     let normalize = VarMap.filter (fun _ v -> v != 0)
     let (||>) (x, y) f = f x y
@@ -168,8 +168,8 @@ end = struct
         |> Printf.sprintf "%s [%s]" ctor
     let parameter s = (1, VarMap.singleton (Atom.parameter s) 1)
     let induction s = (1, VarMap.singleton (Atom.induction s) 1)
-    let of_int i = (i, VarMap.empty)
-    let one = of_int 1
+    (* let of_int i = (i, VarMap.empty) *)
+    (* let one = of_int 1 *)
 
     let ( * ) (c1, t1) (c2, t2) = (c1 * c2, TermInner.( * ) t1 t2)
     let coeff (c, _) = c
@@ -316,16 +316,10 @@ let to_string: t -> string = function
     (list_to_string Exp.n_to_string dims)
     (list_to_string Exp.b_to_string conditions)
 
-module Make(L:Logger.Logger) = struct
+module Make(L:Logger.Logger) : sig
+  val rewrite_kernel : Aligned.Kernel.t -> Aligned.Kernel.t
+end = struct
 
-  (* Extracts all size parameters *)
-  let size_params (t: Expr.t): Term.t list = t
-      |> Expr.to_list
-      |> List.filter (fun t ->
-        Term.has_induction t && Term.has_parameter t
-      )
-      |> List.map (Term.filter (fun v _ -> Atom.is_parameter v))
-      |> List.sort_uniq (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
   let size_params_all (ts : Expr.t list) : Term.t list = ts
       |> List.map (fun t -> t
         |> Expr.to_list
@@ -361,31 +355,7 @@ module Make(L:Logger.Logger) = struct
     |> List.rev
     (*turn this into a fold later*)
 
-  let from_exp (expr : Expr.t) : t option =
-    L.info ("Expr = \n" ^ Expr.to_string expr);
-    let ( let* ) = Option.bind in
-    let params = size_params expr in
-    L.info ("Size Params = \n" ^ list_to_string Term.to_string params);
-    let ds = dims params in
-    L.info ("Dims = " ^ option_to_string (list_to_string Term.to_string) ds);
-    let* ds = ds in
-    let is = accesses ds expr in
-    L.info ("Indices = \n" ^ list_to_string Expr.to_string is);
-    let conditions ds is = match ds, is with
-    | ds, _ :: is -> List.map2 (fun d i -> 
-        let open Exp in
-        NRel (Lt, Expr.to_nexp i, Expr.Term.to_nexp d)
-      ) ds is 
-    | _ -> failwith "unreachable?"
-    in
-    L.warning ("Unchecked conditions = \n" ^ list_to_string Exp.b_to_string (conditions ds is));
-    Some {
-      indices = List.map Expr.to_nexp is;
-      dims = List.map Expr.Term.to_nexp ds;
-      conditions = conditions ds is
-    }
-
-  let from_exp2 (ds : Term.t list) (expr : Expr.t) : t option =
+  let from_exp (ds : Term.t list) (expr : Expr.t) : t option =
     L.info ("Expr = \n" ^ Expr.to_string expr);
     let is = accesses ds expr in
     L.info ("Indices = \n" ^ list_to_string Expr.to_string is);
@@ -402,9 +372,6 @@ module Make(L:Logger.Logger) = struct
       dims = List.map Expr.Term.to_nexp ds;
       conditions = conditions ds is
     }
-  let from_nexp ~globals (expr: Exp.nexp): t option =
-    let expr' = Expr.from_nexp ~globals expr in
-    from_exp expr'
   
 
   (* let list_bind (x : 'a list) (f : 'a -> 'b list) : 'b list =
@@ -418,29 +385,7 @@ module Make(L:Logger.Logger) = struct
 
   (* Throwing out conditions for now. eventually will use t as a sort of rewrite template *)
 
-  let rewrite_access ~globals (acc : Access.t) : Access.t =
-    let (let*) = Option.bind in
-    (match acc with
-    | { index = [a]; _ } ->
-      let* result = from_nexp ~globals a in
-      let out = { acc with index = result.indices } in
-      L.info (Printf.sprintf "rewriting\n  %s\nwith\n  %s\nas\n  %s\n"
-        (Access.to_string acc)
-        (to_string result)
-        (Access.to_string out));
-      Some out
-    | _ -> 
-      L.error (Printf.sprintf "already multidimensional access\n  %s\n" (Access.to_string acc));
-      failwith "multidimensional acccess"
-      (* None *)
-    ) |>
-    Option.value ~default:acc
   (* TODO: this should simply not rewrite if there is a failure *)
-
-  (* module NexpMap = Map.Make(struct
-    type t = Exp.nexp
-    let compare = Exp.n_compare
-  end) *)
 
   let get_accesses (unsync : Unsync.t) : Exp.nexp list list Variable.Map.t =
     let open Unsync in
@@ -450,23 +395,9 @@ module Make(L:Logger.Logger) = struct
       | Cond (_, u) -> get_accesses_unsync u
       | Loop (_, u) -> get_accesses_unsync u
       | Seq (u, v) -> Fun.compose (get_accesses_unsync u) (get_accesses_unsync v)
-    (* QUESTION: we want to work on unsync, yes? *)
     in get_accesses_unsync unsync Variable.Map.empty
 
-  (* Global analysis not there yet. will need to collect all accesses in a block *)
-  let rewrite_unsync ~(globals : Variable.Set.t) : Unsync.t -> Unsync.t =
-    let open Unsync in
-    let rec rewrite_unsync : Unsync.t -> Unsync.t =
-    function
-    | Access a -> Access (rewrite_access ~globals a)
-    | Cond (p, b) -> Cond (p, rewrite_unsync b)
-    | Loop (r, b) -> Loop (r, rewrite_unsync b)
-    | Seq (a, b) -> Seq (rewrite_unsync a, rewrite_unsync b)
-    | code -> code
-    in
-    rewrite_unsync
-
-  let rewrite_unsync2 ~(globals : Variable.Set.t) (unsync : Unsync.t) : Unsync.t =
+  let rewrite_unsync ~(globals : Variable.Set.t) (unsync : Unsync.t) : Unsync.t =
     let (let*) = Option.bind in
     let open Unsync in
     let dims = unsync
@@ -486,7 +417,7 @@ module Make(L:Logger.Logger) = struct
         (match (
           let a = Expr.from_nexp ~globals a in
           let* dim = Variable.Map.find_opt array  dims in
-          let* rewritten = from_exp2 dim a in
+          let* rewritten = from_exp dim a in
           Some rewritten.indices
         ) with
         | Some indices -> Access { acc with index = indices }
@@ -507,24 +438,10 @@ module Make(L:Logger.Logger) = struct
     | Loop ({ range = { var = x; _ }; body; _ } as loop) ->
       Loop { loop with body = rewrite_aligned ~globals:(Variable.Set.add x globals) body }
     | Seq (a, b) -> Seq (rewrite_aligned ~globals a, rewrite_aligned ~globals b)
-  
-  let rec rewrite_aligned2 ~(globals : Variable.Set.t): Aligned.Code.t -> Aligned.Code.t =
-    let open Aligned.Code in
-    (* TODO rewrite: get dimensionality *)
-    function
-    | Sync c -> Sync (rewrite_unsync2 ~globals c)
-    | Loop ({ range = { var = x; _ }; body; _ } as loop) ->
-      Loop { loop with body = rewrite_aligned2 ~globals:(Variable.Set.add x globals) body }
-    | Seq (a, b) -> Seq (rewrite_aligned2 ~globals a, rewrite_aligned2 ~globals b)
-
 
   let rewrite_kernel (kernel : Aligned.Kernel.t) : Aligned.Kernel.t =
     let globals = Params.to_set kernel.global_variables in
     { kernel with code = rewrite_aligned ~globals kernel.code }
-
-  let rewrite_kernel2 (kernel : Aligned.Kernel.t) : Aligned.Kernel.t =
-    let globals = Params.to_set kernel.global_variables in
-    { kernel with code = rewrite_aligned2 ~globals kernel.code }
   (* currently this thinks blockIdx is global *)
 end
 
