@@ -362,7 +362,7 @@ end = struct
     let conditions ds is = match ds, is with
     | ds, _ :: is -> List.map2 (fun d i -> 
         let open Exp in
-        b_or (n_ge (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Expr.Term.to_nexp d))
+        b_and (n_ge (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Expr.Term.to_nexp d))
       ) ds is 
     | _ -> failwith "unreachable?"
     in
