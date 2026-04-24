@@ -3,7 +3,7 @@
  (public_name faial-sync)
  (name main)
  (modes exe)
- (modules main barrier)
+ (modules main barrier analysis)
  (libraries
   ; 3rd-party
   cmdliner printbox printbox-text

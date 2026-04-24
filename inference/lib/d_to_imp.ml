@@ -553,7 +553,7 @@ module Make (L : Logger) = struct
       | SwitchStmt { body = s; _ } | CaseStmt { body = s; _ } | DefaultStmt s ->
           infer s
       | AsmStmt a ->
-          (match Ptx.parse a.asm_string with
+          (match Ptx.parse ?loc:a.loc a.asm_string with
            | Some s -> Infer_stmt.Sync s
            | None ->
                L.warning

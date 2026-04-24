@@ -1,4 +1,5 @@
 open Stage0
+open Location_parser
 
 type json = Yojson.Basic.t
 type 'a j_result = 'a Rjson.j_result
@@ -11,6 +12,7 @@ type 'a t = {
   outputs : 'a operand list;
   inputs : 'a operand list;
   clobbers : string list;
+  loc : Location.t option;
 }
 
 let map_operand (f : 'a -> 'b) (o : 'a operand) : 'b operand =
@@ -23,6 +25,7 @@ let map_expr (f : 'a -> 'b) (a : 'a t) : 'b t =
     outputs = List.map (map_operand f) a.outputs;
     inputs = List.map (map_operand f) a.inputs;
     clobbers = a.clobbers;
+    loc = a.loc;
   }
 
 let parse (parse_expr : json -> 'a j_result) (j : json) : 'a t j_result =
@@ -68,7 +71,12 @@ let parse (parse_expr : json -> 'a j_result) (j : json) : 'a t j_result =
       in
       split num_outputs operands
     in
-    Ok { asm_string; is_volatile; outputs; inputs; clobbers }
+    let loc =
+      match List.assoc_opt "range" o with
+      | Some r -> parse_location r |> Result.to_option
+      | None -> None
+    in
+    Ok { asm_string; is_volatile; outputs; inputs; clobbers; loc }
 
 let to_string (expr_to_string : 'a -> string) (a : 'a t) : string =
   let operand_to_string (o : 'a operand) : string =

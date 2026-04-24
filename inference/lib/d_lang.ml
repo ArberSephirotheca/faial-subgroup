@@ -999,6 +999,7 @@ let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
                 outputs;
                 inputs;
                 clobbers = a.clobbers;
+                loc = a.loc;
               }))
 
 let rewrite_kernel (k : C_lang.Kernel.t) : Kernel.t =
