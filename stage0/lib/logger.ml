@@ -10,6 +10,12 @@ module Default : Logger = struct
   let error : string -> unit = fun x -> prerr_endline ("ERROR: " ^ x)
 end
 
+module Warnings : Logger = struct
+  let info : string -> unit = fun _ -> ()
+  let warning : string -> unit = fun x -> prerr_endline ("WARNING: " ^ x)
+  let error : string -> unit = fun x -> prerr_endline ("ERROR: " ^ x)
+end
+
 module Colors : Logger = struct
   let info (x : string) : unit =
     let open ANSITerminal in
