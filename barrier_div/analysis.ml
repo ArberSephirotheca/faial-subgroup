@@ -1,26 +1,56 @@
 open Protocols
 open Stage0
 
-(* In our context we gather the uniform and divergent path conditions. The
-   [pre] field holds the kernel precondition: assumptions that must hold for
-   any thread to be a real thread in the kernel (bounds, positivity, thread
-   distinctness, etc). It is kept separate from [divergent] so it can be
-   projected symmetrically onto both T1 and T2 instead of being negated along
-   with the divergent path when we build ¬D(T2). *)
+(* Path-condition state carried as we walk the kernel body.
+
+   Two variable sets serve different roles:
+   - [locals] classifies expressions as thread-divergent. An [if]/[for]
+     guard is uniform iff it references no [locals]. Contains threadIdx
+     plus user locals plus decls plus divergent-loop binders.
+   - [projectable] names the variables that get a $T1/$T2 suffix at goal
+     construction. These are the things that can differ between two
+     executions of the same thread under the same launch configuration:
+     kernel arguments and user-declared locals. Architectural invariants
+     (threadIdx, blockIdx, blockDim, gridDim) are never projected. *)
 module PathCondition = struct
+  (* The architectural constants — same value for T1 and T2 by construction
+     of "same thread, same launch config". Never projected. *)
+  let architectural : Variable.Set.t =
+    Variable.tid_set
+    |> Variable.Set.union Variable.bid_set
+    |> Variable.Set.union Variable.bdim_set
+    |> Variable.Set.union Variable.gdim_set
+
   type t = {
     locals : Variable.Set.t;
+    projectable : Variable.Set.t;
+    shared : Variable.Set.t;
     pre : Exp.bexp;
     divergent : Exp.bexp;
     uniform : Exp.bexp;
   }
 
-  let make (locals : Variable.Set.t) ~(pre : Exp.bexp) : t =
-    { locals; pre; divergent = (Bool true : Exp.bexp);
+  let make ~(locals : Variable.Set.t) ~(globals : Variable.Set.t)
+      ~(pre : Exp.bexp) : t =
+    let projectable =
+      Variable.Set.diff (Variable.Set.union locals globals) architectural
+    in
+    { locals; projectable; shared = architectural; pre;
+      divergent = (Bool true : Exp.bexp);
       uniform = (Bool true : Exp.bexp) }
 
+  (* Per-thread-divergent binder (decl, divergent loop var). Also projectable
+     because its value can differ between T1 and T2 executions. *)
   let add_local (x : Variable.t) (c : t) : t =
-    { c with locals = Variable.Set.add x c.locals }
+    { c with
+      locals = Variable.Set.add x c.locals;
+      projectable = Variable.Set.add x c.projectable }
+
+  (* Uniform binder (uniform loop var). Thread-uniform, and must stay shared
+     between T1 and T2 — projecting it would let Z3 pick different iterations
+     for the two tasks, which is not the semantics we want. *)
+  let add_shared (x : Variable.t) (c : t) : t =
+    { c with shared = Variable.Set.add x c.shared }
 
   let add_uniform (b : Exp.bexp) (c : t) : t =
     { c with uniform = Exp.b_and c.uniform b }
@@ -40,8 +70,10 @@ module PathCondition = struct
 
   let to_string (e : t) : string =
     Printf.sprintf
-      "{locals = {%s}; pre = %s; divergent = %s; uniform = %s}"
+      "{locals = {%s}; projectable = {%s}; shared = {%s}; pre = %s; divergent = %s; uniform = %s}"
       (Variable.set_to_string e.locals)
+      (Variable.set_to_string e.projectable)
+      (Variable.set_to_string e.shared)
       (Exp.b_to_string e.pre)
       (Exp.b_to_string e.divergent)
       (Exp.b_to_string e.uniform)
@@ -64,7 +96,9 @@ module Check = struct
           let cond = Range.to_cond range in
           let p =
             if PathCondition.is_uniform p cond then
-              PathCondition.add_uniform cond p
+              p
+              |> PathCondition.add_shared range.var
+              |> PathCondition.add_uniform cond
             else
               p
               |> PathCondition.add_local range.var
@@ -98,10 +132,9 @@ module Check = struct
       |> Protocols.Kernel.add_missing_binders
       |> Protocols.Kernel.opt
     in
-    let locals =
-      Variable.Set.union (Params.to_set k.local_variables) Variable.tid_set
-    in
-    let p = PathCondition.make locals ~pre:k.pre in
+    let locals = Params.to_set k.local_variables in
+    let globals = Params.to_set k.global_variables in
+    let p = PathCondition.make ~locals ~globals ~pre:k.pre in
     let barriers = Barrier.of_code p k.code in
     { barriers; kernel_name = k.name }
 
@@ -214,19 +247,27 @@ module Proof = struct
 
   (* Determinism-of-reachability obligation:
        pre(T1) ∧ pre(T2) ∧ U(T1) ∧ U(T2) ∧ D(T1) ∧ ¬D(T2).
-     T1 and T2 are two executions of the SAME thread — every free variable
-     except threadIdx gets projected per-task, so globals (blockDim, gridDim,
-     blockIdx, user globals) and user locals can differ between executions,
-     while threadIdx stays shared (same thread identity across executions). *)
+     T1 and T2 are two executions of the SAME thread under the SAME launch
+     configuration. Variables in [c.projectable] get $T1/$T2 suffixes and
+     may differ between executions; everything else (the architectural
+     vectors) stays shared. *)
   let path_condition_to_goal (c : PathCondition.t) : Exp.bexp =
-    let projected =
+    (* Sanity: every free name must be either projectable or architectural.
+       A stray free var means the protocol inference left something unbound
+       — that's a bug upstream, not something for us to work around. *)
+    let free =
       Variable.Set.empty
       |> Exp.b_free_names c.pre
       |> Exp.b_free_names c.divergent
       |> Exp.b_free_names c.uniform
-      |> (fun s -> Variable.Set.diff s Variable.tid_set)
     in
-    let proj t b = Proj.bexp projected t b in
+    let accounted = Variable.Set.union c.projectable c.shared in
+    let stray = Variable.Set.diff free accounted in
+    if not (Variable.Set.is_empty stray) then
+      prerr_endline
+        ("barrier_div: unaccounted free variables in path condition: "
+         ^ Variable.set_to_string stray);
+    let proj t b = Proj.bexp c.projectable t b in
     let pre1 = proj T1 c.pre in
     let pre2 = proj T2 c.pre in
     let d1 = proj T1 c.divergent in

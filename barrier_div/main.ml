@@ -79,45 +79,75 @@ module TUI = struct
     print_box (render_globals w);
     print_endline ""
 
-  let check_proof (p : Analysis.Proof.t) : unit =
-    let open Protocols.Gen_z3.Solver in
-    let loc =
-      match p.barrier.loc with
-      | Some l -> Location.to_string l
-      | None -> "<unknown location>"
+  let print_divergence ~index (p : Analysis.Proof.t) (m : Z3.Model.model) : unit =
+    T.print_string
+      [ T.Bold; T.Foreground T.Blue ]
+      ("\n~~~~ Barrier divergence " ^ string_of_int (index + 1) ^ " ~~~~\n\n");
+    (match p.barrier.loc with
+     | Some l -> Stage0.Tui_helper.LocationUI.print l
+     | None -> print_endline "<unknown location>");
+    print_endline "";
+    print_witness m;
+    T.print_string [ T.Underlined ]
+      ("(proof #" ^ string_of_int p.id ^ ")\n")
+
+  let check_kernel (k : Protocols.Kernel.t) ~show_map ~show_check ~show_symbexp
+      : bool =
+    if show_map then Protocols.Kernel.print k;
+    let check = Analysis.Check.of_kernel k in
+    if show_check then Analysis.Check.print check;
+    let proofs = Analysis.Proof.of_check check in
+    if show_symbexp then Analysis.Proof.print_seq proofs;
+    let outcomes =
+      proofs
+      |> Seq.map (fun p -> (p, Analysis.Proof.solve p))
+      |> List.of_seq
     in
-    let header =
-      Printf.sprintf "[%s] %s @ %s" p.kernel_name
-        (Protocols.Sync.to_string p.barrier) loc
+    let divergent =
+      outcomes
+      |> List.filter_map (fun (p, r) ->
+          match r with
+          | Ok (Protocols.Gen_z3.Solver.Sat m) -> Some (p, m)
+          | _ -> None)
     in
-    match Analysis.Proof.solve p with
-    | Ok Unsat ->
-        T.print_string [ T.Foreground T.Green ] (header ^ ": divergence-free\n")
-    | Ok (Sat m) ->
-        T.print_string [ T.Bold; T.Foreground T.Red ]
-          (header ^ ": POTENTIAL DIVERGENCE\n");
-        (match p.barrier.loc with
-         | Some l -> Stage0.Tui_helper.LocationUI.print l
-         | None -> ());
-        print_witness m
-    | Error e -> print_endline (header ^ ": solver error: " ^ e)
+    let errors =
+      outcomes
+      |> List.filter_map (fun (p, r) ->
+          match r with Error e -> Some (p, e) | _ -> None)
+    in
+    match (divergent, errors) with
+    | [], [] ->
+        T.print_string
+          [ T.Bold; T.Foreground T.Green ]
+          ("Kernel '" ^ check.kernel_name ^ "' is well-synchronized!\n");
+        true
+    | _, _ ->
+        let n = List.length divergent in
+        let noun = if n = 1 then "divergence" else "divergences" in
+        T.print_string
+          [ T.Bold; T.Foreground T.Red ]
+          ("Kernel '" ^ check.kernel_name ^ "' has " ^ string_of_int n
+         ^ " potential " ^ noun ^ ".\n");
+        List.iteri
+          (fun index (p, m) -> print_divergence ~index p m)
+          divergent;
+        List.iter
+          (fun (p, e) ->
+            T.print_string
+              [ T.Foreground T.Red ]
+              ("solver error on proof #" ^ string_of_int p.Analysis.Proof.id
+             ^ ": " ^ e ^ "\n"))
+          errors;
+        false
 
   let run ~show_map ~show_check ~show_symbexp
-      (protocol_kernels : Protocols.Kernel.t list) : unit =
+      (protocol_kernels : Protocols.Kernel.t list) : bool =
     protocol_kernels
-    |> List.iter (fun k ->
-        if show_map then Protocols.Kernel.print k;
-        let check = Analysis.Check.of_kernel k in
-        if show_check then Analysis.Check.print check;
-        let proofs = Analysis.Proof.of_check check in
-        if show_symbexp then Analysis.Proof.print_seq proofs;
-        Seq.iter check_proof proofs;
-        let k = Barrier.Kernel.from_proto k in
-        let is_unif = Barrier.Kernel.is_uniform k in
-        print_endline (k.name ^ ": " ^ if is_unif then "true" else "false");
-        Barrier.Kernel.divergent k
-        |> List.iter (fun l ->
-            l |> Option.iter (fun i -> Stage0.Tui_helper.LocationUI.print i)))
+    |> List.fold_left
+         (fun all_safe k ->
+           let safe = check_kernel ~show_map ~show_check ~show_symbexp k in
+           all_safe && safe)
+         true
 end
 
 let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
@@ -128,7 +158,8 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
       fname
   in
   if output_json then JUI.run parsed.kernels
-  else TUI.run ~show_map ~show_check ~show_symbexp parsed.kernels
+  else if not (TUI.run ~show_map ~show_check ~show_symbexp parsed.kernels) then
+    exit 1
 
 open Cmdliner
 
