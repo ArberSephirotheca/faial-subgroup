@@ -19,22 +19,66 @@ let abort_when (b : bool) (msg : string) : unit =
     exit (-2))
   else ()
 
-(** Same preprocessing as [faial-cost]: filter arrays to those the
-    chosen metric supports, fix the dim parameters, inline globals,
-    constant-fold, then linearize the array indices.
+(** {1 Preprocessing pipeline}
 
-    Metric mapping (Rocq side ↔ Faial side):
-    - [Rocq.Metric.MemReads]      ↔ [Rel_cost.Metric.UncoalescedAccesses]
-                                    (filters to global arrays)
-    - [Rocq.Metric.ActiveThreads] ↔ [Rel_cost.Metric.ActiveThreads]
-                                    (no array filtering — applies to any
-                                    memory) *)
+    Mirrors [faial-cost]'s pipeline plus index linearization, with
+    user-driven filters added on top:
+
+    - {!Filter.mode} drops accesses by R/W mode (cmdliner [--mode]).
+    - {!Filter.memory} restricts the surviving arrays to a memory
+      hierarchy (cmdliner [--memory]). When omitted, falls back to
+      the metric's natural choice — [Rel_cost.Metric.supported_arrays]
+      mapping [MemReads → UncoalescedAccesses → global] and
+      [ActiveThreads → any]. *)
+
+(** User-facing filter choices. Independent of [Rocq.Metric] — that
+    one only governs the Coq [Metric.T] expression. *)
+module Filter = struct
+  type mode = Read | Write | Any
+  type memory = Global | Shared
+
+  let mode_choices : (string * mode) list =
+    [ ("read", Read); ("write", Write); ("all", Any) ]
+
+  let memory_choices : (string * memory) list =
+    [ ("global", Global); ("shared", Shared) ]
+
+  let mode_predicate : mode -> Access.t -> bool = function
+    | Read -> Access.is_read
+    | Write -> Access.is_write
+    | Any -> fun _ -> true
+
+  let memory_predicate (arrays : Memory.t Variable.Map.t) :
+      memory -> Variable.t -> bool =
+    let lookup pred v =
+      Variable.Map.find_opt v arrays
+      |> Option.map pred
+      |> Option.value ~default:false
+    in
+    function
+    | Global -> lookup Memory.is_global
+    | Shared -> lookup Memory.is_shared
+end
+
 module Pipeline = struct
   module L = Linearize_index.Make (Logger.Silent)
 
   let to_faial_metric : Rocq.Metric.t -> Metric.t = function
     | MemReads -> UncoalescedAccesses
     | ActiveThreads -> ActiveThreads
+
+  (** Predicate keeping arrays that survive both the user's [--memory]
+      choice (when given) and, otherwise, the metric's natural
+      filtering. *)
+  let array_keep ~(metric : Rocq.Metric.t) ~(memory : Filter.memory option)
+      (k : kernel) : Variable.t -> bool =
+    match memory with
+    | Some choice -> Filter.memory_predicate k.arrays choice
+    | None ->
+        let supported =
+          Metric.supported_arrays k.arrays (to_faial_metric metric)
+        in
+        fun v -> Variable.Set.mem v supported
 
   let linearize_kernel (cfg : Config.t) (k : kernel) :
       (kernel, string) Result.t =
@@ -66,12 +110,12 @@ module Pipeline = struct
 
   let prepare ~(block_dim : Dim3.t) ~(grid_dim : Dim3.t)
       ~(params : (string * int) list) ~(metric : Rocq.Metric.t)
+      ~(mode : Filter.mode) ~(memory : Filter.memory option)
       (cfg : Config.t) (k : kernel) : (kernel, string) Result.t =
     let open Protocols.Kernel in
-    let faial_metric = to_faial_metric metric in
-    let supported_arrays = Metric.supported_arrays k.arrays faial_metric in
     k
-    |> filter_array (fun x -> Variable.Set.mem x supported_arrays)
+    |> filter_array (array_keep ~metric ~memory k)
+    |> filter_access (Filter.mode_predicate mode)
     |> set_block_dim block_dim |> set_grid_dim grid_dim
     |> apply_arch_binders Architecture.Defaults.block
     |> inline_globals params |> opt
@@ -81,8 +125,8 @@ end
 let pico (fname : string) (block_dim : Dim3.t option)
     (grid_dim : Dim3.t option) (params : (string * int) list)
     (ignore_parsing_errors : bool) (bank_count : int)
-    (threads_per_warp : int) (metric : Rocq.Metric.t) (output : string option)
-    : unit =
+    (threads_per_warp : int) (metric : Rocq.Metric.t) (mode : Filter.mode)
+    (memory : Filter.memory option) (output : string option) : unit =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
@@ -94,7 +138,10 @@ let pico (fname : string) (block_dim : Dim3.t option)
   let kernels =
     parsed.kernels
     |> List.map (fun k ->
-           match Pipeline.prepare ~block_dim ~grid_dim ~params ~metric cfg k with
+           match
+             Pipeline.prepare ~block_dim ~grid_dim ~params ~metric ~mode
+               ~memory cfg k
+           with
            | Ok k -> k
            | Error e ->
                Logger.Colors.error
@@ -181,18 +228,40 @@ let output =
 let metric =
   let doc =
     "Coq metric to bind in [Access] nodes. $(docv) ∈ {mem-reads, active}: \
-     mem-reads → Warp.MemReads.T (filters to global arrays); active → \
-     Warp.Metric.CountEnabled.T (counts enabled threads, no filter)."
+     mem-reads → Warp.MemReads.T; active → Warp.Metric.CountEnabled.T. \
+     When --memory is omitted, the metric also drives the array filter \
+     (mem-reads → global, active → no filter)."
   in
   Arg.(
     value
     & opt (enum Rocq.Metric.choices) Rocq.Metric.MemReads
     & info [ "m"; "metric" ] ~docv:"METRIC" ~doc)
 
+let mode =
+  let doc =
+    "Include only accesses with the given mode. $(docv) ∈ \
+     {read, write, all}. Default: all."
+  in
+  Arg.(
+    value
+    & opt (enum Filter.mode_choices) Filter.Any
+    & info [ "mode" ] ~docv:"MODE" ~doc)
+
+let memory =
+  let doc =
+    "Restrict accesses to arrays in the given memory hierarchy. $(docv) \
+     ∈ {global, shared}. Omit to use the metric's natural choice."
+  in
+  Arg.(
+    value
+    & opt (some (enum Filter.memory_choices)) None
+    & info [ "memory" ] ~docv:"MEMORY" ~doc)
+
 let pico_t =
   Term.(
     const pico $ get_fname $ block_dim $ grid_dim $ params
-    $ ignore_parsing_errors $ bank_count $ warp_size $ metric $ output)
+    $ ignore_parsing_errors $ bank_count $ warp_size $ metric $ mode $ memory
+    $ output)
 
 let info =
   let doc =
