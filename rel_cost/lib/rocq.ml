@@ -57,6 +57,21 @@
       [Bin Add ub (Num 1)] otherwise (the Rocq-side [smart_*]
       constructors will simplify what they can).
 
+    - [for_mul x lb count (fun x => body)] — base-2 ascending,
+      body sees [lb * 2^x] for [x = 0..count-1]. Used when
+      [step = Mult (Num 2)] and [dir = Increase] (e.g.
+      [for (i = 1; i < N; i *= 2)] or [i <<= 1]). [count] must be
+      a literal [nat]; we derive it from literal [lb] and [ub] by
+      iterating [lb, lb*2, lb*4, …] until exceeding [ub]. Symbolic
+      bounds aren't expressible (the Coq [count] argument is [nat]).
+      [count = 0] elaborates Coq-side to [Skip].
+
+    - [for_div x ub count (fun x => body)] — base-2 descending,
+      body sees [ub / 2^x] for [x = 0..count-1]. Used when
+      [step = Mult (Num 2)] and [dir = Decrease] (e.g.
+      [for (i = N; i >= 1; i /= 2)] or [i >>= 1]). Same
+      literal-bounds restriction as [for_mul].
+
     Other range shapes — [Mult] step, [Decrease] direction,
     non-literal bounds with [k ≠ 1] — fall outside the supported
     subset and surface as a translation error. *)
@@ -201,28 +216,93 @@ type range_form =
       (** Additive range with literal stride [≥ 2]. Emitted as
           [for_ var lb ub_excl stride (fun var => body)]. Bounds are
           [NExp.t], so symbolic ones (Tid, free vars, …) are fine. *)
+  | For_mul of {
+      var : string;
+      lb : string;  (** Coq [NExp.t] string. *)
+      count : int;  (** Number of base-2 doublings, derived statically. *)
+    }
+      (** Base-2 ascending multiplicative range (step [Mult (Num 2)],
+          [dir = Increase]). Emitted as
+          [for_mul var lb count (fun var => body)]. *)
+  | For_div of {
+      var : string;
+      ub : string;  (** Coq [NExp.t] string. *)
+      count : int;  (** Number of base-2 halvings, derived statically. *)
+    }
+      (** Base-2 descending multiplicative range (step [Mult (Num 2)],
+          [dir = Decrease]). Emitted as
+          [for_div var ub count (fun var => body)]. *)
 
 let classify_range (r : Range.t) : (range_form, error) Result.t =
   let ( let* ) = Result.bind in
-  let* () =
-    match r.dir with
-    | Increase -> Ok ()
-    | Decrease ->
-        Error
-          ("decreasing loops are not supported yet: " ^ Range.to_string r)
-  in
   let var = sanitize_name (Variable.name r.var) in
-  match r.step with
-  | Mult _ ->
+  let lit n =
+    match Exp.n_eval_opt n with Some k when k >= 0 -> Some k | _ -> None
+  in
+  match (r.dir, r.step) with
+  | Decrease, Plus _ ->
       Error
-        ("multiplicative-step loops are not supported yet: "
+        ("decreasing additive loops are not supported yet: "
        ^ Range.to_string r)
-  | Plus stride_e -> (
-      (* [Exp.n_eval_opt] folds whole expressions, so e.g.
-         [Num 1024 * Num 1] qualifies as a literal stride. *)
-      let lit n =
-        match Exp.n_eval_opt n with Some k when k >= 0 -> Some k | _ -> None
-      in
+  | Increase, Mult stride_e -> (
+      (* Base-2 ascending: [for_mul x lb count]. The body sees
+         [lb * 2^k] for [k = 0..count-1]; [count] is derived by
+         iterating [lb, lb*2, lb*4, …] while still [≤ ub]. Both
+         bounds must be literal so [count] is a Coq nat. *)
+      match (lit stride_e, lit r.lower_bound, lit r.upper_bound) with
+      | Some 2, Some lb, Some ub when lb >= 1 ->
+          let rec count_up cur n = if cur > ub then n else count_up (cur * 2) (n + 1) in
+          let count = count_up lb 0 in
+          if count = 0 then Ok Empty_loop
+          else
+            let* lb_s = nexp_to_coq env_empty r.lower_bound in
+            Ok (For_mul { var; lb = lb_s; count })
+      | Some 2, _, _ ->
+          Error
+            ("for_mul requires literal nat bounds with lb ≥ 1: "
+           ^ Range.to_string r)
+      | Some k, _, _ ->
+          Error
+            (Printf.sprintf
+               "only base-2 multiplicative steps are supported (got: \
+                %d in %s)"
+               k (Range.to_string r))
+      | None, _, _ ->
+          Error
+            ("multiplicative stride does not reduce to a literal nat: "
+           ^ Range.to_string r))
+  | Decrease, Mult stride_e -> (
+      (* Base-2 descending: [for_div x ub count]. The body sees
+         [ub / 2^k] for [k = 0..count-1]; [count] is derived by
+         iterating [ub, ub/2, ub/4, …] while still [≥ lb]. *)
+      match (lit stride_e, lit r.lower_bound, lit r.upper_bound) with
+      | Some 2, Some lb, Some ub when lb >= 1 ->
+          let rec count_down cur n =
+            if cur < lb then n else count_down (cur / 2) (n + 1)
+          in
+          let count = count_down ub 0 in
+          if count = 0 then Ok Empty_loop
+          else
+            let* ub_s = nexp_to_coq env_empty r.upper_bound in
+            Ok (For_div { var; ub = ub_s; count })
+      | Some 2, _, _ ->
+          Error
+            ("for_div requires literal nat bounds with lb ≥ 1: "
+           ^ Range.to_string r)
+      | Some k, _, _ ->
+          Error
+            (Printf.sprintf
+               "only base-2 multiplicative steps are supported (got: \
+                %d in %s)"
+               k (Range.to_string r))
+      | None, _, _ ->
+          Error
+            ("multiplicative stride does not reduce to a literal nat: "
+           ^ Range.to_string r))
+  | Increase, Plus stride_e -> (
+      (* [lit] is hoisted to the top of [classify_range] and folds
+         whole expressions, so e.g. [Num 1024 * Num 1] qualifies as a
+         literal stride. *)
       let lb_lit = lit r.lower_bound in
       let ub_lit = lit r.upper_bound in
       let stride_lit = lit stride_e in
@@ -350,6 +430,16 @@ module Syntax = struct
             body is rendered inside [fun var => …] where [var] has
             type [NExp.t], so callers must have translated the body
             with [var] bound in the env. *)
+    for_mul :
+      var:string -> lb:string -> count:int -> Indent.t list -> Indent.t list;
+        (** Base-2 ascending [for_mul]. [lb] is a pre-translated
+            [NExp.t]; [count] is a literal nat. Body sees
+            [lb * 2^var]. *)
+    for_div :
+      var:string -> ub:string -> count:int -> Indent.t list -> Indent.t list;
+        (** Base-2 descending [for_div]. [ub] is a pre-translated
+            [NExp.t]; [count] is a literal nat. Body sees
+            [ub / 2^var]. *)
   }
 
   (** Bare [Inductive] constructor backend.
@@ -391,6 +481,24 @@ module Syntax = struct
             Line
               (Printf.sprintf "(ProtoLet.for_ %s %s %s %d (fun %s =>" var lb
                  ub_excl stride var);
+            Block body;
+            Line "))";
+          ]);
+      for_mul =
+        (fun ~var ~lb ~count body ->
+          [
+            Line
+              (Printf.sprintf "(ProtoLet.for_mul %s %s %d (fun %s =>" var lb
+                 count var);
+            Block body;
+            Line "))";
+          ]);
+      for_div =
+        (fun ~var ~ub ~count body ->
+          [
+            Line
+              (Printf.sprintf "(ProtoLet.for_div %s %s %d (fun %s =>" var ub
+                 count var);
             Block body;
             Line "))";
           ]);
@@ -437,17 +545,23 @@ let rec code_to_s (cfg : config) (env : env) (c : Code.t) :
       Ok (s.ite ~cond:b_s p_s q_s)
   | Loop { range; body } -> (
       let* form = classify_range range in
+      (* The [for_]-family bodies are wrapped in [fun var => …]
+         where [var : NExp.t], so references to the loop variable
+         must drop the [(NExp.Var _)] wrapper. The unit-stride
+         [Loop] form keeps it as an [Ident.t]. *)
+      let env_for_body =
+        match form with
+        | Strided _ | For_mul _ | For_div _ -> env_bind range.var env
+        | Unit_stride _ | Empty_loop -> env
+      in
+      let* body_s = code_to_s cfg env_for_body body in
       match form with
       | Empty_loop -> Ok s.skip
-      | Unit_stride { var; lb; ub } ->
-          let* body_s = code_to_s cfg env body in
-          Ok (s.loop ~var ~lb ~ub body_s)
+      | Unit_stride { var; lb; ub } -> Ok (s.loop ~var ~lb ~ub body_s)
       | Strided { var; lb; ub_excl; stride } ->
-          (* Inside the [for_] body, the loop variable becomes a Coq
-             lambda parameter of type [NExp.t]. *)
-          let env' = env_bind range.var env in
-          let* body_s = code_to_s cfg env' body in
-          Ok (s.for_ ~var ~lb ~ub_excl ~stride body_s))
+          Ok (s.for_ ~var ~lb ~ub_excl ~stride body_s)
+      | For_mul { var; lb; count } -> Ok (s.for_mul ~var ~lb ~count body_s)
+      | For_div { var; ub; count } -> Ok (s.for_div ~var ~ub ~count body_s))
   | Decl { body; _ } -> code_to_s cfg env body
 
 (** {1 Kernel translation} *)
@@ -504,13 +618,15 @@ let sanitize_module_name (name : string) : string =
 
     [threadIdx.x] is always excluded — it renders as [NExp.Tid]. *)
 let used_idents (k : Kernel.t) : Variable.t list =
-  (* Mirrors [classify_range]: a range emits the [for_] form (with a
-     lambda binding for the loop variable) iff it is increasing, has
-     additive step, and the stride reduces to a literal nat [≥ 2]. *)
+  (* Mirrors [classify_range]: the loop variable becomes a Coq lambda
+     parameter (rather than a section [Ident.t]) iff the range emits
+     one of [for_], [for_mul], or [for_div]. *)
   let is_for_form (r : Range.t) : bool =
     match (r.dir, r.step) with
     | Increase, Plus stride_e -> (
         match Exp.n_eval_opt stride_e with Some k -> k >= 2 | None -> false)
+    | Increase, Mult stride_e | Decrease, Mult stride_e ->
+        Exp.n_eval_opt stride_e = Some 2
     | _ -> false
   in
   let add_unbound (env : Variable.Set.t) (x : Variable.t)
