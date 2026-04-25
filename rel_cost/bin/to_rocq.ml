@@ -126,7 +126,8 @@ let pico (fname : string) (block_dim : Dim3.t option)
     (grid_dim : Dim3.t option) (params : (string * int) list)
     (ignore_parsing_errors : bool) (bank_count : int)
     (threads_per_warp : int) (metric : Rocq.Metric.t) (mode : Filter.mode)
-    (memory : Filter.memory option) (output : string option) : unit =
+    (memory : Filter.memory option) (no_imports : bool)
+    (output : string option) : unit =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
@@ -149,7 +150,7 @@ let pico (fname : string) (block_dim : Dim3.t option)
                exit (-1))
   in
   abort_when (kernels = []) "No kernels found.";
-  match Rocq.from_kernels ~metric kernels with
+  match Rocq.from_kernels ~metric ~include_imports:(not no_imports) kernels with
   | Error e ->
       Logger.Colors.error e;
       exit (-1)
@@ -257,11 +258,19 @@ let memory =
     & opt (some (enum Filter.memory_choices)) None
     & info [ "memory" ] ~docv:"MEMORY" ~doc)
 
+let no_imports =
+  let doc =
+    "Suppress the leading [Require …] / [Open Scope] header. Useful \
+     when pasting the generated module(s) into a file that already \
+     has the imports."
+  in
+  Arg.(value & flag & info [ "no-imports" ] ~doc)
+
 let pico_t =
   Term.(
     const pico $ get_fname $ block_dim $ grid_dim $ params
     $ ignore_parsing_errors $ bank_count $ warp_size $ metric $ mode $ memory
-    $ output)
+    $ no_imports $ output)
 
 let info =
   let doc =
