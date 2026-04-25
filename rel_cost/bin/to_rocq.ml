@@ -19,12 +19,22 @@ let abort_when (b : bool) (msg : string) : unit =
     exit (-2))
   else ()
 
-(** Same preprocessing as [faial-cost] for the [UncoalescedAccesses]
-    metric (which mirrors Rocq's [MemReads]): keep global-memory
-    arrays only, fix the dim parameters, inline globals, constant-fold,
-    then linearize the array indices. *)
+(** Same preprocessing as [faial-cost]: filter arrays to those the
+    chosen metric supports, fix the dim parameters, inline globals,
+    constant-fold, then linearize the array indices.
+
+    Metric mapping (Rocq side ↔ Faial side):
+    - [Rocq.Metric.MemReads]      ↔ [Rel_cost.Metric.UncoalescedAccesses]
+                                    (filters to global arrays)
+    - [Rocq.Metric.ActiveThreads] ↔ [Rel_cost.Metric.ActiveThreads]
+                                    (no array filtering — applies to any
+                                    memory) *)
 module Pipeline = struct
   module L = Linearize_index.Make (Logger.Silent)
+
+  let to_faial_metric : Rocq.Metric.t -> Metric.t = function
+    | MemReads -> UncoalescedAccesses
+    | ActiveThreads -> ActiveThreads
 
   let linearize_kernel (cfg : Config.t) (k : kernel) :
       (kernel, string) Result.t =
@@ -55,11 +65,11 @@ module Pipeline = struct
     Ok { k with code }
 
   let prepare ~(block_dim : Dim3.t) ~(grid_dim : Dim3.t)
-      ~(params : (string * int) list) (cfg : Config.t) (k : kernel) :
-      (kernel, string) Result.t =
+      ~(params : (string * int) list) ~(metric : Rocq.Metric.t)
+      (cfg : Config.t) (k : kernel) : (kernel, string) Result.t =
     let open Protocols.Kernel in
-    let metric = Metric.UncoalescedAccesses in
-    let supported_arrays = Metric.supported_arrays k.arrays metric in
+    let faial_metric = to_faial_metric metric in
+    let supported_arrays = Metric.supported_arrays k.arrays faial_metric in
     k
     |> filter_array (fun x -> Variable.Set.mem x supported_arrays)
     |> set_block_dim block_dim |> set_grid_dim grid_dim
@@ -71,7 +81,8 @@ end
 let pico (fname : string) (block_dim : Dim3.t option)
     (grid_dim : Dim3.t option) (params : (string * int) list)
     (ignore_parsing_errors : bool) (bank_count : int)
-    (threads_per_warp : int) (output : string option) : unit =
+    (threads_per_warp : int) (metric : Rocq.Metric.t) (output : string option)
+    : unit =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
@@ -83,7 +94,7 @@ let pico (fname : string) (block_dim : Dim3.t option)
   let kernels =
     parsed.kernels
     |> List.map (fun k ->
-           match Pipeline.prepare ~block_dim ~grid_dim ~params cfg k with
+           match Pipeline.prepare ~block_dim ~grid_dim ~params ~metric cfg k with
            | Ok k -> k
            | Error e ->
                Logger.Colors.error
@@ -91,7 +102,7 @@ let pico (fname : string) (block_dim : Dim3.t option)
                exit (-1))
   in
   abort_when (kernels = []) "No kernels found.";
-  match Rocq.from_kernels kernels with
+  match Rocq.from_kernels ~metric kernels with
   | Error e ->
       Logger.Colors.error e;
       exit (-1)
@@ -167,10 +178,21 @@ let output =
     & opt (some string) None
     & info [ "o"; "output" ] ~docv:"OUTPUT" ~doc)
 
+let metric =
+  let doc =
+    "Coq metric to bind in [Access] nodes. $(docv) ∈ {mem-reads, active}: \
+     mem-reads → Warp.MemReads.T (filters to global arrays); active → \
+     Warp.Metric.CountEnabled.T (counts enabled threads, no filter)."
+  in
+  Arg.(
+    value
+    & opt (enum Rocq.Metric.choices) Rocq.Metric.MemReads
+    & info [ "m"; "metric" ] ~docv:"METRIC" ~doc)
+
 let pico_t =
   Term.(
     const pico $ get_fname $ block_dim $ grid_dim $ params
-    $ ignore_parsing_errors $ bank_count $ warp_size $ output)
+    $ ignore_parsing_errors $ bank_count $ warp_size $ metric $ output)
 
 let info =
   let doc =
