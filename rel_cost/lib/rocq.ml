@@ -109,81 +109,89 @@ let sanitize_name (name : string) : string =
 (** {1 Operator translation} *)
 
 let n_binary_to_op : N_binary.t -> (string, error) Result.t = function
-  | Plus -> Ok "NOp.Add"
-  | Minus -> Ok "NOp.Sub"
-  | Mult -> Ok "NOp.Mult"
-  | Div -> Ok "NOp.Div"
-  | Mod -> Ok "NOp.Mod"
+  | Plus -> Ok "Add"
+  | Minus -> Ok "Sub"
+  | Mult -> Ok "Mult"
+  | Div -> Ok "Div"
+  | Mod -> Ok "Mod"
   | (BitOr | BitXOr | BitAnd | LeftShift | RightShift) as o ->
       Error ("unsupported binary operator: " ^ N_binary.to_string o)
 
+(** ROp's [Eq], [Lt], [Gt] collide with [Datatypes.comparison]'s
+    constructors. We emit [N_]-prefixed aliases (introduced as
+    [Notation]s in {!from_kernel}) so the generated source parses
+    unambiguously. The remaining three ([Neq], [Le], [Ge]) are
+    aliased identically for visual symmetry. *)
 let n_rel_to_op : N_rel.t -> string = function
-  | Eq -> "ROp.Eq"
-  | Neq -> "ROp.Neq"
-  | Lt -> "ROp.Lt"
-  | Le -> "ROp.Le"
-  | Gt -> "ROp.Gt"
-  | Ge -> "ROp.Ge"
+  | Eq -> "NEq"
+  | Neq -> "NNeq"
+  | Lt -> "NLt"
+  | Le -> "NLe"
+  | Gt -> "NGt"
+  | Ge -> "NGe"
 
 let b_rel_to_op : B_rel.t -> string = function
-  | BAnd -> "BOp.And"
-  | BOr -> "BOp.Or"
+  | BAnd -> "And"
+  | BOr -> "Or"
 
-(** {1 Translation environment}
+(** {1 Expression translation}
 
-    [env] tracks which OCaml [Variable.t] names are currently bound by
-    a surrounding Coq lambda parameter of type [NExp.t] (introduced by
-    [for_]'s [body : NExp.t -> t]). Lookups of [Var x] for such [x]
-    emit the bare Coq identifier instead of [(NExp.Var x)] — the value
-    is already an [NExp.t]. Outside this set, [Var x] is treated as a
-    free [Ident.t] and wrapped with [NExp.Var]. *)
-type env = Variable.Set.t
+    Every program variable [x] gets a single section-level binding
+    (built by {!from_kernel}); two coercions installed at the top of
+    the section lift them into [NExp.t] at use sites:
+    - Globals (thread-uniform kernel parameters) →
+      [Variable x : nat.]; coerced via [NExp.Num : nat >-> NExp.t].
+    - Locals (loop binders, [Decl]-bound names) →
+      [Let x : Ident.t := Ident.make N.]; coerced via
+      [NExp.Var : Ident.t >-> NExp.t].
 
-let env_empty : env = Variable.Set.empty
+    In both cases [Var x] renders as the bare sanitized name [x].
+    [threadIdx.x] is special-cased to [NExp.Tid]. *)
 
-let env_bind (x : Variable.t) (e : env) : env = Variable.Set.add x e
-
-(** {1 Expression translation} *)
-
-let rec nexp_to_coq (env : env) (n : nexp) : (string, error) Result.t =
+(** Numeric literals are emitted as bare nats; the section-level
+    [Coercion NExp.Num : nat >-> NExp.t] lifts them where an [NExp.t]
+    is expected. Constructors are emitted unqualified ([Rel], [Bool],
+    [Tid], [Add], …) and rely on the [Require Import]s in
+    {!common_header}. Identifiers that would collide — [NExp.Bin] and
+    [BExp.Bin] (same name, different inductive); [ROp.Eq], [ROp.Lt],
+    [ROp.Gt] (collide with [Datatypes.comparison]) — are emitted via
+    section-level [Notation] aliases ([NBin], [BBin], [NEq], …)
+    introduced by {!from_kernel}. *)
+let rec nexp_to_coq (n : nexp) : (string, error) Result.t =
   let ( let* ) = Result.bind in
   match n with
-  | Num k when k >= 0 -> Ok (Printf.sprintf "(NExp.Num %d)" k)
+  | Num k when k >= 0 -> Ok (string_of_int k)
   | Num k -> Error (Printf.sprintf "negative numeric literal: %d" k)
-  | Var x when Variable.equal x Variable.tid_x -> Ok "NExp.Tid"
+  | Var x when Variable.equal x Variable.tid_x -> Ok "Tid"
   | Var x when Variable.is_tid x ->
       Error
         ("only threadIdx.x maps to NExp.Tid (the [Dim.T] axis); got: "
        ^ Variable.name x)
-  | Var x when Variable.Set.mem x env ->
-      (* Bound by an enclosing for_ lambda: already has type NExp.t. *)
-      Ok (sanitize_name (Variable.name x))
-  | Var x ->
-      Ok (Printf.sprintf "(NExp.Var %s)" (sanitize_name (Variable.name x)))
+  | Var x -> Ok (sanitize_name (Variable.name x))
   | Binary (op, e1, e2) ->
       let* op_s = n_binary_to_op op in
-      let* e1_s = nexp_to_coq env e1 in
-      let* e2_s = nexp_to_coq env e2 in
-      Ok (Printf.sprintf "(NExp.Bin %s %s %s)" op_s e1_s e2_s)
+      let* e1_s = nexp_to_coq e1 in
+      let* e2_s = nexp_to_coq e2 in
+      Ok (Printf.sprintf "(NBin %s %s %s)" op_s e1_s e2_s)
   | (Unary _ | NCall _ | NIf _ | Other _ | CastInt _) as e ->
       Error ("unsupported nexp: " ^ Exp.n_to_string e)
 
-let rec bexp_to_coq (env : env) (b : bexp) : (string, error) Result.t =
+let rec bexp_to_coq (b : bexp) : (string, error) Result.t =
   let ( let* ) = Result.bind in
   match b with
-  | Bool true -> Ok "(BExp.Bool true)"
-  | Bool false -> Ok "(BExp.Bool false)"
+  | Bool true -> Ok "(Bool true)"
+  | Bool false -> Ok "(Bool false)"
   | NRel (op, e1, e2) ->
-      let* e1_s = nexp_to_coq env e1 in
-      let* e2_s = nexp_to_coq env e2 in
-      Ok (Printf.sprintf "(BExp.Rel %s %s %s)" (n_rel_to_op op) e1_s e2_s)
+      let* e1_s = nexp_to_coq e1 in
+      let* e2_s = nexp_to_coq e2 in
+      Ok (Printf.sprintf "(Rel %s %s %s)" (n_rel_to_op op) e1_s e2_s)
   | BRel (op, b1, b2) ->
-      let* b1_s = bexp_to_coq env b1 in
-      let* b2_s = bexp_to_coq env b2 in
-      Ok (Printf.sprintf "(BExp.Bin %s %s %s)" (b_rel_to_op op) b1_s b2_s)
+      let* b1_s = bexp_to_coq b1 in
+      let* b2_s = bexp_to_coq b2 in
+      Ok (Printf.sprintf "(BBin %s %s %s)" (b_rel_to_op op) b1_s b2_s)
   | BNot b ->
-      let* b_s = bexp_to_coq env b in
-      Ok (Printf.sprintf "(BExp.neg %s)" b_s)
+      let* b_s = bexp_to_coq b in
+      Ok (Printf.sprintf "(neg %s)" b_s)
   | (CastBool _ | Pred _ | Distinct _) as e ->
       Error ("unsupported bexp: " ^ Exp.b_to_string e)
 
@@ -255,7 +263,7 @@ let classify_range (r : Range.t) : (range_form, error) Result.t =
           let count = count_up lb 0 in
           if count = 0 then Ok Empty_loop
           else
-            let* lb_s = nexp_to_coq env_empty r.lower_bound in
+            let* lb_s = nexp_to_coq r.lower_bound in
             Ok (For_mul { var; lb = lb_s; count })
       | Some 2, _, _ ->
           Error
@@ -283,7 +291,7 @@ let classify_range (r : Range.t) : (range_form, error) Result.t =
           let count = count_down ub 0 in
           if count = 0 then Ok Empty_loop
           else
-            let* ub_s = nexp_to_coq env_empty r.upper_bound in
+            let* ub_s = nexp_to_coq r.upper_bound in
             Ok (For_div { var; ub = ub_s; count })
       | Some 2, _, _ ->
           Error
@@ -317,11 +325,11 @@ let classify_range (r : Range.t) : (range_form, error) Result.t =
       else
         match stride_lit with
         | Some 1 ->
-            let* lb = nexp_to_coq env_empty r.lower_bound in
-            let* ub = nexp_to_coq env_empty r.upper_bound in
+            let* lb = nexp_to_coq r.lower_bound in
+            let* ub = nexp_to_coq r.upper_bound in
             Ok (Unit_stride { var; lb; ub })
         | Some k when k >= 2 ->
-            let* lb = nexp_to_coq env_empty r.lower_bound in
+            let* lb = nexp_to_coq r.lower_bound in
             (* Fold [(Num k) + 1] to [Num (k+1)] when [ub] is a
                literal, avoiding a redundant [Bin Add _ (Num 1)] in
                the common literal-bound case. *)
@@ -329,7 +337,7 @@ let classify_range (r : Range.t) : (range_form, error) Result.t =
               match ub_lit with
               | Some ub -> Ok (Printf.sprintf "(NExp.Num %d)" (ub + 1))
               | None ->
-                  let* ub_s = nexp_to_coq env_empty r.upper_bound in
+                  let* ub_s = nexp_to_coq r.upper_bound in
                   Ok
                     (Printf.sprintf
                        "(NExp.Bin NOp.Add %s (NExp.Num 1))" ub_s)
@@ -384,28 +392,40 @@ module Metric = struct
       ("parametric", Parametric);
     ]
 
-  (** Coq expression of type [Metric.T] for the [Access] constructor. *)
-  let to_coq_expr : t -> string = function
-    | MemReads -> "(MemReads.T m)"
-    | ActiveThreads -> "Metric.CountEnabled.T"
-    | Parametric -> "Met"
+  (** All metric variants are hoisted into a single section-level
+      binding named [M] of type [Metric.T] (see {!preamble_lines});
+      [Access] then reads as [Access M <index>] regardless of which
+      metric was selected. *)
+  let to_coq_expr : t -> string = fun _ -> "M"
 
-  (** Extra declarations to insert into the section preamble for free
-      parameters of this metric. *)
+  (** Section preamble for the chosen metric:
+      - [MemReads] introduces [Variable m : nat.] for the sector size
+        and [Let M := MemReads.T m.] for the [Metric.T] binding;
+      - [ActiveThreads] is concrete and parameter-free, so just
+        [Let M := Metric.CountEnabled.T.];
+      - [Parametric] leaves [M] abstract via [Variable M : Metric.T.]
+        — the kernel becomes generic in the metric and is specialized
+        at the proof site. *)
   let preamble_lines : t -> Indent.t list =
     let open Indent in
     function
     | MemReads ->
         [
-          Line "(* Sector size for the MemReads metric. *)";
+          Line "(* MemReads metric, parameterized by sector size [m]. *)";
           Line "Variable m : nat.";
+          Line "Let M : Metric.T := MemReads.T m.";
           Line "";
         ]
-    | ActiveThreads -> []
+    | ActiveThreads ->
+        [
+          Line "(* Address-independent count of enabled threads. *)";
+          Line "Let M : Metric.T := Metric.CountEnabled.T.";
+          Line "";
+        ]
     | Parametric ->
         [
           Line "(* Abstract metric — specialize at the proof site. *)";
-          Line "Variable Met : Metric.T.";
+          Line "Variable M : Metric.T.";
           Line "";
         ]
 
@@ -441,6 +461,10 @@ module Syntax = struct
     seq : Indent.t list -> Indent.t list -> Indent.t list;
     ite :
       cond:string -> Indent.t list -> Indent.t list -> Indent.t list;
+    cond : cond:string -> Indent.t list -> Indent.t list;
+        (** Single-branch conditional ([Cond] constructor). Used when
+            an [If] has a [Skip] arm — emits the surviving branch under
+            the (possibly negated) condition. *)
     loop :
       var:string -> lb:string -> ub:string -> Indent.t list -> Indent.t list;
         (** Inclusive [Loop] used for unit-stride additive ranges.
@@ -480,27 +504,29 @@ module Syntax = struct
     {
       name = "constructor";
       extra_preamble = [];
-      skip = [ Line "ProtoLet.Skip" ];
+      skip = [ Line "Skip" ];
       access =
         (fun ~metric ~index ->
-          [ Line (Printf.sprintf "(ProtoLet.Access %s %s)" metric index) ]);
-      seq =
-        (fun p q ->
-          [ Line "(ProtoLet.Seq"; Block p; Block q; Line ")" ]);
+          [ Line (Printf.sprintf "(Access %s %s)" metric index) ]);
+      seq = (fun p q -> [ Line "(Seq"; Block p; Block q; Line ")" ]);
       ite =
         (fun ~cond p q ->
-          [
-            Line (Printf.sprintf "(ProtoLet.ite %s" cond);
-            Block p;
-            Block q;
-            Line ")";
-          ]);
+          [ Line (Printf.sprintf "(ite %s" cond); Block p; Block q; Line ")" ]);
+      cond =
+        (fun ~cond body ->
+          [ Line (Printf.sprintf "(Cond %s" cond); Block body; Line ")" ]);
+      (* [var] points at the section-level
+         [Let <var> : Ident.t := Ident.make N.] binding emitted by
+         {!from_kernel}. The body uses bare [<var>] at every site,
+         which resolves to either the lambda parameter (for_-family,
+         shadowing the [Ident.t] in scope with an [NExp.t] of the
+         same name) or — for unit-stride [Loop] — to the [Ident.t]
+         binding, lifted to [NExp.t] by the [NExp.Var] coercion. *)
       loop =
         (fun ~var ~lb ~ub body ->
           [
             Line
-              (Printf.sprintf "(ProtoLet.Loop (Base.RExp.make %s %s %s)"
-                 var lb ub);
+              (Printf.sprintf "(Loop (RExp.make %s %s %s)" var lb ub);
             Block body;
             Line ")";
           ]);
@@ -508,7 +534,7 @@ module Syntax = struct
         (fun ~var ~lb ~ub_excl ~stride body ->
           [
             Line
-              (Printf.sprintf "(ProtoLet.for_ %s %s %s %d (fun %s =>" var lb
+              (Printf.sprintf "(for_ %s %s %s %d (fun %s =>" var lb
                  ub_excl stride var);
             Block body;
             Line "))";
@@ -517,8 +543,8 @@ module Syntax = struct
         (fun ~var ~lb ~count body ->
           [
             Line
-              (Printf.sprintf "(ProtoLet.for_mul %s %s %d (fun %s =>" var lb
-                 count var);
+              (Printf.sprintf "(for_mul %s %s %d (fun %s =>" var lb count
+                 var);
             Block body;
             Line "))";
           ]);
@@ -526,8 +552,8 @@ module Syntax = struct
         (fun ~var ~ub ~count body ->
           [
             Line
-              (Printf.sprintf "(ProtoLet.for_div %s %s %d (fun %s =>" var ub
-                 count var);
+              (Printf.sprintf "(for_div %s %s %d (fun %s =>" var ub count
+                 var);
             Block body;
             Line "))";
           ]);
@@ -546,8 +572,21 @@ type config = {
 let make_config ?(syntax = Syntax.constructor) ~metric () : config =
   { metric; syntax }
 
-let rec code_to_s (cfg : config) (env : env) (c : Code.t) :
-    (Indent.t list, error) Result.t =
+(** [Code.t] nodes that translate to [ProtoLet.Skip] and can therefore
+    be elided when they appear as a [Seq] or [If] arm. Recursive so
+    that wrappers introduced by inference — [Decl] around a Skip body,
+    [Seq] of two Skip-equivalent arms, etc. — are also recognized.
+    [Access] is never unit. [Loop] is unit when the body is. *)
+let rec is_unit_code : Code.t -> bool = function
+  | Skip | Sync _ -> true
+  | Access _ -> false
+  | Decl { body; _ } -> is_unit_code body
+  | Seq (p, q) -> is_unit_code p && is_unit_code q
+  | If (_, p, q) -> is_unit_code p && is_unit_code q
+  | Loop { body; _ } -> is_unit_code body
+
+let rec code_to_s (cfg : config) (c : Code.t) : (Indent.t list, error) Result.t
+    =
   let ( let* ) = Result.bind in
   let s = cfg.syntax in
   match c with
@@ -555,7 +594,7 @@ let rec code_to_s (cfg : config) (env : env) (c : Code.t) :
   | Access a ->
       let* idx =
         match a.index with
-        | [ i ] -> nexp_to_coq env i
+        | [ i ] -> nexp_to_coq i
         | _ ->
             Error
               (Printf.sprintf
@@ -563,27 +602,40 @@ let rec code_to_s (cfg : config) (env : env) (c : Code.t) :
                  (Access.to_string a))
       in
       Ok (s.access ~metric:cfg.metric ~index:idx)
-  | Seq (p, q) ->
-      let* p_s = code_to_s cfg env p in
-      let* q_s = code_to_s cfg env q in
-      Ok (s.seq p_s q_s)
-  | If (b, p, q) ->
-      let* b_s = bexp_to_coq env b in
-      let* p_s = code_to_s cfg env p in
-      let* q_s = code_to_s cfg env q in
-      Ok (s.ite ~cond:b_s p_s q_s)
+  | Seq (p, q) -> (
+      (* [Code.opt] uses a smart [seq] that already collapses [Skip]
+         operands, so this is mostly defensive — it also catches the
+         [Sync ;; q] case (we render [Sync] as [Skip]). *)
+      match (is_unit_code p, is_unit_code q) with
+      | true, true -> Ok s.skip
+      | true, false -> code_to_s cfg q
+      | false, true -> code_to_s cfg p
+      | false, false ->
+          let* p_s = code_to_s cfg p in
+          let* q_s = code_to_s cfg q in
+          Ok (s.seq p_s q_s))
+  | If (b, p, q) -> (
+      let* b_s = bexp_to_coq b in
+      (* [If b p Skip] simplifies to [Cond b p] (the single-branch
+         conditional constructor); [If b Skip q] symmetrically to
+         [Cond (neg b) q]. Avoids an [ite]-expanded [Seq (Cond b p)
+         (Cond (neg b) Skip)] with a redundant trailing arm. *)
+      match (is_unit_code p, is_unit_code q) with
+      | true, true -> Ok s.skip
+      | false, true ->
+          let* p_s = code_to_s cfg p in
+          Ok (s.cond ~cond:b_s p_s)
+      | true, false ->
+          let* q_s = code_to_s cfg q in
+          let neg_b = Printf.sprintf "(BExp.neg %s)" b_s in
+          Ok (s.cond ~cond:neg_b q_s)
+      | false, false ->
+          let* p_s = code_to_s cfg p in
+          let* q_s = code_to_s cfg q in
+          Ok (s.ite ~cond:b_s p_s q_s))
   | Loop { range; body } -> (
       let* form = classify_range range in
-      (* The [for_]-family bodies are wrapped in [fun var => …]
-         where [var : NExp.t], so references to the loop variable
-         must drop the [(NExp.Var _)] wrapper. The unit-stride
-         [Loop] form keeps it as an [Ident.t]. *)
-      let env_for_body =
-        match form with
-        | Strided _ | For_mul _ | For_div _ -> env_bind range.var env
-        | Unit_stride _ | Empty_loop -> env
-      in
-      let* body_s = code_to_s cfg env_for_body body in
+      let* body_s = code_to_s cfg body in
       match form with
       | Empty_loop -> Ok s.skip
       | Unit_stride { var; lb; ub } -> Ok (s.loop ~var ~lb ~ub body_s)
@@ -591,7 +643,7 @@ let rec code_to_s (cfg : config) (env : env) (c : Code.t) :
           Ok (s.for_ ~var ~lb ~ub_excl ~stride body_s)
       | For_mul { var; lb; count } -> Ok (s.for_mul ~var ~lb ~count body_s)
       | For_div { var; ub; count } -> Ok (s.for_div ~var ~ub ~count body_s))
-  | Decl { body; _ } -> code_to_s cfg env body
+  | Decl { body; _ } -> code_to_s cfg body
 
 (** {1 Kernel translation} *)
 
@@ -610,7 +662,7 @@ let common_header : string list =
     "Require Import Base.ROp.";
     "Require Base.Ident.";
     "Require Dim.";
-    "Require Warp.ProtoLet.";
+    "Require Import Warp.ProtoLet.";
   ]
 
 (** Sanitize a kernel name so it forms a valid Coq module identifier.
@@ -637,58 +689,36 @@ let sanitize_module_name (name : string) : string =
     need a [Variable … : Ident.t.] declaration in the section.
 
     Mirrors the emission rules in {!code_to_s}:
-    - A loop binder is emitted as [Ident.t] (first argument of
-      [RExp.make] or [for_]) regardless of whether the body uses it.
-    - Inside a [for_] body the loop variable is shadowed by a Coq
-      lambda parameter of type [NExp.t]; references to it do not
-      surface as [(NExp.Var _)], so it doesn't count there.
-    - [Decl] binders are kept only when the body still references
+    - A loop binder always gets a [Let _id] declaration (it's the
+      [Ident.t] argument to [RExp.make] / [for_] / [for_mul] /
+      [for_div]).
+    - [Decl] binders survive only when the body still references
       them (we drop the [Decl] wrapper but inherit any free [Var x]).
-    - Free expression variables (in code, ranges, and [pre]) count
-      whenever they aren't shadowed by an enclosing [for_] lambda.
+    - Free expression variables in code, ranges, and [pre] are
+      always added.
 
-    [threadIdx.x] is always excluded — it renders as [NExp.Tid]. *)
+    [threadIdx.x] is excluded — it renders as [NExp.Tid]. The result
+    feeds {!from_kernel}, which partitions it into thread-uniform
+    parameters (rendered as [nat]) and the rest (rendered as
+    [Ident.t]). *)
 let used_idents (k : Kernel.t) : Variable.t list =
-  (* Mirrors [classify_range]: the loop variable becomes a Coq lambda
-     parameter (rather than a section [Ident.t]) iff the range emits
-     one of [for_], [for_mul], or [for_div]. *)
-  let is_for_form (r : Range.t) : bool =
-    match (r.dir, r.step) with
-    | Increase, Plus stride_e -> (
-        match Exp.n_eval_opt stride_e with Some k -> k >= 2 | None -> false)
-    | Increase, Mult stride_e | Decrease, Mult stride_e ->
-        Exp.n_eval_opt stride_e = Some 2
-    | _ -> false
-  in
-  let add_unbound (env : Variable.Set.t) (x : Variable.t)
-      (acc : Variable.Set.t) : Variable.Set.t =
-    if Variable.Set.mem x env then acc else Variable.Set.add x acc
-  in
-  let nexp env acc e = Exp.n_fold (add_unbound env) e acc in
-  let bexp env acc b = Exp.b_fold (add_unbound env) b acc in
-  let rec on_code (env : Variable.Set.t) (acc : Variable.Set.t)
-      (c : Code.t) : Variable.Set.t =
+  let nexp acc e = Exp.n_free_names e acc in
+  let bexp acc b = Exp.b_free_names b acc in
+  let rec on_code (acc : Variable.Set.t) (c : Code.t) : Variable.Set.t =
     match c with
     | Skip | Sync _ -> acc
-    | Access a -> List.fold_left (nexp env) acc a.index
-    | Seq (p, q) -> on_code env (on_code env acc p) q
-    | If (b, p, q) ->
-        let acc = bexp env acc b in
-        on_code env (on_code env acc p) q
+    | Access a -> List.fold_left nexp acc a.index
+    | Seq (p, q) -> on_code (on_code acc p) q
+    | If (b, p, q) -> on_code (on_code (bexp acc b) p) q
     | Loop { range; body } ->
-        (* The binder is always emitted as Ident.t. *)
         let acc = Variable.Set.add range.var acc in
-        (* Bounds are evaluated in the outer scope. *)
-        let acc = nexp env acc range.lower_bound in
-        let acc = nexp env acc range.upper_bound in
-        let env' =
-          if is_for_form range then Variable.Set.add range.var env else env
-        in
-        on_code env' acc body
-    | Decl { body; _ } -> on_code env acc body
+        let acc = nexp acc range.lower_bound in
+        let acc = nexp acc range.upper_bound in
+        on_code acc body
+    | Decl { body; _ } -> on_code acc body
   in
-  let acc = on_code Variable.Set.empty Variable.Set.empty k.code in
-  let acc = bexp Variable.Set.empty acc k.pre in
+  let acc = on_code Variable.Set.empty k.code in
+  let acc = bexp acc k.pre in
   let acc = Variable.Set.remove Variable.tid_x acc in
   Variable.Set.elements acc
 
@@ -696,18 +726,49 @@ let from_kernel ?(syntax = Syntax.constructor) ?(metric = Metric.MemReads)
     (k : Kernel.t) : (Indent.t list, error) Result.t =
   let ( let* ) = Result.bind in
   let cfg = make_config ~syntax ~metric:(Metric.to_coq_expr metric) () in
-  let* body = code_to_s cfg env_empty k.code in
+  let* body = code_to_s cfg k.code in
+  let globals_in_kernel = Params.to_set k.global_variables in
+  let used = used_idents k |> Variable.Set.of_list in
+  let used_nats = Variable.Set.inter used globals_in_kernel in
+  let used_locals = Variable.Set.diff used globals_in_kernel in
   let mod_name = sanitize_module_name k.name in
-  let idents = used_idents k in
-  let var_idents =
-    if idents = [] then []
+  (* Each [Variable.t] gets two section-level bindings — an
+     underlying-typed declaration and an [NExp.t] alias of the same
+     name as the source variable. The traversal in [code_to_s] always
+     emits the bare sanitized name, so [Var x] resolves to the alias
+     (or to a [for_]-family lambda parameter of the same name when
+     applicable). *)
+  (* Globals are declared as [nat]; the section-level coercion
+     [NExp.Num : nat >-> NExp.t] handles the lifting at use sites. *)
+  let global_decls =
+    used_nats |> Variable.Set.elements
+    |> List.map (fun v ->
+           let n = sanitize_name (Variable.name v) in
+           Indent.Line (Printf.sprintf "Variable %s : nat." n))
+  in
+  let global_decls =
+    if global_decls = [] then []
     else
-      let names =
-        idents
-        |> List.map (fun v -> sanitize_name (Variable.name v))
-        |> String.concat " "
-      in
-      [ Indent.Line (Printf.sprintf "Variable %s : Ident.t." names) ]
+      [ Indent.Line "(* Thread-uniform parameters (kernel globals). *)" ]
+      @ global_decls @ [ Indent.Line "" ]
+  in
+  (* Locals are declared as [Ident.t]; the section-level coercion
+     [NExp.Var : Ident.t >-> NExp.t] lifts them to expression form
+     where needed. Loop binders ([RExp.make], [for_], ...) take
+     [Ident.t] directly, so they consume the binding unchanged. *)
+  let local_decls =
+    used_locals |> Variable.Set.elements
+    |> List.mapi (fun i v -> (v, i))
+    |> List.map (fun (v, i) ->
+           let n = sanitize_name (Variable.name v) in
+           Indent.Line
+             (Printf.sprintf "Let %s : Ident.t := Ident.make %d." n i))
+  in
+  let local_decls =
+    if local_decls = [] then []
+    else
+      [ Indent.Line "(* Thread-local identifiers from the kernel. *)" ]
+      @ local_decls @ [ Indent.Line "" ]
   in
   let open Indent in
   Ok
@@ -717,12 +778,31 @@ let from_kernel ?(syntax = Syntax.constructor) ?(metric = Metric.MemReads)
         ([
            Line "Section Def.";
            Block
-             ([ Line "Context {D : Dim.T}."; Line "" ]
-             @ Metric.preamble_lines metric
-             @ (if var_idents = [] then []
-                else
-                  [ Line "(* Identifiers from the kernel. *)" ]
-                  @ var_idents @ [ Line "" ])
+             ([
+                Line "Context {D : Dim.T}.";
+                Line "";
+                Line
+                  "(* Lift kernel-globals (nat) and locals (Ident.t)";
+                Line "   into NExp.t at use sites. *)";
+                Line "Local Coercion NExp.Num : nat >-> NExp.t.";
+                Line "Local Coercion NExp.Var : Ident.t >-> NExp.t.";
+                Line "";
+                Line
+                  "(* Disambiguating aliases: [NExp.Bin]/[BExp.Bin] share a";
+                Line
+                  "   name, and [ROp.{Eq,Lt,Gt}] collide with";
+                Line "   [Datatypes.comparison]. *)";
+                Line "Local Notation NBin := NExp.Bin (only parsing).";
+                Line "Local Notation BBin := BExp.Bin (only parsing).";
+                Line "Local Notation NEq  := ROp.Eq   (only parsing).";
+                Line "Local Notation NNeq := ROp.Neq  (only parsing).";
+                Line "Local Notation NLt  := ROp.Lt   (only parsing).";
+                Line "Local Notation NLe  := ROp.Le   (only parsing).";
+                Line "Local Notation NGt  := ROp.Gt   (only parsing).";
+                Line "Local Notation NGe  := ROp.Ge   (only parsing).";
+                Line "";
+              ]
+             @ Metric.preamble_lines metric @ global_decls @ local_decls
              @ [ Line "Let kernel : ProtoLet.t :=" ]
              @ [ Block body ] @ [ Line "." ]);
            Line "End Def.";
