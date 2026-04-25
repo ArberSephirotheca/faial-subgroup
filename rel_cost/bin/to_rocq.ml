@@ -63,22 +63,26 @@ end
 module Pipeline = struct
   module L = Linearize_index.Make (Logger.Silent)
 
-  let to_faial_metric : Rocq.Metric.t -> Metric.t = function
-    | MemReads -> UncoalescedAccesses
-    | ActiveThreads -> ActiveThreads
-
-  (** Predicate keeping arrays that survive both the user's [--memory]
-      choice (when given) and, otherwise, the metric's natural
-      filtering. *)
+  (** Predicate keeping arrays that survive [--memory] when given,
+      otherwise the metric's natural array filter:
+      - [MemReads] → arrays in global memory (mirrors
+        [Rel_cost.Metric.UncoalescedAccesses]).
+      - [ActiveThreads] → no filter (the metric is
+        address-independent, applies to any memory).
+      - [Parametric] → no filter (no metric is committed to, so no
+        memory class is assumed). *)
   let array_keep ~(metric : Rocq.Metric.t) ~(memory : Filter.memory option)
       (k : kernel) : Variable.t -> bool =
     match memory with
     | Some choice -> Filter.memory_predicate k.arrays choice
-    | None ->
-        let supported =
-          Metric.supported_arrays k.arrays (to_faial_metric metric)
-        in
-        fun v -> Variable.Set.mem v supported
+    | None -> (
+        match metric with
+        | MemReads ->
+            let supported =
+              Metric.supported_arrays k.arrays UncoalescedAccesses
+            in
+            fun v -> Variable.Set.mem v supported
+        | ActiveThreads | Parametric -> fun _ -> true)
 
   let linearize_kernel (cfg : Config.t) (k : kernel) :
       (kernel, string) Result.t =
@@ -150,7 +154,32 @@ let pico (fname : string) (block_dim : Dim3.t option)
                exit (-1))
   in
   abort_when (kernels = []) "No kernels found.";
-  match Rocq.from_kernels ~metric ~include_imports:(not no_imports) kernels with
+  (* Document effective filters in the header comment. With no
+     [--memory] supplied, [Pipeline.array_keep] falls back to the
+     metric's natural choice (mem-reads → global; active /
+     parametric → any). [--mode] defaults to [all]. *)
+  let effective_memory =
+    match memory with
+    | Some Filter.Global -> "global"
+    | Some Filter.Shared -> "shared"
+    | None -> (
+        match metric with
+        | Rocq.Metric.MemReads -> "global"
+        | Rocq.Metric.ActiveThreads | Rocq.Metric.Parametric -> "any")
+  in
+  let effective_mode =
+    match mode with
+    | Filter.Read -> "read"
+    | Filter.Write -> "write"
+    | Filter.Any -> "all"
+  in
+  let extra_header_info =
+    [ ("memory", effective_memory); ("mode", effective_mode) ]
+  in
+  match
+    Rocq.from_kernels ~metric ~include_imports:(not no_imports)
+      ~extra_header_info kernels
+  with
   | Error e ->
       Logger.Colors.error e;
       exit (-1)
