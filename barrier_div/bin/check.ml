@@ -7,25 +7,42 @@ module JUI = struct
 
   type json = Yojson.Basic.t
 
-  let to_json (kernels : Barrier.Kernel.t list) : json =
-    let kernels_json =
-      `List
-        (kernels
-        |> List.map (fun k ->
-            let is_unif = Barrier.Kernel.is_uniform k in
-            let divs =
-              Barrier.Kernel.divergent k
-              |> List.filter_map (fun loc ->
-                  loc
-                  |> Option.map (fun loc -> `String (Location.to_string loc)))
-            in
-            `Assoc
-              [
-                ("name", `String k.name);
-                ("is_uniform", `Bool is_unif);
-                ("divergent", `List divs);
-              ]))
+  (* Run the same semantic analysis as the TUI exit-code path: discharge
+     every barrier site's (WS-Γ) via Z3 and treat Sat as a divergence.
+     A kernel is reported is_uniform iff every proof returned Unsat (no
+     errors / unknowns either). *)
+  let kernel_to_json (k : Protocols.Kernel.t) : json =
+    let check = Analysis.Check.of_kernel k in
+    let outcomes =
+      Analysis.Proof.of_check check
+      |> Seq.map (fun (p : Analysis.Proof.t) -> (p, Analysis.Proof.solve p))
+      |> List.of_seq
     in
+    let divergent_locs =
+      outcomes
+      |> List.filter_map (fun (p, r) ->
+          match r with
+          | Ok (Protocols.Gen_z3.Solver.Sat _) ->
+              p.Analysis.Proof.barrier.loc
+              |> Option.map (fun l -> `String (Location.to_string l))
+          | _ -> None)
+    in
+    let has_non_unsat =
+      outcomes
+      |> List.exists (fun (_, r) ->
+          match r with
+          | Ok Protocols.Gen_z3.Solver.Unsat -> false
+          | _ -> true)
+    in
+    `Assoc
+      [
+        ("name", `String check.kernel_name);
+        ("is_uniform", `Bool (not has_non_unsat));
+        ("divergent", `List divergent_locs);
+      ]
+
+  let run (protocol_kernels : Protocols.Kernel.t list) : unit =
+    let kernels_json = `List (List.map kernel_to_json protocol_kernels) in
     `Assoc
       [
         ("kernels", kernels_json);
@@ -33,11 +50,7 @@ module JUI = struct
           `List (Sys.argv |> Array.to_list |> List.map (fun s -> `String s)) );
         ("executable_name", `String Sys.executable_name);
       ]
-
-  let run (protocol_kernels : Protocols.Kernel.t list) : unit =
-    protocol_kernels
-    |> List.map Barrier.Kernel.from_proto
-    |> to_json |> to_string |> print_endline
+    |> to_string |> print_endline
 end
 
 module TUI = struct
