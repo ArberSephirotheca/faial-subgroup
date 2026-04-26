@@ -553,7 +553,13 @@ module Make (L : Logger) = struct
       | SwitchStmt { body = s; _ } | CaseStmt { body = s; _ } | DefaultStmt s ->
           infer s
       | AsmStmt a ->
-          (match Ptx.parse ?loc:a.loc a.asm_string with
+          (* Outputs precede inputs in %N indexing, per GCC inline-asm. *)
+          let operands : Exp.nexp option list =
+            (a.outputs @ a.inputs)
+            |> List.map (fun (o : D_lang.Expr.t Asm.operand) ->
+                   try_to_nexp o.expr)
+          in
+          (match Ptx.parse ?loc:a.loc ~operands a.asm_string with
            | Some s -> Infer_stmt.Sync s
            | None ->
                L.warning
