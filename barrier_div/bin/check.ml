@@ -1,7 +1,6 @@
 open Inference
 open Stage0
-
-let _ = Analysis.Check.of_kernel
+open Barrier_div
 
 module JUI = struct
   open Yojson.Basic

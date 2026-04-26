@@ -1,0 +1,9 @@
+(executables
+ (names check mutate)
+ (public_names faial-sync faial-mutate)
+ (modes exe)
+ (libraries
+  ; 3rd-party
+  cmdliner printbox printbox-text
+  ; 1st-party
+  stage0 protocols inference cgen barrier_div))
