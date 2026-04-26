@@ -154,12 +154,25 @@ let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
           | [ i ] -> n_to_string i
           | _ -> Variable.name s.array
         in
-        let operands =
-          match s.count with
-          | None -> id_s
-          | Some c -> Printf.sprintf "%s, %s" id_s (n_to_string c)
+        let operand_exprs : string list =
+          id_s
+          :: (match s.count with Some c -> [ n_to_string c ] | None -> [])
         in
-        [ Line (Printf.sprintf "asm volatile(\"bar.%s %s;\");" mnem operands) ]
+        let template =
+          operand_exprs
+          |> List.mapi (fun i _ -> Printf.sprintf "%%%d" i)
+          |> String.concat ", "
+        in
+        let operand_list =
+          operand_exprs
+          |> List.map (fun e -> Printf.sprintf "\"r\"(%s)" e)
+          |> String.concat ", "
+        in
+        [
+          Line
+            (Printf.sprintf "asm volatile(\"bar.%s %s;\" :: %s);" mnem template
+               operand_list);
+        ]
   | If (b, p, q) ->
       [
         Line ("if (" ^ b_to_string b ^ ") {");
@@ -260,8 +273,10 @@ let local_var_to_l (vs : VarSet.t) (g : Generator.t) : Indent.t list =
     in
     Indent.Line ("int " ^ Variable.name v ^ " = " ^ rhs ^ ";")
   in
-  (* A local variable must not be a tid/dummy variable *)
-  vs
+  (* Architectural names are CUDA builtins — never declare them.
+     [thread_globals] covers blockIdx/blockDim/gridDim/warpSize; [is_tid]
+     covers threadIdx, which is intentionally not in [thread_globals]. *)
+  VarSet.diff vs thread_globals
   |> VarSet.filter (fun v -> not (Variable.is_tid v || is_dummy_var v))
   |> VarSet.elements |> List.map init_local_var
 
@@ -314,8 +329,23 @@ let kernel_to_s (f : Code.t -> Indent.t list) (g : Generator.t)
 
 let prog_to_s (g : Generator.t) (p : Code.t) : Indent.t list = inst_to_s g p
 
+(* Inference synthesizes intermediate names containing '@' (e.g.
+   "@AccessState98"). '@' is not a valid character in a C identifier,
+   so we sanitize generated output by prefixing every '@'-name with a
+   stable, collision-resistant prefix. *)
+let synth_prefix : string = "__synth_"
+
+let sanitize_at (s : string) : string =
+  let buf = Buffer.create (String.length s) in
+  String.iter
+    (fun c ->
+      if c = '@' then Buffer.add_string buf synth_prefix
+      else Buffer.add_char buf c)
+    s;
+  Buffer.contents buf
+
 let gen_cuda (g : Generator.t) (gv : Gv_parser.t) (k : Kernel.t) : string =
-  kernel_to_s (prog_to_s g) g gv k |> Indent.to_string
+  kernel_to_s (prog_to_s g) g gv k |> Indent.to_string |> sanitize_at
 
 (* Serialization of RaCUDA parameters *)
 let gen_params (gv : Gv_parser.t) : string =
