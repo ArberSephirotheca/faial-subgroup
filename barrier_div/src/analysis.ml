@@ -32,10 +32,12 @@ module PathCondition = struct
 
   let make ~(locals : Variable.Set.t) ~(globals : Variable.Set.t)
       ~(pre : Exp.bexp) : t =
-    let projectable =
-      Variable.Set.diff (Variable.Set.union locals globals) architectural
-    in
-    { locals; projectable; shared = architectural; pre;
+    (* Kernel parameters are uniform within a launch and the launch is
+       fixed across T1 and T2 by construction, so they go to [shared].
+       Only thread-local declarations stay in [projectable]. *)
+    let projectable = Variable.Set.diff locals architectural in
+    let shared = Variable.Set.union architectural globals in
+    { locals; projectable; shared; pre;
       divergent = (Bool true : Exp.bexp);
       uniform = (Bool true : Exp.bexp) }
 
