@@ -39,16 +39,27 @@ module PathCondition = struct
       divergent = (Bool true : Exp.bexp);
       uniform = (Bool true : Exp.bexp) }
 
-  (* Per-thread-divergent binder (decl, divergent loop var). Also projectable
-     because its value can differ between T1 and T2 executions. *)
+  (* Decl-introduced local. Classified as divergent and projectable: its
+     value depends on the executing thread (and may be input-derived), so
+     two same-thread executions of the same launch may disagree on it. *)
   let add_local (x : Variable.t) (c : t) : t =
     { c with
       locals = Variable.Set.add x c.locals;
       projectable = Variable.Set.add x c.projectable }
 
-  (* Uniform binder (uniform loop var). Thread-uniform, and must stay shared
-     between T1 and T2 — projecting it would let Z3 pick different iterations
-     for the two tasks, which is not the semantics we want. *)
+  (* Divergent-loop binder. Classified as local (its mention makes a sub-
+     guard divergent, since the binder's value depends on iteration position)
+     but shared between T1 and T2 — both same-thread executions traverse the
+     same iteration sequence; any variation in the loop range arises from
+     projectable variables in the bounds, captured separately. *)
+  let add_divergent_binder (x : Variable.t) (c : t) : t =
+    { c with
+      locals = Variable.Set.add x c.locals;
+      shared = Variable.Set.add x c.shared }
+
+  (* Uniform-loop binder. Same value across T1 and T2 by the same argument
+     as above; additionally, its mention does not make sub-guards divergent
+     because the loop's range refers only to non-locals. *)
   let add_shared (x : Variable.t) (c : t) : t =
     { c with shared = Variable.Set.add x c.shared }
 
@@ -101,7 +112,7 @@ module Check = struct
               |> PathCondition.add_uniform cond
             else
               p
-              |> PathCondition.add_local range.var
+              |> PathCondition.add_divergent_binder range.var
               |> PathCondition.add_divergent cond
           in
           of_code p body
