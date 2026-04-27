@@ -1,39 +1,58 @@
 open Protocols
 open Stage0
 
-(* The two properties this analysis can verify. Both share the same
-   syntax-directed traversal in [Check.Barrier.of_code]; they differ only
-   in the initial state (which arch components are projected vs. shared)
-   and in the goal precondition.
+(* The properties this analysis can verify. All three share the same
+   syntax-directed traversal in [Check.Barrier.of_code]; they differ in
+   the obligation's frame (paired vs unary), the initial partition of
+   architectural variables, and the goal precondition.
 
-   - [Well_sync]: same thread, same launch, two executions T1/T2. Catches
-     barriers whose reachability depends on thread-private state that may
-     differ between executions (uninitialised locals, input-derived data).
-     Projectable: user locals. All of arch is shared.
+   - [Well_sync] (paired). Same thread, same launch, two executions T1/T2.
+     Catches barriers whose reachability depends on thread-private state
+     that may differ between executions (uninitialised locals, input-
+     derived data). Projectable: user locals. All of arch is shared.
 
-   - [Barrier_div]: two distinct threads in the same group at the same
-     barrier. Catches the GPUVerify litmus pattern where threads of a
-     warp disagree on a guard wrapping a barrier. Projectable: tid plus
-     user locals. bid/bdim/gdim shared. tid$T1 != tid$T2 added as a
-     precondition. *)
+   - [Barrier_div] (paired). Two distinct threads in the same group at
+     the same barrier. Catches the GPUVerify litmus pattern where threads
+     of a warp disagree on a guard wrapping a barrier. Projectable: tid
+     plus user locals. bid/bdim/gdim shared. tid$T1 != tid$T2 added as a
+     precondition.
+
+   - [Missing_participants] (unary). A single thread that fails to reach
+     the barrier. Catches deadlocks at block-wide barriers when the cohort
+     is partial — and, unlike [Barrier_div], also when the cohort is
+     uniformly empty (no thread arrives, both peer-frames agree on
+     missing). The obligation has no T1/T2 split: it asks
+     [SAT(pre ∧ U ∧ ¬D)] over a single tid in the valid block range. *)
 module Property = struct
-  type t = Well_sync | Barrier_div
+  type t = Well_sync | Barrier_div | Missing_participants
 
   let to_string : t -> string = function
     | Well_sync -> "well-sync"
     | Barrier_div -> "barrier-div"
+    | Missing_participants -> "missing-participants"
+
+  (* Whether the obligation compares two thread frames (T1, T2) or
+     reasons about a single one. Drives projection and witness shape. *)
+  type frame = Paired | Unary
+
+  let frame : t -> frame = function
+    | Well_sync | Barrier_div -> Paired
+    | Missing_participants -> Unary
 
   (* Architectural variables that may differ between T1 and T2 under this
      property's frame. Their guards are classified divergent and they are
-     projected with $T1/$T2 suffixes. *)
+     projected with $T1/$T2 suffixes. Empty for unary frames — there is
+     no second frame to differ from. *)
   let arch_projectable : t -> Variable.Set.t = function
     | Well_sync -> Variable.Set.empty
     | Barrier_div -> Variable.tid_set
+    | Missing_participants -> Variable.Set.empty
 
   (* Architectural variables guaranteed equal across T1 and T2 under this
-     property's frame. Stay shared (single copy in the goal). *)
+     property's frame. Stay shared (single copy in the goal). For unary
+     frames, every arch component is "shared" trivially. *)
   let arch_shared : t -> Variable.Set.t = function
-    | Well_sync ->
+    | Well_sync | Missing_participants ->
         Variable.tid_set
         |> Variable.Set.union Variable.bid_set
         |> Variable.Set.union Variable.bdim_set
@@ -44,10 +63,9 @@ module Property = struct
         |> Variable.Set.union Variable.gdim_set
 
   (* Extra precondition conjoined to the goal: "T1 and T2 are different
-     threads of the same group" for Barrier_div; nothing for Well_sync
-     (T1 = T2 by construction). *)
+     threads of the same group" for Barrier_div; nothing for the others. *)
   let goal_precondition : t -> Exp.bexp = function
-    | Well_sync -> Bool true
+    | Well_sync | Missing_participants -> Bool true
     | Barrier_div -> Exp.thread_distinct Variable.tid_list
 end
 
@@ -302,12 +320,18 @@ module Proof = struct
 
   let print_seq (s : t Seq.t) : unit = Seq.iter print s
 
-  (* Determinism-of-reachability obligation:
-       pre(T1) ∧ pre(T2) ∧ U(T1) ∧ U(T2) ∧ D(T1) ∧ ¬D(T2).
-     T1 and T2 are two executions of the SAME thread under the SAME launch
-     configuration. Variables in [c.projectable] get $T1/$T2 suffixes and
-     may differ between executions; everything else (the architectural
-     vectors) stays shared. *)
+  (* Goal construction. The shape depends on the property's frame:
+
+     - [Paired] (well-sync, barrier-div): peer-frame disagreement over T1/T2.
+       pre(T1) ∧ pre(T2) ∧ U(T1) ∧ U(T2) ∧ D(T1) ∧ ¬D(T2) ∧ extra.
+       Variables in [c.projectable] are renamed with $T1/$T2 suffixes;
+       everything in [c.shared] stays a single copy.
+
+     - [Unary] (missing-participants): single-frame existence of a thread
+       that fails to reach the barrier.
+       pre ∧ U ∧ ¬D.
+       No projection — there is no second frame, so [c.projectable]
+       collapses into the same set of free variables and stays bare. *)
   let path_condition_to_goal (c : PathCondition.t) : Exp.bexp =
     (* Sanity: every free name must be either projectable or architectural.
        A stray free var means the protocol inference left something unbound
@@ -324,17 +348,23 @@ module Proof = struct
       prerr_endline
         ("barrier_div: unaccounted free variables in path condition: "
          ^ Variable.set_to_string stray);
-    let proj t b = Proj.bexp c.projectable t b in
-    let pre1 = proj T1 c.pre in
-    let pre2 = proj T2 c.pre in
-    let d1 = proj T1 c.divergent in
-    let d2 = proj T2 c.divergent in
-    let u1 = proj T1 c.uniform in
-    let u2 = proj T2 c.uniform in
-    (* For barrier-div, project tid in the distinctness precondition too:
-       the constraint is tid$T1 != tid$T2. *)
-    let extra = proj T2 (Property.goal_precondition c.property) in
-    Exp.b_and_ex [ pre1; pre2; u1; u2; d1; Exp.b_not d2; extra ]
+    match Property.frame c.property with
+    | Paired ->
+        let proj t b = Proj.bexp c.projectable t b in
+        let pre1 = proj T1 c.pre in
+        let pre2 = proj T2 c.pre in
+        let d1 = proj T1 c.divergent in
+        let d2 = proj T2 c.divergent in
+        let u1 = proj T1 c.uniform in
+        let u2 = proj T2 c.uniform in
+        (* For barrier-div, project tid in the distinctness precondition
+           too: the constraint is tid$T1 != tid$T2. *)
+        let extra = proj T2 (Property.goal_precondition c.property) in
+        Exp.b_and_ex [ pre1; pre2; u1; u2; d1; Exp.b_not d2; extra ]
+    | Unary ->
+        Exp.b_and_ex
+          [ c.pre; c.uniform; Exp.b_not c.divergent;
+            Property.goal_precondition c.property ]
 
   let of_check (c : Check.t) : t Seq.t =
     c.barriers
@@ -349,11 +379,22 @@ module Proof = struct
     S.solve ?timeout (Predicates.b_inline p.goal)
 
   module Witness = struct
-    type t = {
-      t1_locals : (string * string) list;
-      t2_locals : (string * string) list;
-      globals : (string * string) list;
-    }
+    (* Two witness shapes, mirroring the two obligation frames:
+
+       - [Paired]: a counter-model has T1/T2 columns of locals plus a
+         shared globals column.
+       - [Unary]: a counter-model is a single assignment of locals and
+         globals — the failing thread's view. *)
+    type t =
+      | Paired of {
+          t1_locals : (string * string) list;
+          t2_locals : (string * string) list;
+          globals : (string * string) list;
+        }
+      | Unary of {
+          locals : (string * string) list;
+          globals : (string * string) list;
+        }
 
     let strip_suffix (suffix : string) (s : string) : string option =
       let n = String.length s in
@@ -362,7 +403,7 @@ module Proof = struct
         Some (String.sub s 0 (n - m))
       else None
 
-    let parse (m : Z3.Model.model) : t =
+    let parse (frame : Property.frame) (m : Z3.Model.model) : t =
       let open Z3 in
       let vars =
         Model.get_const_decls m
@@ -378,23 +419,35 @@ module Proof = struct
             (name, value))
       in
       let sort = List.sort (fun (k1, _) (k2, _) -> String.compare k1 k2) in
-      let t1_locals, rest =
-        List.partition_map
-          (fun (k, v) ->
-            match strip_suffix "$T1" k with
-            | Some k' -> Left (k', v)
-            | None -> Right (k, v))
-          vars
-      in
-      let t2_locals, globals =
-        List.partition_map
-          (fun (k, v) ->
-            match strip_suffix "$T2" k with
-            | Some k' -> Left (k', v)
-            | None -> Right (k, v))
-          rest
-      in
-      { t1_locals = sort t1_locals; t2_locals = sort t2_locals;
-        globals = sort globals }
+      match frame with
+      | Property.Paired ->
+          let t1_locals, rest =
+            List.partition_map
+              (fun (k, v) ->
+                match strip_suffix "$T1" k with
+                | Some k' -> Left (k', v)
+                | None -> Right (k, v))
+              vars
+          in
+          let t2_locals, globals =
+            List.partition_map
+              (fun (k, v) ->
+                match strip_suffix "$T2" k with
+                | Some k' -> Left (k', v)
+                | None -> Right (k, v))
+              rest
+          in
+          Paired
+            { t1_locals = sort t1_locals; t2_locals = sort t2_locals;
+              globals = sort globals }
+      | Property.Unary ->
+          (* Split between thread-local and uniform variables: any name
+             that is a known thread-id component goes into [locals];
+             everything else into [globals]. *)
+          let is_local (k, _) =
+            List.mem k [ "threadIdx.x"; "threadIdx.y"; "threadIdx.z" ]
+          in
+          let locals, globals = List.partition is_local vars in
+          Unary { locals = sort locals; globals = sort globals }
   end
 end

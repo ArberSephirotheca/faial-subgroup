@@ -9,7 +9,11 @@ open Barrier_div
    catches the GPUVerify litmus pattern (different threads in the same warp
    disagree on a guard wrapping a barrier). *)
 let all_properties : Analysis.Property.t list =
-  [ Analysis.Property.Well_sync; Analysis.Property.Barrier_div ]
+  [
+    Analysis.Property.Well_sync;
+    Analysis.Property.Barrier_div;
+    Analysis.Property.Missing_participants;
+  ]
 
 (* Selector for the [--check] flag. [Both] is the default and runs every
    property in [all_properties]; the singletons restrict to one. *)
@@ -84,12 +88,13 @@ module TUI = struct
 
   let print_box : PrintBox.t -> unit = PrintBox_text.output stdout
 
-  let render_tasks (w : Analysis.Proof.Witness.t) : PrintBox.t =
+  let render_paired_locals (t1_locals : (string * string) list)
+      (t2_locals : (string * string) list) : PrintBox.t =
     let open PrintBox in
-    let t1 = List.to_seq w.t1_locals |> Hashtbl.of_seq in
-    let t2 = List.to_seq w.t2_locals |> Hashtbl.of_seq in
+    let t1 = List.to_seq t1_locals |> Hashtbl.of_seq in
+    let t2 = List.to_seq t2_locals |> Hashtbl.of_seq in
     let keys =
-      List.map fst w.t1_locals @ List.map fst w.t2_locals
+      List.map fst t1_locals @ List.map fst t2_locals
       |> List.sort_uniq String.compare
     in
     let header =
@@ -103,18 +108,32 @@ module TUI = struct
     in
     header :: List.map row keys |> Array.of_list |> grid |> frame
 
-  let render_globals (w : Analysis.Proof.Witness.t) : PrintBox.t =
+  let render_unary_locals (locals : (string * string) list) : PrintBox.t =
     let open PrintBox in
-    w.globals
+    locals
     |> List.map (fun (k, v) -> [| text k; text v |])
     |> Array.of_list |> grid |> frame
 
-  let print_witness (m : Z3.Model.model) : unit =
-    let w = Analysis.Proof.Witness.parse m in
-    T.print_string [ T.Bold ] "Locals\n";
-    print_box (render_tasks w);
-    T.print_string [ T.Bold ] "\nGlobals\n";
-    print_box (render_globals w);
+  let render_globals (globals : (string * string) list) : PrintBox.t =
+    let open PrintBox in
+    globals
+    |> List.map (fun (k, v) -> [| text k; text v |])
+    |> Array.of_list |> grid |> frame
+
+  let print_witness (frame : Analysis.Property.frame) (m : Z3.Model.model) :
+      unit =
+    let w = Analysis.Proof.Witness.parse frame m in
+    (match w with
+     | Paired { t1_locals; t2_locals; globals } ->
+         T.print_string [ T.Bold ] "Locals\n";
+         print_box (render_paired_locals t1_locals t2_locals);
+         T.print_string [ T.Bold ] "\nGlobals\n";
+         print_box (render_globals globals)
+     | Unary { locals; globals } ->
+         T.print_string [ T.Bold ] "Failing thread\n";
+         print_box (render_unary_locals locals);
+         T.print_string [ T.Bold ] "\nGlobals\n";
+         print_box (render_globals globals));
     print_endline ""
 
   (* Property-specific labels used in headers and counter-example banners.
@@ -129,6 +148,10 @@ module TUI = struct
         ( "free of barrier divergence",
           "Barrier divergence",
           "divergent barrier" )
+    | Missing_participants ->
+        ( "fully attended at every barrier",
+          "Missing participant",
+          "barrier with a missing participant" )
 
   let print_counter_example ~banner ~index (p : Analysis.Proof.t)
       (m : Z3.Model.model) : unit =
@@ -139,7 +162,7 @@ module TUI = struct
      | Some l -> Stage0.Tui_helper.LocationUI.print l
      | None -> print_endline "<unknown location>");
     print_endline "";
-    print_witness m;
+    print_witness (Analysis.Property.frame p.property) m;
     T.print_string [ T.Underlined ]
       ("(proof #" ^ string_of_int p.id ^ ")\n")
 
@@ -332,13 +355,16 @@ let check_arg : check_selector Term.t =
   let doc =
     "Which property to verify: $(b,well-sync) (each thread is internally \
      deterministic at every barrier), $(b,barrier-div) (any two threads of \
-     the same group agree on every barrier), or $(b,both) (default)."
+     the same group agree on every barrier), $(b,missing-participants) \
+     (every thread reaches every block-wide barrier), or $(b,both) for \
+     all of them (default)."
   in
   let choices =
     [
       ("both", Both);
       ("well-sync", Only Analysis.Property.Well_sync);
       ("barrier-div", Only Analysis.Property.Barrier_div);
+      ("missing-participants", Only Analysis.Property.Missing_participants);
     ]
   in
   Arg.(
