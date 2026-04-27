@@ -181,22 +181,12 @@ module Check = struct
   }
 
   let of_kernel ~(property : Property.t) (k : Protocols.Kernel.t) : t =
-    (* We sidestep Protocols.Kernel.apply_arch because it injects
-       [thread_distinct] into [pre] keyed off the [Other()] term used by
-       rel_cost; we add the property-specific distinctness directly when
-       building the goal. Following the rel_cost pattern, we attach only
-       the architectural [base] precondition (bounds, positivity,
-       dim >= 1) and bind the arch defaults via apply_arch_binders. *)
-    let defaults = Protocols.Architecture.Defaults.block in
-    let k =
-      k
-      |> Protocols.Kernel.apply_arch_binders defaults
-      |> (fun k ->
-          { k with
-            pre = Exp.b_and Protocols.Architecture.Defaults.base k.pre })
-      |> Protocols.Kernel.add_missing_binders
-      |> Protocols.Kernel.opt
-    in
+    (* The arch binders (blockDim/gridDim into globals, threadIdx into
+       locals) and the [base] precondition (bounds, positivity,
+       dim >= 1) must be applied by the caller before [inline_globals]
+       runs — otherwise pinned launch dimensions don't get substituted
+       in [pre] and the analysis sees them as free. See [check.ml]
+       [preprocess]. *)
     let locals = Params.to_set k.local_variables in
     let globals = Params.to_set k.global_variables in
     let p = PathCondition.make ~property ~locals ~globals ~pre:k.pre in

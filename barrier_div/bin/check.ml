@@ -1,5 +1,6 @@
 open Inference
 open Stage0
+open Protocols
 open Barrier_div
 
 (* Both verification properties are checked on every kernel by default.
@@ -221,35 +222,87 @@ module TUI = struct
 end
 
 (* Mirror the kernel-level preprocessing the [drf] driver does in
-   [drf/bin/app.ml] [translate]: substitute integer parameters
-   (-p key=val) into globals, fold dimensions, ensure every free
-   name has a binder, and run constant folding so the analyser sees
-   a simplified IR. *)
-let preprocess (params : (string * int) list) (k : Protocols.Kernel.t) :
-    Protocols.Kernel.t =
+   [drf/bin/app.ml] [translate]: pin block/grid dimensions when known
+   (so [inline_globals] can substitute concrete values), substitute
+   integer parameters (-p key=val) into globals, fold dimensions,
+   ensure every free name has a binder, and run constant folding so the
+   analyser sees a simplified IR. *)
+let preprocess ~(block_dim : Dim3.t option) ~(grid_dim : Dim3.t option)
+    (params : (string * int) list) (k : Kernel.t) : Kernel.t =
+  (* Pin launch dimensions, then bind the arch defaults and attach the
+     [base] precondition before [inline_globals]. The order matters:
+     [inline_globals] -> [subst_vars] substitutes blockDim/gridDim
+     occurrences in both [code] and [pre], which only works if the
+     [base] precondition is already in [pre] when the substitution
+     runs. The analysis (Check.of_kernel) consumes the kernel as-is
+     after this — it does not re-bind the arch defaults, which would
+     undo the substitution by reintroducing free blockDim/gridDim
+     globals. *)
   k
-  |> Protocols.Kernel.inline_globals params
-  |> Protocols.Kernel.add_missing_binders
-  |> Protocols.Kernel.opt
+  |> Kernel.try_set_block_dim block_dim
+  |> Kernel.try_set_grid_dim grid_dim
+  |> Kernel.apply_arch_binders Architecture.Defaults.block
+  |> (fun k -> { k with pre = Exp.b_and Architecture.Defaults.base k.pre })
+  |> Kernel.inline_globals params
+  |> Kernel.add_missing_binders
+  |> Kernel.opt
 
 let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
     (show_map : bool) (show_check : bool) (show_symbexp : bool)
-    (selector : check_selector) (macros : string list)
+    (selector : check_selector) (block_dim : Dim3.t option)
+    (grid_dim : Dim3.t option) (all_dims : bool)
+    (macros : string list)
     (params : (string * int) list) : unit =
+  if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then begin
+    prerr_endline
+      "Cannot run with options: --all-dims and --grid-dim/--block-dim.\n\
+       Use --all-dims and -p instead.";
+    exit 2
+  end;
   let properties = resolve_selector selector in
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
-      ~macros
+      ~block_dim ~grid_dim ~macros
       fname
   in
-  let kernels = List.map (preprocess params) parsed.kernels in
+  (* parsed.options has merged the user overrides on top of any
+     GPUVerify pragma in the source (and the parser defaults). With
+     --all-dims, leave the dims free; otherwise pin them so the
+     analyzer treats blockDim/gridDim as known constants. *)
+  let block_dim =
+    if all_dims then None else Some parsed.options.block_dim
+  in
+  let grid_dim =
+    if all_dims then None else Some parsed.options.grid_dim
+  in
+  let kernels =
+    List.map (preprocess ~block_dim ~grid_dim params) parsed.kernels
+  in
   if output_json then JUI.run properties kernels
   else if
     not (TUI.run ~properties ~show_map ~show_check ~show_symbexp kernels)
   then exit 1
 
 open Cmdliner
+
+(* Cmdliner converter for the [a,b,c] / scalar Dim3 syntax used by
+   --block-dim and --grid-dim. Mirrors drf/bin/main.ml. *)
+let dim_help =
+  {|
+The value will be loaded from header if omitted.
+Examples (without quotes): "[2,2,2]" or "32".
+|}
+  |> Common.replace ~substring:"\n" ~by:""
+
+let conv_dim3 default =
+  let parse s =
+    match Dim3.parse ~default s with
+    | Ok e -> Ok e
+    | Error e -> Error (`Msg e)
+  in
+  let print ppf (l : Dim3.t) = Format.fprintf ppf "%s" (Dim3.to_string l) in
+  Arg.conv (parse, print)
 
 let get_fname : string Term.t =
   let doc = "The path $(docv) of the GPU program." in
@@ -292,6 +345,33 @@ let check_arg : check_selector Term.t =
     value & opt (enum choices) Both
     & info [ "check" ] ~docv:"PROPERTY" ~doc)
 
+let block_dim_arg : Dim3.t option Term.t =
+  let d = Gv_parser.default_block_dim |> Dim3.to_string in
+  let doc =
+    "Sets the number of threads per block." ^ dim_help ^ " Default: " ^ d
+  in
+  Arg.(
+    value
+    & opt (some (conv_dim3 Dim3.one)) None
+    & info [ "b"; "block-dim"; "blockDim" ] ~docv:"DIM3" ~doc)
+
+let grid_dim_arg : Dim3.t option Term.t =
+  let d = Gv_parser.default_grid_dim |> Dim3.to_string in
+  let doc =
+    "Sets the number of blocks per grid." ^ dim_help ^ " Default: " ^ d
+  in
+  Arg.(
+    value
+    & opt (some (conv_dim3 Dim3.one)) None
+    & info [ "g"; "grid-dim"; "gridDim" ] ~docv:"DIM3" ~doc)
+
+let all_dims_arg : bool Term.t =
+  let doc =
+    "Do not pin gridDim/blockDim; the verifier ranges over all possible \
+     launch dimensions."
+  in
+  Arg.(value & flag & info [ "all-dims" ] ~doc)
+
 let macros : string list Term.t =
   let doc = "Define <macro> to <value> (or 1 if <value> omitted)." in
   Arg.(
@@ -307,7 +387,8 @@ let params : (string * int) list Term.t =
 let main_t : unit Term.t =
   Term.(
     const main $ get_fname $ ignore_parsing_errors $ output_json $ show_map
-    $ show_check $ show_symbexp $ check_arg $ macros $ params)
+    $ show_check $ show_symbexp $ check_arg $ block_dim_arg $ grid_dim_arg
+    $ all_dims_arg $ macros $ params)
 
 let info =
   let doc = "Check for barrier divergence errors" in
