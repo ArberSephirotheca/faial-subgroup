@@ -162,15 +162,30 @@ module TUI = struct
          true
 end
 
+(* Mirror the kernel-level preprocessing the [drf] driver does in
+   [drf/bin/app.ml] [translate]: substitute integer parameters
+   (-p key=val) into globals, fold dimensions, ensure every free
+   name has a binder, and run constant folding so the analyser sees
+   a simplified IR. *)
+let preprocess (params : (string * int) list) (k : Protocols.Kernel.t) :
+    Protocols.Kernel.t =
+  k
+  |> Protocols.Kernel.inline_globals params
+  |> Protocols.Kernel.add_missing_binders
+  |> Protocols.Kernel.opt
+
 let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
-    (show_map : bool) (show_check : bool) (show_symbexp : bool) : unit =
+    (show_map : bool) (show_check : bool) (show_symbexp : bool)
+    (macros : string list) (params : (string * int) list) : unit =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
+      ~macros
       fname
   in
-  if output_json then JUI.run parsed.kernels
-  else if not (TUI.run ~show_map ~show_check ~show_symbexp parsed.kernels) then
+  let kernels = List.map (preprocess params) parsed.kernels in
+  if output_json then JUI.run kernels
+  else if not (TUI.run ~show_map ~show_check ~show_symbexp kernels) then
     exit 1
 
 open Cmdliner
@@ -199,10 +214,22 @@ let show_symbexp : bool Term.t =
   let doc = "Show the generated proof obligations." in
   Arg.(value & flag & info [ "show-symbexp" ] ~doc)
 
+let macros : string list Term.t =
+  let doc = "Define <macro> to <value> (or 1 if <value> omitted)." in
+  Arg.(
+    value & opt_all string []
+    & info [ "D"; "macro" ] ~docv:"<macro>=<value>" ~doc)
+
+let params : (string * int) list Term.t =
+  let doc = "Set the value of an integer parameter." in
+  Arg.(
+    value & opt_all (pair ~sep:'=' string int) []
+    & info [ "p"; "param" ] ~docv:"KEYVAL" ~doc)
+
 let main_t : unit Term.t =
   Term.(
     const main $ get_fname $ ignore_parsing_errors $ output_json $ show_map
-    $ show_check $ show_symbexp)
+    $ show_check $ show_symbexp $ macros $ params)
 
 let info =
   let doc = "Check for barrier divergence errors" in
