@@ -61,7 +61,8 @@ let print_kernel_result (k : Kernel.t) (diags : Diagnostic.t list) : bool =
 
 let main (fname : string) (ignore_parsing_errors : bool)
     (block_dim : Dim3.t option) (grid_dim : Dim3.t option) (timeout : int)
-    (macros : string list) (params : (string * int) list) : unit =
+    (precise : bool) (macros : string list)
+    (params : (string * int) list) : unit =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
@@ -70,6 +71,7 @@ let main (fname : string) (ignore_parsing_errors : bool)
   let block_dim = Some parsed.options.block_dim in
   let grid_dim = Some parsed.options.grid_dim in
   let kernels = List.map (preprocess ~block_dim ~grid_dim params) parsed.kernels in
+  let mode = if precise then Diagnostic.Precise else Diagnostic.Witness in
   let all_safe =
     List.fold_left
       (fun all_safe (k : Kernel.t) ->
@@ -79,7 +81,9 @@ let main (fname : string) (ignore_parsing_errors : bool)
         let final =
           State.reduce ~timeout cfg locals (State.initial initial)
         in
-        let diags = Diagnostic.of_state ~timeout cfg locals final in
+        let diags =
+          Diagnostic.of_state ~mode ~timeout ~pre:k.pre cfg locals final
+        in
         let safe = print_kernel_result k diags in
         all_safe && safe)
       true kernels
@@ -130,13 +134,23 @@ let timeout : int Term.t =
      A query that exceeds the timeout returns no result, which the \
      analysis treats conservatively (count predicates fail, blocking fire \
      and merge and producing no diagnostic from that query). NOTE: this \
-     bounds an individual Z3 call, not the whole run. Each phase issues \
-     several queries (currently up to four: a max+min for is_finished \
-     during reduction, plus a max+min for the diagnostic), so total \
-     wall-clock cost scales as O(phases * queries-per-phase * timeout). \
-     A 30s timeout on a single stuck phase can therefore take ~120s."
+     bounds an individual Z3 call, not the whole run. Total wall-clock \
+     cost scales as O(phases * queries-per-phase * timeout) — see \
+     --precise for the trade-off."
   in
   Arg.(value & opt int 0 & info [ "t"; "timeout" ] ~docv:"MS" ~doc)
+
+let precise : bool Term.t =
+  let doc =
+    "Refine reported cohort sizes to their actual extrema (min for missing \
+     participants, max for oversize cohorts) using the SMT optimizer. \
+     Without this flag, cohort sizes are read off a SAT witness — fast \
+     but only one valuation, not the worst. With this flag, every SAT \
+     diagnostic triggers an additional optimizer call to tighten the \
+     reported size; if the optimizer times out, the SAT witness is \
+     used as a fallback so the diagnostic is never lost. Off by default."
+  in
+  Arg.(value & flag & info [ "precise" ] ~doc)
 
 let macros : string list Term.t =
   let doc = "Define <macro> to <value> (or 1 if <value> omitted)." in
@@ -151,7 +165,7 @@ let params : (string * int) list Term.t =
 let main_t : unit Term.t =
   Term.(
     const main $ get_fname $ ignore_parsing_errors $ block_dim $ grid_dim
-    $ timeout $ macros $ params)
+    $ timeout $ precise $ macros $ params)
 
 let info =
   let doc = "Check for missing-participant errors at barriers" in

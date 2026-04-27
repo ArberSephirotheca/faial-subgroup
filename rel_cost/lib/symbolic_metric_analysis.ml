@@ -568,6 +568,46 @@ let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
 
 let count_active_threads = optimize_metric encode_count_active_threads
 
+(* SAT-based cohort counting. Asks Z3: is there a valuation where the
+   active-thread count satisfies [predicate count_expr]? Returns:
+     - [Sat k] if such a valuation exists, where [k] is the count value
+       in the witnessing model;
+     - [Unsat] if no such valuation exists;
+     - [Unknown] on solver error / timeout.
+   Much cheaper than [optimize_metric] when only a witness is needed —
+   the optimizer must additionally prove its result is the extremum. *)
+type sat_witness = Sat of int | Unsat_w | Unknown_w
+
+let sat_count
+    ?(generator = Constraints.default)
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(timeout = 0)
+    (config : Config.t) (locals : Variable.Set.t) (active_threads : bexp)
+    (predicate : nexp -> bexp) : sat_witness =
+  let module S = (val solver) in
+  let fns = Exp.b_free_names active_threads Variable.Set.empty in
+  let globals = Variable.Set.diff fns locals in
+  let st =
+    make generator config locals globals |> add_active_threads active_threads
+  in
+  let count_expr = encode_count_active_threads (Num 0) st in
+  (* Syntactic bound on the count: a sum of [threads_per_warp] booleans
+     lies in [0, threads_per_warp]. Without this hint, Z3 has to derive
+     the bound from the BV-encoded sum, which can take seconds-to-
+     minutes on large warp sizes — turning UNSAT proofs of
+     [count > threads_per_warp] into a bottleneck. *)
+  let count_bounds =
+    Exp.b_and
+      (n_ge count_expr (Num 0))
+      (n_le count_expr (Num st.config.threads_per_warp))
+  in
+  let goal =
+    Exp.b_and (Exp.b_and st.assumptions count_bounds) (predicate count_expr)
+  in
+  match S.solve_with_int_witness ~timeout goal count_expr with
+  | Ok (Some k) -> Sat k
+  | Ok None -> Unsat_w
+  | Error _ -> Unknown_w
+
 let encode_ua (index : nexp) (st : t) : nexp =
   let index = n_div index (Num (Config.memory_segments_bits st.config)) in
   let index = n_split index st in

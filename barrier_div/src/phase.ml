@@ -84,7 +84,7 @@ let phases_share_id (a : t) (b : t) : bool = id_eq a.sync b.sync
 
 let is_finished ?(timeout = 0) (cfg : Rel_cost.Config.t)
     (locals : Variable.Set.t) (p : t) : bool =
-  Thread_count.equals ~timeout cfg locals p.arrive_cohort p.count
+  Thread_count.is_uniform ~timeout cfg locals p.arrive_cohort p.count
 
 let can_admit ?(timeout = 0) (cfg : Rel_cost.Config.t)
     (locals : Variable.Set.t) (b : bexp) (p : t) : bool =

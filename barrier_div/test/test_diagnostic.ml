@@ -30,7 +30,7 @@ let mk_thread (path_cond : bexp) : Thread.t =
 let test_empty_state_no_diagnostics () =
   let s : State.t = { phases = []; threads = [] } in
   Alcotest.(check int) "no diagnostics on empty state" 0
-    (List.length (Diagnostic.of_state cfg locals s))
+    (List.length (Diagnostic.of_state ~pre:(Bool true) cfg locals s))
 
 let test_finished_phase_no_diagnostics () =
   (* arrive_cohort = true, count = 32 → exact match, no diagnostic *)
@@ -38,7 +38,7 @@ let test_finished_phase_no_diagnostics () =
   let p = Phase.of_sync cfg { sync = s; rest = mk_thread (Bool true) } in
   let st : State.t = { phases = [ p ]; threads = [] } in
   Alcotest.(check int) "no diagnostics on finished phase" 0
-    (List.length (Diagnostic.of_state cfg locals st))
+    (List.length (Diagnostic.of_state ~pre:(Bool true) cfg locals st))
 
 let test_missing_participants_diagnostic () =
   (* arrive_cohort = (tid<17), count = 32 → Missing_participants *)
@@ -46,7 +46,7 @@ let test_missing_participants_diagnostic () =
   let pc = n_lt (Var Variable.tid_x) (Num 17) in
   let p = Phase.of_sync cfg { sync = s; rest = mk_thread pc } in
   let st : State.t = { phases = [ p ]; threads = [] } in
-  match Diagnostic.of_state cfg locals st with
+  match Diagnostic.of_state ~pre:(Bool true) cfg locals st with
   | [ Diagnostic.Missing_participants { expected = 32; _ } ] -> ()
   | results ->
       Alcotest.failf "expected one Missing_participants, got %d diagnostics"
@@ -63,7 +63,7 @@ let test_count_mismatch_diagnostic () =
     Phase.of_sync cfg { sync = s_32; rest = mk_thread (Bool true) }
   in
   let st : State.t = { phases = [ p1; p2 ]; threads = [] } in
-  let results = Diagnostic.of_state cfg locals st in
+  let results = Diagnostic.of_state ~pre:(Bool true) cfg locals st in
   let has_count_mismatch =
     List.exists (function Diagnostic.Count_mismatch _ -> true | _ -> false)
       results

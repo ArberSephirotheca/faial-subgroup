@@ -157,9 +157,9 @@ let test_cohort_size_tid_lt_17 () =
   let pc = n_lt (Var Variable.tid_x) (Num 17) in
   let locals = Variable.tid_set in
   Alcotest.(check (option int)) "max(tid_x < 17) = 17" (Some 17)
-    (Thread_count.max_count cfg locals pc);
+    (Thread_count.refine_max cfg locals pc);
   Alcotest.(check (option int)) "min(tid_x < 17) = 17" (Some 17)
-    (Thread_count.min_count cfg locals pc)
+    (Thread_count.refine_min cfg locals pc)
 
 (* Regression: when [block_dim] exceeds [threads_per_warp], the
    symbolic-metric layer samples only one warp at a time. For a
@@ -177,9 +177,9 @@ let test_cohort_multi_warp_block () =
   let pc = n_lt (Var Variable.tid_x) (Num 17) in
   let locals = Variable.tid_set in
   Alcotest.(check (option int)) "max on 64-thread block = 17" (Some 17)
-    (Thread_count.max_count cfg' locals pc);
+    (Thread_count.refine_max cfg' locals pc);
   Alcotest.(check (option int)) "min on 64-thread block = 17" (Some 17)
-    (Thread_count.min_count cfg' locals pc)
+    (Thread_count.refine_min cfg' locals pc)
 
 (* test groups *)
 

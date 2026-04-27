@@ -461,6 +461,27 @@ module type Z3_SOLVER = sig
     Optimizer.Strategy.t ->
     Exp.nexp ->
     (int option, string) Result.t
+
+  (* SAT a boolean goal and, if satisfiable, return the integer value
+     of [witness] in the model. Returns [Ok (Some k)] on SAT, [Ok None]
+     on UNSAT, and [Error msg] on solver error / unknown (e.g. timeout).
+     Used by callers that want the count value implied by a model rather
+     than the optimum — much cheaper than the full optimizer when a
+     witness is enough. *)
+  val solve_with_int_witness :
+    ?timeout:int -> Exp.bexp -> Exp.nexp -> (int option, string) Result.t
+
+  (* Like [solve_with_int_witness], but extracts multiple witnesses from
+     a single solve in one shared Z3 context. Returns [Ok (Some [v1; …])]
+     on SAT (each [vi] is the value of the i-th witness in the model, or
+     [None] if it can't be parsed), [Ok None] on UNSAT, and [Error msg]
+     on solver error. Use this when a single goal pins several integer
+     witnesses (e.g. all three [tid] components). *)
+  val solve_with_int_witnesses :
+    ?timeout:int ->
+    Exp.bexp ->
+    Exp.nexp list ->
+    (int option list option, string) Result.t
 end
 
 module CodeGen (N : NUMERIC_OPS) = struct
@@ -602,6 +623,40 @@ module CodeGen (N : NUMERIC_OPS) = struct
     let solver = Z3.Solver.mk_solver ctx None in
     Z3.Solver.add solver [ b_to_expr ctx pre ];
     Solver.run solver
+
+  let solve_with_int_witness ?(timeout = 0) (pre : Exp.bexp) (witness : Exp.nexp)
+      : (int option, string) Result.t =
+    let args =
+      if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
+    in
+    let ctx = Z3.mk_context args in
+    let solver = Z3.Solver.mk_solver ctx None in
+    Z3.Solver.add solver [ b_to_expr ctx pre ];
+    let witness_expr = n_to_expr ctx witness in
+    match Z3.Solver.check solver [] with
+    | Z3.Solver.SATISFIABLE -> (
+        match Z3.Solver.get_model solver with
+        | Some m -> Ok (get_int m witness_expr)
+        | None -> Ok None)
+    | Z3.Solver.UNSATISFIABLE -> Ok None
+    | Z3.Solver.UNKNOWN -> Error (Z3.Solver.get_reason_unknown solver)
+
+  let solve_with_int_witnesses ?(timeout = 0) (pre : Exp.bexp)
+      (witnesses : Exp.nexp list) : (int option list option, string) Result.t =
+    let args =
+      if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
+    in
+    let ctx = Z3.mk_context args in
+    let solver = Z3.Solver.mk_solver ctx None in
+    Z3.Solver.add solver [ b_to_expr ctx pre ];
+    let witness_exprs = List.map (n_to_expr ctx) witnesses in
+    match Z3.Solver.check solver [] with
+    | Z3.Solver.SATISFIABLE -> (
+        match Z3.Solver.get_model solver with
+        | Some m -> Ok (Some (List.map (get_int m) witness_exprs))
+        | None -> Ok None)
+    | Z3.Solver.UNSATISFIABLE -> Ok None
+    | Z3.Solver.UNKNOWN -> Error (Z3.Solver.get_reason_unknown solver)
 
   let solve_with_tactic ?(timeout = 0) ?(debug = false) (tactic : Tactic.t)
       (pre : Exp.bexp) : (Solver.t, string) Result.t =

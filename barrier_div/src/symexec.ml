@@ -19,13 +19,15 @@ let setup ~(params : (string * int) list) (k : Kernel.t) : Kernel.t =
   let used = Kernel.parameter_set k in
   { k with code = Code.vars_distinct k.code used }
 
-let check ?(params : (string * int) list = []) ?(timeout = 0)
-    (cfg : Rel_cost.Config.t) (k : Kernel.t) : Diagnostic.t list =
+let check ?(mode = Diagnostic.Witness) ?(params : (string * int) list = [])
+    ?(timeout = 0) (cfg : Rel_cost.Config.t) (k : Kernel.t) :
+    Diagnostic.t list =
   let k = setup ~params k in
   let initial : Thread.t = { path_cond = k.pre; proto = k.code } in
   let locals = Kernel.local_set k in
   let final = State.reduce ~timeout cfg locals (State.initial initial) in
-  Diagnostic.of_state ~timeout cfg locals final
+  Diagnostic.of_state ~mode ~timeout ~pre:k.pre cfg locals final
 
-let is_safe ?params ?timeout (cfg : Rel_cost.Config.t) (k : Kernel.t) : bool =
-  check ?params ?timeout cfg k = []
+let is_safe ?mode ?params ?timeout (cfg : Rel_cost.Config.t) (k : Kernel.t) :
+    bool =
+  check ?mode ?params ?timeout cfg k = []

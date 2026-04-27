@@ -21,22 +21,13 @@ let tests =
     ("tid-conditional.cu", [], 1);
     (* asm("bar.sync 0, 32") executed in a 16-thread block — undersized. *)
     ("named-bar-undersize.cu", [ "--block-dim=16" ], 1);
+    (* Loop bound depends on threadIdx.x — the cohort can shrink. Default
+       (Witness) mode reads the cohort_size off a SAT model, so this is
+       fast even though the optimizer-based extremum is intractable. *)
+    ("loop-tid-bound.cu", [], 1);
   ]
 
-(* These are kernels that the analysis handles, but are too costly to
-   include in the routine test suite. *)
-let unsupported : Fpath.t list =
-  [
-    (* Loop bound depends on threadIdx.x. The diagnosis is correct
-       (Missing participants, cohort_size = 0), but the run currently
-       costs up to 4 * --timeout because is_finished and of_phase_solo
-       each issue a max+min pair against the same arrive_cohort and the
-       results are not memoized. With --timeout=30000 the run takes
-       ~120s — too slow for the test suite until the duplication is
-       fixed. *)
-    "loop-tid-bound.cu";
-  ]
-  |> List.map (fun x -> Fpath.(v "." / x))
+let unsupported : Fpath.t list = []
 
 (* ---- Testing-specific code ----- *)
 
