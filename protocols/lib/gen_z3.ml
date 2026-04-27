@@ -561,8 +561,18 @@ module CodeGen (N : NUMERIC_OPS) = struct
 
   (*
     Optimizes a numeric expression given a boolean expression.
+
+    The [timeout] parameter is forwarded to Z3 as a context-level
+    "timeout" parameter, expressed in milliseconds. It applies to a
+    single optimizer call only — every invocation of [optimize] /
+    [optimize_expr] / [solve] / [solve_with_tactic] starts its own
+    Z3 context and gets its own independent timeout budget. Callers
+    that issue multiple queries per analysis step (e.g. computing a
+    max and a min, or running [equals] which does both) will see a
+    total wall-clock cost of [N * timeout] in the worst case where
+    every query saturates the budget. There is no global cap.
     *)
-  let optimize ?(timeout = 0) (* By default no timeout is given *)
+  let optimize ?(timeout = 0) (* per-Z3-call timeout in ms; 0 = unlimited *)
       (strategy : Optimizer.Strategy.t) (pre : Exp.bexp) (n : Exp.nexp) :
       (Optimizer.t, string) Result.t =
     let open Z3 in

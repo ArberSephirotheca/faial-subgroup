@@ -490,12 +490,12 @@ let print_optimize (pre : bexp) (formula : nexp) : unit =
 (** Optimizes a formula *)
 let optimize ?(verbose = false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(default_cost = 0)
-    (formula : nexp) (st : t) : (int, string) Result.t =
+    ?(timeout = 0) (formula : nexp) (st : t) : (int, string) Result.t =
   let module S = (val solver) in
   let pre = st.assumptions in
   (* pre: the generated runtime constraints (eg, tid is unique) *)
   let solve formula : (int, string) Result.t =
-    S.optimize_expr strategy ~pre formula
+    S.optimize_expr ~timeout strategy ~pre formula
     |> Result.map (fun o -> Option.value ~default:default_cost o)
   in
   if verbose then print_optimize pre formula;
@@ -549,9 +549,9 @@ let encode_count_active_threads (_index : nexp) (st : t) : nexp =
 let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
     ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default)
-    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (config : Config.t)
-    (locals : Variable.Set.t) (active_threads : bexp) (index : nexp) :
-    int option =
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(timeout = 0)
+    (config : Config.t) (locals : Variable.Set.t) (active_threads : bexp)
+    (index : nexp) : int option =
   (* Compute free names from active_threads and index *)
   let fns =
     Exp.b_free_names active_threads Variable.Set.empty |> Exp.n_free_names index
@@ -563,7 +563,7 @@ let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
     (make generator config locals globals |> add_active_threads active_threads)
     (let* n = cost_of metric index in
      let* st = State.get in
-     return (optimize ~verbose ~strategy ~solver ~default_cost:0 n st))
+     return (optimize ~verbose ~strategy ~solver ~default_cost:0 ~timeout n st))
   |> snd |> Result.to_option
 
 let count_active_threads = optimize_metric encode_count_active_threads

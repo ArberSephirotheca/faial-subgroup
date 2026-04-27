@@ -1,3 +1,3 @@
 (library
   (name barrier_div)
-  (libraries stage0 protocols z3 ANSITerminal))
+  (libraries stage0 protocols rel_cost z3 ANSITerminal))
