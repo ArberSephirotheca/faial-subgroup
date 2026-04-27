@@ -183,7 +183,16 @@ let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
       ]
   | Skip -> []
   | Decl { var; ty; body = p } ->
-      Line (C_type.to_string ty ^ " " ^ Variable.name var ^ ";")
+      (* Synthesised Decls are uninitialised scaffold variables — strip
+         [const] so the emitted C++ doesn't fail "default initialisation
+         of an object of const type". Clang dependent-type placeholders
+         (e.g. "<dependent type>" inside templated bodies) leak through
+         as type strings; substitute [int] so the file remains parseable. *)
+      let ty_s = C_type.to_string (C_type.strip_const ty) in
+      let ty_s =
+        if String.length ty_s > 0 && ty_s.[0] = '<' then "int" else ty_s
+      in
+      Line (ty_s ^ " " ^ Variable.name var ^ ";")
       :: inst_to_s g p
   | Seq (p, q) -> inst_to_s g p @ inst_to_s g q
   | Loop { range = r; body = p } ->
@@ -192,7 +201,7 @@ let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
       let lb, ub, op =
         match r.dir with
         | Increase -> (r.lower_bound, r.upper_bound, " <= ")
-        | Decrease -> (n_dec r.upper_bound, n_dec r.lower_bound, " => ")
+        | Decrease -> (n_dec r.upper_bound, n_dec r.lower_bound, " >= ")
       in
       [
         Line
