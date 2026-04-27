@@ -33,6 +33,9 @@ let kernel_used_vars (k : Kernel.t) : Variable.Set.t =
 let fresh (k : Kernel.t) (base : string) : Variable.t =
   Variable.fresh (kernel_used_vars k) (Variable.from_name base)
 
+let has_sync (c : Code.t) : bool =
+  Code.exists (function Code.Sync _ -> true | _ -> false) c
+
 (* ----- W-preserving operators -----
 
    For each, the input label and the output label coincide. The argument
@@ -134,15 +137,17 @@ let wrap_decl_if : t =
     relabel = (fun _ -> Label.IllSync);
     apply =
       (fun k ->
-        let x = fresh k "mut_x" in
-        let cond = Exp.n_gt (Var x) (Num 0) in
-        let inner : Code.t = If (cond, k.code, Skip) in
-        [
-          {
-            k with
-            code = Decl { var = x; ty = C_type.int; body = inner };
-          };
-        ]);
+        if not (has_sync k.code) then []
+        else
+          let x = fresh k "mut_x" in
+          let cond = Exp.n_gt (Var x) (Num 0) in
+          let inner : Code.t = If (cond, k.code, Skip) in
+          [
+            {
+              k with
+              code = Decl { var = x; ty = C_type.int; body = inner };
+            };
+          ]);
   }
 
 (* Wrap k.code in Decl(n, Loop(i ∈ [0, n)) body) for fresh n, i.
@@ -157,17 +162,19 @@ let wrap_decl_loop : t =
     relabel = (fun _ -> Label.IllSync);
     apply =
       (fun k ->
-        let n = fresh k "mut_n" in
-        let used' = Variable.Set.add n (kernel_used_vars k) in
-        let i = Variable.fresh used' (Variable.from_name "mut_i") in
-        let r = Range.make ~lower_bound:(Num 0) i (Var n) in
-        let inner : Code.t = Loop { range = r; body = k.code } in
-        [
-          {
-            k with
-            code = Decl { var = n; ty = C_type.int; body = inner };
-          };
-        ]);
+        if not (has_sync k.code) then []
+        else
+          let n = fresh k "mut_n" in
+          let used' = Variable.Set.add n (kernel_used_vars k) in
+          let i = Variable.fresh used' (Variable.from_name "mut_i") in
+          let r = Range.make ~lower_bound:(Num 0) i (Var n) in
+          let inner : Code.t = Loop { range = r; body = k.code } in
+          [
+            {
+              k with
+              code = Decl { var = n; ty = C_type.int; body = inner };
+            };
+          ]);
   }
 
 let all : t list =
