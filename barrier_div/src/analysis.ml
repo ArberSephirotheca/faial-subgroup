@@ -1,27 +1,69 @@
 open Protocols
 open Stage0
 
+(* The two properties this analysis can verify. Both share the same
+   syntax-directed traversal in [Check.Barrier.of_code]; they differ only
+   in the initial state (which arch components are projected vs. shared)
+   and in the goal precondition.
+
+   - [Well_sync]: same thread, same launch, two executions T1/T2. Catches
+     barriers whose reachability depends on thread-private state that may
+     differ between executions (uninitialised locals, input-derived data).
+     Projectable: user locals. All of arch is shared.
+
+   - [Barrier_div]: two distinct threads in the same group at the same
+     barrier. Catches the GPUVerify litmus pattern where threads of a
+     warp disagree on a guard wrapping a barrier. Projectable: tid plus
+     user locals. bid/bdim/gdim shared. tid$T1 != tid$T2 added as a
+     precondition. *)
+module Property = struct
+  type t = Well_sync | Barrier_div
+
+  let to_string : t -> string = function
+    | Well_sync -> "well-sync"
+    | Barrier_div -> "barrier-div"
+
+  (* Architectural variables that may differ between T1 and T2 under this
+     property's frame. Their guards are classified divergent and they are
+     projected with $T1/$T2 suffixes. *)
+  let arch_projectable : t -> Variable.Set.t = function
+    | Well_sync -> Variable.Set.empty
+    | Barrier_div -> Variable.tid_set
+
+  (* Architectural variables guaranteed equal across T1 and T2 under this
+     property's frame. Stay shared (single copy in the goal). *)
+  let arch_shared : t -> Variable.Set.t = function
+    | Well_sync ->
+        Variable.tid_set
+        |> Variable.Set.union Variable.bid_set
+        |> Variable.Set.union Variable.bdim_set
+        |> Variable.Set.union Variable.gdim_set
+    | Barrier_div ->
+        Variable.bid_set
+        |> Variable.Set.union Variable.bdim_set
+        |> Variable.Set.union Variable.gdim_set
+
+  (* Extra precondition conjoined to the goal: "T1 and T2 are different
+     threads of the same group" for Barrier_div; nothing for Well_sync
+     (T1 = T2 by construction). *)
+  let goal_precondition : t -> Exp.bexp = function
+    | Well_sync -> Bool true
+    | Barrier_div -> Exp.thread_distinct Variable.tid_list
+end
+
 (* Path-condition state carried as we walk the kernel body.
 
    Two variable sets serve different roles:
    - [locals] classifies expressions as thread-divergent. An [if]/[for]
-     guard is uniform iff it references no [locals]. Contains threadIdx
-     plus user locals plus decls plus divergent-loop binders.
+     guard is uniform iff it references no [locals]. Contains user locals
+     plus decls plus divergent-loop binders, plus the property-specific
+     subset of arch ([Property.arch_projectable]).
    - [projectable] names the variables that get a $T1/$T2 suffix at goal
-     construction. These are the things that can differ between two
-     executions of the same thread under the same launch configuration:
-     kernel arguments and user-declared locals. Architectural invariants
-     (threadIdx, blockIdx, blockDim, gridDim) are never projected. *)
+     construction. Identical to [locals] minus binders that are shared by
+     construction (loop binders), plus the property's projected arch. *)
 module PathCondition = struct
-  (* The architectural constants — same value for T1 and T2 by construction
-     of "same thread, same launch config". Never projected. *)
-  let architectural : Variable.Set.t =
-    Variable.tid_set
-    |> Variable.Set.union Variable.bid_set
-    |> Variable.Set.union Variable.bdim_set
-    |> Variable.Set.union Variable.gdim_set
-
   type t = {
+    property : Property.t;
     locals : Variable.Set.t;
     projectable : Variable.Set.t;
     shared : Variable.Set.t;
@@ -30,14 +72,21 @@ module PathCondition = struct
     uniform : Exp.bexp;
   }
 
-  let make ~(locals : Variable.Set.t) ~(globals : Variable.Set.t)
-      ~(pre : Exp.bexp) : t =
-    (* Kernel parameters are uniform within a launch and the launch is
-       fixed across T1 and T2 by construction, so they go to [shared].
-       Only thread-local declarations stay in [projectable]. *)
-    let projectable = Variable.Set.diff locals architectural in
-    let shared = Variable.Set.union architectural globals in
-    { locals; projectable; shared; pre;
+  let make ~(property : Property.t) ~(locals : Variable.Set.t)
+      ~(globals : Variable.Set.t) ~(pre : Exp.bexp) : t =
+    let arch_proj = Property.arch_projectable property in
+    let arch_shared = Property.arch_shared property in
+    (* [locals] (as supplied by the kernel after [apply_arch_binders]) is
+       tid plus user-declared locals. This set drives the U/D split: it
+       happens to be exactly the right "may differ between T1 and T2"
+       set for both properties — for barrier-div trivially, for
+       well-sync conservatively (tid is shared across T1/T2 of the same
+       thread, so tid-only guards landing in D are simply discharged
+       trivially). *)
+    let user_locals = Variable.Set.diff locals (Variable.Set.union arch_proj arch_shared) in
+    let projectable = Variable.Set.union user_locals arch_proj in
+    let shared = Variable.Set.union arch_shared globals in
+    { property; locals; projectable; shared; pre;
       divergent = (Bool true : Exp.bexp);
       uniform = (Bool true : Exp.bexp) }
 
@@ -83,7 +132,8 @@ module PathCondition = struct
 
   let to_string (e : t) : string =
     Printf.sprintf
-      "{locals = {%s}; projectable = {%s}; shared = {%s}; pre = %s; divergent = %s; uniform = %s}"
+      "{property = %s; locals = {%s}; projectable = {%s}; shared = {%s}; pre = %s; divergent = %s; uniform = %s}"
+      (Property.to_string e.property)
       (Variable.set_to_string e.locals)
       (Variable.set_to_string e.projectable)
       (Variable.set_to_string e.shared)
@@ -125,15 +175,17 @@ module Check = struct
         (PathCondition.to_string b.path_condition)
   end
   type t = {
+    property : Property.t;
     kernel_name: string;
     barriers: Barrier.t Seq.t;
   }
 
-  let of_kernel (k : Protocols.Kernel.t) : t =
+  let of_kernel ~(property : Property.t) (k : Protocols.Kernel.t) : t =
     (* We sidestep Protocols.Kernel.apply_arch because it injects
-       [thread_distinct] (tid != Other(tid)) into [pre], which contradicts
-       our same-thread semantics. Following the rel_cost pattern, we attach
-       only the architectural [base] precondition (bounds, positivity,
+       [thread_distinct] into [pre] keyed off the [Other()] term used by
+       rel_cost; we add the property-specific distinctness directly when
+       building the goal. Following the rel_cost pattern, we attach only
+       the architectural [base] precondition (bounds, positivity,
        dim >= 1) and bind the arch defaults via apply_arch_binders. *)
     let defaults = Protocols.Architecture.Defaults.block in
     let k =
@@ -147,9 +199,9 @@ module Check = struct
     in
     let locals = Params.to_set k.local_variables in
     let globals = Params.to_set k.global_variables in
-    let p = PathCondition.make ~locals ~globals ~pre:k.pre in
+    let p = PathCondition.make ~property ~locals ~globals ~pre:k.pre in
     let barriers = Barrier.of_code p k.code in
-    { barriers; kernel_name = k.name }
+    { property; barriers; kernel_name = k.name }
 
   let to_string (e : t) : string =
     let barriers_str =
@@ -158,7 +210,8 @@ module Check = struct
       |> List.of_seq
       |> String.concat "\n  "
     in
-    Printf.sprintf "kernel %s:\n  %s" e.kernel_name barriers_str
+    Printf.sprintf "kernel %s [%s]:\n  %s"
+      e.kernel_name (Property.to_string e.property) barriers_str
 
   let print (c : t) : unit = to_string c |> print_endline
 end
@@ -204,6 +257,7 @@ end
    boilerplate via Proof.make, same UNSAT-is-safe convention on the goal. *)
 module Proof = struct
   type t = {
+    property : Property.t;
     id : int;
     kernel_name : string;
     barrier : Sync.t;
@@ -213,8 +267,8 @@ module Proof = struct
     goal : Exp.bexp;
   }
 
-  let make ~(kernel_name : string) ~(barrier : Sync.t) ~(id : int)
-      ~(goal : Exp.bexp) : t =
+  let make ~(property : Property.t) ~(kernel_name : string)
+      ~(barrier : Sync.t) ~(id : int) ~(goal : Exp.bexp) : t =
     let goal = Constfold.b_opt goal in
     let fns =
       Exp.b_free_names goal Variable.Set.empty |> Variable.Set.elements
@@ -227,7 +281,7 @@ module Proof = struct
         fns
     in
     let preds = Predicates.get_predicates goal in
-    { id; preds; decls; goal; kernel_name; labels; barrier }
+    { property; id; preds; decls; goal; kernel_name; labels; barrier }
 
   let to_s (p : t) : Indent.t list =
     let open Indent in
@@ -287,12 +341,16 @@ module Proof = struct
     let d2 = proj T2 c.divergent in
     let u1 = proj T1 c.uniform in
     let u2 = proj T2 c.uniform in
-    Exp.b_and_ex [ pre1; pre2; u1; u2; d1; Exp.b_not d2 ]
+    (* For barrier-div, project tid in the distinctness precondition too:
+       the constraint is tid$T1 != tid$T2. *)
+    let extra = proj T2 (Property.goal_precondition c.property) in
+    Exp.b_and_ex [ pre1; pre2; u1; u2; d1; Exp.b_not d2; extra ]
 
   let of_check (c : Check.t) : t Seq.t =
     c.barriers
     |> Seq.mapi (fun id (b : Check.Barrier.t) ->
-           make ~kernel_name:c.kernel_name ~barrier:b.sync ~id
+           make ~property:c.property ~kernel_name:c.kernel_name
+             ~barrier:b.sync ~id
              ~goal:(path_condition_to_goal b.path_condition))
 
   let solve ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?timeout

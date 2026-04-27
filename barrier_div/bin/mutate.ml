@@ -42,14 +42,15 @@ let write_string (fname : string) (data : string) : unit =
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
       output_string oc data)
 
-let label_of_string : string -> Mutation.Label.t = function
-  | "well" | "well_sync" | "wellsync" | "WellSync" -> WellSync
-  | "ill" | "ill_sync" | "illsync" | "IllSync" -> IllSync
-  | s -> invalid_arg ("unknown label: " ^ s)
-
-let main (input : string) (output_dir : string) (label_str : string)
-    (macros : string list) (params : (string * int) list) : unit =
-  let input_label = label_of_string label_str in
+let main (input : string) (output_dir : string) (ws_label_str : string)
+    (bd_label_str : string) (macros : string list)
+    (params : (string * int) list) : unit =
+  let input_label : Mutation.Label.pair =
+    {
+      well_sync = Mutation.Label.of_string ws_label_str;
+      barrier_div = Mutation.Label.of_string bd_label_str;
+    }
+  in
   let g : Generator.t =
     Generator.make ~const_fold:false ~distinct_vars:false ~div_to_mult:false
       ~expand_device:false ~gen_params:false ~mod_gv_args:false ~racuda:false
@@ -69,14 +70,14 @@ let main (input : string) (output_dir : string) (label_str : string)
            Mutation.all
            |> List.iter (fun (m : Mutation.t) ->
                   let mutants = m.apply k in
-                  let out_label = m.relabel input_label in
+                  let out_label = Mutation.relabel_pair m input_label in
                   List.iteri
                     (fun i (mut : Kernel.t) ->
                       let cuda = Cgen.gen_cuda g gv mut in
                       let stem =
                         Printf.sprintf "%s.%s.%s.%d.%s.cu" input_stem k.name
                           m.name i
-                          (Mutation.Label.to_string out_label)
+                          (Mutation.Label.pair_to_filename out_label)
                       in
                       let path = Filename.concat output_dir stem in
                       write_string path cuda;
@@ -93,10 +94,21 @@ let output_dir : string Term.t =
   let doc = "Directory to write mutants into." in
   Arg.(required & pos 1 (some string) None & info [] ~docv:"OUTPUT_DIR" ~doc)
 
-let input_label : string Term.t =
-  let doc = "Label of the input kernel: well_sync or ill_sync." in
+let ws_label : string Term.t =
+  let doc = "Well-sync label of the input kernel: well_sync or ill_sync." in
   Arg.(
-    required & opt (some string) None & info [ "l"; "label" ] ~docv:"LABEL" ~doc)
+    required
+    & opt (some string) None
+    & info [ "ws-label" ] ~docv:"LABEL" ~doc)
+
+let bd_label : string Term.t =
+  let doc =
+    "Barrier-div label of the input kernel: well_sync or ill_sync."
+  in
+  Arg.(
+    required
+    & opt (some string) None
+    & info [ "bd-label" ] ~docv:"LABEL" ~doc)
 
 let macros : string list Term.t =
   let doc = "Define <macro> to <value> (or 1 if <value> omitted)." in
@@ -111,10 +123,12 @@ let params : (string * int) list Term.t =
     & info [ "p"; "param" ] ~docv:"KEYVAL" ~doc)
 
 let main_t : unit Term.t =
-  Term.(const main $ input_file $ output_dir $ input_label $ macros $ params)
+  Term.(
+    const main $ input_file $ output_dir $ ws_label $ bd_label $ macros
+    $ params)
 
 let info =
   let doc = "Apply mutation operators to a CUDA kernel for dataset growth." in
-  Cmd.info "faial-mutate" ~doc
+  Cmd.info "faial-mut-sync" ~doc
 
 let () = Cmd.v info main_t |> Cmd.eval |> exit

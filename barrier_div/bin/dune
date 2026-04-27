@@ -1,6 +1,6 @@
 (executables
  (names check mutate)
- (public_names faial-sync faial-mutate)
+ (public_names faial-sync faial-mut-sync)
  (modes exe)
  (libraries
   ; 3rd-party

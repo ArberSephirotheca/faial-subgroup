@@ -10,7 +10,7 @@ all: c-ast \
 	faial-drf \
 	data-dep \
 	faial-sync \
-	faial-mutate \
+	faial-mut-sync \
 	faial-gen \
 	faial-cost \
 	faial-cost-diff \
@@ -55,8 +55,8 @@ faial-cost-diff: build
 faial-sync: build
 	cp -f $(BUILD)/barrier_div/bin/check.exe faial-sync
 
-faial-mutate: build
-	cp -f $(BUILD)/barrier_div/bin/mutate.exe faial-mutate
+faial-mut-sync: build
+	cp -f $(BUILD)/barrier_div/bin/mutate.exe faial-mut-sync
 
 faial-gen: build
 	cp -f $(BUILD)/codegen/corvo.exe faial-gen
@@ -97,7 +97,7 @@ gitlab: gitlab-test gitlab-bin
 	c-ast \
 	data-dep \
 	faial-sync \
-	faial-mutate \
+	faial-mut-sync \
 	faial-gen \
 	faial-cost \
 	faial-cost-dyn \
