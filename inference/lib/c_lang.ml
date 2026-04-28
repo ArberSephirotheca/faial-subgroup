@@ -2412,24 +2412,40 @@ module Def = struct
     let open Rjson in
     let open Imp.Enum in
     let* o = cast_object j in
-    let* var =
-      match parse_variable j with
-      | Ok v -> Ok v
-      | Error _ -> (
-          let* location = with_field "range" parse_location o in
-          let ty =
-            let open Yojson.Basic.Util in
-            j |> member "inner" |> index 0 |> member "type" |> member "qualType"
-            |> to_string_option
-          in
-          match ty with
-          | Some name -> Ok (Variable.make ~name ~location)
-          | None -> root_cause "Could not find enum name." j)
-    in
     (* Skip non-EnumConstantDecl children (notably FullComment doc
        comments interspersed between enumerators). *)
     let is_constant : Yojson.Basic.t -> bool =
       j_filter_kind (fun k -> k = "EnumConstantDecl")
+    in
+    let* var =
+      match parse_variable j with
+      | Ok v -> Ok v
+      | Error _ ->
+          (* Anonymous enum: derive a name from the first
+             EnumConstantDecl's type qualType (clang renders these as
+             e.g. "Matrix::(unnamed enum at .../main.cu:92:3)"). Skip
+             non-EnumConstantDecl children first so a leading FullComment
+             can't trip the lookup. *)
+          let* location = with_field "range" parse_location o in
+          let name =
+            let open Yojson.Basic.Util in
+            let inner =
+              List.assoc_opt "inner" o |> Option.value ~default:(`List [])
+            in
+            let consts =
+              match inner with
+              | `List l -> List.filter is_constant l
+              | _ -> []
+            in
+            match consts with
+            | first :: _ ->
+                first |> member "type" |> member "qualType"
+                |> to_string_option
+            | [] -> None
+          in
+          (match name with
+          | Some name -> Ok (Variable.make ~name ~location)
+          | None -> root_cause "Could not find enum name." j)
     in
     let* constants =
       with_field_or "inner"
