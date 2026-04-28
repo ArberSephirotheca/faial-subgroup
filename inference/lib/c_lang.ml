@@ -2094,15 +2094,30 @@ module Def = struct
     let* o = cast_object j in
     let* _ = expect_kind "EnumConstantDecl" o in
     let* var = parse_variable j in
-    let* init =
-      with_field_or "inner"
-        (cast_list_1 (fun j ->
-             let* e = Expr.parse j in
-             match e with
-             | IntegerLiteral n -> Ok (Some n)
-             | _ -> root_cause "Expecting an integer, but got something else" j))
-        None o
+    (* The init expression may be a bare [IntegerLiteral] or a clang
+       [ConstantExpr] wrapper carrying the already-evaluated value as
+       a string (used for any non-trivial init like [-1] or [1 << 3]).
+       Prefer the pre-evaluated [value] field when present. *)
+    let parse_init (j : json) : int option j_result =
+      let* o = cast_object j in
+      let* k = get_kind o in
+      if k = "ConstantExpr" then
+        match with_opt_field "value" cast_string o with
+        | Ok (Some s) -> (
+            match int_of_string_opt s with
+            | Some n -> Ok (Some n)
+            | None ->
+                root_cause
+                  ("ConstantExpr.value is not an integer: " ^ s) j)
+        | _ ->
+            root_cause "ConstantExpr without a pre-evaluated value" j
+      else
+        let* e = Expr.parse j in
+        match e with
+        | IntegerLiteral n -> Ok (Some n)
+        | _ -> root_cause "Expecting an integer, but got something else" j
     in
+    let* init = with_field_or "inner" (cast_list_1 parse_init) None o in
     let open Imp.Enum.Constant in
     Ok { var; init }
 
