@@ -118,8 +118,115 @@ module BarrierOp = struct
     J_type.desugared_matches is_barrier_c_type ty
 end
 
+(* The C-AST types are mutually recursive: [c_expr] needs to embed
+   [c_stmt] (via [StmtExpr], the GCC statement expression), and
+   [c_stmt] embeds [c_expr] in conditions, returns, etc. Defining the
+   types at file scope lets us hand them out from the [Expr], [Init],
+   [Decl], [ForInit], and [Stmt] modules below via the [type t = origin
+   = | C1 ... | Cn ...] re-export pattern, so that [Expr.t = c_expr]
+   etc. and [Expr.BinaryOperator] / [Stmt.IfStmt] / etc. remain
+   accessible at their existing module paths. *)
+type c_expr =
+  | SizeOfExpr of J_type.t
+  | CXXNewExpr of { arg : c_expr; ty : J_type.t }
+  | CXXDeleteExpr of { arg : c_expr; ty : J_type.t }
+  | RecoveryExpr of J_type.t
+  | CharacterLiteral of int
+  | ArraySubscriptExpr of c_array_subscript
+  | BinaryOperator of c_binary
+  | CallExpr of { func : c_expr; args : c_expr list; ty : J_type.t }
+  | ConditionalOperator of {
+      cond : c_expr;
+      then_expr : c_expr;
+      else_expr : c_expr;
+      ty : J_type.t;
+    }
+  | CXXConstructExpr of { args : c_expr list; ty : J_type.t }
+  | CXXBoolLiteralExpr of bool
+  | Ident of Decl_expr.t
+  | CXXOperatorCallExpr of { func : c_expr; args : c_expr list; ty : J_type.t }
+  | FloatingLiteral of float
+  | IntegerLiteral of int
+  | MemberExpr of { name : string; base : c_expr; ty : J_type.t }
+  | UnaryOperator of { opcode : string; child : c_expr; ty : J_type.t }
+  | UnresolvedLookupExpr of { name : Variable.t; tys : J_type.t list }
+  (* GCC statement expression [({ s1; s2; ... ; e; })]. The value of
+     the expression is [result] (the trailing expression of the inner
+     CompoundStmt); [body] holds the prefix statements (typically
+     hygiene decls from a macro like [ppcg_min]). The [rewrite_stmtexpr]
+     pass hoists [body] into the enclosing statement scope and replaces
+     the StmtExpr with [result], so the rest of the pipeline never sees
+     this constructor. *)
+  | StmtExpr of { body : c_stmt; result : c_expr; ty : J_type.t }
+
+and c_binary = { opcode : string; lhs : c_expr; rhs : c_expr; ty : J_type.t }
+
+and c_array_subscript = {
+  lhs : c_expr;
+  rhs : c_expr;
+  ty : J_type.t;
+  location : Location.t;
+}
+
+and c_init =
+  | InitListExpr of { ty : J_type.t; args : c_expr list }
+  | IExpr of c_expr
+
+and c_decl = {
+  var : Variable.t;
+  ty : J_type.t;
+  init : c_init option;
+  attrs : string list;
+}
+
+and c_for_init = Decls of c_decl list | Expr of c_expr
+
+and 'a c_if = { cond : c_expr; then_stmt : 'a; else_stmt : 'a }
+and 'a c_cond = { cond : c_expr; body : 'a }
+
+and 'a c_for = {
+  init : c_for_init option;
+  cond : c_expr option;
+  inc : 'a;
+  body : 'a;
+}
+
+and 'a c_case = { case : c_expr; body : 'a }
+
+and c_stmt =
+  | Skip
+  | BreakStmt
+  | GotoStmt
+  | ReturnStmt of c_expr option
+  | ContinueStmt
+  | IfStmt of c_stmt c_if
+  | DeclStmt of c_decl list
+  | WhileStmt of c_stmt c_cond
+  | ForStmt of c_stmt c_for
+  | DoStmt of c_stmt c_cond
+  | SwitchStmt of c_stmt c_cond
+  | DefaultStmt of c_stmt
+  | CaseStmt of c_stmt c_case
+  | SExpr of c_expr
+  | AsmStmt of c_expr Asm.t
+  | BarrierOp of {
+      op : BarrierOp.t;
+      target : c_expr;
+      args : c_expr list;
+      loc : Location.t option;
+    }
+  | Seq of c_stmt * c_stmt
+
+(* Forward reference: [Expr.parse] needs to call [Stmt.parse_list] to
+   parse the body of a [StmtExpr], but the [Stmt] module is defined
+   below. We populate this ref once the [Stmt] module is in scope. *)
+let stmt_parse_list_ref : (json -> c_stmt j_result) ref =
+  ref (fun _ ->
+    let open Stack_trace in
+    Error (RootCause ("stmt_parse_list_ref not initialized", `Null)))
+
 module Expr = struct
-  type t =
+  type t = c_expr =
     | SizeOfExpr of J_type.t
     | CXXNewExpr of { arg : t; ty : J_type.t }
     | CXXDeleteExpr of { arg : t; ty : J_type.t }
@@ -143,10 +250,16 @@ module Expr = struct
     | MemberExpr of { name : string; base : t; ty : J_type.t }
     | UnaryOperator of { opcode : string; child : t; ty : J_type.t }
     | UnresolvedLookupExpr of { name : Variable.t; tys : J_type.t list }
+    | StmtExpr of { body : c_stmt; result : t; ty : J_type.t }
 
-  and c_binary = { opcode : string; lhs : t; rhs : t; ty : J_type.t }
+  type nonrec c_binary = c_binary = {
+    opcode : string;
+    lhs : t;
+    rhs : t;
+    ty : J_type.t;
+  }
 
-  and c_array_subscript = {
+  type nonrec c_array_subscript = c_array_subscript = {
     lhs : t;
     rhs : t;
     ty : J_type.t;
@@ -172,6 +285,7 @@ module Expr = struct
     | MemberExpr a -> a.ty
     | UnresolvedLookupExpr _ -> J_type.unknown
     | RecoveryExpr ty -> ty
+    | StmtExpr e -> e.ty
 
   let to_string ?(modifier : bool = false) ?(provenance : bool = false)
       ?(types : bool = false) : t -> string =
@@ -190,7 +304,7 @@ module Expr = struct
         | UnresolvedLookupExpr _ | CallExpr _ | CXXOperatorCallExpr _
         | CXXConstructExpr _ | CXXBoolLiteralExpr _ | ArraySubscriptExpr _
         | MemberExpr _ | IntegerLiteral _ | CharacterLiteral _ | RecoveryExpr _
-        | FloatingLiteral _ | SizeOfExpr _ ->
+        | FloatingLiteral _ | SizeOfExpr _ | StmtExpr _ ->
             exp_to_s e
       in
       function
@@ -217,6 +331,7 @@ module Expr = struct
       | CallExpr c -> par c.func ^ "(" ^ list_to_s exp_to_s c.args ^ ")"
       | UnresolvedLookupExpr v -> attr "unresolv" ^ var_name v.name
       | UnaryOperator u -> u.opcode ^ par u.child
+      | StmtExpr e -> "({ ...; " ^ exp_to_s e.result ^ "; })"
     in
     exp_to_s
 
@@ -258,6 +373,7 @@ module Expr = struct
       | Member of { name : string; base : 'a; ty : J_type.t }
       | UnaryOperator of { opcode : string; child : 'a; ty : J_type.t }
       | UnresolvedLookup of { name : Variable.t; tys : J_type.t list }
+      | StmtExpr of { body : c_stmt; result : 'a; ty : J_type.t }
 
     let rec fold (f : 'a t -> 'a) : expr_t -> 'a = function
       | SizeOfExpr e -> f (SizeOf e)
@@ -322,6 +438,8 @@ module Expr = struct
                { opcode = e.opcode; child = fold f e.child; ty = e.ty })
       | UnresolvedLookupExpr e ->
           f (UnresolvedLookup { name = e.name; tys = e.tys })
+      | StmtExpr e ->
+          f (StmtExpr { body = e.body; result = fold f e.result; ty = e.ty })
 
     let rec map (f : expr_t -> expr_t) (e : expr_t) : expr_t =
       let ret : expr_t -> expr_t = map f in
@@ -351,6 +469,8 @@ module Expr = struct
           f (MemberExpr { name = x; base = ret e; ty })
       | UnaryOperator { opcode = o; child = e; ty } ->
           f (UnaryOperator { opcode = o; child = ret e; ty })
+      | StmtExpr { body; result; ty } ->
+          f (StmtExpr { body; result = ret result; ty })
   end
 
   (** Remove comma operator *)
@@ -387,6 +507,8 @@ module Expr = struct
         MemberExpr { base = remove_comma base; ty; name }
     | UnaryOperator { opcode; child; ty } ->
         UnaryOperator { opcode; child = remove_comma child; ty }
+    | StmtExpr { body; result; ty } ->
+        StmtExpr { body; result = remove_comma result; ty }
     | ( SizeOfExpr _ | FloatingLiteral _ | CXXBoolLiteralExpr _
       | UnresolvedLookupExpr _ | RecoveryExpr _ | CharacterLiteral _ | Ident _
       | IntegerLiteral _ ) as e ->
@@ -457,6 +579,9 @@ module Expr = struct
           return (UnaryOperator { opcode; child; ty })
       | UnresolvedLookupExpr { name; tys } ->
           return (UnresolvedLookupExpr { name; tys })
+      | StmtExpr { body; result; ty } ->
+          let* result = rw result in
+          return (StmtExpr { body; result; ty })
     in
     fun e ->
       let st, e = State.run [] (rw e) in
@@ -701,6 +826,38 @@ module Expr = struct
     | "MaterializeTemporaryExpr" ->
         let* body = with_field "inner" (cast_list_1 parse) o in
         Ok body
+    | "StmtExpr" ->
+        (* GCC statement expression [({ s1; s2; ... ; e; })]. The inner
+           CompoundStmt's body is a sequence of statements with the
+           trailing element being the value-yielding expression. We
+           parse the body via [Stmt.parse_list] (forward-ref since
+           Stmt is defined below), then split off the trailing
+           [SExpr e] as [result] — leaving the prefix statements as
+           [body]. The [rewrite_stmtexpr] pass downstream hoists [body]
+           into the enclosing statement scope and replaces the StmtExpr
+           with [result], faithfully preserving C semantics: the
+           statements execute in the enclosing scope before the value
+           is consumed. *)
+        let* compound = with_field "inner" (cast_list_1 (fun j -> Ok j)) o in
+        let* compound_o = cast_object compound in
+        let* body_stmt =
+          with_field "inner" (fun j -> !stmt_parse_list_ref j) compound_o
+        in
+        let* ty = get_field "type" o in
+        let ty = J_type.from_json ty in
+        let rec split_trailing : c_stmt -> (c_stmt * t) option = function
+          | SExpr e -> Some (Skip, e)
+          | Seq (s1, s2) -> (
+              match split_trailing s2 with
+              | Some (rest, e) -> Some (Seq (s1, rest), e)
+              | None -> None)
+          | _ -> None
+        in
+        (match split_trailing body_stmt with
+        | Some (body, result) -> Ok (StmtExpr { body; result; ty })
+        | None ->
+            (* No trailing expression — illegal C, treat as unknown. *)
+            Ok (RecoveryExpr ty))
     | "CXXTemporaryObjectExpr" | "InitListExpr" | "CXXUnresolvedConstructExpr"
     | "CXXConstructExpr" ->
         let* ty = get_field "type" o in
@@ -713,7 +870,7 @@ module Expr = struct
 end
 
 module Init = struct
-  type t =
+  type t = c_init =
     | InitListExpr of { ty : J_type.t; args : Expr.t list }
     | IExpr of Expr.t
 
@@ -751,7 +908,7 @@ let c_attr_constant = c_attr "constant"
 let c_attr_managed = c_attr "managed"
 
 module Decl : sig
-  type t = {
+  type t = c_decl = {
     var : Variable.t;
     ty : J_type.t;
     init : Init.t option;
@@ -783,7 +940,7 @@ module Decl : sig
   val to_s : t -> Indent.t list
   val parse : Yojson.Basic.t -> t option j_result
 end = struct
-  type t = {
+  type t = c_decl = {
     var : Variable.t;
     ty : J_type.t;
     init : Init.t option;
@@ -797,7 +954,7 @@ end = struct
   let attrs (x : t) : string list = x.attrs
   let var (x : t) : Variable.t = x.var
   let ty (x : t) : J_type.t = x.ty
-  let matches pred x = J_type.matches pred x.ty
+  let matches pred (x : t) = J_type.matches pred x.ty
   let is_shared (x : t) : bool = List.mem c_attr_shared x.attrs
 
   let to_expr_seq (x : t) : Expr.t Seq.t =
@@ -872,7 +1029,7 @@ end = struct
 end
 
 module ForInit = struct
-  type t = Decls of Decl.t list | Expr of Expr.t
+  type t = c_for_init = Decls of Decl.t list | Expr of Expr.t
 
   (* Iterate over the expressions contained in a for-init *)
   let to_expr_seq : t -> Expr.t Seq.t = function
@@ -912,19 +1069,24 @@ module ForInit = struct
 end
 
 module Stmt = struct
-  type 'a if_t = { cond : Expr.t; then_stmt : 'a; else_stmt : 'a }
-  type 'a cond_t = { cond : Expr.t; body : 'a }
+  type 'a if_t = 'a c_if = {
+    cond : Expr.t;
+    then_stmt : 'a;
+    else_stmt : 'a;
+  }
 
-  type 'a for_t = {
+  type 'a cond_t = 'a c_cond = { cond : Expr.t; body : 'a }
+
+  type 'a for_t = 'a c_for = {
     init : ForInit.t option;
     cond : Expr.t option;
     inc : 'a;
     body : 'a;
   }
 
-  type 'a case_t = { case : Expr.t; body : 'a }
+  type 'a case_t = 'a c_case = { case : Expr.t; body : 'a }
 
-  type t =
+  type t = c_stmt =
     | Skip
     | BreakStmt
     | GotoStmt
@@ -1492,6 +1654,232 @@ module Stmt = struct
     Ok (from_list l)
 end
 
+(* Resolve the forward reference now that [Stmt.parse_list] is in scope.
+   See [stmt_parse_list_ref] above for context. *)
+let () = stmt_parse_list_ref := Stmt.parse_list
+
+(* ──────────────────────────────────────────────────────────────────
+   StmtExpr hoisting pass
+   ──────────────────────────────────────────────────────────────────
+
+   GCC statement expressions [({ s1; ... ; e; })] embed statements
+   inside expressions. They are eliminated here, before the rest of
+   the pipeline (notably [Stmt.rewrite_comma] and [D_lang.rewrite_*])
+   sees the AST. The pass is the StmtExpr analogue of [rewrite_comma]:
+   it pulls statement-shaped side effects out of expressions and
+   stitches them into the enclosing statement scope.
+
+   - [rewrite_expr_stmtexpr e] returns a pair [(prefix, residual)]
+     such that evaluating [e] is semantically equivalent to executing
+     [prefix] then evaluating [residual]. Walking down the expression
+     tree, every [StmtExpr { body; result; _ }] contributes its body
+     to the prefix and continues recursion on [result].
+
+   - [rewrite_stmt_stmtexpr s] walks each statement context, calls
+     [rewrite_expr_stmtexpr] on every contained expression, and
+     prepends the prefix statements at the right point. For loop
+     conditions we duplicate the prefix at top-and-tail (mirroring
+     [rewrite_comma]) so that side-effects re-execute on every
+     iteration along with the condition.
+
+   Caveat: hoisting unconditionally past a [ConditionalOperator] is
+   unsound for [StmtExpr]s nested inside a conditional branch, since
+   the prefix would execute regardless of the branch taken. We
+   currently treat both branches as always-executed; this matches
+   what [rewrite_comma] does for commas in conditionals and is sound
+   for the macro-hygiene patterns ([ppcg_min] and friends) that
+   dominate real-world StmtExpr usage. If a kernel exercises the
+   nested-in-branch case we can refine later. *)
+
+let rec rewrite_expr_stmtexpr (e : c_expr) : c_stmt * c_expr =
+  match e with
+  | StmtExpr { body; result; _ } ->
+      let body' = rewrite_stmt_stmtexpr body in
+      let prefix_inner, residual = rewrite_expr_stmtexpr result in
+      (Stmt.seq body' prefix_inner, residual)
+  | SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _ | CXXBoolLiteralExpr _
+  | FloatingLiteral _ | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _ ->
+      (Skip, e)
+  | CXXNewExpr { arg; ty } ->
+      let s, arg = rewrite_expr_stmtexpr arg in
+      (s, CXXNewExpr { arg; ty })
+  | CXXDeleteExpr { arg; ty } ->
+      let s, arg = rewrite_expr_stmtexpr arg in
+      (s, CXXDeleteExpr { arg; ty })
+  | ArraySubscriptExpr { lhs; rhs; ty; location } ->
+      let s1, lhs = rewrite_expr_stmtexpr lhs in
+      let s2, rhs = rewrite_expr_stmtexpr rhs in
+      (Stmt.seq s1 s2, ArraySubscriptExpr { lhs; rhs; ty; location })
+  | BinaryOperator { opcode; lhs; rhs; ty } ->
+      let s1, lhs = rewrite_expr_stmtexpr lhs in
+      let s2, rhs = rewrite_expr_stmtexpr rhs in
+      (Stmt.seq s1 s2, BinaryOperator { opcode; lhs; rhs; ty })
+  | CallExpr { func; args; ty } ->
+      let sf, func = rewrite_expr_stmtexpr func in
+      let sa, args = rewrite_expr_list_stmtexpr args in
+      (Stmt.seq sf sa, CallExpr { func; args; ty })
+  | ConditionalOperator { cond; then_expr; else_expr; ty } ->
+      let sc, cond = rewrite_expr_stmtexpr cond in
+      let st, then_expr = rewrite_expr_stmtexpr then_expr in
+      let se, else_expr = rewrite_expr_stmtexpr else_expr in
+      ( Stmt.seq sc (Stmt.seq st se),
+        ConditionalOperator { cond; then_expr; else_expr; ty } )
+  | CXXConstructExpr { args; ty } ->
+      let s, args = rewrite_expr_list_stmtexpr args in
+      (s, CXXConstructExpr { args; ty })
+  | CXXOperatorCallExpr { func; args; ty } ->
+      let sf, func = rewrite_expr_stmtexpr func in
+      let sa, args = rewrite_expr_list_stmtexpr args in
+      (Stmt.seq sf sa, CXXOperatorCallExpr { func; args; ty })
+  | MemberExpr { name; base; ty } ->
+      let s, base = rewrite_expr_stmtexpr base in
+      (s, MemberExpr { name; base; ty })
+  | UnaryOperator { opcode; child; ty } ->
+      let s, child = rewrite_expr_stmtexpr child in
+      (s, UnaryOperator { opcode; child; ty })
+
+and rewrite_expr_list_stmtexpr (es : c_expr list) : c_stmt * c_expr list =
+  let prefix, residuals =
+    List.fold_left
+      (fun (prefix, acc) e ->
+        let s, e = rewrite_expr_stmtexpr e in
+        (Stmt.seq prefix s, e :: acc))
+      (Skip, []) es
+  in
+  (prefix, List.rev residuals)
+
+and rewrite_expr_opt_stmtexpr : c_expr option -> c_stmt * c_expr option =
+  function
+  | None -> (Skip, None)
+  | Some e ->
+      let s, e = rewrite_expr_stmtexpr e in
+      (s, Some e)
+
+and rewrite_init_stmtexpr (i : c_init) : c_stmt * c_init =
+  match i with
+  | IExpr e ->
+      let s, e = rewrite_expr_stmtexpr e in
+      (s, IExpr e)
+  | InitListExpr { ty; args } ->
+      let s, args = rewrite_expr_list_stmtexpr args in
+      (s, InitListExpr { ty; args })
+
+and rewrite_decl_stmtexpr (d : c_decl) : c_stmt * c_decl =
+  match d.init with
+  | None -> (Skip, d)
+  | Some i ->
+      let s, i = rewrite_init_stmtexpr i in
+      (s, { d with init = Some i })
+
+and rewrite_decls_stmtexpr (ds : c_decl list) : c_stmt * c_decl list =
+  let prefix, residuals =
+    List.fold_left
+      (fun (prefix, acc) d ->
+        let s, d = rewrite_decl_stmtexpr d in
+        (Stmt.seq prefix s, d :: acc))
+      (Skip, []) ds
+  in
+  (prefix, List.rev residuals)
+
+and rewrite_for_init_stmtexpr (f : c_for_init) : c_stmt * c_for_init =
+  match f with
+  | Decls ds ->
+      let s, ds = rewrite_decls_stmtexpr ds in
+      (s, Decls ds)
+  | Expr e ->
+      let s, e = rewrite_expr_stmtexpr e in
+      (s, Expr e)
+
+and rewrite_stmt_stmtexpr (s : c_stmt) : c_stmt =
+  match s with
+  | Skip | BreakStmt | GotoStmt | ContinueStmt | ReturnStmt None -> s
+  | ReturnStmt (Some e) ->
+      let prefix, e = rewrite_expr_stmtexpr e in
+      Stmt.seq prefix (ReturnStmt (Some e))
+  | IfStmt { cond; then_stmt; else_stmt } ->
+      let prefix, cond = rewrite_expr_stmtexpr cond in
+      Stmt.seq prefix
+        (IfStmt
+           {
+             cond;
+             then_stmt = rewrite_stmt_stmtexpr then_stmt;
+             else_stmt = rewrite_stmt_stmtexpr else_stmt;
+           })
+  | DeclStmt ds ->
+      let prefix, ds = rewrite_decls_stmtexpr ds in
+      Stmt.seq prefix (DeclStmt ds)
+  | WhileStmt { cond; body } ->
+      let prefix, cond = rewrite_expr_stmtexpr cond in
+      let body = rewrite_stmt_stmtexpr body in
+      if prefix = Skip then WhileStmt { cond; body }
+      else
+        (* Prefix re-runs each iteration: prepend before the loop AND
+           append at the end of the body so the next iteration's
+           condition evaluates with fresh side-effects. Mirrors
+           [rewrite_comma]'s loop-cond duplication. *)
+        Stmt.seq prefix
+          (WhileStmt { cond; body = Stmt.seq body prefix })
+  | DoStmt { cond; body } ->
+      let prefix, cond = rewrite_expr_stmtexpr cond in
+      let body = rewrite_stmt_stmtexpr body in
+      DoStmt { cond; body = Stmt.seq body prefix }
+  | ForStmt { init; cond; inc; body } ->
+      let s_init, init =
+        match init with
+        | None -> (Skip, None)
+        | Some f ->
+            let s, f = rewrite_for_init_stmtexpr f in
+            (s, Some f)
+      in
+      let s_cond, cond = rewrite_expr_opt_stmtexpr cond in
+      let inc = rewrite_stmt_stmtexpr inc in
+      let body = rewrite_stmt_stmtexpr body in
+      let body =
+        if s_cond = Skip then body else Stmt.seq body s_cond
+      in
+      Stmt.seq s_init
+        (Stmt.seq s_cond (ForStmt { init; cond; inc; body }))
+  | SwitchStmt { cond; body } ->
+      let prefix, cond = rewrite_expr_stmtexpr cond in
+      Stmt.seq prefix
+        (SwitchStmt { cond; body = rewrite_stmt_stmtexpr body })
+  | CaseStmt { case; body } ->
+      let prefix, case = rewrite_expr_stmtexpr case in
+      Stmt.seq prefix
+        (CaseStmt { case; body = rewrite_stmt_stmtexpr body })
+  | DefaultStmt s -> DefaultStmt (rewrite_stmt_stmtexpr s)
+  | SExpr e ->
+      let prefix, e = rewrite_expr_stmtexpr e in
+      Stmt.seq prefix (SExpr e)
+  | AsmStmt a ->
+      let rewrite_operand (op : c_expr Asm.operand) :
+          c_stmt * c_expr Asm.operand =
+        let s, expr = rewrite_expr_stmtexpr op.expr in
+        (s, { Asm.constr = op.constr; expr })
+      in
+      let s_outs, outputs =
+        List.fold_left
+          (fun (prefix, acc) op ->
+            let s, op = rewrite_operand op in
+            (Stmt.seq prefix s, op :: acc))
+          (Skip, []) a.outputs
+      in
+      let s_ins, inputs =
+        List.fold_left
+          (fun (prefix, acc) op ->
+            let s, op = rewrite_operand op in
+            (Stmt.seq prefix s, op :: acc))
+          (Skip, []) a.inputs
+      in
+      Stmt.seq (Stmt.seq s_outs s_ins)
+        (AsmStmt { a with outputs = List.rev outputs; inputs = List.rev inputs })
+  | BarrierOp { op; target; args; loc } ->
+      let st, target = rewrite_expr_stmtexpr target in
+      let sa, args = rewrite_expr_list_stmtexpr args in
+      Stmt.seq (Stmt.seq st sa) (BarrierOp { op; target; args; loc })
+  | Seq (s1, s2) ->
+      Stmt.seq (rewrite_stmt_stmtexpr s1) (rewrite_stmt_stmtexpr s2)
+
 module KernelAttr = struct
   type t = Default | Auxiliary
 
@@ -1557,7 +1945,14 @@ module Kernel = struct
   let params (x : t) : Param.t list = x.params
   let type_params (x : t) : Ty_param.t list = x.type_params
   let attribute (x : t) : KernelAttr.t = x.attribute
-  let rewrite_comma (k : t) : t = { k with code = Stmt.rewrite_comma k.code }
+  let rewrite_comma (k : t) : t =
+    (* Run StmtExpr hoisting before comma rewriting: by the time
+       [Stmt.rewrite_comma] sees the kernel body, every [StmtExpr]
+       node has been replaced by its hoisted prefix decls plus a
+       residual expression, so the rest of the pipeline never has to
+       know about GCC statement expressions. *)
+    let code = rewrite_stmt_stmtexpr k.code in
+    { k with code = Stmt.rewrite_comma code }
 
   let rewrite_barriers (k : t) : t =
     { k with code = Stmt.rewrite_barriers k.code }

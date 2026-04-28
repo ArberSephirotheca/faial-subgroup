@@ -861,6 +861,13 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   | IntegerLiteral i -> return (IntegerLiteral i)
   | CharacterLiteral c -> return (CharacterLiteral c)
   | CXXBoolLiteralExpr b -> return (CXXBoolLiteralExpr b)
+  | StmtExpr _ ->
+      (* StmtExpr should have been eliminated by Stmt.rewrite_stmtexpr
+         before D-lowering. Hitting this case means the pass wasn't
+         wired in for this kernel. *)
+      failwith
+        "D_lang.rewrite_exp: StmtExpr leaked past rewrite_stmtexpr — \
+         pass not run?"
 
 and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
   let rec rewrite_subscript (c : C_lang.Expr.c_array_subscript)

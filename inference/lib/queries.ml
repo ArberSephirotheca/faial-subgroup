@@ -75,7 +75,8 @@ module Variables = struct
       | CXXOperatorCall { func = a; args = l; _ }
       | Call { func = a; args = l; _ } ->
           List.to_seq l |> Seq.concat |> Seq.append a
-      | CXXConstruct l -> List.to_seq l.args |> Seq.concat)
+      | CXXConstruct l -> List.to_seq l.args |> Seq.concat
+      | StmtExpr e -> e.result)
 
   (* Given a sequence of c_var, generate a set of variables *)
   let to_set (s : Variable.t Seq.t) : VarSet.t =
@@ -187,6 +188,7 @@ module Calls = struct
           |> Seq.append (to_seq e.then_expr)
           |> Seq.append (to_seq e.else_expr)
       | CXXConstructExpr l -> List.to_seq l.args |> Seq.concat_map to_seq
+      | StmtExpr e -> to_seq e.result
     in
     (* Use an expression iterator, extract function
        calls for each expression therein. *)
@@ -440,6 +442,7 @@ module MutatedVar = struct
         |> get_writes e.else_expr
     | CXXConstructExpr { args = l; _ } ->
         List.fold_left (fun writes e -> get_writes e writes) writes l
+    | StmtExpr e -> get_writes e.result writes
 
   let typecheck (s : Stmt.t) : VarSet.t =
     let rec typecheck (scope : int) (env : int VarMap.t) :
