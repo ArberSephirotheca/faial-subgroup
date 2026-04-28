@@ -608,6 +608,98 @@ let sat_count
   | Ok None -> Unsat_w
   | Error _ -> Unknown_w
 
+(* SAT("there are [n] pairwise-distinct tids in the block, all
+   satisfying [cohort], under [pre]"). Returns the [n] witnessing
+   tid triples on SAT, [None] on UNSAT or solver error.
+
+   Used for sub-warp Oversize: pass [n = expected + 1]; a SAT result
+   exhibits a configuration where strictly more than [expected]
+   threads arrive at the barrier — the bug witness is the [n] tids
+   themselves.
+
+   The encoding is small: [n] is typically a sub-warp count plus one
+   (e.g. 33 for [bar.sync 0, 32]), not the block size. Distinctness
+   is on tid triples — [(x,y,z)] differ in at least one component —
+   rather than the heavy [Distinct] over the full block. *)
+let sat_n_distinct_in_cohort
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(timeout = 0)
+    (config : Config.t) ~(pre : bexp) ~(n : int) (cohort : bexp) :
+    (int * int * int) list option =
+  if n <= 0 then Some []
+  else
+    let module S = (val solver) in
+    let bdim = config.block_dim in
+    let tid_locals = Variable.tid_set in
+    let proj_ctx i : Proj.t =
+      { suffix = string_of_int i; locals = tid_locals }
+    in
+    let tid_at i base = proj ~suffix:(string_of_int i) base in
+    let triple_at i =
+      ( Var (tid_at i Variable.tid_x),
+        Var (tid_at i Variable.tid_y),
+        Var (tid_at i Variable.tid_z) )
+    in
+    let mk_instance i =
+      let cohort_i = Proj.proj_b cohort (proj_ctx i) in
+      let pre_i = Proj.proj_b pre (proj_ctx i) in
+      let xi, yi, zi = triple_at i in
+      let in_block =
+        Exp.b_and_ex
+          [
+            n_le (Num 0) xi;
+            n_lt xi (Num bdim.x);
+            n_le (Num 0) yi;
+            n_lt yi (Num bdim.y);
+            n_le (Num 0) zi;
+            n_lt zi (Num bdim.z);
+          ]
+      in
+      Exp.b_and_ex [ pre_i; in_block; cohort_i ]
+    in
+    let pairwise_distinct =
+      let acc = ref [] in
+      for i = 0 to n - 1 do
+        for j = i + 1 to n - 1 do
+          let xi, yi, zi = triple_at i in
+          let xj, yj, zj = triple_at j in
+          acc :=
+            Exp.b_or_ex
+              [
+                Exp.b_not (n_eq xi xj);
+                Exp.b_not (n_eq yi yj);
+                Exp.b_not (n_eq zi zj);
+              ]
+            :: !acc
+        done
+      done;
+      Exp.b_and_ex !acc
+    in
+    let goal =
+      Exp.b_and_ex (pairwise_distinct :: List.init n mk_instance)
+    in
+    let witness_exprs =
+      List.init n (fun i ->
+          let xi, yi, zi = triple_at i in
+          [ xi; yi; zi ])
+      |> List.concat
+    in
+    match S.solve_with_int_witnesses ~timeout goal witness_exprs with
+    | Ok (Some vs) when List.length vs = 3 * n ->
+        let triples =
+          List.init n (fun i ->
+              match
+                ( List.nth vs (3 * i),
+                  List.nth vs ((3 * i) + 1),
+                  List.nth vs ((3 * i) + 2) )
+              with
+              | Some x, Some y, Some z -> Some (x, y, z)
+              | _ -> None)
+        in
+        if List.for_all Option.is_some triples then
+          Some (List.map Option.get triples)
+        else None
+    | _ -> None
+
 let encode_ua (index : nexp) (st : t) : nexp =
   let index = n_div index (Num (Config.memory_segments_bits st.config)) in
   let index = n_split index st in

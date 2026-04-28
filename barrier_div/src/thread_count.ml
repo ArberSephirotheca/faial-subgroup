@@ -96,6 +96,22 @@ let find_missing_thread ?(timeout = 0) (cfg : Rel_cost.Config.t)
   | Ok (Some [ Some x; Some y; Some z ]) -> Some (x, y, z)
   | _ -> None
 
+(* Sub-warp Oversize detection: returns a list of [bound + 1] distinct
+   tids that all satisfy [arrive_cohort], if such a configuration exists.
+   A non-empty result is a witness that the cohort can hold strictly
+   more than [bound] participants — the bug for a [bar.sync] expecting
+   exactly [bound]. Returns [None] on UNSAT or solver error.
+
+   Uses [Symbolic_metric_analysis.sat_n_distinct_in_cohort] with
+   [n = bound + 1]; the SMT problem has [3 * (bound + 1)] tid variables
+   and [bound + 1 choose 2] pairwise-distinct disjunctions — small for
+   typical sub-warp counts (e.g. 33 tids for [bar.sync 0, 32]). *)
+let exceeds_cardinality ?(timeout = 0) (cfg : Rel_cost.Config.t)
+    ~(pre : bexp) (arrive_cohort : bexp) (bound : int) :
+    (int * int * int) list option =
+  Rel_cost.Symbolic_metric_analysis.sat_n_distinct_in_cohort ~timeout cfg
+    ~pre ~n:(bound + 1) arrive_cohort
+
 (* Optimizer-based refinement. Returns the actual minimum / maximum
    cohort size, or [None] on timeout / error. Used in [--precise] mode
    to upgrade a SAT witness into a tight extremum. *)

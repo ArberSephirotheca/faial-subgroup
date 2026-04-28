@@ -47,6 +47,13 @@ let sync_tests : (string * string list * int) list =
     ("named-bar-undersize.cu", [ "--block-dim=16"; "--check=barrier-div" ], 0);
     ("named-bar-undersize.cu",
       [ "--block-dim=16"; "--check=missing-participants" ], 0);
+    (* named-bar-oversize: bar.sync 0,32 in a 64-thread block. Symmetric
+       cardinality mismatch (cohort of 64 > expected 32). faial-sync's
+       path-condition view doesn't see it for the same reason as undersize. *)
+    ("named-bar-oversize.cu", [ "--block-dim=64"; "--check=well-sync" ], 0);
+    ("named-bar-oversize.cu", [ "--block-dim=64"; "--check=barrier-div" ], 0);
+    ("named-bar-oversize.cu",
+      [ "--block-dim=64"; "--check=missing-participants" ], 0);
 
     (* convergent-if: two lexical __syncthreads sites, one per branch of a
        tid-conditional. Each thread reaches exactly one of them — barrier-div
@@ -108,6 +115,11 @@ let sym_tests : (string * string list * int) list =
        mismatch; faial-sync-sym's static fast-path
        (expected > threads_per_warp) does. *)
     ("named-bar-undersize.cu", [ "--block-dim=16" ], 1);
+    (* named-bar-oversize: cohort of 64 arrives at a bar.sync expecting 32.
+       Caught by faial-sync-sym's small-distinctness SAT — 33 distinct
+       in-block tids that all satisfy the cohort. faial-sync misses it
+       (path-condition view: every thread reaches the asm, fine). *)
+    ("named-bar-oversize.cu", [ "--block-dim=64" ], 1);
   ]
 
 (* These are kernels in this directory that are intentionally not

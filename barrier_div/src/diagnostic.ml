@@ -31,6 +31,15 @@ type missing_witness =
   | Failing_thread of { x : int; y : int; z : int }
   | Cohort_size of int
 
+(* Symmetric to [missing_witness] for Oversize: either a count value
+   (from the vector / optimizer path) or a list of distinct tids that
+   all satisfy the cohort (from the small-distinctness SAT, used for
+   sub-warp named bars — its length is [expected + 1], proving the
+   cohort can hold strictly more than [expected]). *)
+type oversize_witness =
+  | Cohort_size_over of int
+  | Witness_threads of (int * int * int) list
+
 type t =
   | Missing_participants of {
       sync : Sync.t;
@@ -39,7 +48,7 @@ type t =
     }
   | Oversize_cohort of {
       sync : Sync.t;
-      cohort_size : int;
+      witness : oversize_witness;
       expected : int;
     }
   | Count_mismatch of { sync : Sync.t; n : int; m : int }
@@ -59,9 +68,35 @@ let to_string : t -> string = function
         | Cohort_size n -> Printf.sprintf "got %d" n
       in
       Printf.sprintf "Missing participants (%s, expected %d)" what expected
-  | Oversize_cohort { cohort_size; expected; _ } ->
-      Printf.sprintf "Oversize cohort (got %d, expected %d)" cohort_size
-        expected
+  | Oversize_cohort { witness; expected; _ } ->
+      let what =
+        match witness with
+        | Cohort_size_over n -> Printf.sprintf "got %d" n
+        | Witness_threads ts ->
+            let n = List.length ts in
+            let sample_size = 3 in
+            let sample, suffix =
+              if n <= sample_size then (ts, "")
+              else
+                let take_n =
+                  let rec aux acc k = function
+                    | _ when k = 0 -> List.rev acc
+                    | [] -> List.rev acc
+                    | x :: rest -> aux (x :: acc) (k - 1) rest
+                  in
+                  aux [] sample_size ts
+                in
+                (take_n, ", ...")
+            in
+            let pretty =
+              sample
+              |> List.map (fun (x, y, z) -> Printf.sprintf "(%d,%d,%d)" x y z)
+              |> String.concat ", "
+            in
+            Printf.sprintf "got at least %d distinct threads [%s%s]" n pretty
+              suffix
+      in
+      Printf.sprintf "Oversize cohort (%s, expected %d)" what expected
   | Count_mismatch { n; m; _ } ->
       Printf.sprintf "Count mismatch on barrier id (counts %d, %d)" n m
 
@@ -77,17 +112,12 @@ let to_string : t -> string = function
       over a single tid triple. Oversize is impossible (cohort ≤
       threads_per_warp = expected).
 
-   3. [expected < threads_per_warp]. Sub-warp named bar — the cohort
-      can be too small *or* too large at a count smaller than the
-      block. Cardinality matters. Falls back to the existing SAT
-      below/above queries; in [Precise] mode each SAT witness is
-      refined via the optimizer with witness fallback on timeout. *)
-
-let refine_size (mode : mode) (witness : int) (refine : unit -> int option) : int
-    =
-  match mode with
-  | Witness -> witness
-  | Precise -> Option.value (refine ()) ~default:witness
+   3. [expected < threads_per_warp]. Sub-warp named bar — cardinality
+      matters. Oversize uses a small-distinctness SAT
+      ([Thread_count.exceeds_cardinality]) with witness threads;
+      Missing has no symmetric cheap encoding and is gated behind
+      [--precise], which runs [refine_min]. Witness mode reports
+      Oversize only. *)
 
 let of_phase_solo ?(mode = Witness) ?(timeout = 0) ~(pre : Exp.bexp)
     (cfg : Rel_cost.Config.t) (locals : Variable.Set.t) (p : Phase.t) : t list =
@@ -113,28 +143,48 @@ let of_phase_solo ?(mode = Witness) ?(timeout = 0) ~(pre : Exp.bexp)
         ]
     | None -> []
   else
-    let missing =
-      match Thread_count.below ~timeout cfg locals p.arrive_cohort p.count with
-      | Sat k ->
-          let cohort_size =
-            refine_size mode k (fun () ->
-                Thread_count.refine_min ~timeout cfg locals p.arrive_cohort)
-          in
-          [
-            Missing_participants
-              { sync = p.sync; witness = Cohort_size cohort_size; expected = p.count };
-          ]
-      | Unsat | Unknown -> []
-    in
+    (* Sub-warp named bar (expected < threads_per_warp). Detection is
+       direction-asymmetric: Oversize has a cheap small-distinctness
+       encoding ([expected + 1] distinct tids all in cohort); Missing
+       does not, because the dual ([block_size - expected + 1] distinct
+       ¬cohort tids) exceeds the block size we were trying to escape.
+
+       Default mode runs the cheap Oversize check and skips Missing.
+       [--precise] mode additionally invokes [refine_min] for an exact
+       extremum on the Missing side. *)
     let oversize =
-      match Thread_count.above ~timeout cfg locals p.arrive_cohort p.count with
-      | Sat k ->
-          let cohort_size =
-            refine_size mode k (fun () ->
-                Thread_count.refine_max ~timeout cfg locals p.arrive_cohort)
-          in
-          [ Oversize_cohort { sync = p.sync; cohort_size; expected = p.count } ]
-      | Unsat | Unknown -> []
+      match
+        Thread_count.exceeds_cardinality ~timeout cfg ~pre p.arrive_cohort
+          p.count
+      with
+      | Some witnesses ->
+          [
+            Oversize_cohort
+              {
+                sync = p.sync;
+                witness = Witness_threads witnesses;
+                expected = p.count;
+              };
+          ]
+      | None -> []
+    in
+    let missing =
+      match mode with
+      | Witness -> []
+      | Precise -> (
+          match
+            Thread_count.refine_min ~timeout cfg locals p.arrive_cohort
+          with
+          | Some k when k < p.count ->
+              [
+                Missing_participants
+                  {
+                    sync = p.sync;
+                    witness = Cohort_size k;
+                    expected = p.count;
+                  };
+              ]
+          | _ -> [])
     in
     oversize @ missing
 
