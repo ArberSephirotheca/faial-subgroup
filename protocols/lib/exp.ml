@@ -159,7 +159,11 @@ let n_div n1 n2 =
   match (n1, n2) with
   | _, Num 1 -> n1
   | Num 0, _ -> Num 0
-  | _, Num 0 -> failwith "Division by 0"
+  (* Leave [_/0] unfolded rather than crashing: the source expression
+     is undefined behavior at runtime, but the analyzer shouldn't fail
+     when constant-folding a kernel that contains it (e.g. dead code
+     under a guard the folder doesn't see through). *)
+  | _, Num 0 -> Binary (Div, n1, n2)
   | Num n1, Num n2 -> Num (n1 / n2)
   | _, _ -> Binary (Div, n1, n2)
 
