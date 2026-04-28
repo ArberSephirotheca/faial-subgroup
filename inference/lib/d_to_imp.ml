@@ -200,7 +200,7 @@ module Make (L : Logger) = struct
         let b = infer_expr u.child in
         BExp (BNot b)
     | RecoveryExpr _ | CXXConstructExpr _ | MemberExpr _ | CallExpr _
-    | UnaryOperator _ | CXXOperatorCallExpr _ ->
+    | UnaryOperator _ | CXXOperatorCallExpr _ | UnresolvedLookupExpr _ ->
         let lbl = D_lang.Expr.to_string e in
         L.warning ("parse_exp: rewriting to unknown: " ^ lbl);
         Unknown lbl
