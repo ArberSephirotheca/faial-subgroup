@@ -2112,7 +2112,18 @@ module Def = struct
           | Some name -> Ok (Variable.make ~name ~location)
           | None -> root_cause "Could not find enum name." j)
     in
-    let* constants = with_field_or "inner" (cast_map parse_constant) [] o in
+    (* Skip non-EnumConstantDecl children (notably FullComment doc
+       comments interspersed between enumerators). *)
+    let is_constant : Yojson.Basic.t -> bool =
+      j_filter_kind (fun k -> k = "EnumConstantDecl")
+    in
+    let* constants =
+      with_field_or "inner"
+        (fun j ->
+          let* l = cast_list j in
+          cast_map parse_constant (`List (List.filter is_constant l)))
+        [] o
+    in
     Ok { var; constants }
 
   let rec parse (j : Yojson.Basic.t) : t list j_result =
