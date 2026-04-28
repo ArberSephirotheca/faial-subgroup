@@ -987,7 +987,19 @@ end = struct
   let parse (j : json) : t option j_result =
     let open Rjson in
     let* o = cast_object j in
-    if is_invalid o then Ok None
+    let* k = get_kind o in
+    (* Tag declarations (anonymous structs/unions/enums introduced
+       by `struct { ... } v;`) appear as siblings of the VarDecl in a
+       DeclStmt's inner list. They aren't variable declarations and
+       have no `name` field, so skip them rather than failing inside
+       parse_variable. *)
+    let is_tag_decl =
+      match k with
+      | "CXXRecordDecl" | "RecordDecl" | "EnumDecl" | "ClassTemplateDecl" ->
+          true
+      | _ -> false
+    in
+    if is_invalid o || is_tag_decl then Ok None
     else
       let* name = parse_variable j in
       let* ty = get_field "type" o in
