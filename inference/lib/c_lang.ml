@@ -2228,7 +2228,22 @@ module Ty_param = struct
         let* name = parse_variable j in
         Ok (Some (TemplateType name))
     | "NonTypeTemplateParmDecl" ->
-        let* name = parse_variable j in
+        (* Anonymous SFINAE template parameters (e.g.
+           [typename std::enable_if<...>::type = 0]) have no name field;
+           synthesize one from depth/index since the parameter is never
+           referenced from the function body. *)
+        let* name =
+          match parse_variable j with
+          | Ok v -> Ok v
+          | Error _ ->
+              let* depth = with_field_or "depth" cast_int 0 o in
+              let* index = with_field_or "index" cast_int 0 o in
+              let* location = with_field "range" parse_location o in
+              let name =
+                Printf.sprintf "__anon_nttp_%d_%d" depth index
+              in
+              Ok (Variable.make ~name ~location)
+        in
         let* ty = get_field "type" o in
         Ok (Some (NonTypeTemplate { name; ty = J_type.from_json ty }))
     | _ -> Ok None
