@@ -315,6 +315,17 @@ module Stmt = struct
         args : Expr.t list;
         loc : Location.t option;
       }
+    (* Local C++ lambda binding [auto v = [captures](params) { body };].
+       D_to_imp lifts this to a synthetic [Imp.Kernel.t] with
+       [visibility = Device] and rewrites every [v(args)] callsite into
+       a call to that synthetic kernel with [captures @ args]. *)
+    | LambdaDecl of {
+        var : Variable.t;
+        captures : (Variable.t * Expr.t) list;
+        params : C_lang.Param.t list;
+        body : t;
+        ret_ty : J_type.t;
+      }
 
   and d_cond = { cond : Expr.t; body : t }
 
@@ -431,6 +442,21 @@ module Stmt = struct
             (subscript_to_s target
             ^ "." ^ C_lang.BarrierOp.to_string op ^ args_s ^ ";");
         ]
+    | LambdaDecl { var; captures; params; body; _ } ->
+        let cs =
+          captures
+          |> List.map (fun (n, e) ->
+              Variable.name n ^ " = " ^ Expr.to_string e)
+          |> String.concat ", "
+        in
+        let ps = list_to_s C_lang.Param.to_string params in
+        let open Indent in
+        [
+          Line
+            ("lambda " ^ Variable.name var ^ " = [" ^ cs ^ "] (" ^ ps ^ ") {");
+          Block (to_s body);
+          Line "};";
+        ]
 
   and to_string ?(inline = false) (s : t) : string =
     s |> to_s |> Indent.to_string |> fun s ->
@@ -471,6 +497,8 @@ module Stmt = struct
       | AsmStmt a -> Asm.to_string Expr.to_string a
       | BarrierOp { op; target; _ } ->
           subscript_to_s target ^ "." ^ C_lang.BarrierOp.to_string op ^ "(...)"
+      | LambdaDecl { var; _ } ->
+          "lambda " ^ Variable.name var ^ " = [...] (...) {...};"
       | Skip -> ";"
       | Seq _ as s -> stmt_to_s (first s) ^ "; ..."
     in
@@ -868,6 +896,14 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       failwith
         "D_lang.rewrite_exp: StmtExpr leaked past rewrite_stmtexpr — \
          pass not run?"
+  | LambdaExpr _ ->
+      (* The DeclStmt-with-lambda-init recognizer in [rewrite_stmt]
+         catches lambda bindings before [rewrite_exp] sees the
+         [LambdaExpr]. Reaching this case means a lambda appeared in a
+         non-binding expression position, which we don't support. *)
+      failwith
+        "D_lang.rewrite_exp: LambdaExpr in non-binding position — only \
+         [auto v = lambda { ... }] is supported"
 
 and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
   let rec rewrite_subscript (c : C_lang.Expr.c_array_subscript)
@@ -968,6 +1004,30 @@ let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
                 cond;
                 then_stmt = rewrite_stmt then_stmt;
                 else_stmt = rewrite_stmt else_stmt;
+              }))
+  (* [auto v = [captures](params) { body };] — a singleton DeclStmt whose
+     init is a LambdaExpr. Lift to a structured [LambdaDecl] so D_to_imp
+     can emit a synthetic Imp.Kernel.t for it and rewrite call sites. *)
+  | DeclStmt
+      [
+        ({ var; init = Some (IExpr (LambdaExpr l)); _ } : C_lang.Decl.t);
+      ] ->
+      run
+        (let* captures =
+           State.list_map
+             (fun (n, e) ->
+               let* e = rewrite_exp e in
+               State.return (n, e))
+             l.captures
+         in
+         add
+           (LambdaDecl
+              {
+                var;
+                captures;
+                params = l.params;
+                body = rewrite_stmt l.body;
+                ret_ty = l.ret_ty;
               }))
   | DeclStmt ({ var; init = Some (IExpr (ArraySubscriptExpr a)); _ } :: d) ->
       run

@@ -576,6 +576,12 @@ module Make (L : Logger) = struct
           let index = List.map infer_expr target.index in
           Infer_stmt.SyncOp { mode; array = target.name; index; loc }
       | Seq (s1, s2) -> Seq (infer s1, infer s2)
+      | LambdaDecl _ ->
+          (* [Lift_lambdas.lift_program] runs at the start of
+             [parse_program] and removes every [LambdaDecl]. *)
+          failwith
+            "D_to_imp.infer: LambdaDecl leaked past Lift_lambdas — \
+             pass not run?"
     in
     infer
 
@@ -638,7 +644,10 @@ module Make (L : Logger) = struct
           |> Common.append_tr arrays
       | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _ | GotoStmt
       | ReturnStmt _ | ContinueStmt | BreakStmt | SExpr _ | AsmStmt _
-      | BarrierOp _ | Skip ->
+      | BarrierOp _ | Skip | LambdaDecl _ ->
+          (* [LambdaDecl] is removed by [Lift_lambdas.lift_program]
+             before [parse_kernel] runs; if one survives here, it
+             carries no shared declarations the caller could see. *)
           arrays
       | Seq (s1, s2) | IfStmt { then_stmt = s1; else_stmt = s2; _ } ->
           let arrays = find_shared arrays s1 in
@@ -701,6 +710,11 @@ module Make (L : Logger) = struct
       } )
 
   let parse_program (p : D_lang.Program.t) : Imp.Kernel.t list =
+    (* Hoist C++ lambdas into synthetic [D_lang.Kernel.t] entries with
+       [Auxiliary] visibility before parsing. The synthetic kernels
+       become regular [Imp.Kernel.t] with [Visibility.Device] and are
+       inlined by [Imp.Inline_calls]. *)
+    let p = Lift_lambdas.lift_program p in
     let rec parse_p (ctx : Context.t) (p : D_lang.Program.t) : Imp.Kernel.t list
         =
       match p with
