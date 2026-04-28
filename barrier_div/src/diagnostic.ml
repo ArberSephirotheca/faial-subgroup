@@ -40,6 +40,20 @@ type oversize_witness =
   | Cohort_size_over of int
   | Witness_threads of (int * int * int) list
 
+(* Sync-only ([b_a = b_w]) and split-phase ([b_a ≠ b_w]) residuals share
+   the same arrival-side analysis (count vs expected) but differ in how
+   the bug is reported. The diagnostic table at
+   documentation/barrier-participants.md lines 251-263 distinguishes:
+
+   - Sync-only, [|b_a| < n]   → [Missing_participants]
+   - Split, [|b_a| < n], [b_w = ⊥]   → [Incomplete_arrivals]
+       (no waiters affected, but barrier never fires — contract
+        violation; any future wait would deadlock)
+   - Split, [|b_a| < n], [b_w ≠ ⊥]   → [Waiters_blocked]
+       (waiters parked inside the membrane will never be released)
+   - Any shape, [|b_a| > n]   → [Oversize_cohort]
+   - [b_a = ⊥], [b_w ≠ ⊥]      → [Standalone_wait_deadlock]
+       (no thread arrives; waiters sleep forever) *)
 type t =
   | Missing_participants of {
       sync : Sync.t;
@@ -52,11 +66,25 @@ type t =
       expected : int;
     }
   | Count_mismatch of { sync : Sync.t; n : int; m : int }
+  | Incomplete_arrivals of {
+      sync : Sync.t;
+      witness : missing_witness;
+      expected : int;
+    }
+  | Waiters_blocked of {
+      sync : Sync.t;
+      witness : missing_witness;
+      expected : int;
+    }
+  | Standalone_wait_deadlock of { sync : Sync.t; expected : int }
 
 let sync_of : t -> Sync.t = function
   | Missing_participants { sync; _ }
   | Oversize_cohort { sync; _ }
-  | Count_mismatch { sync; _ } ->
+  | Count_mismatch { sync; _ }
+  | Incomplete_arrivals { sync; _ }
+  | Waiters_blocked { sync; _ }
+  | Standalone_wait_deadlock { sync; _ } ->
       sync
 
 let to_string : t -> string = function
@@ -99,73 +127,76 @@ let to_string : t -> string = function
       Printf.sprintf "Oversize cohort (%s, expected %d)" what expected
   | Count_mismatch { n; m; _ } ->
       Printf.sprintf "Count mismatch on barrier id (counts %d, %d)" n m
+  | Incomplete_arrivals { witness; expected; _ } ->
+      let what =
+        match witness with
+        | Failing_thread { x; y; z } ->
+            Printf.sprintf "thread tid=(%d,%d,%d) does not arrive" x y z
+        | Cohort_size n -> Printf.sprintf "got %d" n
+      in
+      Printf.sprintf
+        "Incomplete arrivals (%s, expected %d) — barrier contract \
+         violated: any future wait deadlocks"
+        what expected
+  | Waiters_blocked { witness; expected; _ } ->
+      let what =
+        match witness with
+        | Failing_thread { x; y; z } ->
+            Printf.sprintf "thread tid=(%d,%d,%d) does not arrive" x y z
+        | Cohort_size n -> Printf.sprintf "got %d" n
+      in
+      Printf.sprintf
+        "Deadlock: waiters blocked on insufficient arrivals (%s, \
+         expected %d)"
+        what expected
+  | Standalone_wait_deadlock { expected; _ } ->
+      Printf.sprintf
+        "Standalone wait deadlock (no thread arrives, expected %d)"
+        expected
 
-(* Single-phase diagnosis. We split on three structural cases:
+(* Internal arrival-side bug type, agnostic to whether the surrounding
+   phase is sync-only or split-phase. The phase-shape dispatch wraps
+   each value in the appropriate Diagnostic.t constructor. *)
+type arrival_bug =
+  | Insufficient of missing_witness
+  | Excessive of oversize_witness
+
+(* Detect bugs on the arrival cohort against the expected count. We
+   split on three structural cases:
 
    1. [expected > threads_per_warp]. The cohort is bounded above by
       [threads_per_warp], so it can never reach [expected]. Statically
-      Missing — no SMT call needed.
+      insufficient — no SMT call needed.
 
    2. [expected = threads_per_warp]. Block-wide barrier (the
-      __syncthreads case). Missing reduces to "is there a single thread
-      in the block that fails the cohort?", answered by one SAT call
-      over a single tid triple. Oversize is impossible (cohort ≤
-      threads_per_warp = expected).
+      __syncthreads case). Insufficient reduces to "is there a single
+      thread in the block that fails the cohort?", answered by one
+      SAT call over a single tid triple. Excessive is impossible
+      (cohort ≤ threads_per_warp = expected).
 
    3. [expected < threads_per_warp]. Sub-warp named bar — cardinality
-      matters. Oversize uses a small-distinctness SAT
+      matters. Excessive uses a small-distinctness SAT
       ([Thread_count.exceeds_cardinality]) with witness threads;
-      Missing has no symmetric cheap encoding and is gated behind
+      Insufficient has no symmetric cheap encoding and is gated behind
       [--precise], which runs [refine_min]. Witness mode reports
-      Oversize only. *)
+      Excessive only. *)
 
-let of_phase_solo ?(mode = Witness) ?(timeout = 0) ~(pre : Exp.bexp)
-    (cfg : Rel_cost.Config.t) (locals : Variable.Set.t) (p : Phase.t) : t list =
+let detect_arrival_bugs ?(mode = Witness) ?(timeout = 0) ~(pre : Exp.bexp)
+    (cfg : Rel_cost.Config.t) (locals : Variable.Set.t) (p : Phase.t) :
+    arrival_bug list =
   if p.count > cfg.threads_per_warp then
-    [
-      Missing_participants
-        {
-          sync = p.sync;
-          witness = Cohort_size cfg.threads_per_warp;
-          expected = p.count;
-        };
-    ]
+    [ Insufficient (Cohort_size cfg.threads_per_warp) ]
   else if p.count = cfg.threads_per_warp then
     match Thread_count.find_missing_thread ~timeout cfg ~pre p.arrive_cohort with
-    | Some (x, y, z) ->
-        [
-          Missing_participants
-            {
-              sync = p.sync;
-              witness = Failing_thread { x; y; z };
-              expected = p.count;
-            };
-        ]
+    | Some (x, y, z) -> [ Insufficient (Failing_thread { x; y; z }) ]
     | None -> []
   else
-    (* Sub-warp named bar (expected < threads_per_warp). Detection is
-       direction-asymmetric: Oversize has a cheap small-distinctness
-       encoding ([expected + 1] distinct tids all in cohort); Missing
-       does not, because the dual ([block_size - expected + 1] distinct
-       ¬cohort tids) exceeds the block size we were trying to escape.
-
-       Default mode runs the cheap Oversize check and skips Missing.
-       [--precise] mode additionally invokes [refine_min] for an exact
-       extremum on the Missing side. *)
     let oversize =
       match
         Thread_count.exceeds_cardinality ~timeout cfg ~pre p.arrive_cohort
           p.count
       with
-      | Some witnesses ->
-          [
-            Oversize_cohort
-              {
-                sync = p.sync;
-                witness = Witness_threads witnesses;
-                expected = p.count;
-              };
-          ]
+      | Some witnesses -> [ Excessive (Witness_threads witnesses) ]
       | None -> []
     in
     let missing =
@@ -175,18 +206,43 @@ let of_phase_solo ?(mode = Witness) ?(timeout = 0) ~(pre : Exp.bexp)
           match
             Thread_count.refine_min ~timeout cfg locals p.arrive_cohort
           with
-          | Some k when k < p.count ->
-              [
-                Missing_participants
-                  {
-                    sync = p.sync;
-                    witness = Cohort_size k;
-                    expected = p.count;
-                  };
-              ]
+          | Some k when k < p.count -> [ Insufficient (Cohort_size k) ]
           | _ -> [])
     in
     oversize @ missing
+
+(* Single-phase diagnosis. First decide whether the residual is
+   sync-only ([b_a = b_w]), arrive-only ([b_w = ⊥]), wait-only
+   ([b_a = ⊥]), or two-cohort ([b_a ≠ b_w], both non-⊥), then label the
+   arrival-side bugs accordingly.
+
+   Wait-only is its own diagnostic: no count check is meaningful when
+   nothing arrives — the bug is the standalone wait, not its size. *)
+let of_phase_solo ?(mode = Witness) ?(timeout = 0) ~(pre : Exp.bexp)
+    (cfg : Rel_cost.Config.t) (locals : Variable.Set.t) (p : Phase.t) : t list =
+  let arrive_empty = p.arrive_cohort = Exp.Bool false in
+  let wait_empty = p.wait_cohort = Exp.Bool false in
+  let is_split = p.arrive_cohort <> p.wait_cohort in
+  if arrive_empty && not wait_empty then
+    [ Standalone_wait_deadlock { sync = p.sync; expected = p.count } ]
+  else
+    let label : arrival_bug -> t = function
+      | Excessive w ->
+          Oversize_cohort
+            { sync = p.sync; witness = w; expected = p.count }
+      | Insufficient w ->
+          if is_split then
+            if wait_empty then
+              Incomplete_arrivals
+                { sync = p.sync; witness = w; expected = p.count }
+            else
+              Waiters_blocked
+                { sync = p.sync; witness = w; expected = p.count }
+          else
+            Missing_participants
+              { sync = p.sync; witness = w; expected = p.count }
+    in
+    detect_arrival_bugs ~mode ~timeout ~pre cfg locals p |> List.map label
 
 (* Pairwise diagnosis: same id, different counts → Count_mismatch.
    Reported only once per ordered pair (later phase compared against

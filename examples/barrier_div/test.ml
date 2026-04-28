@@ -120,6 +120,13 @@ let sym_tests : (string * string list * int) list =
        in-block tids that all satisfy the cohort. faial-sync misses it
        (path-condition view: every thread reaches the asm, fine). *)
     ("named-bar-oversize.cu", [ "--block-dim=64" ], 1);
+    (* incomplete-arrivals: bar.arrive 0,32 in a 16-thread block. The
+       arrival cohort is the full block (16 < 32 expected), and there
+       are no waiters — the membrane stays in a half-collected state.
+       Exercises the split-phase [Incomplete_arrivals] diagnostic
+       (distinct from [Missing_participants], which applies only to
+       sync-only barriers where [b_a = b_w]). *)
+    ("incomplete-arrivals.cu", [ "--block-dim=16" ], 1);
   ]
 
 (* These are kernels in this directory that are intentionally not
