@@ -274,7 +274,7 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
     (show_map : bool) (show_check : bool) (show_symbexp : bool)
     (selector : check_selector) (block_dim : Dim3.t option)
     (grid_dim : Dim3.t option) (all_dims : bool)
-    (macros : string list)
+    (macros : string list) (includes : string list)
     (params : (string * int) list) : unit =
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then begin
     prerr_endline
@@ -286,7 +286,7 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
-      ~block_dim ~grid_dim ~macros
+      ~block_dim ~grid_dim ~includes ~macros
       fname
   in
   (* parsed.options has merged the user overrides on top of any
@@ -404,6 +404,12 @@ let macros : string list Term.t =
     value & opt_all string []
     & info [ "D"; "macro" ] ~docv:"<macro>=<value>" ~doc)
 
+let includes : string list Term.t =
+  let doc =
+    "Add the specified directory to the search path for include files."
+  in
+  Arg.(value & opt_all string [] & info [ "I"; "include-dir" ] ~docv:"DIR" ~doc)
+
 let params : (string * int) list Term.t =
   let doc = "Set the value of an integer parameter." in
   Arg.(
@@ -414,7 +420,7 @@ let main_t : unit Term.t =
   Term.(
     const main $ get_fname $ ignore_parsing_errors $ output_json $ show_map
     $ show_check $ show_symbexp $ check_arg $ block_dim_arg $ grid_dim_arg
-    $ all_dims_arg $ macros $ params)
+    $ all_dims_arg $ macros $ includes $ params)
 
 let info =
   let doc = "Check for barrier divergence errors" in
