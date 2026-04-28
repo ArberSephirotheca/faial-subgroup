@@ -2117,7 +2117,23 @@ module Def = struct
         | IntegerLiteral n -> Ok (Some n)
         | _ -> root_cause "Expecting an integer, but got something else" j
     in
-    let* init = with_field_or "inner" (cast_list_1 parse_init) None o in
+    (* Skip non-init siblings (notably trailing FullComment doc
+       comments — clang attaches them to the EnumConstantDecl when
+       the enumerator has an inline `/** ... */`). *)
+    let is_doc_comment : json -> bool =
+      j_filter_kind (fun k -> k = "FullComment")
+    in
+    let* init =
+      with_field_or "inner"
+        (fun j ->
+          let* l = cast_list j in
+          let l = List.filter (fun x -> not (is_doc_comment x)) l in
+          (* No init expression — the enumerator inherits [previous + 1]
+             (or 0 when first). We don't model that here; just record
+             [None] so the caller skips the binding. *)
+          match l with [] -> Ok None | _ -> cast_list_1 parse_init (`List l))
+        None o
+    in
     let open Imp.Enum.Constant in
     Ok { var; init }
 
