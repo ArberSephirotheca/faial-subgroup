@@ -823,7 +823,7 @@ module Expr = struct
         let* ty = get_field "type" o in
         Ok (CallExpr { func; args; ty = J_type.from_json ty })
     | "CXXBindTemporaryExpr" | "CXXFunctionalCastExpr"
-    | "MaterializeTemporaryExpr" ->
+    | "MaterializeTemporaryExpr" | "CompoundLiteralExpr" ->
         let* body = with_field "inner" (cast_list_1 parse) o in
         Ok body
     | "StmtExpr" ->
