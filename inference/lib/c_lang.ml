@@ -834,8 +834,22 @@ and parse_stmt (j : json) : c_stmt j_result =
                     (* Ensure the expected kind *)
                     let* o = cast_object j in
                     let* _ = expect_kind "StaticAssertDecl" o in
+                    (* C++17 allows omitting the assertion message; clang
+                       still emits an inner slot for it (as an empty
+                       object [{}] or [null]). Drop entries that have no
+                       [kind] field so parse_expr only sees real
+                       expressions (the condition, plus an optional
+                       StringLiteral message). *)
                     let* args =
-                      with_field "inner" (cast_map parse_expr) o
+                      with_field "inner"
+                        (fun j ->
+                          let* l = cast_list j in
+                          let has_kind = function
+                            | `Assoc fs -> List.mem_assoc "kind" fs
+                            | _ -> false
+                          in
+                          map parse_expr (List.filter has_kind l))
+                        o
                     in
                     let static_assert : Decl_expr.t =
                       {
