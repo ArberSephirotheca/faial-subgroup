@@ -296,6 +296,27 @@ let rec parse_expr (j : json) : c_expr j_result =
       (* Unknown value *)
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.from_json ty))
+  | "ShuffleVectorExpr" | "ConvertVectorExpr" ->
+      (* Clang's [__builtin_shufflevector(vec1, vec2, idx0, idx1, ...)] and
+         [__builtin_convertvector(vec, type)], used by <mmintrin.h>- and
+         <xmmintrin.h>-style intrinsics. Preserve the inner operands as a
+         synthetic call so downstream stages still see the dependencies;
+         protocol-level vector-shuffle support is TODO. *)
+      let* args = with_field "inner" (cast_map parse_expr) o in
+      let* ty = get_field "type" o in
+      let builtin_name =
+        if kind = "ShuffleVectorExpr" then "__shufflevector"
+        else "__convertvector"
+      in
+      let func =
+        Ident
+          {
+            name = Variable.from_name builtin_name;
+            ty = J_type.from_json ty;
+            kind = Decl_expr.Kind.Function;
+          }
+      in
+      Ok (CallExpr { func; args; ty = J_type.from_json ty })
   | "CharacterLiteral" ->
       let* i = with_field "value" cast_int o in
       Ok (CharacterLiteral i)
