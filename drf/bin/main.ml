@@ -1,5 +1,6 @@
 open Stage0
 open Protocols
+open Protocols_parsing
 open Cmdliner
 
 let dim_help =
@@ -35,6 +36,15 @@ let conv_int_list =
     let s = "[" ^ (List.map string_of_int l |> String.concat ", ") ^ "]" in
     Format.fprintf ppf "%s" s
   in
+  Arg.conv (parse, print)
+
+let conv_bexp =
+  let parse s =
+    match Parsers.BExpParser.of_string s with
+    | Ok b -> Ok b
+    | Error msg -> Error (`Msg msg)
+  in
+  let print ppf (b : Exp.bexp) = Format.fprintf ppf "%s" (Exp.b_to_string b) in
   Arg.conv (parse, print)
 
 let main =
@@ -237,6 +247,13 @@ let main =
              possible dimensions.")
   and+ ignore_asserts =
     Arg.(value & flag & info [ "ignore-asserts" ] ~doc:"Ignore asserts.")
+  and+ assumes =
+    Arg.(
+      value & opt_all conv_bexp []
+      & info [ "assume" ] ~docv:"BEXP"
+          ~doc:
+            "Add a boolean expression as a kernel pre-condition. May be \
+             repeated. Example: --assume \"blockDim.x == 32 && N > 0\"")
   in
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then
     Error
@@ -255,7 +272,7 @@ let main =
         ~block_idx_1 ~block_idx_2 ~archs ~inline_calls:(not ignore_calls)
         ~ignore_parsing_errors ~includes ~block_dim ~grid_dim ~params
         ~only_kernel ~only_true_data_races ~macros ~cu_to_json ~all_dims
-        ~ignore_asserts
+        ~ignore_asserts ~assumes
     in
     let ui = if output_json then Jui.render else Tui.render in
     if unreachable then App.check_unreachable app else App.run app |> ui;

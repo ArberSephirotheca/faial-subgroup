@@ -1,6 +1,6 @@
-(menhir (modules tactics_parser))
+(menhir (modules tactics_parser exp_parser))
 
-(ocamllex tactics_lexer)
+(ocamllex tactics_lexer exp_lexer)
 
 
 (library

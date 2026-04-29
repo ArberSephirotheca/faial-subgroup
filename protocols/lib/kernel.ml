@@ -100,6 +100,9 @@ let try_set_block_dim (d : Dim3.t option) (k : t) : t =
 let try_set_grid_dim (d : Dim3.t option) (k : t) : t =
   match d with Some d -> set_grid_dim d k | None -> k
 
+let add_pre (b : bexp) (k : t) : t =
+  { k with pre = b_and b k.pre }
+
 let apply_arch_binders (d : Architecture.Defaults.t) (k : t) : t =
   {
     k with
