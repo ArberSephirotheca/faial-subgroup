@@ -68,6 +68,17 @@ let sync_tests : (string * string list * int) list =
     ("tid-conditional.cu", [ "--check=well-sync" ], 0);
     ("tid-conditional.cu", [ "--check=barrier-div" ], 1);
     ("tid-conditional.cu", [ "--check=missing-participants" ], 1);
+    (* tid-conditional under --all-dims: blockDim.x is symbolic, so the
+       analyser can no longer prove every thread reaches the barrier and
+       missing-participants flags. With --assume "blockDim.x <= 17"
+       injected as a kernel pre-condition, every in-block tid_x satisfies
+       the guard and the property holds. Exercises the --assume CLI flag
+       (and that it composes with --all-dims). *)
+    ("tid-conditional.cu",
+      [ "--all-dims"; "--check=missing-participants" ], 1);
+    ("tid-conditional.cu",
+      [ "--all-dims"; "--check=missing-participants";
+        "--assume"; "blockDim.x <= 17" ], 0);
     (* tid-mod: __syncthreads inside [tid_x % 2 == 0]. Same shape as
        tid-conditional but with a different guard. *)
     ("tid-mod.cu", [ "--check=well-sync" ], 0);

@@ -1,6 +1,7 @@
 open Inference
 open Stage0
 open Protocols
+open Protocols_parsing
 open Barrier_div
 
 (* Both verification properties are checked on every kernel by default.
@@ -251,7 +252,8 @@ end
    ensure every free name has a binder, and run constant folding so the
    analyser sees a simplified IR. *)
 let preprocess ~(block_dim : Dim3.t option) ~(grid_dim : Dim3.t option)
-    (params : (string * int) list) (k : Kernel.t) : Kernel.t =
+    ~(assumes : Exp.bexp list) (params : (string * int) list) (k : Kernel.t) :
+    Kernel.t =
   (* Pin launch dimensions, then bind the arch defaults and attach the
      [base] precondition before [inline_globals]. The order matters:
      [inline_globals] -> [subst_vars] substitutes blockDim/gridDim
@@ -266,6 +268,9 @@ let preprocess ~(block_dim : Dim3.t option) ~(grid_dim : Dim3.t option)
   |> Kernel.try_set_grid_dim grid_dim
   |> Kernel.apply_arch_binders Architecture.Defaults.block
   |> (fun k -> { k with pre = Exp.b_and Architecture.Defaults.base k.pre })
+  (* Inject user-provided assumptions before [inline_globals] so any
+     [-p key=val] parameters referenced inside an assumption get inlined. *)
+  |> (fun k -> List.fold_left (fun k b -> Kernel.add_pre b k) k assumes)
   |> Kernel.inline_globals params
   |> Kernel.add_missing_binders
   |> Kernel.opt
@@ -275,7 +280,7 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
     (selector : check_selector) (block_dim : Dim3.t option)
     (grid_dim : Dim3.t option) (all_dims : bool)
     (macros : string list) (includes : string list)
-    (params : (string * int) list) : unit =
+    (params : (string * int) list) (assumes : Exp.bexp list) : unit =
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then begin
     prerr_endline
       "Cannot run with options: --all-dims and --grid-dim/--block-dim.\n\
@@ -300,7 +305,7 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
     if all_dims then None else Some parsed.options.grid_dim
   in
   let kernels =
-    List.map (preprocess ~block_dim ~grid_dim params) parsed.kernels
+    List.map (preprocess ~block_dim ~grid_dim ~assumes params) parsed.kernels
   in
   if output_json then JUI.run properties kernels
   else if
@@ -325,6 +330,15 @@ let conv_dim3 default =
     | Error e -> Error (`Msg e)
   in
   let print ppf (l : Dim3.t) = Format.fprintf ppf "%s" (Dim3.to_string l) in
+  Arg.conv (parse, print)
+
+let conv_bexp =
+  let parse s =
+    match Parsers.BExpParser.of_string s with
+    | Ok b -> Ok b
+    | Error msg -> Error (`Msg msg)
+  in
+  let print ppf (b : Exp.bexp) = Format.fprintf ppf "%s" (Exp.b_to_string b) in
   Arg.conv (parse, print)
 
 let get_fname : string Term.t =
@@ -416,11 +430,18 @@ let params : (string * int) list Term.t =
     value & opt_all (pair ~sep:'=' string int) []
     & info [ "p"; "param" ] ~docv:"KEYVAL" ~doc)
 
+let assumes_arg : Exp.bexp list Term.t =
+  let doc =
+    "Add a boolean expression as a kernel pre-condition. May be repeated. \
+     Example: --assume \"blockDim.x == 32 && N > 0\""
+  in
+  Arg.(value & opt_all conv_bexp [] & info [ "assume" ] ~docv:"BEXP" ~doc)
+
 let main_t : unit Term.t =
   Term.(
     const main $ get_fname $ ignore_parsing_errors $ output_json $ show_map
     $ show_check $ show_symbexp $ check_arg $ block_dim_arg $ grid_dim_arg
-    $ all_dims_arg $ macros $ includes $ params)
+    $ all_dims_arg $ macros $ includes $ params $ assumes_arg)
 
 let info =
   let doc = "Check for barrier divergence errors" in
