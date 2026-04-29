@@ -280,7 +280,8 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
     (selector : check_selector) (block_dim : Dim3.t option)
     (grid_dim : Dim3.t option) (all_dims : bool)
     (macros : string list) (includes : string list)
-    (params : (string * int) list) (assumes : Exp.bexp list) : unit =
+    (params : (string * int) list) (assumes : Exp.bexp list)
+    (only_kernel : string option) : unit =
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then begin
     prerr_endline
       "Cannot run with options: --all-dims and --grid-dim/--block-dim.\n\
@@ -304,8 +305,20 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
   let grid_dim =
     if all_dims then None else Some parsed.options.grid_dim
   in
+  let parsed_kernels =
+    match only_kernel with
+    | None -> parsed.kernels
+    | Some name ->
+        let ks =
+          List.filter (fun k -> Kernel.name k = name) parsed.kernels
+        in
+        if ks = [] then (
+          Logger.Colors.error ("kernel '" ^ name ^ "' not found!");
+          exit (-1))
+        else ks
+  in
   let kernels =
-    List.map (preprocess ~block_dim ~grid_dim ~assumes params) parsed.kernels
+    List.map (preprocess ~block_dim ~grid_dim ~assumes params) parsed_kernels
   in
   if output_json then JUI.run properties kernels
   else if
@@ -437,11 +450,16 @@ let assumes_arg : Exp.bexp list Term.t =
   in
   Arg.(value & opt_all conv_bexp [] & info [ "assume" ] ~docv:"BEXP" ~doc)
 
+let only_kernel_arg : string option Term.t =
+  let doc = "Only check a specific kernel." in
+  Arg.(value & opt (some string) None & info [ "kernel" ] ~docv:"NAME" ~doc)
+
 let main_t : unit Term.t =
   Term.(
     const main $ get_fname $ ignore_parsing_errors $ output_json $ show_map
     $ show_check $ show_symbexp $ check_arg $ block_dim_arg $ grid_dim_arg
-    $ all_dims_arg $ macros $ includes $ params $ assumes_arg)
+    $ all_dims_arg $ macros $ includes $ params $ assumes_arg
+    $ only_kernel_arg)
 
 let info =
   let doc = "Check for barrier divergence errors" in
