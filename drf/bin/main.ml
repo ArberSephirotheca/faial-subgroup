@@ -254,6 +254,19 @@ let main =
           ~doc:
             "Add a boolean expression as a kernel pre-condition. May be \
              repeated. Example: --assume \"blockDim.x == 32 && N > 0\"")
+  and+ assume_dims =
+    Arg.(
+      value & flag
+      & info [ "assume-dims" ]
+          ~doc:
+            "For each thread/block index axis that is not referenced in \
+             the kernel, assert that the matching launch dimension is 1 \
+             (e.g. if threadIdx.y is unused, assume blockDim.y == 1; \
+             same for threadIdx.{x,z} / blockIdx.{x,y,z}). UNSOUND in \
+             general: a kernel that writes memory still races between \
+             threads that differ only in an unreferenced axis, and \
+             this flag hides those races. Use --show-map to inspect \
+             the resulting precondition.")
   in
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then
     Error
@@ -272,7 +285,7 @@ let main =
         ~block_idx_1 ~block_idx_2 ~archs ~inline_calls:(not ignore_calls)
         ~ignore_parsing_errors ~includes ~block_dim ~grid_dim ~params
         ~only_kernel ~only_true_data_races ~macros ~cu_to_json ~all_dims
-        ~ignore_asserts ~assumes
+        ~ignore_asserts ~assumes ~assume_dims
     in
     let ui = if output_json then Jui.render else Tui.render in
     if unreachable then App.check_unreachable app else App.run app |> ui;

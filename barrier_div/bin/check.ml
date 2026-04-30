@@ -252,8 +252,8 @@ end
    ensure every free name has a binder, and run constant folding so the
    analyser sees a simplified IR. *)
 let preprocess ~(block_dim : Dim3.t option) ~(grid_dim : Dim3.t option)
-    ~(assumes : Exp.bexp list) (params : (string * int) list) (k : Kernel.t) :
-    Kernel.t =
+    ~(assumes : Exp.bexp list) ~(assume_dims : bool)
+    (params : (string * int) list) (k : Kernel.t) : Kernel.t =
   (* Pin launch dimensions, then bind the arch defaults and attach the
      [base] precondition before [inline_globals]. The order matters:
      [inline_globals] -> [subst_vars] substitutes blockDim/gridDim
@@ -271,6 +271,8 @@ let preprocess ~(block_dim : Dim3.t option) ~(grid_dim : Dim3.t option)
   (* Inject user-provided assumptions before [inline_globals] so any
      [-p key=val] parameters referenced inside an assumption get inlined. *)
   |> (fun k -> List.fold_left (fun k b -> Kernel.add_pre b k) k assumes)
+  (* Optionally pin unreferenced launch dimensions to 1. *)
+  |> (if assume_dims then Kernel.add_dim_assumptions else Fun.id)
   |> Kernel.inline_globals params
   |> Kernel.add_missing_binders
   |> Kernel.opt
@@ -281,7 +283,7 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
     (grid_dim : Dim3.t option) (all_dims : bool)
     (macros : string list) (includes : string list)
     (params : (string * int) list) (assumes : Exp.bexp list)
-    (only_kernel : string option) : unit =
+    (assume_dims : bool) (only_kernel : string option) : unit =
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then begin
     prerr_endline
       "Cannot run with options: --all-dims and --grid-dim/--block-dim.\n\
@@ -318,7 +320,9 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
         else ks
   in
   let kernels =
-    List.map (preprocess ~block_dim ~grid_dim ~assumes params) parsed_kernels
+    List.map
+      (preprocess ~block_dim ~grid_dim ~assumes ~assume_dims params)
+      parsed_kernels
   in
   if output_json then JUI.run properties kernels
   else if
@@ -450,6 +454,18 @@ let assumes_arg : Exp.bexp list Term.t =
   in
   Arg.(value & opt_all conv_bexp [] & info [ "assume" ] ~docv:"BEXP" ~doc)
 
+let assume_dims_arg : bool Term.t =
+  let doc =
+    "For each thread/block index axis that is not referenced in the \
+     kernel, assert that the matching launch dimension is 1 (e.g. if \
+     threadIdx.y is unused, assume blockDim.y == 1; same for \
+     threadIdx.{x,z} / blockIdx.{x,y,z}). UNSOUND in general: a kernel \
+     that writes memory still races between threads that differ only \
+     in an unreferenced axis, and this flag hides those races. Use \
+     --show-map to inspect the resulting precondition."
+  in
+  Arg.(value & flag & info [ "assume-dims" ] ~doc)
+
 let only_kernel_arg : string option Term.t =
   let doc = "Only check a specific kernel." in
   Arg.(value & opt (some string) None & info [ "kernel" ] ~docv:"NAME" ~doc)
@@ -459,7 +475,7 @@ let main_t : unit Term.t =
     const main $ get_fname $ ignore_parsing_errors $ output_json $ show_map
     $ show_check $ show_symbexp $ check_arg $ block_dim_arg $ grid_dim_arg
     $ all_dims_arg $ macros $ includes $ params $ assumes_arg
-    $ only_kernel_arg)
+    $ assume_dims_arg $ only_kernel_arg)
 
 let info =
   let doc = "Check for barrier divergence errors" in

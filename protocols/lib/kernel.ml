@@ -243,6 +243,49 @@ let inline_globals (globals : (string * int) list) (k : t) : t =
 let used_variables (k : t) : Variable.Set.t =
   Code.free_names k.code Variable.Set.empty |> Exp.b_free_names k.pre
 
+(*
+  For each thread-index / block-index axis whose variable does not
+  appear in [code], assert that the matching launch dimension has
+  extent 1 by adding the equality to [pre]. The pairings are
+  [threadIdx.{x,y,z}] with [blockDim.{x,y,z}] and [blockIdx.{x,y,z}]
+  with [gridDim.{x,y,z}].
+
+  Note: only [code] free names are consulted, not [pre]. After
+  [apply_arch] the precondition contains arch-default references
+  like [tid.y < blockDim.y] for every axis, so consulting [pre]
+  would always mark every axis as used and the function would
+  never fire.
+
+  This is a user-asserted assumption, not a sound inference. A
+  kernel that writes to memory but does not reference [threadIdx.y]
+  still races between any two threads that differ only in
+  y-coordinate, and pinning [blockDim.y == 1] hides those races.
+  The caller (e.g. the [--assume-dims] CLI flag) is asserting that
+  each unreferenced axis was intended to be launched with extent 1.
+
+  Run after [apply_arch] (so [blockDim.*] / [gridDim.*] are
+  registered as globals) and before [inline_globals] (so
+  [inline_inferred] picks up the new equality and propagates the
+  constant through both [code] and [pre]).
+*)
+let add_dim_assumptions (k : t) : t =
+  let used = Code.free_names k.code Variable.Set.empty in
+  let pairs =
+    [
+      (Variable.tid_x, Variable.bdim_x);
+      (Variable.tid_y, Variable.bdim_y);
+      (Variable.tid_z, Variable.bdim_z);
+      (Variable.bid_x, Variable.gdim_x);
+      (Variable.bid_y, Variable.gdim_y);
+      (Variable.bid_z, Variable.gdim_z);
+    ]
+  in
+  List.fold_left
+    (fun k (idx, dim) ->
+      if Variable.Set.mem idx used then k
+      else add_pre (n_eq (Var dim) (Num 1)) k)
+    k pairs
+
 let trim_binders (k : t) : t =
   let fns = used_variables k in
   {
