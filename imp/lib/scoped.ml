@@ -154,7 +154,14 @@ module Code = struct
             | None -> subst st s
           in
           Call (c, s)
-      | (Sync _ | Skip) as i -> i
+      | Sync s ->
+          Sync
+            {
+              s with
+              index = List.map (M.n_subst st) s.index;
+              count = Option.map (M.n_subst st) s.count;
+            }
+      | Skip -> Skip
   end
 
   module ReplacePair = SubstMake (Subst.SubstPair)

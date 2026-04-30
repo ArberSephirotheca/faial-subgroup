@@ -104,7 +104,13 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
       (x, known, st)
     in
     match i with
-    | Sync l -> Sync l
+    | Sync l ->
+        Sync
+          {
+            l with
+            index = List.map (n_subst st) l.index;
+            count = Option.map (n_subst st) l.count;
+          }
     | Assert b -> Assert (Assert.map (b_subst st) b)
     | Access e -> Access (a_subst st e)
     | Skip -> Skip
