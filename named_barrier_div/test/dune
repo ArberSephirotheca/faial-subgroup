@@ -1,0 +1,7 @@
+(tests
+ (names
+   test_tier1
+   test_tier2
+   test_bd
+ )
+ (libraries stage0 protocols named_barrier_div alcotest))

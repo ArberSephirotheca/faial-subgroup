@@ -1,0 +1,9 @@
+(executable
+ (name check)
+ (public_name faial-nbd)
+ (modes exe)
+ (libraries
+  ; 3rd-party
+  cmdliner
+  ; 1st-party
+  stage0 protocols protocols_parsing inference named_barrier_div))
