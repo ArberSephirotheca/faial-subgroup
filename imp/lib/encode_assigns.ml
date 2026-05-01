@@ -4,7 +4,7 @@ open Stage0
 type t =
   | Access of Access.t
   | Assert of Assert.t
-  | Sync of Location.t option
+  | Sync of Sync.t
   | If of Exp.bexp * t * t
   | For of Range.t * t
   | Seq of t * t
@@ -17,7 +17,7 @@ let decl ?(ty = C_type.int) (var : Variable.t) (body : t) : t =
 let to_string : t -> string =
   let rec to_s : t -> Indent.t list = function
     | Skip -> [ Line "skip;" ]
-    | Sync _ -> [ Line "sync;" ]
+    | Sync s -> [ Line (Sync.to_string s ^ ";") ]
     | Assert b -> [ Line (Assert.to_string b ^ ";") ]
     | Access e -> [ Line (Access.to_string e) ]
     | Decl d ->
@@ -104,7 +104,13 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
       (x, known, st)
     in
     match i with
-    | Sync l -> Sync l
+    | Sync l ->
+        Sync
+          {
+            l with
+            index = List.map (n_subst st) l.index;
+            count = Option.map (n_subst st) l.count;
+          }
     | Assert b -> Assert (Assert.map (b_subst st) b)
     | Access e -> Access (a_subst st e)
     | Skip -> Skip

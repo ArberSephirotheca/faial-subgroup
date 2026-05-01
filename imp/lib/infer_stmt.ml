@@ -40,7 +40,13 @@ end
 type t =
   | Skip
   | Seq of t * t
-  | Sync of Location.t option
+  | Sync of Sync.t
+  | SyncOp of {
+      mode : Sync.Mode.t;
+      array : Variable.t;
+      index : Infer_exp.t list;
+      loc : Location.t option;
+    }
   | Assert of Infer_exp.t
   | Read of {
       target : (C_type.t * Variable.t) option;
@@ -109,7 +115,11 @@ let rec to_stmt : t -> Stmt.t =
   function
   | Skip -> Skip
   | Seq (p, q) -> Seq (to_stmt p, to_stmt q)
-  | Sync l -> Sync l
+  | Sync s -> Sync s
+  | SyncOp { mode; array; index; loc } ->
+      Infer_exp.unknowns
+        (let* index = State.list_map to_nexp index in
+         return (Stmt.Sync { mode; array; index; count = None; loc }))
   | Assert e -> ret_assert e Global
   | Read { array; target; index } ->
       Infer_exp.unknowns

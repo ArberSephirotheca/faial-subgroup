@@ -200,7 +200,7 @@ module Make (L : Logger) = struct
         let b = infer_expr u.child in
         BExp (BNot b)
     | RecoveryExpr _ | CXXConstructExpr _ | MemberExpr _ | CallExpr _
-    | UnaryOperator _ | CXXOperatorCallExpr _ ->
+    | UnaryOperator _ | CXXOperatorCallExpr _ | UnresolvedLookupExpr _ ->
         let lbl = D_lang.Expr.to_string e in
         L.warning ("parse_exp: rewriting to unknown: " ^ lbl);
         Unknown lbl
@@ -432,12 +432,12 @@ module Make (L : Logger) = struct
           (CallExpr
              { func = Ident { name = n; kind = Function; _ }; args = []; _ })
         when Variable.name n = "__syncthreads" ->
-          Sync n.location
+          Sync (Sync.threadsync ?loc:n.location ())
       | SExpr
           (CallExpr
              { func = Ident { name = n; kind = Function; _ }; args = [ _ ]; _ })
         when Variable.name n = "sync" ->
-          Sync n.location
+          Sync (Sync.threadsync ?loc:n.location ())
           (* Static assert may have a message as second argument *)
       | SExpr
           (CallExpr
@@ -552,7 +552,36 @@ module Make (L : Logger) = struct
           While (cond, body)
       | SwitchStmt { body = s; _ } | CaseStmt { body = s; _ } | DefaultStmt s ->
           infer s
+      | AsmStmt a ->
+          (* Outputs precede inputs in %N indexing, per GCC inline-asm. *)
+          let operands : Exp.nexp option list =
+            (a.outputs @ a.inputs)
+            |> List.map (fun (o : D_lang.Expr.t Asm.operand) ->
+                   try_to_nexp o.expr)
+          in
+          (match Ptx.parse ?loc:a.loc ~operands a.asm_string with
+           | Some s -> Infer_stmt.Sync s
+           | None ->
+               L.warning
+                 ("asm: dropping (unrecognized PTX template): " ^ a.asm_string);
+               Skip)
+      | BarrierOp { op; target; args = _; loc } ->
+          let mode : Sync.Mode.t =
+            match op with
+            | Arrive -> Sync.Mode.Arrive
+            | Wait -> Sync.Mode.Wait
+            | ArriveAndWait -> Sync.Mode.ArriveAndWait
+            | ArriveAndDrop -> Sync.Mode.ArriveAndDrop
+          in
+          let index = List.map infer_expr target.index in
+          Infer_stmt.SyncOp { mode; array = target.name; index; loc }
       | Seq (s1, s2) -> Seq (infer s1, infer s2)
+      | LambdaDecl _ ->
+          (* [Lift_lambdas.lift_program] runs at the start of
+             [parse_program] and removes every [LambdaDecl]. *)
+          failwith
+            "D_to_imp.infer: LambdaDecl leaked past Lift_lambdas — \
+             pass not run?"
     in
     infer
 
@@ -587,19 +616,38 @@ module Make (L : Logger) = struct
       Kernel.Parameter.array x (mk_array h ty)
     else Kernel.Parameter.unsupported x
 
-  let parse_shared (s : D_lang.Stmt.t) : (Variable.t * Memory.t) list =
+  let parse_shared (ctx : Context.t) (s : D_lang.Stmt.t) :
+      (Variable.t * Memory.t) list =
     let open D_lang in
+    (* A decl declares an array of barriers iff its element type, after
+       typedef resolution, is [cuda::barrier<_>]. Such decls are identity-only
+       (the array names a set of named barriers) and must not be added to
+       data-memory tracking. *)
+    let is_barrier_decl (d : Decl.t) : bool =
+      match J_type.to_c_type_res d.ty with
+      | Ok ty ->
+          let elem = C_type.strip_array ty in
+          let resolved = Context.resolve elem ctx in
+          C_lang.BarrierOp.is_barrier_c_type resolved
+          || C_lang.BarrierOp.is_barrier_base_type d.ty
+      | Error _ -> false
+    in
     let rec find_shared (arrays : (Variable.t * array_t) list) (s : Stmt.t) :
         (Variable.t * array_t) list =
       match s with
       | DeclStmt l ->
           List.filter_map
             (fun (d : Decl.t) ->
-              Decl.get_shared d |> Option.map (fun a -> (d.var, a)))
+              if is_barrier_decl d then None
+              else Decl.get_shared d |> Option.map (fun a -> (d.var, a)))
             l
           |> Common.append_tr arrays
       | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _ | GotoStmt
-      | ReturnStmt _ | ContinueStmt | BreakStmt | SExpr _ | Skip ->
+      | ReturnStmt _ | ContinueStmt | BreakStmt | SExpr _ | AsmStmt _
+      | BarrierOp _ | Skip | LambdaDecl _ ->
+          (* [LambdaDecl] is removed by [Lift_lambdas.lift_program]
+             before [parse_kernel] runs; if one survives here, it
+             carries no shared declarations the caller could see. *)
           arrays
       | Seq (s1, s2) | IfStmt { then_stmt = s1; else_stmt = s2; _ } ->
           let arrays = find_shared arrays s1 in
@@ -621,7 +669,7 @@ module Make (L : Logger) = struct
     let ctx =
       List.fold_left
         (fun ctx (x, m) -> Context.add_array x m ctx)
-        ctx (parse_shared k.code)
+        ctx (parse_shared ctx k.code)
     in
     (* Parse kernel parameters *)
     let parameters = List.map (parse_param ctx) k.params in
@@ -662,31 +710,41 @@ module Make (L : Logger) = struct
       } )
 
   let parse_program (p : D_lang.Program.t) : Imp.Kernel.t list =
+    (* Hoist C++ lambdas into synthetic [D_lang.Kernel.t] entries with
+       [Auxiliary] visibility before parsing. The synthetic kernels
+       become regular [Imp.Kernel.t] with [Visibility.Device] and are
+       inlined by [Imp.Inline_calls]. *)
+    let p = Lift_lambdas.lift_program p in
     let rec parse_p (ctx : Context.t) (p : D_lang.Program.t) : Imp.Kernel.t list
         =
       match p with
       | Declaration v :: l ->
           let b =
-            match J_type.to_c_type_res v.ty with
-            | Ok ty ->
-                (* make sure we resolve the type before we query it *)
-                let ty = Context.resolve ty ctx in
-                let is_mut = not (C_type.is_const ty) in
-                if is_mut && List.mem C_lang.c_attr_shared v.attrs then
-                  Context.add_array v.var (Memory.from_type SharedMemory ty) ctx
-                else if is_mut && List.mem C_lang.c_attr_device v.attrs then
-                  Context.add_array v.var (Memory.from_type GlobalMemory ty) ctx
-                else if Context.is_int ty ctx then
-                  let g =
-                    match v.init with
-                    | Some (IExpr n) -> try_to_nexp n
-                    | _ -> None
-                  in
-                  match g with
-                  | Some g -> Context.add_assign v.var g ctx
-                  | None -> Context.add_global v.var ty ctx
-                else ctx
-            | Error _ -> ctx
+            (* Skip arrays of barriers: they're identity-only, not data memory. *)
+            if C_lang.BarrierOp.is_barrier_base_type v.ty then ctx
+            else
+              match J_type.to_c_type_res v.ty with
+              | Ok ty ->
+                  (* make sure we resolve the type before we query it *)
+                  let ty = Context.resolve ty ctx in
+                  let is_mut = not (C_type.is_const ty) in
+                  if is_mut && List.mem C_lang.c_attr_shared v.attrs then
+                    Context.add_array v.var
+                      (Memory.from_type SharedMemory ty) ctx
+                  else if is_mut && List.mem C_lang.c_attr_device v.attrs then
+                    Context.add_array v.var
+                      (Memory.from_type GlobalMemory ty) ctx
+                  else if Context.is_int ty ctx then
+                    let g =
+                      match v.init with
+                      | Some (IExpr n) -> try_to_nexp n
+                      | _ -> None
+                    in
+                    match g with
+                    | Some g -> Context.add_assign v.var g ctx
+                    | None -> Context.add_global v.var ty ctx
+                  else ctx
+              | Error _ -> ctx
           in
           parse_p b l
       | Kernel k :: l ->

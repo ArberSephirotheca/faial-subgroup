@@ -10,7 +10,6 @@ type t =
   | CountAccesses
   | ActiveThreads
 
-
 module TransactionMap = struct
   type t = Transaction.t IntMap.t
 
@@ -49,7 +48,7 @@ module type Spec = sig
   val min_cost : int
   val max_cost : int -> Config.t -> int
   val supports_memory : Protocols.Memory.t -> bool
-  val run: Config.t -> NMap.t -> BMap.t -> Dim3.t array -> Cost.t
+  val run : Config.t -> NMap.t -> BMap.t -> Dim3.t array -> Cost.t
 end
 
 module BankConflicts = struct
@@ -64,19 +63,20 @@ module BankConflicts = struct
 
   let supports_memory memory = Protocols.Memory.is_shared memory
 
-  let run (cfg : Config.t) (indices : NMap.t)
-      (enabled : BMap.t) (tids : Dim3.t array) : Cost.t =
+  let run (cfg : Config.t) (indices : NMap.t) (enabled : BMap.t)
+      (tids : Dim3.t array) : Cost.t =
     let bank_count = cfg.bank_count in
     let indices = NMap.to_array indices in
     let enabled = BMap.to_array enabled in
-    let to_bid (tsk : Task.t) : int = Stage0.Common.modulo tsk.index bank_count in
+    let to_bid (tsk : Task.t) : int =
+      Stage0.Common.modulo tsk.index bank_count
+    in
     let w = TransactionMap.make to_bid indices enabled tids in
     let state = TransactionMap.max w in
     (* we need to get the maximum, because all threads may be disabled,
       in which case, we would get a transaction count of 0 and therefore
       a cost of -1 *)
     Cost.make ~value:(max (Transaction.count state - 1) 0) ~state ~exact:true ()
-
 end
 
 module UncoalescedAccesses = struct
@@ -103,17 +103,14 @@ module UncoalescedAccesses = struct
       |> Transaction.from_list 0
     in
     Cost.make ~value:(IntMap.cardinal tsx_map) ~state ~exact:true ()
-
 end
 
 module CountAccesses = struct
   let min_cost = 1
-
   let max_cost _ _ = 1
-
   let supports_memory _ = true
 
-  let run (_ : Config.t) (_ :  NMap.t) (_ : BMap.t) (_ : Dim3.t array) : Cost.t =
+  let run (_ : Config.t) (_ : NMap.t) (_ : BMap.t) (_ : Dim3.t array) : Cost.t =
     Cost.from_int ~value:1 ~exact:true ()
 end
 
@@ -126,7 +123,8 @@ module ActiveThreads = struct
 
   let supports_memory _ = true
 
-  let run (_ : Config.t) (_ :  NMap.t) (enabled : BMap.t) (_ : Dim3.t array) : Cost.t =
+  let run (_ : Config.t) (_ : NMap.t) (enabled : BMap.t) (_ : Dim3.t array) :
+      Cost.t =
     Cost.from_int ~value:(BMap.count true enabled) ~exact:true ()
 end
 
@@ -148,15 +146,13 @@ let values : t list =
 
 let choices : (string * t) list = values |> List.map (fun x -> (to_string x, x))
 
-let to_spec : t -> (module Spec) =
-  function
+let to_spec : t -> (module Spec) = function
   | BankConflicts -> (module BankConflicts)
   | UncoalescedAccesses | UncoalescedAccessesSat -> (module UncoalescedAccesses)
   | CountAccesses -> (module CountAccesses)
   | ActiveThreads -> (module ActiveThreads)
 
-
-let max_cost (thread_count : int) (cfg: Config.t) (m : t) : int =
+let max_cost (thread_count : int) (cfg : Config.t) (m : t) : int =
   let module S = (val to_spec m : Spec) in
   S.max_cost thread_count cfg
 

@@ -490,12 +490,12 @@ let print_optimize (pre : bexp) (formula : nexp) : unit =
 (** Optimizes a formula *)
 let optimize ?(verbose = false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(default_cost = 0)
-    (formula : nexp) (st : t) : (int, string) Result.t =
+    ?(timeout = 0) (formula : nexp) (st : t) : (int, string) Result.t =
   let module S = (val solver) in
   let pre = st.assumptions in
   (* pre: the generated runtime constraints (eg, tid is unique) *)
   let solve formula : (int, string) Result.t =
-    S.optimize_expr strategy ~pre formula
+    S.optimize_expr ~timeout strategy ~pre formula
     |> Result.map (fun o -> Option.value ~default:default_cost o)
   in
   if verbose then print_optimize pre formula;
@@ -549,9 +549,9 @@ let encode_count_active_threads (_index : nexp) (st : t) : nexp =
 let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
     ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default)
-    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) (config : Config.t)
-    (locals : Variable.Set.t) (active_threads : bexp) (index : nexp) :
-    int option =
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(timeout = 0)
+    (config : Config.t) (locals : Variable.Set.t) (active_threads : bexp)
+    (index : nexp) : int option =
   (* Compute free names from active_threads and index *)
   let fns =
     Exp.b_free_names active_threads Variable.Set.empty |> Exp.n_free_names index
@@ -563,10 +563,142 @@ let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
     (make generator config locals globals |> add_active_threads active_threads)
     (let* n = cost_of metric index in
      let* st = State.get in
-     return (optimize ~verbose ~strategy ~solver ~default_cost:0 n st))
+     return (optimize ~verbose ~strategy ~solver ~default_cost:0 ~timeout n st))
   |> snd |> Result.to_option
 
 let count_active_threads = optimize_metric encode_count_active_threads
+
+(* SAT-based cohort counting. Asks Z3: is there a valuation where the
+   active-thread count satisfies [predicate count_expr]? Returns:
+     - [Sat k] if such a valuation exists, where [k] is the count value
+       in the witnessing model;
+     - [Unsat] if no such valuation exists;
+     - [Unknown] on solver error / timeout.
+   Much cheaper than [optimize_metric] when only a witness is needed —
+   the optimizer must additionally prove its result is the extremum. *)
+type sat_witness = Sat of int | Unsat_w | Unknown_w
+
+let sat_count
+    ?(generator = Constraints.default)
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(timeout = 0)
+    (config : Config.t) (locals : Variable.Set.t) (active_threads : bexp)
+    (predicate : nexp -> bexp) : sat_witness =
+  let module S = (val solver) in
+  let fns = Exp.b_free_names active_threads Variable.Set.empty in
+  let globals = Variable.Set.diff fns locals in
+  let st =
+    make generator config locals globals |> add_active_threads active_threads
+  in
+  let count_expr = encode_count_active_threads (Num 0) st in
+  (* Syntactic bound on the count: a sum of [threads_per_warp] booleans
+     lies in [0, threads_per_warp]. Without this hint, Z3 has to derive
+     the bound from the BV-encoded sum, which can take seconds-to-
+     minutes on large warp sizes — turning UNSAT proofs of
+     [count > threads_per_warp] into a bottleneck. *)
+  let count_bounds =
+    Exp.b_and
+      (n_ge count_expr (Num 0))
+      (n_le count_expr (Num st.config.threads_per_warp))
+  in
+  let goal =
+    Exp.b_and (Exp.b_and st.assumptions count_bounds) (predicate count_expr)
+  in
+  match S.solve_with_int_witness ~timeout goal count_expr with
+  | Ok (Some k) -> Sat k
+  | Ok None -> Unsat_w
+  | Error _ -> Unknown_w
+
+(* SAT("there are [n] pairwise-distinct tids in the block, all
+   satisfying [cohort], under [pre]"). Returns the [n] witnessing
+   tid triples on SAT, [None] on UNSAT or solver error.
+
+   Used for sub-warp Oversize: pass [n = expected + 1]; a SAT result
+   exhibits a configuration where strictly more than [expected]
+   threads arrive at the barrier — the bug witness is the [n] tids
+   themselves.
+
+   The encoding is small: [n] is typically a sub-warp count plus one
+   (e.g. 33 for [bar.sync 0, 32]), not the block size. Distinctness
+   is on tid triples — [(x,y,z)] differ in at least one component —
+   rather than the heavy [Distinct] over the full block. *)
+let sat_n_distinct_in_cohort
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(timeout = 0)
+    (config : Config.t) ~(pre : bexp) ~(n : int) (cohort : bexp) :
+    (int * int * int) list option =
+  if n <= 0 then Some []
+  else
+    let module S = (val solver) in
+    let bdim = config.block_dim in
+    let tid_locals = Variable.tid_set in
+    let proj_ctx i : Proj.t =
+      { suffix = string_of_int i; locals = tid_locals }
+    in
+    let tid_at i base = proj ~suffix:(string_of_int i) base in
+    let triple_at i =
+      ( Var (tid_at i Variable.tid_x),
+        Var (tid_at i Variable.tid_y),
+        Var (tid_at i Variable.tid_z) )
+    in
+    let mk_instance i =
+      let cohort_i = Proj.proj_b cohort (proj_ctx i) in
+      let pre_i = Proj.proj_b pre (proj_ctx i) in
+      let xi, yi, zi = triple_at i in
+      let in_block =
+        Exp.b_and_ex
+          [
+            n_le (Num 0) xi;
+            n_lt xi (Num bdim.x);
+            n_le (Num 0) yi;
+            n_lt yi (Num bdim.y);
+            n_le (Num 0) zi;
+            n_lt zi (Num bdim.z);
+          ]
+      in
+      Exp.b_and_ex [ pre_i; in_block; cohort_i ]
+    in
+    let pairwise_distinct =
+      let acc = ref [] in
+      for i = 0 to n - 1 do
+        for j = i + 1 to n - 1 do
+          let xi, yi, zi = triple_at i in
+          let xj, yj, zj = triple_at j in
+          acc :=
+            Exp.b_or_ex
+              [
+                Exp.b_not (n_eq xi xj);
+                Exp.b_not (n_eq yi yj);
+                Exp.b_not (n_eq zi zj);
+              ]
+            :: !acc
+        done
+      done;
+      Exp.b_and_ex !acc
+    in
+    let goal =
+      Exp.b_and_ex (pairwise_distinct :: List.init n mk_instance)
+    in
+    let witness_exprs =
+      List.init n (fun i ->
+          let xi, yi, zi = triple_at i in
+          [ xi; yi; zi ])
+      |> List.concat
+    in
+    match S.solve_with_int_witnesses ~timeout goal witness_exprs with
+    | Ok (Some vs) when List.length vs = 3 * n ->
+        let triples =
+          List.init n (fun i ->
+              match
+                ( List.nth vs (3 * i),
+                  List.nth vs ((3 * i) + 1),
+                  List.nth vs ((3 * i) + 2) )
+              with
+              | Some x, Some y, Some z -> Some (x, y, z)
+              | _ -> None)
+        in
+        if List.for_all Option.is_some triples then
+          Some (List.map Option.get triples)
+        else None
+    | _ -> None
 
 let encode_ua (index : nexp) (st : t) : nexp =
   let index = n_div index (Num (Config.memory_segments_bits st.config)) in
@@ -681,6 +813,10 @@ module Theorem = struct
       | Optimize of { strategy : Gen_z3.Optimizer.Strategy.t; expr : Exp.nexp }
       | Prop of Exp.bexp
 
+    let subst (kvs: Subst.Vars.t) : t -> t = function
+      | Optimize o -> Optimize { o with expr = Subst.ReplaceVars.n_subst kvs o.expr }
+      | Prop e -> Prop (Subst.ReplaceVars.b_subst kvs e)
+
     let to_string : t -> string = function
       | Optimize { strategy = s; expr = e } ->
           Gen_z3.Optimizer.Strategy.to_string s ^ " " ^ Exp.n_to_string e
@@ -698,11 +834,29 @@ module Theorem = struct
     goals : Goal.t list;
   }
 
+  let config_subst (e: t) : Subst.Vars.t =
+    [
+      Variable.from_name "$config.threads_per_warp", Num e.cfg.threads_per_warp;
+      Variable.from_name "$config.bank_count", Num e.cfg.bank_count;
+    ]
+    |> Subst.Vars.make
+
+  let inline_config (e : t) : t =
+    let kvs = config_subst e in
+    let b_subst = Subst.ReplaceVars.b_subst kvs in
+    {
+      e with
+      active_threads = b_subst e.active_threads;
+      assumptions = b_subst e.assumptions;
+      goals = List.map (Goal.subst kvs) e.goals;
+    }
+
   (* Execute all goals in a theorem *)
   let execute ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER))
       ?(debug = true) ?(verbose = false) ?(generator = Constraints.default)
       ?(tactic : Gen_z3.Tactic.t option = None) (thm : t) :
       (TheoremResult.t, string) Result.t list =
+    let thm = inline_config thm in
     let st : context =
       make generator thm.cfg thm.locals thm.globals
       (* set active threads *)

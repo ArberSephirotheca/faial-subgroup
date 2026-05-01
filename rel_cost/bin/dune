@@ -40,3 +40,13 @@
  (modules cost_dyn)
  (modes exe byte)
  (libraries inference cmdliner z3 rel_cost ra))
+
+(executable
+ (public_name faial-to-rocq)
+ (name to_rocq)
+ (modules to_rocq)
+ (modes exe byte)
+ (libraries
+   ; 1st-party
+   cmdliner
+   rel_cost inference protocols))

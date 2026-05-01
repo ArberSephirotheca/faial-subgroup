@@ -6,7 +6,7 @@ module Code = struct
 
   type t =
     | Skip
-    | Sync of Location.t option
+    | Sync of Sync.t
     | Assert of Assert.t
     | Access of Access.t
     | Call of (Call.t * t)
@@ -49,7 +49,7 @@ module Code = struct
   let to_string : t -> string =
     let rec to_s : t -> Indent.t list = function
       | Skip -> [ Line "skip;" ]
-      | Sync _ -> [ Line "sync;" ]
+      | Sync s -> [ Line (Sync.to_string s ^ ";") ]
       | Assert b -> [ Line (Assert.to_string b ^ ";") ]
       | Access e -> [ Line (Access.to_string e) ]
       | Call (c, s) ->
@@ -154,7 +154,14 @@ module Code = struct
             | None -> subst st s
           in
           Call (c, s)
-      | (Sync _ | Skip) as i -> i
+      | Sync s ->
+          Sync
+            {
+              s with
+              index = List.map (M.n_subst st) s.index;
+              count = Option.map (M.n_subst st) s.count;
+            }
+      | Skip -> Skip
   end
 
   module ReplacePair = SubstMake (Subst.SubstPair)
@@ -372,7 +379,7 @@ module Code = struct
           let* s1 = imp_to_scoped s1 in
           let* s2 = imp_to_scoped s2 in
           return (Seq (s1, s2))
-      | Sync l -> return (Sync l)
+      | Sync s -> return (Sync s)
       | Write e ->
           return
             (Access { array = e.array; index = e.index; mode = Write e.payload })

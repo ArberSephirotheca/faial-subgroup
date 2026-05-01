@@ -145,7 +145,34 @@ let inc_to_s (r : Range.t) : string =
 (* Converts source instruction to a valid CUDA operation *)
 let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
   | Access e -> acc_expr_to_dummy e
-  | Sync _ -> [ Line "__syncthreads();" ]
+  | Sync s ->
+      if Protocols.Sync.is_threadsync s then [ Line "__syncthreads();" ]
+      else
+        let mnem = Protocols.Sync.Mode.to_string s.mode in
+        let id_s =
+          match s.index with
+          | [ i ] -> n_to_string i
+          | _ -> Variable.name s.array
+        in
+        let operand_exprs : string list =
+          id_s
+          :: (match s.count with Some c -> [ n_to_string c ] | None -> [])
+        in
+        let template =
+          operand_exprs
+          |> List.mapi (fun i _ -> Printf.sprintf "%%%d" i)
+          |> String.concat ", "
+        in
+        let operand_list =
+          operand_exprs
+          |> List.map (fun e -> Printf.sprintf "\"r\"(%s)" e)
+          |> String.concat ", "
+        in
+        [
+          Line
+            (Printf.sprintf "asm volatile(\"bar.%s %s;\" :: %s);" mnem template
+               operand_list);
+        ]
   | If (b, p, q) ->
       [
         Line ("if (" ^ b_to_string b ^ ") {");
@@ -156,7 +183,16 @@ let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
       ]
   | Skip -> []
   | Decl { var; ty; body = p } ->
-      Line (C_type.to_string ty ^ " " ^ Variable.name var ^ ";")
+      (* Synthesised Decls are uninitialised scaffold variables — strip
+         [const] so the emitted C++ doesn't fail "default initialisation
+         of an object of const type". Clang dependent-type placeholders
+         (e.g. "<dependent type>" inside templated bodies) leak through
+         as type strings; substitute [int] so the file remains parseable. *)
+      let ty_s = C_type.to_string (C_type.strip_const ty) in
+      let ty_s =
+        if String.length ty_s > 0 && ty_s.[0] = '<' then "int" else ty_s
+      in
+      Line (ty_s ^ " " ^ Variable.name var ^ ";")
       :: inst_to_s g p
   | Seq (p, q) -> inst_to_s g p @ inst_to_s g q
   | Loop { range = r; body = p } ->
@@ -165,7 +201,7 @@ let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
       let lb, ub, op =
         match r.dir with
         | Increase -> (r.lower_bound, r.upper_bound, " <= ")
-        | Decrease -> (n_dec r.upper_bound, n_dec r.lower_bound, " => ")
+        | Decrease -> (n_dec r.upper_bound, n_dec r.lower_bound, " >= ")
       in
       [
         Line
@@ -246,8 +282,10 @@ let local_var_to_l (vs : VarSet.t) (g : Generator.t) : Indent.t list =
     in
     Indent.Line ("int " ^ Variable.name v ^ " = " ^ rhs ^ ";")
   in
-  (* A local variable must not be a tid/dummy variable *)
-  vs
+  (* Architectural names are CUDA builtins — never declare them.
+     [thread_globals] covers blockIdx/blockDim/gridDim/warpSize; [is_tid]
+     covers threadIdx, which is intentionally not in [thread_globals]. *)
+  VarSet.diff vs thread_globals
   |> VarSet.filter (fun v -> not (Variable.is_tid v || is_dummy_var v))
   |> VarSet.elements |> List.map init_local_var
 
@@ -300,8 +338,23 @@ let kernel_to_s (f : Code.t -> Indent.t list) (g : Generator.t)
 
 let prog_to_s (g : Generator.t) (p : Code.t) : Indent.t list = inst_to_s g p
 
+(* Inference synthesizes intermediate names containing '@' (e.g.
+   "@AccessState98"). '@' is not a valid character in a C identifier,
+   so we sanitize generated output by prefixing every '@'-name with a
+   stable, collision-resistant prefix. *)
+let synth_prefix : string = "__synth_"
+
+let sanitize_at (s : string) : string =
+  let buf = Buffer.create (String.length s) in
+  String.iter
+    (fun c ->
+      if c = '@' then Buffer.add_string buf synth_prefix
+      else Buffer.add_char buf c)
+    s;
+  Buffer.contents buf
+
 let gen_cuda (g : Generator.t) (gv : Gv_parser.t) (k : Kernel.t) : string =
-  kernel_to_s (prog_to_s g) g gv k |> Indent.to_string
+  kernel_to_s (prog_to_s g) g gv k |> Indent.to_string |> sanitize_at
 
 (* Serialization of RaCUDA parameters *)
 let gen_params (gv : Gv_parser.t) : string =

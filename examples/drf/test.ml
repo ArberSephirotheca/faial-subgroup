@@ -18,6 +18,23 @@ let tests =
     (* The kernel contains constraints that makes it DRF: blockDim.{y,z}=1
      and gridDim.{y,z}=1. *)
     ("drf-saxpy.cu", [ "--all-dims"; "--all-levels" ], 0);
+    (* Same kernel as drf-saxpy.cu but without the in-source __assume()s:
+     racy under all-dims/all-levels because blockDim.{y,z} or gridDim.{y,z}
+     may exceed 1, allowing two threads to compute the same index. *)
+    ("drf-assume.cu", [ "--all-dims"; "--all-levels" ], 1);
+    (* Same kernel, but the missing __assume() constraints are injected via
+     the --assume CLI flag. Two assumptions are passed to verify that
+     --assume composes when repeated. *)
+    ( "drf-assume.cu",
+      [
+        "--all-dims";
+        "--all-levels";
+        "--assume";
+        "blockDim.y == 1 && blockDim.z == 1";
+        "--assume";
+        "gridDim.y == 1 && gridDim.z == 1";
+      ],
+      0 );
     (* This example is only racy at the grid-level *)
     ("racy-grid-level.cu", [], 0);
     ("racy-grid-level.cu", [ "--grid-level" ], 1);

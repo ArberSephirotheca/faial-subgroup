@@ -1,0 +1,8 @@
+(tests
+ (names
+   test_thread
+   test_phase
+   test_state
+   test_diagnostic
+ )
+ (libraries stage0 protocols rel_cost barrier_div alcotest))

@@ -49,7 +49,20 @@ module Infer = struct
     loop_guard : Exp.bexp;
     cond : Comparator.t unop;
     inc : Increment.t unop;
+    (* Increments of other variables harvested out of the [inc] slot. These
+       get expanded into per-iteration assignments by [extract_incs]. *)
     other_incs : Increment.t unop list;
+    (* Same-variable increments beyond the primary [inc]. These come from
+       the body's top level (or from a multi-increment [inc] slot) and
+       contribute to the loop's step. They are NOT extracted: body-origin
+       ones stay where they are, inc-origin ones were already removed
+       from the [inc] slot. *)
+    extra_step : Increment.t unop list;
+    (* True when at least one increment of [name] was harvested from the
+       body's top level. The body is then prepended with [Decl name = name]
+       so the body's writes target an iteration-local shadow rather than
+       the For-loop's binding. *)
+    needs_shadow : bool;
     post_body : Stmt.t;
   }
 
@@ -129,34 +142,37 @@ module Infer = struct
     in
     parse ~accum:(Bool true)
 
-  (** Find every increment that is possible to find. The remainding statements
-      should be kept in order. *)
-  let parse_inc : Stmt.t -> Increment.t unop list * Stmt.t =
+  (* Match an Assign that has the shape of an increment, without modifying
+     state. Used by both [parse_inc] (which removes them from the inc slot)
+     and [parse_body_top_incs] (which leaves them in place). *)
+  let match_inc (s : Stmt.t) : Increment.t unop option =
     let parse (var : Variable.t) (o : N_binary.t) (arg : Exp.nexp) :
         Increment.t unop option =
       o |> Increment.parse |> Option.map (fun op -> { var; op; arg })
     in
+    match s with
+    | Assign { var = l; data = Binary (o, Var l1, Var l2); _ } ->
+        if Variable.equal l l1 then parse l o (Var l2)
+        else if Variable.equal l l2 then parse l o (Var l1)
+        else None
+    | Assign
+        {
+          var = l;
+          data = Binary (o, r, Var l') | Binary (o, Var l', r);
+          _;
+        } ->
+        if Variable.equal l l' then parse l o r else None
+    | _ -> None
+
+  (** Find every increment that is possible to find. The remainding statements
+      should be kept in order. *)
+  let parse_inc : Stmt.t -> Increment.t unop list * Stmt.t =
     let rec loop (accum : Increment.t unop list) (s : Stmt.t) :
         Stmt.t list -> Increment.t unop list * Stmt.t = function
       | [] -> (accum, s)
       | s1 :: l ->
-          let inc : Increment.t unop option =
-            match s1 with
-            | Assign { var = l; data = Binary (o, Var l1, Var l2); _ } ->
-                if Variable.equal l l1 then parse l o (Var l2)
-                else if Variable.equal l l2 then parse l o (Var l1)
-                else None
-            | Assign
-                {
-                  var = l;
-                  data = Binary (o, r, Var l') | Binary (o, Var l', r);
-                  _;
-                } ->
-                if Variable.equal l l' then parse l o r else None
-            | _ -> None
-          in
           let s, accum =
-            match inc with
+            match match_inc s1 with
             | Some o -> (s, o :: accum)
             | None -> (Stmt.seq s1 s, accum)
           in
@@ -164,19 +180,56 @@ module Infer = struct
     in
     fun s -> loop [] Skip (Stmt.to_list s)
 
-  let parse (loop : for_) : t option =
-    let incs, inc_stmt = parse_inc loop.inc in
-    let rec iter (skipped : Increment.t unop list) :
-        Increment.t unop list -> t option = function
-      | inc :: todo -> (
+  (** Harvest increment-shaped assignments from the top level of the body.
+      Does NOT modify the body — only collects matches. Nested statements
+      (inside If, For, Star, etc.) are not visited; the scoped analysis
+      handles them. *)
+  let parse_body_top_incs (s : Stmt.t) : Increment.t unop list =
+    Stmt.to_list s |> List.filter_map match_inc
+
+  let parse ~(body : Stmt.t) (loop : for_) : t option =
+    let inc_incs, inc_stmt = parse_inc loop.inc in
+    let body_incs = parse_body_top_incs body in
+    let tagged : (Increment.t unop * bool) list =
+      (* bool = from_body *)
+      List.map (fun i -> (i, false)) inc_incs
+      @ List.map (fun i -> (i, true)) body_incs
+    in
+    let rec iter (skipped : (Increment.t unop * bool) list) :
+        (Increment.t unop * bool) list -> t option = function
+      | (inc, b) :: todo -> (
           let name = inc.var in
           (* Try to find a range from this increment: *)
           match
             let* cond, loop_guard = parse_cond name loop.cond in
             let init, pre_loop = parse_init name loop.init in
+            let rest = skipped @ todo in
+            (* Same-variable increments beyond the primary contribute to step. *)
+            let extra_step =
+              rest
+              |> List.filter (fun (i, _) -> Variable.equal i.var name)
+              |> List.map fst
+            in
+            (* Increments of other variables, harvested only from the inc
+               slot (body-origin ones for other vars stay in place). *)
+            let other_incs =
+              rest
+              |> List.filter (fun (i, from_body) ->
+                     (not from_body) && not (Variable.equal i.var name))
+              |> List.map fst
+            in
+            let needs_shadow =
+              b
+              || List.exists
+                   (fun (i, from_body) ->
+                     from_body && Variable.equal i.var name)
+                   rest
+            in
             Some
               {
-                other_incs = skipped @ todo;
+                other_incs;
+                extra_step;
+                needs_shadow;
                 post_body = Stmt.Skip;
                 loop_guard;
                 init;
@@ -191,10 +244,10 @@ module Infer = struct
               o
           | None ->
               (* This increment didn't work, try again *)
-              iter (inc :: skipped) todo)
+              iter ((inc, b) :: skipped) todo)
       | [] -> None (* Failed inference *)
     in
-    incs
+    tagged
     (* Infer a range *)
     |> iter []
     (* And if we find it, add the non-increments to post_body *)
@@ -216,16 +269,60 @@ module Infer = struct
     (* (int i = 4; i > 0; i--) *)
     | { op = Gt; arg = lb; _ } -> (Binary (Plus, Num 1, lb), init, Decrease)
 
-  let infer_step (r : t) : Range.Step.t option =
-    match r.inc with
-    | { op = Plus; arg = a; _ } | { op = Minus; arg = a; _ } ->
-        Some (Range.Step.Plus a)
-    | { op = Mult; arg = a; _ } | { op = Div; arg = a; _ } ->
-        Some (Range.Step.Mult a)
-    | { op = LeftShift; arg = Num a; _ } | { op = RightShift; arg = Num a; _ }
-      ->
-        Some (Range.Step.Mult (Num (Stage0.Common.pow ~base:2 a)))
+  (* Signed contribution of an additive increment. [Plus k] contributes
+     +k, [Minus k] contributes -k. Returns None for non-additive ops. *)
+  let signed_arg (i : Increment.t unop) : Exp.nexp option =
+    match i.op with
+    | Plus -> Some i.arg
+    | Minus -> (
+        match i.arg with Num n -> Some (Num (-n)) | a -> Some (Exp.n_uminus a))
     | _ -> None
+
+  let dir_from_cond (c : Comparator.t unop) : Range.direction =
+    match c.op with
+    | Lt | Le | RelMinus -> Range.Increase
+    | Ge | Gt -> Range.Decrease
+
+  let infer_step (r : t) : Range.Step.t option =
+    if r.extra_step = [] then
+      (* No extras — original behavior. The arg is taken as-is and the
+         direction is derived from the comparator by [infer_bounds]. *)
+      match r.inc with
+      | { op = Plus; arg = a; _ } | { op = Minus; arg = a; _ } ->
+          Some (Range.Step.Plus a)
+      | { op = Mult; arg = a; _ } | { op = Div; arg = a; _ } ->
+          Some (Range.Step.Mult a)
+      | { op = LeftShift; arg = Num a; _ }
+      | { op = RightShift; arg = Num a; _ } ->
+          Some (Range.Step.Mult (Num (Stage0.Common.pow ~base:2 a)))
+      | _ -> None
+    else
+      (* Extras present: only additive ops compose. Sum signed args. *)
+      let extras_additive =
+        List.for_all
+          (fun i ->
+            match i.op with Increment.Plus | Minus -> true | _ -> false)
+          r.extra_step
+      in
+      match r.inc with
+      | { op = Plus | Minus; _ } when extras_additive -> (
+          let* primary = signed_arg r.inc in
+          let total =
+            List.fold_left
+              (fun acc i ->
+                match signed_arg i with
+                | Some s -> Exp.n_plus acc s
+                | None -> acc)
+              primary r.extra_step
+          in
+          match (total, dir_from_cond r.cond) with
+          | Num 0, _ -> None
+          | Num n, Increase when n > 0 -> Some (Range.Step.Plus (Num n))
+          | Num n, Decrease when n < 0 -> Some (Range.Step.Plus (Num (-n)))
+          | Num _, _ -> None (* sign mismatch with cond direction *)
+          | _, Increase -> Some (Range.Step.Plus total)
+          | _, Decrease -> None (* refuse symbolic step with decreasing cond *))
+      | _ -> None
 
   let to_range (r : t) : Range.t option =
     let lower_bound, upper_bound, dir = infer_bounds r in
@@ -241,11 +338,19 @@ let to_stmt (l : t) (body : Stmt.t) : Stmt.t =
   if body = Skip then Skip
   else
     match
-      let* inf = Infer.parse l in
+      let* inf = Infer.parse ~body l in
       let* r = Infer.to_range inf in
       Some (inf, r)
     with
     | Some (inf, r) ->
+        (* When the loop variable is mutated inside the body, shadow it
+           with [Decl x = x] so the body's writes target an iteration-local
+           binding rather than the For-loop's range variable. *)
+        let body =
+          if inf.needs_shadow then
+            Stmt.seq (Stmt.decl_set inf.name (Var inf.name)) body
+          else body
+        in
         let body =
           Stmt.from_list
             [

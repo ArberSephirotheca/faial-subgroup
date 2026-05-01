@@ -1,5 +1,5 @@
 //saxpy,data,ctrl
-//@AccessState98, j1
+//@AccessState1, j1
 /*
 Example 10: Second loop variable is rendered as j1 and x[i] as unknonw_1.
 */

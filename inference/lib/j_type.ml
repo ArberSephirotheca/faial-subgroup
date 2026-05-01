@@ -30,4 +30,18 @@ let to_c_type ?(default = C_type.unknown) (j : t) : C_type.t =
 let matches (f : C_type.t -> bool) (j : t) : bool =
   j |> to_c_type_res |> Result.map f |> Result.value ~default:false
 
+(* Returns the desugared type (typedefs resolved) if present, else qualType. *)
+let to_desugared_c_type (j : t) : C_type.t =
+  let open Rjson in
+  let desugared =
+    let* o = cast_object j in
+    with_field "desugaredQualType" cast_string o
+  in
+  match desugared with
+  | Ok s -> C_type.make s
+  | Error _ -> to_c_type j
+
+let desugared_matches (f : C_type.t -> bool) (j : t) : bool =
+  f (to_desugared_c_type j)
+
 let to_string (j : t) : string = j |> to_c_type |> C_type.to_string

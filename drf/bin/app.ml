@@ -33,6 +33,8 @@ type t = {
   macros : string list;
   ignore_asserts : bool;
   log_delinearize : bool;
+  assumes : Exp.bexp list;
+  assume_dims : bool;
 }
 
 let to_string (app : t) : string =
@@ -82,6 +84,8 @@ let to_string (app : t) : string =
    only_true_data_races;
    ignore_asserts;
    log_delinearize;
+   assumes;
+   assume_dims;
   } ->
       let only_kernel = Option.value ~default:"(null)" only_kernel in
       let kernels = List.length kernels |> string_of_int in
@@ -96,15 +100,20 @@ let to_string (app : t) : string =
       ^ "\nshow_flat_acc: " ^ bool show_flat_acc ^ "\nshow_symbexp: "
       ^ bool show_symbexp ^ "\nmacros = " ^ list_string macros
       ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
-      ^ "\nignore_asserts = " ^ bool ignore_asserts ^ "\n"
       ^ "\nlog_delinearize = " ^ bool log_delinearize ^ "\n"
+      ^ "\nignore_asserts = " ^ bool ignore_asserts
+      ^ "\nassume_dims = " ^ bool assume_dims
+      ^ "\nassumes: "
+      ^ list_string (List.map Exp.b_to_string assumes)
+      ^ "\n"
 
 let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~show_phase_split ~show_loc_split ~show_flat_acc ~show_symbexp ~logic
     ~ge_index ~le_index ~eq_index ~only_array ~only_kernel ~only_true_data_races
     ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~block_dim ~grid_dim
     ~includes ~inline_calls ~archs ~ignore_parsing_errors ~params ~macros
-    ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize : t =
+    ~cu_to_json ~all_dims ~ignore_asserts ~assumes ~assume_dims
+    ~log_delinearize : t =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
@@ -144,6 +153,8 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     macros;
     ignore_asserts;
     log_delinearize;
+    assumes;
+    assume_dims;
   }
 
 let show (b : bool) (call : 'a -> unit) (x : 'a) : 'a =
@@ -162,6 +173,11 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   |> Protocols.Kernel.try_set_block_dim a.block_dim
   |> Protocols.Kernel.try_set_grid_dim a.grid_dim
   |> Protocols.Kernel.apply_arch arch
+  (* 1.1 inject user-provided assumptions into the kernel precondition *)
+  |> (fun k ->
+    List.fold_left (fun k b -> Protocols.Kernel.add_pre b k) k a.assumes)
+  (* 1.2 optionally pin unreferenced launch dimensions to 1 *)
+  |> (if a.assume_dims then Protocols.Kernel.add_dim_assumptions else Fun.id)
   (* 2. inline global assignments, including block_dim/grid_dim *)
   |> Protocols.Kernel.inline_globals a.params
   (* 2.1 inline block_id as a constant when architecture is Grid *)

@@ -7,7 +7,7 @@ open Exp
 (* The source instruction uses the base defined above *)
 type t =
   | Access of Access.t
-  | Sync of Location.t option
+  | Sync of Sync.t
   | If of bexp * t * t
   | Loop of { range : Range.t; body : t }
   | Seq of t * t
@@ -153,7 +153,12 @@ let vars_distinct : t -> Variable.Set.t -> t =
 
 let rec free_names (i : t) (fns : Variable.Set.t) : Variable.Set.t =
   match i with
-  | Skip | Sync _ -> fns
+  | Skip -> fns
+  | Sync s ->
+      let fns =
+        List.fold_left (fun fns e -> n_free_names e fns) fns s.index
+      in
+      (match s.count with Some c -> n_free_names c fns | None -> fns)
   | Access a -> Access.free_names a fns
   | If (b, p, q) -> b_free_names b fns |> free_names p |> free_names q
   | Decl { var = x; body = p; _ } -> free_names p fns |> Variable.Set.remove x
@@ -189,7 +194,7 @@ let rec used_arrays (i : t) (fns : Variable.Set.t) : Variable.Set.t =
 
 let rec to_s : t -> Indent.t list = function
   | Skip -> [ Line "skip;" ]
-  | Sync _ -> [ Line "sync;" ]
+  | Sync s -> [ Line (Sync.to_string s ^ ";") ]
   | Access a -> [ Line (Access.to_string a) ]
   | If (b, p, Skip) ->
       [ Line ("if (" ^ b_to_string b ^ ") {"); Block (to_s p); Line "}" ]

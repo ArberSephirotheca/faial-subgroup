@@ -6,11 +6,11 @@ module Code = struct
     | Decl of { ty : C_type.t; var : Variable.t; body : t }
     | Loop of { range : Range.t; body : t }
     | Cond of { test : Exp.bexp; body : t }
-    | Barrier of Location.t option
+    | Barrier of Sync.t
 
   let rec from_proto : Protocols.Code.t -> t Seq.t = function
     | Skip | Access _ -> Seq.empty
-    | Sync l -> Seq.return (Barrier l)
+    | Sync s -> Seq.return (Barrier s)
     | Decl { ty; var; body = s } ->
         from_proto s |> Seq.map (fun body -> Decl { ty; body; var })
     | If (b, p, q) ->
@@ -44,10 +44,12 @@ module Code = struct
     | Cond { test = b; body = s } ->
         b_is_uniform thread_locals b && is_uniform thread_locals s
 
-  let rec location : t -> Location.t option = function
-    | Barrier l -> l
+  let rec sync : t -> Sync.t = function
+    | Barrier s -> s
     | Decl { body = s; _ } | Cond { body = s; _ } | Loop { body = s; _ } ->
-        location s
+        sync s
+
+  let location (c : t) : Location.t option = (sync c).loc
 end
 
 module Kernel = struct

@@ -7,7 +7,7 @@ module StringSet = Common.StringSet
 type t =
   | Skip
   | Seq of t * t
-  | Sync of Location.t option
+  | Sync of Sync.t
   | Assert of Assert.t
   | Read of Read.t
   | Atomic of Atomic_write.t
@@ -130,7 +130,7 @@ let decl_unset (v : Variable.t) : t = Decl (Decl.unset v)
 let to_s : t -> Indent.t list =
   let rec stmt_to_s : t -> Indent.t list = function
     | Call c -> [ Line (Call.to_string c) ]
-    | Sync _ -> [ Line "sync;" ]
+    | Sync s -> [ Line (Sync.to_string s ^ ";") ]
     | Assert b -> [ Line (Assert.to_string b ^ ";") ]
     | Atomic r ->
         [

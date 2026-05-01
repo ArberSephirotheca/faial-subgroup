@@ -74,6 +74,12 @@ let get_array_type (c : t) : string list =
 
 let is_const (c : t) : bool = to_string c |> String.starts_with ~prefix:"const "
 
+let strip_const (c : t) : t =
+  let s = to_string c in
+  if String.starts_with ~prefix:"const " s then
+    CType (Slice.from_start (String.length "const ") |> Slice.substring s)
+  else c
+
 let is_array (c : t) : bool =
   to_string c |> parse_array_type_opt |> Option.is_some
 

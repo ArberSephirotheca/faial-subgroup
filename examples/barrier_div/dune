@@ -1,0 +1,11 @@
+(test
+  (name test)
+  (deps (glob_files *.cu)
+    ../../barrier_div/bin/check.exe
+    ../../barrier_div/bin/participants.exe
+  )
+  (libraries stage0
+    ; 3rd-party:
+    fpath
+  )
+)

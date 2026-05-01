@@ -3,6 +3,7 @@
    test_scoped
    test_encode_assigns
    test_kernel_inline
+   test_for
  )
  (libraries stage0 protocols inference alcotest)
 )
