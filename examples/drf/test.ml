@@ -164,6 +164,11 @@ let tests =
     ("drf-inline-var.cu", [], 0);
     (* ensure that an aligned protocol remains aligned *)
     ("drf-loop-aligned-1.cu", [], 0);
+    (* End-to-end smoke test for IntegerLiteral parsing of uint64
+     sentinels that exceed OCaml's 63-bit int — they must reach the
+     analyser as concrete two's-complement values, not the
+     [Int.max_int] fallback. *)
+    ("drf-uint64-sentinel.cu", [], 0);
   ]
 
 (* These are kernels that are being documented, but are

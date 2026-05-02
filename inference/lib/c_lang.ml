@@ -427,12 +427,35 @@ let rec parse_expr (j : json) : c_expr j_result =
           let* f = with_field "value" cast_float o in
           Ok (FloatingLiteral f))
   | "IntegerLiteral" ->
-      let* i = with_field "value" cast_string o in
+      let* s = with_field "value" cast_string o in
+      (* Try increasingly wide parses: OCaml [int] is 63-bit on 64-bit
+         platforms, so [int_of_string] rejects literals in
+         [2^62, 2^63) and uint64 sentinels in [2^63, 2^64).
+         [Int64.of_string] covers up to [2^63-1]; the [0u]-prefixed
+         form reinterprets the digits as unsigned 64-bit (two's
+         complement), which is what C does for [unsigned long long]
+         constants like [0xFFFFFFFFFFFFFFFFULL]. *)
+      let fits_int (i64 : int64) : bool =
+        i64 >= Int64.of_int Int.min_int && i64 <= Int64.of_int Int.max_int
+      in
+      let parsed : int option =
+        match int_of_string_opt s with
+        | Some i -> Some i
+        | None -> (
+            match Int64.of_string_opt s with
+            | Some i64 when fits_int i64 -> Some (Int64.to_int i64)
+            | _ -> (
+                match Int64.of_string_opt ("0u" ^ s) with
+                | Some i64 when fits_int i64 -> Some (Int64.to_int i64)
+                | _ -> None))
+      in
       let i =
-        try int_of_string i
-        with Failure _ ->
-          prerr_endline ("Could not parse long: " ^ i);
-          if String.get i 0 = '-' then Int.min_int else Int.max_int
+        match parsed with
+        | Some i -> i
+        | None ->
+            prerr_endline ("Could not parse long: " ^ s);
+            if String.length s > 0 && String.get s 0 = '-' then Int.min_int
+            else Int.max_int
       in
       Ok (IntegerLiteral i)
   | "MemberExpr" ->
