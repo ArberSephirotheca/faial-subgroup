@@ -169,6 +169,11 @@ let tests =
      analyser as concrete two's-complement values, not the
      [Int.max_int] fallback. *)
     ("drf-uint64-sentinel.cu", [], 0);
+    (* C++11 range-based for over a fixed-size array: the bound is
+     extracted from the RangeStmt's qualType so the iteration
+     variable becomes [arr[__idx]] inside a bounded foreach,
+     instead of an unbounded Star. *)
+    ("drf-range-for.cu", [], 0);
   ]
 
 (* These are kernels that are being documented, but are

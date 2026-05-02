@@ -1071,6 +1071,175 @@ and parse_stmt (j : json) : c_stmt j_result =
                 ("Expecting a list of length 5, but got a length of list " ^ g)
                 j)
         o
+  | Some "CXXForRangeStmt" ->
+      (* C++ range-based [for (T x : range) body]. Clang's [inner]
+         is [Init?; RangeStmt; BeginStmt; EndStmt; Cond; Inc;
+         LoopVar; Body] — the optional init is C++20. The RangeStmt
+         is a synthetic [DeclStmt] declaring [__rangeN] whose [type]
+         is the range expression's type and whose first inner is the
+         range expression itself. For built-in arrays the [qualType]
+         carries the bound (e.g. [int (&)[3]]), which lets us emit a
+         bounded [for (int __faial_idx = 0; __faial_idx < N; ++)]
+         with [LoopVarT loop_var = arr_expr[__faial_idx]] in the
+         body — the analyser then sees a real bound and a concrete
+         binding for [loop_var]. When the bound can't be extracted
+         (containers, iterator-based ranges) we fall back to a
+         [while(1)] wrapper around the original LoopVar declaration,
+         which under-approximates iteration count but at least keeps
+         body accesses visible. *)
+      let parse_array_bound (qual_type : string) : int option =
+        match
+          (String.rindex_opt qual_type '[', String.rindex_opt qual_type ']')
+        with
+        | Some i, Some j when j > i + 1 ->
+            int_of_string_opt (String.sub qual_type (i + 1) (j - i - 1))
+        | _ -> None
+      in
+      let parse_range_stmt (range_j : json) :
+          (c_expr * int * J_type.t) option =
+        let extract =
+          let* ro = cast_object range_j in
+          let* var_decls = with_field "inner" cast_list ro in
+          let* var_j =
+            match var_decls with
+            | x :: _ -> Ok x
+            | [] -> root_cause "RangeStmt: empty inner" range_j
+          in
+          let* vo = cast_object var_j in
+          let* ty_j = get_field "type" vo in
+          let* ty_o = cast_object ty_j in
+          let* qual_type = with_field "qualType" cast_string ty_o in
+          let* arr_expr = with_field "inner" (cast_list_1 parse_expr) vo in
+          match parse_array_bound qual_type with
+          | Some n -> Ok (arr_expr, n, J_type.from_json ty_j)
+          | None -> root_cause ("RangeStmt: no [N] in " ^ qual_type) range_j
+        in
+        match extract with Ok x -> Some x | Error _ -> None
+      in
+      (* The RangeStmt's VarDecl name is [__rangeN]; reuse N as a
+         non-clashing suffix for our synthetic index variable. *)
+      let synth_index_name (range_j : json) : string =
+        let base = "__faial_for_range_idx" in
+        match
+          let* ro = cast_object range_j in
+          let* var_decls = with_field "inner" cast_list ro in
+          let* var_j =
+            match var_decls with
+            | x :: _ -> Ok x
+            | [] -> root_cause "" range_j
+          in
+          let* vo = cast_object var_j in
+          with_field "name" cast_string vo
+        with
+        | Ok n when String.length n > 7 && String.sub n 0 7 = "__range" ->
+            base ^ String.sub n 7 (String.length n - 7)
+        | _ -> base
+      in
+      (* The LoopVar DeclStmt wraps a single VarDecl whose name and
+         type we want; keep its original parse_stmt result for the
+         fallback path, and re-extract name/type for the bounded
+         path. *)
+      let parse_loop_var (lv_j : json) : (Variable.t * J_type.t) option =
+        let extract =
+          let* lo = cast_object lv_j in
+          let* decls = with_field "inner" cast_list lo in
+          let* d_j =
+            match decls with
+            | x :: _ -> Ok x
+            | [] -> root_cause "LoopVar: empty inner" lv_j
+          in
+          let* d_o = cast_object d_j in
+          let* var = parse_variable d_j in
+          let* ty_j = get_field "type" d_o in
+          Ok (var, J_type.from_json ty_j)
+        in
+        match extract with Ok x -> Some x | Error _ -> None
+      in
+      with_field "inner"
+        (fun j ->
+          let* l = cast_list j in
+          let n = List.length l in
+          if n < 7 then
+            root_cause
+              ("CXXForRangeStmt: expected at least 7 inner elements, got "
+              ^ string_of_int n)
+              j
+          else
+            let body_j = List.nth l (n - 1) in
+            let loop_var_j = List.nth l (n - 2) in
+            let range_stmt_j = List.nth l (n - 7) in
+            let* body = parse_stmt body_j in
+            match
+              ( parse_range_stmt range_stmt_j,
+                parse_loop_var loop_var_j )
+            with
+            | Some (arr_expr, bound, _arr_ty), Some (loop_var, loop_var_ty)
+              ->
+                let idx_var =
+                  Variable.from_name (synth_index_name range_stmt_j)
+                in
+                let idx_ref : c_expr =
+                  Ident
+                    (Decl_expr.from_name ~ty:J_type.int
+                       ~kind:Decl_expr.Kind.Var idx_var)
+                in
+                let arr_subscript : c_expr =
+                  ArraySubscriptExpr
+                    {
+                      lhs = arr_expr;
+                      rhs = idx_ref;
+                      ty = loop_var_ty;
+                      location = Location.empty;
+                    }
+                in
+                let init : c_for_init =
+                  Decls
+                    [
+                      {
+                        var = idx_var;
+                        ty = J_type.int;
+                        init = Some (IExpr (IntegerLiteral 0));
+                        attrs = [];
+                      };
+                    ]
+                in
+                let cond : c_expr =
+                  BinaryOperator
+                    {
+                      opcode = "<";
+                      lhs = idx_ref;
+                      rhs = IntegerLiteral bound;
+                      ty = J_type.bool;
+                    }
+                in
+                let inc : c_stmt =
+                  SExpr
+                    (UnaryOperator
+                       { opcode = "++"; child = idx_ref; ty = J_type.int })
+                in
+                let loop_var_decl : c_stmt =
+                  DeclStmt
+                    [
+                      {
+                        var = loop_var;
+                        ty = loop_var_ty;
+                        init = Some (IExpr arr_subscript);
+                        attrs = [];
+                      };
+                    ]
+                in
+                Ok
+                  (ForStmt
+                     {
+                       init = Some init;
+                       cond = Some cond;
+                       inc;
+                       body = Seq (loop_var_decl, body);
+                     })
+            | _ ->
+                let* loop_var = parse_stmt loop_var_j in
+                Ok (Seq (loop_var, WhileStmt { cond = IntegerLiteral 1; body })))
+        o
   | Some "FullComment" | Some "NullStmt" -> Ok Skip
   | Some "GCCAsmStmt" ->
       let* a = Asm.parse parse_expr j in

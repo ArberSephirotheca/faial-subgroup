@@ -518,6 +518,26 @@ module Make (L : Logger) = struct
           let rhs = infer_expr rhs in
           let ty = J_type.to_c_type ~default:C_type.int ty |> resolve in
           Infer_stmt.Assign { var; ty; data = rhs }
+      (* [++x] / [--x] / [x++] / [x--] as a statement-expression. Clang
+         normalises these to [x = x + 1] inside [for]-loop inc slots
+         before c-to-json sees them, but they survive in other
+         positions (e.g. statement-expressions, synthesised increments
+         from CXXForRangeStmt lowering). Lower them to the same
+         Assign shape so the loop-inference in [imp/lib/for.ml]
+         recognises them as well-formed increments and avoids
+         falling back to an unbounded [Star]. *)
+      | SExpr
+          (UnaryOperator
+             { opcode = ("++" | "--") as opcode;
+               child = Ident { name = var; _ };
+               ty;
+             }) ->
+          let op : N_binary.t = if opcode = "++" then Plus else Minus in
+          let data : Infer_exp.t =
+            NExp (Binary (op, NExp (Var var), NExp (Num 1)))
+          in
+          let ty = J_type.to_c_type ~default:C_type.int ty |> resolve in
+          Infer_stmt.Assign { var; ty; data }
       | ContinueStmt -> Continue
       | BreakStmt -> Break
       | GotoStmt -> Skip
