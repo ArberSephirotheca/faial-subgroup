@@ -291,7 +291,7 @@ let rec parse_expr (j : json) : c_expr j_result =
       (* Unknown value *)
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.from_json ty))
-  | "CXXDefaultArgExpr" | "ImplicitValueInitExpr" | "CXXNullPtrLiteralExpr"
+  | "ImplicitValueInitExpr" | "CXXNullPtrLiteralExpr"
   | "StringLiteral" | "DependentScopeDeclRefExpr" | "RecoveryExpr" ->
       (* Unknown value *)
       let* ty = get_field "type" o in
@@ -322,8 +322,24 @@ let rec parse_expr (j : json) : c_expr j_result =
       Ok (CharacterLiteral i)
   | "CXXConstCastExpr" | "CXXReinterpretCastExpr" | "PackExpansionExpr"
   | "ImplicitCastExpr" | "CXXStaticCastExpr" | "ConstantExpr" | "ParenExpr"
-  | "ExprWithCleanups" | "CStyleCastExpr" ->
+  | "ExprWithCleanups" | "CStyleCastExpr" | "CXXDefaultArgExpr" ->
       with_field "inner" (cast_list_1 parse_expr) o
+  | "SubstNonTypeTemplateParmExpr" ->
+      (* Clang wraps a substituted non-type template parameter
+         (e.g. [BS] becoming [128] in [reduce<float, 128>]) in this
+         node; [inner] is [NonTypeTemplateParmDecl; <substituted value>].
+         Drop the parameter decl and recurse into the substituted value. *)
+      with_field "inner"
+        (fun i ->
+          let* l = cast_list i in
+          match l with
+          | [ _; v ] -> parse_expr v
+          | _ ->
+              root_cause
+                ("SubstNonTypeTemplateParmExpr: expected 2 inner items, got "
+                ^ (List.length l |> string_of_int))
+                i)
+        o
   | "CXXDependentScopeMemberExpr" ->
       let* n = with_field "member" cast_string o in
       let* b =
@@ -2545,26 +2561,44 @@ module Def = struct
     in
     match k with
     | "FunctionTemplateDecl" ->
-        (* Given a list of inners, we parse from left-to-right the
-        template parameters first.
-        If we cannot find parse a template parameter, then
-        we try to parse a function declaration. In some cases we
-        might even have some more parameters after the function
-        declaration, but those are discarded, as I did not understand
-        what they are for. *)
-        let rec handle (type_params : Ty_param.t list) :
-            Yojson.Basic.t list -> t list j_result = function
-          | [] ->
-              root_cause
-                "Error parsing FunctionTemplateDecl: no FunctionDecl found" j
+        (* [inner] holds the template parameters first
+           (TemplateTypeParmDecl / NonTypeTemplateParmDecl), then the
+           primary FunctionDecl, then any implicit/explicit
+           specialisations emitted by writeTemplateDecl
+           (JSONNodeDumper.h). The primary carries dependent types
+           (T *, etc.); specialisations carry concrete substituted
+           types and bodies. When specialisations exist they
+           supersede the primary for analysis. *)
+        let rec split_params (type_params : Ty_param.t list) :
+            Yojson.Basic.t list ->
+            (Ty_param.t list * Yojson.Basic.t list) j_result = function
+          | [] -> Ok (List.rev type_params, [])
           | j :: l -> (
               let* p = Ty_param.parse j in
               match p with
-              | Some p -> handle (p :: type_params) l
-              | None -> parse_k (List.rev type_params) j)
+              | Some p -> split_params (p :: type_params) l
+              | None -> Ok (List.rev type_params, j :: l))
         in
         let* inner = with_field "inner" cast_list o in
-        handle [] inner
+        let* type_params, fdecls = split_params [] inner in
+        let to_parse =
+          match fdecls with
+          | _primary :: (_ :: _ as specs) -> specs
+          | xs -> xs
+        in
+        let rec parse_all : Yojson.Basic.t list -> t list j_result =
+          function
+          | [] -> Ok []
+          | j :: rest ->
+              let* ks = parse_k type_params j in
+              let* rest_ks = parse_all rest in
+              Ok (ks @ rest_ks)
+        in
+        (match to_parse with
+         | [] ->
+             root_cause
+               "Error parsing FunctionTemplateDecl: no FunctionDecl found" j
+         | _ -> parse_all to_parse)
     | "FunctionDecl" -> parse_k [] j
     | "VarDecl" -> (
         match Decl.parse j with
