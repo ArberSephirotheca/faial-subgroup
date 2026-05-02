@@ -554,6 +554,13 @@ module Def = struct
     | Declaration of Decl.t
     | Typedef of Typedef.t
     | Enum of Imp.Enum.t
+    (* Launch metadata is propagated through the C->D lowering as-is:
+       the expression slots stay in [C_lang.Expr.t] form because no
+       D_lang consumer rewrites or analyses them yet. If a downstream
+       stage starts driving assumptions (e.g. on grid/block shape), a
+       parallel [D_lang.LaunchParam.t] with rewritten expressions can
+       be introduced and rewrite_def updated to convert. *)
+    | LaunchParam of C_lang.LaunchParam.t
 
   let is_device_kernel : t -> bool = function
     | Kernel k when Kernel.is_global k -> true
@@ -566,6 +573,7 @@ module Def = struct
     | Kernel k -> Kernel.to_s k
     | Typedef d -> Typedef.to_s d
     | Enum e -> Imp.Enum.to_s e
+    | LaunchParam lp -> C_lang.LaunchParam.to_s lp
 end
 
 module Program = struct
@@ -642,7 +650,7 @@ module SignatureDB = struct
         let open Def in
         match d with
         | Kernel k -> add k kernels
-        | Declaration _ | Typedef _ | Enum _ -> kernels)
+        | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> kernels)
       StringMap.empty p
 end
 
@@ -1152,5 +1160,6 @@ let rewrite_def (d : C_lang.Def.t) : Def.t =
       Declaration d
   | Typedef d -> Typedef d
   | Enum e -> Enum e
+  | LaunchParam lp -> LaunchParam lp
 
 let rewrite_program : C_lang.Program.t -> Program.t = List.map rewrite_def

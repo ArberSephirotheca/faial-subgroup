@@ -150,6 +150,11 @@ let tests =
      reaches the analyser as a [DependentScopeRef] rather than
      collapsing to RecoveryExpr. *)
     ("racy-template-dep-scope.cu", [], 1);
+    (* Launch metadata: one [<<<grid, block>>>] launch with host-side
+     dim3 locals and a templated kernel argument. The LaunchParam node
+     emitted alongside the AST must parse without disturbing the
+     kernel-level DRF analysis. *)
+    ("drf-launch-param.cu", [], 0);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)

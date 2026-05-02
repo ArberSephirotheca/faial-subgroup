@@ -25,7 +25,7 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
         let open Def in
         function
         | Kernel k -> Hashtbl.add k2_ht k.name k
-        | Declaration _ | Typedef _ | Enum _ -> ());
+        | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> ());
   k3
   |> List.iter (fun k ->
       let open Imp.Kernel in
@@ -65,7 +65,7 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
               else decls
             in
             (decls, js)
-        | Typedef _ | Enum _ -> (decls, js))
+        | Typedef _ | Enum _ | LaunchParam _ -> (decls, js))
       ([], []) k1
     |> snd
   in

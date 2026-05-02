@@ -753,6 +753,11 @@ module Make (L : Logger) = struct
           k :: ks
       | Typedef d :: l -> parse_p (Context.add_typedef d ctx) l
       | Enum e :: l -> parse_p (Context.add_enum e ctx) l
+      | LaunchParam _ :: l ->
+          (* Launch metadata flows through the pipeline as data only;
+             d_to_imp produces Imp.Kernel.t which has no slot for
+             launches. Drop here until a downstream stage consumes. *)
+          parse_p ctx l
       | [] -> []
     in
     let sigs = D_lang.SignatureDB.from_program p in

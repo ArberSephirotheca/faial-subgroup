@@ -2607,21 +2607,134 @@ module Kernel = struct
     |> wrap_error "Kernel" j
 end
 
+(* Bare-decl-ref shape (e.g. [{kind: "FunctionDecl", name, type}]) used
+   as the [kernel] / [host_function] / [referencedDecl] fields on
+   c-to-json's launch metadata. parse_expr already produces an [Ident]
+   for these shapes, so we just unwrap. *)
+let parse_bare_decl_ref (j : Yojson.Basic.t) : Decl_expr.t Rjson.j_result =
+  let open Rjson in
+  let* e = parse_expr j in
+  match e with
+  | Ident d -> Ok d
+  | _ -> root_cause "parse_bare_decl_ref: expected an Ident" j
+
+module LaunchParam = struct
+  (* One CUDA launch site, populated from c-to-json's [LaunchParam] node
+     in TranslationUnitDecl.inner[]. The expression slots (grid / block
+     / shared_mem / stream / args) are real AST subtrees that round-trip
+     through [parse_expr]: c-to-json's resolution policy const-folds
+     where possible and emits the original AST otherwise, but every
+     shape parses with the existing [c_expr] arms. *)
+  type t = {
+    loc : Location.t;
+    kernel : Decl_expr.t;
+    host_function : Decl_expr.t option;
+    template_args : TemplateArgument.t list;
+    launch_api : string option;
+    grid : c_expr;
+    block : c_expr;
+    shared_mem : c_expr;
+    stream : c_expr;
+    args : c_expr list;
+    notes : string option;
+  }
+
+  let parse (j : Yojson.Basic.t) : t Rjson.j_result =
+    let open Rjson in
+    (let* o = cast_object j in
+     let* loc = with_field "range" parse_location o in
+     let* kernel = with_field "kernel" parse_bare_decl_ref o in
+     let* host_function =
+       with_opt_field "host_function" parse_bare_decl_ref o
+     in
+     let* template_args =
+       with_field_or "template_args"
+         (cast_map parse_c_template_argument) [] o
+     in
+     let* launch_api = with_opt_field "launch_api" cast_string o in
+     let* grid = with_field "grid" parse_expr o in
+     let* block = with_field "block" parse_expr o in
+     let* shared_mem = with_field "shared_mem" parse_expr o in
+     let* stream = with_field "stream" parse_expr o in
+     let* args = with_field "args" (cast_map parse_expr) o in
+     let* notes = with_opt_field "notes" cast_string o in
+     Ok
+       {
+         loc;
+         kernel;
+         host_function;
+         template_args;
+         launch_api;
+         grid;
+         block;
+         shared_mem;
+         stream;
+         args;
+         notes;
+       })
+    |> Rjson.add_reason "LaunchParam" j
+
+  let to_s (lp : t) : Indent.t list =
+    let targs =
+      if lp.template_args <> [] then
+        "<" ^ list_to_s TemplateArgument.to_string lp.template_args ^ ">"
+      else ""
+    in
+    let host =
+      match lp.host_function with
+      | Some h -> " in " ^ Variable.name h.name
+      | None -> ""
+    in
+    [
+      Indent.Line
+        ("<<<launch>>> "
+        ^ Variable.name lp.kernel.name
+        ^ targs ^ host ^ "(" ^ list_to_s Expr.to_string lp.args ^ ")");
+    ]
+end
+
+(* c-to-json emits a [LaunchParamWarning] node for every [<<<>>>] /
+   [cudaLaunchKernel] site whose callee can't be resolved to a
+   [FunctionDecl] — function-pointer kernels, dependent
+   unresolved-lookups, helper-wrapped launches. Faial doesn't carry
+   these in the AST: we have no consumer for them, and the textual
+   warning at parse time is sufficient observability. If a downstream
+   stage ever needs to enumerate or count unresolvable launches, this
+   should grow back into a [Def.t] variant. *)
+let log_launch_param_warning (j : Yojson.Basic.t) : unit Rjson.j_result =
+  let open Rjson in
+  let* o = cast_object j in
+  let* loc = with_field "range" parse_location o in
+  let* reason = with_field "reason" cast_string o in
+  let* host_function =
+    with_opt_field "host_function" parse_bare_decl_ref o
+  in
+  let host =
+    match host_function with
+    | Some h -> " in " ^ Variable.name h.name
+    | None -> ""
+  in
+  prerr_endline
+    ("WARNING: unresolved launch at " ^ Location.to_string loc ^ host
+    ^ ": " ^ reason);
+  Ok ()
+
 module Def = struct
   type t =
     | Kernel of Kernel.t
     | Declaration of Decl.t
     | Typedef of Typedef.t
     | Enum of Imp.Enum.t
+    | LaunchParam of LaunchParam.t
 
   let remove_comma : t -> t = function
     | Kernel k -> Kernel (Kernel.rewrite_comma k)
     | Declaration d -> Declaration (Decl.map_expr Expr.remove_comma d)
-    | (Typedef _ | Enum _) as d -> d
+    | (Typedef _ | Enum _ | LaunchParam _) as d -> d
 
   let rewrite_barriers : t -> t = function
     | Kernel k -> Kernel (Kernel.rewrite_barriers k)
-    | (Declaration _ | Typedef _ | Enum _) as d -> d
+    | (Declaration _ | Typedef _ | Enum _ | LaunchParam _) as d -> d
 
   let to_s (d : t) : Indent.t list =
     match d with
@@ -2629,6 +2742,7 @@ module Def = struct
     | Kernel k -> Kernel.to_s k
     | Typedef d -> Typedef.to_s d
     | Enum e -> Imp.Enum.to_s e
+    | LaunchParam lp -> LaunchParam.to_s lp
 
   (* Function that checks if a variable is of type array and is being used *)
   let has_array_type (j : Yojson.Basic.t) : bool =
@@ -2857,6 +2971,12 @@ module Def = struct
     | "EnumDecl" ->
         let* e = parse_enum j in
         Ok [ Enum e ]
+    | "LaunchParam" ->
+        let* lp = LaunchParam.parse j in
+        Ok [ LaunchParam lp ]
+    | "LaunchParamWarning" ->
+        let* () = log_launch_param_warning j in
+        Ok []
     | _ -> Ok []
 end
 
@@ -3009,6 +3129,7 @@ module Program = struct
           Kernel { k with code = rw_stmt vars k.code } :: rw_p vars p
       | Typedef d :: p -> Typedef d :: rw_p vars p
       | Enum e :: p -> Enum e :: rw_p vars p
+      | LaunchParam lp :: p -> LaunchParam lp :: rw_p vars p
       | [] -> []
     in
     rw_p Variable.Set.empty
