@@ -72,8 +72,10 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
   print_endline (Yojson.Basic.pretty_to_string (`List l))
 
 let main (fname : string) (silent : bool) (skip_json : bool)
-    (only_global : bool) : unit =
-  let j = Cu_to_json.cu_to_json ~ignore_fail:true fname in
+    (only_global : bool) (includes : string list) (macros : string list) : unit =
+  let j =
+    Cu_to_json.cu_to_json ~ignore_fail:true ~includes ~macros fname
+  in
   let k1, k2, k3 = analyze j in
 
   let k1_filtered =
@@ -123,7 +125,22 @@ let only_global =
   let doc = "Only print __global__ kernels" in
   Arg.(value & flag & info [ "only-global" ] ~doc)
 
-let main_t = Term.(const main $ get_fname $ silent $ skip_json $ only_global)
+let includes =
+  let doc =
+    "Add the specified directory to the search path for include files."
+  in
+  Arg.(value & opt_all string [] & info [ "I"; "include-dir" ] ~docv:"DIR" ~doc)
+
+let macros =
+  let doc = "Define $(docv) to <value> (or 1 if <value> omitted)" in
+  Arg.(
+    value & opt_all string []
+    & info [ "D"; "macro" ] ~docv:"<macro>=<value>" ~doc)
+
+let main_t =
+  Term.(
+    const main $ get_fname $ silent $ skip_json $ only_global $ includes
+    $ macros)
 
 let info =
   let doc = "Print the C-AST" in
