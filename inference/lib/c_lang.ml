@@ -169,6 +169,12 @@ type c_expr =
       body : c_stmt;
       ret_ty : J_type.t;
     }
+  (* C++11 parameter-pack expansion [pattern...]. Wraps the pattern
+     expression and marks "this expression repeats over a parameter
+     pack" so downstream stages can distinguish [f(args...)] from
+     [f(args)]. The wrapper is otherwise transparent: type and
+     traversal delegate to the inner expression. *)
+  | PackExpansion of c_expr
 
 and c_binary = { opcode : string; lhs : c_expr; rhs : c_expr; ty : J_type.t }
 
@@ -269,6 +275,7 @@ let rec c_expr_to_type : c_expr -> J_type.t = function
   | LambdaExpr _ ->
       (* Closure type — opaque from the analyser's POV before lifting. *)
       J_type.unknown
+  | PackExpansion e -> c_expr_to_type e
 
 let c_expr_compound (ty : J_type.t) (lhs : c_expr) (opcode : string)
     (rhs : c_expr) : c_expr =
@@ -320,10 +327,16 @@ let rec parse_expr (j : json) : c_expr j_result =
   | "CharacterLiteral" ->
       let* i = with_field "value" cast_int o in
       Ok (CharacterLiteral i)
-  | "CXXConstCastExpr" | "CXXReinterpretCastExpr" | "PackExpansionExpr"
+  | "CXXConstCastExpr" | "CXXReinterpretCastExpr"
   | "ImplicitCastExpr" | "CXXStaticCastExpr" | "ConstantExpr" | "ParenExpr"
   | "ExprWithCleanups" | "CStyleCastExpr" | "CXXDefaultArgExpr" ->
       with_field "inner" (cast_list_1 parse_expr) o
+  | "PackExpansionExpr" ->
+      (* Preserve the pack-expansion wrapper rather than collapsing to
+         the bare pattern: [f(args...)] keeps the trailing [...] so
+         downstream stages can tell it apart from [f(args)]. *)
+      let* inner = with_field "inner" (cast_list_1 parse_expr) o in
+      Ok (PackExpansion inner)
   | "SubstNonTypeTemplateParmExpr" ->
       (* Clang wraps a substituted non-type template parameter
          (e.g. [BS] becoming [128] in [reduce<float, 128>]) in this
@@ -1049,6 +1062,7 @@ module Expr = struct
         body : c_stmt;
         ret_ty : J_type.t;
       }
+    | PackExpansion of t
 
   type nonrec c_binary = c_binary = {
     opcode : string;
@@ -1087,6 +1101,7 @@ module Expr = struct
     | LambdaExpr _ ->
         (* Closure type — opaque from the analyser's POV before lifting. *)
         J_type.unknown
+    | PackExpansion e -> to_type e
 
   let to_string ?(modifier : bool = false) ?(provenance : bool = false)
       ?(types : bool = false) : t -> string =
@@ -1105,7 +1120,8 @@ module Expr = struct
         | UnresolvedLookupExpr _ | CallExpr _ | CXXOperatorCallExpr _
         | CXXConstructExpr _ | CXXBoolLiteralExpr _ | ArraySubscriptExpr _
         | MemberExpr _ | IntegerLiteral _ | CharacterLiteral _ | RecoveryExpr _
-        | FloatingLiteral _ | SizeOfExpr _ | StmtExpr _ | LambdaExpr _ ->
+        | FloatingLiteral _ | SizeOfExpr _ | StmtExpr _ | LambdaExpr _
+        | PackExpansion _ ->
             exp_to_s e
       in
       function
@@ -1145,6 +1161,7 @@ module Expr = struct
             |> String.concat ", "
           in
           "[" ^ cap ^ "](" ^ par_names ^ ") { ... }"
+      | PackExpansion e -> par e ^ "..."
     in
     exp_to_s
 
@@ -1193,6 +1210,7 @@ module Expr = struct
           body : c_stmt;
           ret_ty : J_type.t;
         }
+      | PackExpansion of 'a
 
     let rec fold (f : 'a t -> 'a) : expr_t -> 'a = function
       | SizeOfExpr e -> f (SizeOf e)
@@ -1269,6 +1287,7 @@ module Expr = struct
                  body = e.body;
                  ret_ty = e.ret_ty;
                })
+      | PackExpansion e -> f (PackExpansion (fold f e))
 
     let rec map (f : expr_t -> expr_t) (e : expr_t) : expr_t =
       let ret : expr_t -> expr_t = map f in
@@ -1309,6 +1328,7 @@ module Expr = struct
                  body;
                  ret_ty;
                })
+      | PackExpansion e -> f (PackExpansion (ret e))
   end
 
   (** Remove comma operator *)
@@ -1356,6 +1376,7 @@ module Expr = struct
             body;
             ret_ty;
           }
+    | PackExpansion e -> PackExpansion (remove_comma e)
     | ( SizeOfExpr _ | FloatingLiteral _ | CXXBoolLiteralExpr _
       | UnresolvedLookupExpr _ | RecoveryExpr _ | CharacterLiteral _ | Ident _
       | IntegerLiteral _ ) as e ->
@@ -1438,6 +1459,9 @@ module Expr = struct
               captures
           in
           return (LambdaExpr { captures; params; body; ret_ty })
+      | PackExpansion e ->
+          let* e = rw e in
+          return (PackExpansion e)
     in
     fun e ->
       let st, e = State.run [] (rw e) in
@@ -2097,6 +2121,9 @@ let rec rewrite_expr_stmtexpr (e : c_expr) : c_stmt * c_expr =
             body;
             ret_ty;
           } )
+  | PackExpansion e ->
+      let s, e = rewrite_expr_stmtexpr e in
+      (s, PackExpansion e)
 
 and rewrite_expr_list_stmtexpr (es : c_expr list) : c_stmt * c_expr list =
   let prefix, residuals =

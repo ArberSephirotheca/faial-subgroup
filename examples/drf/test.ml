@@ -130,10 +130,14 @@ let tests =
     ("drf-comma.cu", [], 0);
     (* index of a templated type *)
     ("drf-template-index.cu", [], 0);
-    (* Multiple instantiations of a templated kernel. Today only the primary
-     template is parsed; tracked under feat.md item #1. Should remain DRF
-     once each specialisation is parsed as its own kernel. *)
+    (* Each launch of a templated kernel produces its own specialisation
+     alongside the primary template; every specialisation must be
+     parsed as a separate kernel, not collapsed into the primary. *)
     ("drf-template-instances.cu", [], 0);
+    (* Variadic-template kernel: the [vals...] parameter-pack expansion
+     in the primary template body must be preserved through parsing
+     rather than collapsed away. *)
+    ("drf-template-pack.cu", [], 0);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)

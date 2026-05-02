@@ -904,6 +904,13 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       failwith
         "D_lang.rewrite_exp: LambdaExpr in non-binding position — only \
          [auto v = lambda { ... }] is supported"
+  | PackExpansion e ->
+      (* C_lang preserves the parameter-pack-expansion wrapper, but no
+         D_lang consumer uses it today: drop the wrapper at the
+         boundary and lower the pattern. If a downstream stage starts
+         caring about pack semantics, mirror the constructor in
+         [D_lang.Expr.t]. *)
+      rewrite_exp e
 
 and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
   let rec rewrite_subscript (c : C_lang.Expr.c_array_subscript)

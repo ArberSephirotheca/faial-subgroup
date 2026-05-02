@@ -1,7 +1,8 @@
-// Multiple instantiations of a templated kernel: today the C-AST parser
-// only sees the primary template (with dependent type T *), and drops the
-// reduce<float,128> / reduce<int,256> specialisations that the program
-// actually launches. Tracked under feat.md item #1.
+// Multiple instantiations of a templated kernel. Each launch
+// (reduce<float,128>, reduce<int,256>) generates a concrete
+// specialisation alongside the primary template; the parser must
+// process every specialisation as its own kernel rather than only
+// seeing the primary template with its dependent T * parameters.
 template <typename T, int BS>
 __global__ void reduce(T *in, T *out, int n) {
     __shared__ T s[BS];

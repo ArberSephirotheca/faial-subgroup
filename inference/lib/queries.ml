@@ -65,7 +65,8 @@ module Variables = struct
       | UnaryOperator { child = e; _ }
       | Member { base = e; _ }
       | CXXNew { arg = e; _ }
-      | CXXDelete { arg = e; _ } ->
+      | CXXDelete { arg = e; _ }
+      | PackExpansion e ->
           e
       | ArraySubscript { lhs = s1; rhs = s2; _ }
       | BinaryOperator { lhs = s1; rhs = s2; _ } ->
@@ -180,7 +181,8 @@ module Calls = struct
       | UnaryOperator { child = e; _ }
       | MemberExpr { base = e; _ }
       | CXXNewExpr { arg = e; _ }
-      | CXXDeleteExpr { arg = e; _ } ->
+      | CXXDeleteExpr { arg = e; _ }
+      | PackExpansion e ->
           to_seq e
       | ArraySubscriptExpr { lhs = s1; rhs = s2; _ }
       | BinaryOperator { lhs = s1; rhs = s2; _ } ->
@@ -437,7 +439,8 @@ module MutatedVar = struct
     | UnaryOperator { child = e; _ }
     | MemberExpr { base = e; _ }
     | CXXNewExpr { arg = e; _ }
-    | CXXDeleteExpr { arg = e; _ } ->
+    | CXXDeleteExpr { arg = e; _ }
+    | PackExpansion e ->
         get_writes e writes
     | BinaryOperator { lhs = s1; rhs = s2; _ }
     | ArraySubscriptExpr { lhs = s1; rhs = s2; _ } ->
