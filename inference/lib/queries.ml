@@ -60,7 +60,8 @@ module Variables = struct
     |> fold (function
       | Ident v when v.kind = Var || v.kind = ParmVar -> Seq.return v.name
       | CXXBoolLiteral _ | SizeOf _ | Recovery _ | CharacterLiteral _
-      | FloatingLiteral _ | IntegerLiteral _ | UnresolvedLookup _ | Ident _ ->
+      | FloatingLiteral _ | IntegerLiteral _ | UnresolvedLookup _ | Ident _
+      | DependentScopeRef _ ->
           Seq.empty
       | UnaryOperator { child = e; _ }
       | Member { base = e; _ }
@@ -176,7 +177,7 @@ module Calls = struct
           Seq.return { func = f; args = a }
       | CXXBoolLiteralExpr _ | SizeOfExpr _ | RecoveryExpr _
       | CharacterLiteral _ | Ident _ | FloatingLiteral _ | IntegerLiteral _
-      | UnresolvedLookupExpr _ ->
+      | UnresolvedLookupExpr _ | DependentScopeRef _ ->
           Seq.empty
       | UnaryOperator { child = e; _ }
       | MemberExpr { base = e; _ }
@@ -434,7 +435,7 @@ module MutatedVar = struct
         f :: a |> List.fold_left (fun writes e -> get_writes e writes) writes
     | Ident _ | CXXBoolLiteralExpr _ | SizeOfExpr _ | RecoveryExpr _
     | CharacterLiteral _ | FloatingLiteral _ | IntegerLiteral _
-    | UnresolvedLookupExpr _ ->
+    | UnresolvedLookupExpr _ | DependentScopeRef _ ->
         writes
     | UnaryOperator { child = e; _ }
     | MemberExpr { base = e; _ }

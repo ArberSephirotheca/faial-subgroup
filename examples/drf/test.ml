@@ -138,6 +138,18 @@ let tests =
      in the primary template body must be preserved through parsing
      rather than collapsed away. *)
     ("drf-template-pack.cu", [], 0);
+    (* Variadic-template kernel with explicit launches generating
+     [variadic<int>] and [variadic<int, int>] specialisations. The
+     resolved template arguments must reach faial as a pack-shaped
+     TemplateArgument whose elements are the individual concrete
+     types. *)
+    ("drf-template-pack-instances.cu", [], 0);
+    (* Templated kernel writing [Traits<T>::value] to a single shared
+     index from every thread. With no explicit launch, the primary
+     template body is parsed and the qualified dependent reference
+     reaches the analyser as a [DependentScopeRef] rather than
+     collapsing to RecoveryExpr. *)
+    ("racy-template-dep-scope.cu", [], 1);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)

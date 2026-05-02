@@ -175,6 +175,16 @@ type c_expr =
      [f(args)]. The wrapper is otherwise transparent: type and
      traversal delegate to the inner expression. *)
   | PackExpansion of c_expr
+  (* Dependent qualified reference inside a templated context, e.g.
+     [Traits<T>::value] or [is_same<T, U>::value]. Carries the unqualified
+     name and the nested-name-specifier verbatim so analyses can equate
+     references by syntactic identity across uses without resolving
+     them semantically. *)
+  | DependentScopeRef of {
+      name : string;
+      nested_name_specifier : string option;
+      ty : J_type.t;
+    }
 
 and c_binary = { opcode : string; lhs : c_expr; rhs : c_expr; ty : J_type.t }
 
@@ -234,6 +244,23 @@ and c_stmt =
     }
   | Seq of c_stmt * c_stmt
 
+(* C++ template argument: the resolved arguments of a specialisation
+   like [reduce<float, 128>] (where the JSON carries [type=float] and
+   [value=128]) and the explicit-template-args arrays on dependent
+   scope references. Mirrors the JSON shapes emitted by clang's
+   [JSONNodeDumper], with [TArgExpr] / [TArgPack] requiring mutual
+   recursion through [c_expr]. *)
+and c_template_argument =
+  | TArgType of J_type.t
+  | TArgIntegral of int
+  | TArgNullArg
+  | TArgNullPtr
+  | TArgDecl of string
+  | TArgExpr of c_expr
+  | TArgPack of c_template_argument list
+  | TArgTemplate of string
+  | TArgTemplateExpansion of string
+
 (* The C-AST parsers form a knot: parsing an expression may need to
    parse a statement (for [StmtExpr] and [LambdaExpr] bodies), and
    parsing a statement requires parsing expressions, declarations, and
@@ -276,6 +303,7 @@ let rec c_expr_to_type : c_expr -> J_type.t = function
       (* Closure type — opaque from the analyser's POV before lifting. *)
       J_type.unknown
   | PackExpansion e -> c_expr_to_type e
+  | DependentScopeRef d -> d.ty
 
 let c_expr_compound (ty : J_type.t) (lhs : c_expr) (opcode : string)
     (rhs : c_expr) : c_expr =
@@ -299,10 +327,21 @@ let rec parse_expr (j : json) : c_expr j_result =
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.from_json ty))
   | "ImplicitValueInitExpr" | "CXXNullPtrLiteralExpr"
-  | "StringLiteral" | "DependentScopeDeclRefExpr" | "RecoveryExpr" ->
+  | "StringLiteral" | "RecoveryExpr" ->
       (* Unknown value *)
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.from_json ty))
+  | "DependentScopeDeclRefExpr" ->
+      (* Qualified dependent reference like [Traits<T>::value]. The
+         JSON now carries [name] and [nestedNameSpecifier] (older
+         dumpers emitted only the bare envelope, which forced a
+         RecoveryExpr collapse). *)
+      let* ty = get_field "type" o |> Result.map J_type.from_json in
+      let* name = with_field "name" cast_string o in
+      let* nested_name_specifier =
+        with_opt_field "nestedNameSpecifier" cast_string o
+      in
+      Ok (DependentScopeRef { name; nested_name_specifier; ty })
   | "ShuffleVectorExpr" | "ConvertVectorExpr" ->
       (* Clang's [__builtin_shufflevector(vec1, vec2, idx0, idx1, ...)] and
          [__builtin_convertvector(vec, type)], used by <mmintrin.h>- and
@@ -1030,6 +1069,35 @@ and parse_stmt_list (j : json) : c_stmt j_result =
   in
   Ok (c_stmt_from_list l)
 
+and parse_c_template_argument (j : json) : c_template_argument j_result =
+  let open Rjson in
+  let* o = cast_object j in
+  let* is_expr = with_field_or "isExpr" cast_bool false o in
+  let* is_pack = with_field_or "isPack" cast_bool false o in
+  let* is_expansion = with_field_or "isExpansion" cast_bool false o in
+  let* is_null_ptr = with_field_or "isNullPtr" cast_bool false o in
+  let* is_null = with_field_or "isNull" cast_bool false o in
+  if is_expr then
+    let* e = with_field "inner" (cast_list_1 parse_expr) o in
+    Ok (TArgExpr e)
+  else if is_pack then
+    let* xs = with_field "inner" (cast_map parse_c_template_argument) o in
+    Ok (TArgPack xs)
+  else if is_null_ptr then Ok TArgNullPtr
+  else if is_null then Ok TArgNullArg
+  else
+    let* value_opt = with_opt_field "value" cast_int o in
+    let* type_opt =
+      with_opt_field "type" (fun j -> Ok (J_type.from_json j)) o
+    in
+    let* name_opt = with_opt_field "name" cast_string o in
+    match (value_opt, type_opt, name_opt) with
+    | Some n, _, _ -> Ok (TArgIntegral n)
+    | _, Some ty, _ -> Ok (TArgType ty)
+    | _, _, Some n when is_expansion -> Ok (TArgTemplateExpansion n)
+    | _, _, Some n -> Ok (TArgTemplate n)
+    | _ -> root_cause "TemplateArgument: unrecognized shape" j
+
 module Expr = struct
   type t = c_expr =
     | SizeOfExpr of J_type.t
@@ -1063,6 +1131,11 @@ module Expr = struct
         ret_ty : J_type.t;
       }
     | PackExpansion of t
+    | DependentScopeRef of {
+        name : string;
+        nested_name_specifier : string option;
+        ty : J_type.t;
+      }
 
   type nonrec c_binary = c_binary = {
     opcode : string;
@@ -1102,6 +1175,7 @@ module Expr = struct
         (* Closure type — opaque from the analyser's POV before lifting. *)
         J_type.unknown
     | PackExpansion e -> to_type e
+    | DependentScopeRef d -> d.ty
 
   let to_string ?(modifier : bool = false) ?(provenance : bool = false)
       ?(types : bool = false) : t -> string =
@@ -1121,7 +1195,7 @@ module Expr = struct
         | CXXConstructExpr _ | CXXBoolLiteralExpr _ | ArraySubscriptExpr _
         | MemberExpr _ | IntegerLiteral _ | CharacterLiteral _ | RecoveryExpr _
         | FloatingLiteral _ | SizeOfExpr _ | StmtExpr _ | LambdaExpr _
-        | PackExpansion _ ->
+        | PackExpansion _ | DependentScopeRef _ ->
             exp_to_s e
       in
       function
@@ -1162,6 +1236,10 @@ module Expr = struct
           in
           "[" ^ cap ^ "](" ^ par_names ^ ") { ... }"
       | PackExpansion e -> par e ^ "..."
+      | DependentScopeRef d ->
+          (match d.nested_name_specifier with
+           | Some nns -> nns ^ d.name
+           | None -> d.name)
     in
     exp_to_s
 
@@ -1211,6 +1289,11 @@ module Expr = struct
           ret_ty : J_type.t;
         }
       | PackExpansion of 'a
+      | DependentScopeRef of {
+          name : string;
+          nested_name_specifier : string option;
+          ty : J_type.t;
+        }
 
     let rec fold (f : 'a t -> 'a) : expr_t -> 'a = function
       | SizeOfExpr e -> f (SizeOf e)
@@ -1288,13 +1371,21 @@ module Expr = struct
                  ret_ty = e.ret_ty;
                })
       | PackExpansion e -> f (PackExpansion (fold f e))
+      | DependentScopeRef d ->
+          f
+            (DependentScopeRef
+               {
+                 name = d.name;
+                 nested_name_specifier = d.nested_name_specifier;
+                 ty = d.ty;
+               })
 
     let rec map (f : expr_t -> expr_t) (e : expr_t) : expr_t =
       let ret : expr_t -> expr_t = map f in
       match e with
       | FloatingLiteral _ | IntegerLiteral _ | CharacterLiteral _ | Ident _
       | RecoveryExpr _ | SizeOfExpr _ | UnresolvedLookupExpr _
-      | CXXBoolLiteralExpr _ ->
+      | CXXBoolLiteralExpr _ | DependentScopeRef _ ->
           f e
       | CXXNewExpr { arg = a; ty } -> f (CXXNewExpr { arg = ret a; ty })
       | CXXDeleteExpr { arg = a; ty } -> f (CXXDeleteExpr { arg = ret a; ty })
@@ -1330,6 +1421,9 @@ module Expr = struct
                })
       | PackExpansion e -> f (PackExpansion (ret e))
   end
+
+  (* DependentScopeRef is a leaf — handled by the literal-and-leaf
+     OR-pattern above. *)
 
   (** Remove comma operator *)
   let rec remove_comma : t -> t = function
@@ -1379,7 +1473,7 @@ module Expr = struct
     | PackExpansion e -> PackExpansion (remove_comma e)
     | ( SizeOfExpr _ | FloatingLiteral _ | CXXBoolLiteralExpr _
       | UnresolvedLookupExpr _ | RecoveryExpr _ | CharacterLiteral _ | Ident _
-      | IntegerLiteral _ ) as e ->
+      | IntegerLiteral _ | DependentScopeRef _ ) as e ->
         e
 
   (** Rewrites a comma operator, by returning the last expression and a list of
@@ -1462,6 +1556,7 @@ module Expr = struct
       | PackExpansion e ->
           let* e = rw e in
           return (PackExpansion e)
+      | DependentScopeRef d -> return (DependentScopeRef d)
     in
     fun e ->
       let st, e = State.run [] (rw e) in
@@ -2061,7 +2156,8 @@ let rec rewrite_expr_stmtexpr (e : c_expr) : c_stmt * c_expr =
       let prefix_inner, residual = rewrite_expr_stmtexpr result in
       (Stmt.seq body' prefix_inner, residual)
   | SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _ | CXXBoolLiteralExpr _
-  | FloatingLiteral _ | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _ ->
+  | FloatingLiteral _ | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _
+  | DependentScopeRef _ ->
       (Skip, e)
   | CXXNewExpr { arg; ty } ->
       let s, arg = rewrite_expr_stmtexpr arg in
@@ -2330,6 +2426,59 @@ module Ty_param = struct
     | _ -> Ok None
 end
 
+module TemplateArgument = struct
+  type t = c_template_argument =
+    | TArgType of J_type.t
+    | TArgIntegral of int
+    | TArgNullArg
+    | TArgNullPtr
+    | TArgDecl of string
+    | TArgExpr of c_expr
+    | TArgPack of t list
+    | TArgTemplate of string
+    | TArgTemplateExpansion of string
+
+  let parse = parse_c_template_argument
+
+  let rec to_string : t -> string = function
+    | TArgType ty -> J_type.to_string ty
+    | TArgIntegral n -> string_of_int n
+    | TArgNullArg -> "<null>"
+    | TArgNullPtr -> "nullptr"
+    | TArgDecl n -> n
+    | TArgExpr _ -> "<expr>"
+    | TArgPack xs -> "{" ^ list_to_s to_string xs ^ "}"
+    | TArgTemplate n -> n
+    | TArgTemplateExpansion n -> n ^ "..."
+end
+
+module Specialization_kind = struct
+  type t =
+    | Undeclared
+    | ImplicitInstantiation
+    | ExplicitSpecialization
+    | ExplicitInstantiationDeclaration
+    | ExplicitInstantiationDefinition
+
+  let parse (s : string) : t option =
+    match s with
+    | "Undeclared" -> Some Undeclared
+    | "ImplicitInstantiation" -> Some ImplicitInstantiation
+    | "ExplicitSpecialization" -> Some ExplicitSpecialization
+    | "ExplicitInstantiationDeclaration" ->
+        Some ExplicitInstantiationDeclaration
+    | "ExplicitInstantiationDefinition" ->
+        Some ExplicitInstantiationDefinition
+    | _ -> None
+
+  let to_string : t -> string = function
+    | Undeclared -> "Undeclared"
+    | ImplicitInstantiation -> "ImplicitInstantiation"
+    | ExplicitSpecialization -> "ExplicitSpecialization"
+    | ExplicitInstantiationDeclaration -> "ExplicitInstantiationDeclaration"
+    | ExplicitInstantiationDefinition -> "ExplicitInstantiationDefinition"
+end
+
 module Kernel = struct
   type t = {
     name : string;
@@ -2338,15 +2487,36 @@ module Kernel = struct
     type_params : Ty_param.t list;
     params : Param.t list;
     attribute : KernelAttr.t;
+    template_args : TemplateArgument.t list;
+    specialization_kind : Specialization_kind.t option;
+    primary_template_name : string option;
   }
 
-  let make ~ty ~name ~code ~type_params ~params ~attribute =
-    { name; ty; code; type_params; params; attribute }
+  let make ~ty ~name ~code ~type_params ~params ~attribute
+      ~template_args ~specialization_kind ~primary_template_name =
+    {
+      name;
+      ty;
+      code;
+      type_params;
+      params;
+      attribute;
+      template_args;
+      specialization_kind;
+      primary_template_name;
+    }
 
   let name (x : t) : string = x.name
   let params (x : t) : Param.t list = x.params
   let type_params (x : t) : Ty_param.t list = x.type_params
   let attribute (x : t) : KernelAttr.t = x.attribute
+  let template_args (x : t) : TemplateArgument.t list = x.template_args
+
+  let specialization_kind (x : t) : Specialization_kind.t option =
+    x.specialization_kind
+
+  let primary_template_name (x : t) : string option = x.primary_template_name
+  let is_specialization (x : t) : bool = x.specialization_kind <> None
   let rewrite_comma (k : t) : t =
     (* Run StmtExpr hoisting before comma rewriting: by the time
        [Stmt.rewrite_comma] sees the kernel body, every [StmtExpr]
@@ -2368,11 +2538,16 @@ module Kernel = struct
         "[" ^ list_to_s Ty_param.to_string k.type_params ^ "]"
       else ""
     in
+    let targs =
+      if k.template_args <> [] then
+        "<" ^ list_to_s TemplateArgument.to_string k.template_args ^ ">"
+      else ""
+    in
     let open Indent in
     [
       Line
         (KernelAttr.to_string k.attribute
-        ^ " " ^ k.name ^ " " ^ tps ^ "("
+        ^ " " ^ k.name ^ targs ^ " " ^ tps ^ "("
         ^ list_to_s Param.to_string k.params
         ^ ")");
     ]
@@ -2408,7 +2583,27 @@ module Kernel = struct
      let* name : string = with_field "name" cast_string o in
      (* Parameters may be faulty, recover: *)
      let ps = List.map Param.parse ps |> List.concat_map Result.to_list in
-     Ok (make ~ty ~name ~code:body ~params:ps ~type_params ~attribute:m))
+     (* Phase-2 metadata (specialisations only): the resolved template
+        arguments, the kind of specialisation, and the primary
+        template's name. Absent on the primary template — those fields
+        are emitted only on instantiation FunctionDecls. *)
+     let* template_args =
+       with_field_or "templateArgs" (cast_map parse_c_template_argument) [] o
+     in
+     let* spec_kind_str = with_opt_field "specializationKind" cast_string o in
+     let specialization_kind =
+       Option.bind spec_kind_str Specialization_kind.parse
+     in
+     let* primary_template_name =
+       with_opt_field "primaryTemplate"
+         (fun pj ->
+           let* po = cast_object pj in
+           with_field "name" cast_string po)
+         o
+     in
+     Ok
+       (make ~ty ~name ~code:body ~params:ps ~type_params ~attribute:m
+          ~template_args ~specialization_kind ~primary_template_name))
     |> wrap_error "Kernel" j
 end
 
@@ -2608,11 +2803,23 @@ module Def = struct
         in
         let* inner = with_field "inner" cast_list o in
         let* type_params, fdecls = split_params [] inner in
-        let to_parse =
-          match fdecls with
-          | _primary :: (_ :: _ as specs) -> specs
-          | xs -> xs
+        (* Specialisation FunctionDecls carry [templateArgs] (and a
+           [specializationKind]) — the primary template doesn't. Use
+           that as the discriminator rather than position; it survives
+           reorderings and is the same predicate the JSON itself
+           guarantees. When any specialisation is present, drop the
+           primary; otherwise keep the primary as the analysable
+           kernel. *)
+        let is_specialization (j : Yojson.Basic.t) : bool =
+          match j with
+          | `Assoc o' -> (
+              match List.assoc_opt "templateArgs" o' with
+              | Some (`List (_ :: _)) -> true
+              | _ -> false)
+          | _ -> false
         in
+        let primaries, specs = List.partition (fun j -> not (is_specialization j)) fdecls in
+        let to_parse = if specs = [] then primaries else specs in
         let rec parse_all : Yojson.Basic.t list -> t list j_result =
           function
           | [] -> Ok []

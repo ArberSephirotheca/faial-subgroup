@@ -911,6 +911,13 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
          caring about pack semantics, mirror the constructor in
          [D_lang.Expr.t]. *)
       rewrite_exp e
+  | DependentScopeRef d ->
+      (* C_lang preserves [Traits<T>::value]-style references with name
+         and qualifier so analyses can equate them by syntactic
+         identity. D_lang has no consumer that uses this today, so
+         lower to [RecoveryExpr]. Mirror in [D_lang.Expr.t] when a
+         downstream stage starts caring. *)
+      return (RecoveryExpr d.ty)
 
 and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
   let rec rewrite_subscript (c : C_lang.Expr.c_array_subscript)
