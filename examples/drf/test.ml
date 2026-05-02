@@ -155,6 +155,23 @@ let tests =
      emitted alongside the AST must parse without disturbing the
      kernel-level DRF analysis. *)
     ("drf-launch-param.cu", [], 0);
+    (* --assume-launch must rescue an under-constrained kernel that is
+     racy when blockDim/gridDim's [y]/[z] axes are free: synthesising
+     the launch's [dim3((n+255)/256)] / [dim3(256)] pins the unused
+     axes to 1 via [assert(...)] in the pseudo-kernel body. *)
+    ("drf-launch-rescue.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Two distinct launches of the same templated kernel must each
+     produce their own pseudo-kernel and analyse independently with
+     the launch's concrete dims. *)
+    ("drf-launch-multi.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Negative control: a kernel that races regardless of launch
+     dims (every thread writes [out[0]]) stays racy under
+     [--assume-launch] — pinning blockDim doesn't suppress real
+     races. *)
+    ("racy-launch-mismatch.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)

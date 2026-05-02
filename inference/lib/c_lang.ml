@@ -327,7 +327,7 @@ let rec parse_expr (j : json) : c_expr j_result =
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.from_json ty))
   | "ImplicitValueInitExpr" | "CXXNullPtrLiteralExpr"
-  | "StringLiteral" | "RecoveryExpr" ->
+  | "StringLiteral" | "RecoveryExpr" | "CXXThisExpr" ->
       (* Unknown value *)
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.from_json ty))
@@ -478,7 +478,8 @@ let rec parse_expr (j : json) : c_expr j_result =
       let* v = parse_variable j in
       let* ty = get_field "type" o in
       Ok (Ident { name = v; ty = J_type.from_json ty; kind = Function })
-  | "CXXMethodDecl" ->
+  | "CXXMethodDecl" | "CXXConstructorDecl" | "CXXDestructorDecl"
+  | "CXXConversionDecl" ->
       let* name = parse_variable j in
       let* ty = get_field "type" o in
       Ok (Ident { name; ty = J_type.from_json ty; kind = CXXMethod })
@@ -2848,7 +2849,7 @@ module LaunchParam = struct
      let* block = with_field "block" parse_expr o in
      let* shared_mem = with_field "shared_mem" parse_expr o in
      let* stream = with_field "stream" parse_expr o in
-     let* args = with_field "args" (cast_map parse_expr) o in
+     let* args = with_field_or "args" (cast_map parse_expr) [] o in
      let* notes = with_opt_field "notes" cast_string o in
      Ok
        {
@@ -2896,7 +2897,13 @@ end
 let log_launch_param_warning (j : Yojson.Basic.t) : unit Rjson.j_result =
   let open Rjson in
   let* o = cast_object j in
-  let* loc = with_field "range" parse_location o in
+  (* c-to-json emits [range] for resolvable LaunchParam nodes but
+     sometimes only [loc] for the warning variant; accept either. *)
+  let* loc =
+    match List.assoc_opt "range" o with
+    | Some r -> parse_location r
+    | None -> with_field "loc" (parse_position ?filename:None) o
+  in
   let* reason = with_field "reason" cast_string o in
   let* host_function =
     with_opt_field "host_function" parse_bare_decl_ref o

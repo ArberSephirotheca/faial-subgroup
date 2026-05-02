@@ -34,6 +34,7 @@ type t = {
   ignore_asserts : bool;
   assumes : Exp.bexp list;
   assume_dims : bool;
+  assume_launch : bool;
 }
 
 let to_string (app : t) : string =
@@ -84,6 +85,7 @@ let to_string (app : t) : string =
    ignore_asserts;
    assumes;
    assume_dims;
+   assume_launch;
   } ->
       let only_kernel = Option.value ~default:"(null)" only_kernel in
       let kernels = List.length kernels |> string_of_int in
@@ -100,6 +102,7 @@ let to_string (app : t) : string =
       ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
+      ^ "\nassume_launch = " ^ bool assume_launch
       ^ "\nassumes: "
       ^ list_string (List.map Exp.b_to_string assumes)
       ^ "\n"
@@ -109,12 +112,13 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~ge_index ~le_index ~eq_index ~only_array ~only_kernel ~only_true_data_races
     ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~block_dim ~grid_dim
     ~includes ~inline_calls ~archs ~ignore_parsing_errors ~params ~macros
-    ~cu_to_json ~all_dims ~ignore_asserts ~assumes ~assume_dims : t =
+    ~cu_to_json ~all_dims ~ignore_asserts ~assumes ~assume_dims
+    ~assume_launch : t =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
       ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
-      ~ignore_asserts filename
+      ~ignore_asserts ~assume_launch filename
   in
   let kernels = parsed.kernels in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
@@ -150,6 +154,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ignore_asserts;
     assumes;
     assume_dims;
+    assume_launch;
   }
 
 let show (b : bool) (call : 'a -> unit) (x : 'a) : 'a =

@@ -407,23 +407,20 @@ module Make (L : Logger) = struct
         (args : D_lang.Expr.t list) : Infer_stmt.t =
       let arg_count = List.length args in
       match Context.lookup_sig func arg_count ctx with
-      | Some s ->
-          if List.length s.params <> arg_count then
-            let e : D_lang.Expr.t =
-              CallExpr { func; args; ty = J_type.unknown }
-            in
-            failwith
-              ("infer_call: CallExpr args mismatch: " ^ D_lang.Expr.to_string e)
-          else
-            let open Imp.Infer_stmt in
-            Call
-              {
-                result;
-                kernel = s.kernel;
-                ty = s.ty;
-                args = List.map infer_arg args;
-              }
-      | None -> Skip
+      | Some s when List.length s.params = arg_count ->
+          let open Imp.Infer_stmt in
+          Call
+            {
+              result;
+              kernel = s.kernel;
+              ty = s.ty;
+              args = List.map infer_arg args;
+            }
+      (* Either no signature found, or the matched signature has a
+         different param count — happens with variadic-template /
+         pack-expansion specialisations whose ty-string aliases a
+         stored entry. Skip rather than abort the whole analysis. *)
+      | Some _ | None -> Skip
     in
 
     let rec infer : D_lang.Stmt.t -> Imp.Infer_stmt.t = function

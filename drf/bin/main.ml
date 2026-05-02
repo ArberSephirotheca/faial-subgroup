@@ -267,11 +267,28 @@ let main =
              threads that differ only in an unreferenced axis, and \
              this flag hides those races. Use --show-map to inspect \
              the resulting precondition.")
+  and+ assume_launch =
+    Arg.(
+      value & flag
+      & info [ "assume-launch" ]
+          ~doc:
+            "For every CUDA <<<grid, block>>> launch site emitted by \
+             cu-to-json, synthesise a pseudo-kernel that binds the \
+             launch's grid/block dimensions and arguments to the \
+             called kernel's parameters and demotes the original \
+             kernel to __device__ for inlining. Off by default; only \
+             the parsed launch metadata is used.")
   in
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then
     Error
       "Cannot run with options: --all-dims and --grid-dim/--block-dim.\n\
        Use --all-dims and -p instead."
+  else if assume_launch && not all_dims then
+    Error
+      "--assume-launch requires --all-dims. The synthesised pseudo-kernels \
+       constrain blockDim/gridDim via assert(...) calls derived from the \
+       launch site; pinning the default block/grid dims on top would \
+       conflict and trivialise the precondition."
   else
     let archs =
       if all_levels then [ Architecture.Grid; Architecture.Block ]
@@ -285,7 +302,7 @@ let main =
         ~block_idx_1 ~block_idx_2 ~archs ~inline_calls:(not ignore_calls)
         ~ignore_parsing_errors ~includes ~block_dim ~grid_dim ~params
         ~only_kernel ~only_true_data_races ~macros ~cu_to_json ~all_dims
-        ~ignore_asserts ~assumes ~assume_dims
+        ~ignore_asserts ~assumes ~assume_dims ~assume_launch
     in
     let ui = if output_json then Jui.render else Tui.render in
     if unreachable then App.check_unreachable app else App.run app |> ui;
