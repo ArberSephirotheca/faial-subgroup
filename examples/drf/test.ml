@@ -202,6 +202,15 @@ let tests =
      reports racy. *)
     ("drf-launch-grid-arith.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Host-side guard ([if (n >= 256)]) enclosing the launch
+     reaches the analyser via c-to-json's [path_condition] slot;
+     the synth kernel lifts it into [assert(n >= 256)] alongside
+     the dim asserts. The kernel races without the bound (a
+     stride pattern: two threads in different blocks collide
+     when [n < blockDim.x]); with the lifted path condition Z3
+     rules out small [n] and the kernel verifies DRF. *)
+    ("drf-launch-path-cond.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)

@@ -2829,6 +2829,16 @@ module LaunchParam = struct
     shared_mem : c_expr;
     stream : c_expr;
     args : c_expr list;
+    (* Sound conjunction of host-side guards (from enclosing
+       [if]/[while]/[for]) that hold whenever this launch executes,
+       as emitted by c-to-json's [path_condition] slot. The dropper
+       on the c-to-json side excludes anything potentially mutated
+       between the guard's branch entry and the launch — calls,
+       members, escaped locals, side effects — so what survives is
+       always pure arithmetic / boolean over [Ident]s and literals
+       that [Launch_arg.lift_pure] handles directly. Absent when no
+       conjunct survives the soundness check. *)
+    path_condition : c_expr option;
     notes : string option;
   }
 
@@ -2850,6 +2860,7 @@ module LaunchParam = struct
      let* shared_mem = with_field "shared_mem" parse_expr o in
      let* stream = with_field "stream" parse_expr o in
      let* args = with_field_or "args" (cast_map parse_expr) [] o in
+     let* path_condition = with_opt_field "path_condition" parse_expr o in
      let* notes = with_opt_field "notes" cast_string o in
      Ok
        {
@@ -2863,6 +2874,7 @@ module LaunchParam = struct
          shared_mem;
          stream;
          args;
+         path_condition;
          notes;
        })
     |> Rjson.add_reason "LaunchParam" j
@@ -2878,11 +2890,16 @@ module LaunchParam = struct
       | Some h -> " in " ^ Variable.name h.name
       | None -> ""
     in
+    let pc =
+      match lp.path_condition with
+      | Some e -> " when " ^ Expr.to_string e
+      | None -> ""
+    in
     [
       Indent.Line
         ("<<<launch>>> "
         ^ Variable.name lp.kernel.name
-        ^ targs ^ host ^ "(" ^ list_to_s Expr.to_string lp.args ^ ")");
+        ^ targs ^ host ^ "(" ^ list_to_s Expr.to_string lp.args ^ ")" ^ pc);
     ]
 end
 

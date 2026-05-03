@@ -104,6 +104,7 @@ let free_vars_of_launch (lp : C_lang.LaunchParam.t) : Decl_expr.t list =
   from_one lp.shared_mem;
   from_one lp.stream;
   List.iter from_one lp.args;
+  Option.iter from_one lp.path_condition;
   List.rev !acc
 
 (* ---------- Pseudo-kernel synthesis ---------- *)
@@ -240,6 +241,37 @@ let param_of_free_var (d : Decl_expr.t) : C_lang.Param.t option =
     let ty_var = Ty_variable.make ~ty:d.ty ~name:d.name in
     Some (C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false)
 
+(* Build [assert(<cond>);] as a D_lang.Stmt.t. [d_to_imp] recognises
+   calls to [assert] and lifts them to [Imp.Stmt.Assert] with
+   [Global] visibility — the same machinery that pins gridDim /
+   blockDim in [dim_asserts] — so the body of the synth kernel can
+   carry arbitrary host-side hypotheses as SMT preconditions. *)
+let assert_stmt (cond : Expr.t) : Stmt.t =
+  let assert_func : Expr.t =
+    Ident
+      (Decl_expr.from_name ~ty:int_ty ~kind:Decl_expr.Kind.Function
+         (Variable.from_name "assert"))
+  in
+  SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = int_ty })
+
+(* Lift c-to-json's [path_condition] (a sound conjunction of
+   enclosing [if]/[while]/[for] guards that hold when the launch
+   executes) into an [assert(...)] in the pseudo-kernel body. The
+   c-to-json drop rule excludes anything potentially mutated between
+   the guard's branch entry and the launch (calls, members, escaped
+   locals, side effects), so what survives is always pure
+   arithmetic / boolean over [Ident]s and literals — exactly the
+   shapes [Launch_arg.lift_pure] handles. If lift_pure declines
+   (defensive — shouldn't fire given the contract), the assert is
+   skipped silently. *)
+let path_cond_asserts (lp : C_lang.LaunchParam.t) : Stmt.t =
+  match lp.path_condition with
+  | None -> Stmt.Skip
+  | Some e -> (
+      match Launch_arg.lift_pure e with
+      | Some d_expr -> assert_stmt d_expr
+      | None -> Stmt.Skip)
+
 let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
   (* One [Launch_arg.cache] per pseudo-kernel — gridDim, then
      blockDim, then args. First slot to see a non-Ident expression
@@ -252,13 +284,14 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
   let cache, body_grid, fresh_grid = dim_asserts cache "gridDim" lp.grid in
   let cache, body_block, fresh_block = dim_asserts cache "blockDim" lp.block in
   let _cache, body_call, fresh_args = call_stmt cache lp.kernel lp.args in
+  let body_path_cond = path_cond_asserts lp in
   (* shared_mem: skipped intentionally. Static [__shared__] arrays
      declare their own sizes inline; only [extern __shared__] consumes
      the launch's dynamic shared-mem arg, and faial doesn't yet model
      that binding. *)
   (* stream: not relevant to data-race analysis. *)
   let body =
-    Stmt.from_list [ body_grid; body_block; body_call ]
+    Stmt.from_list [ body_grid; body_block; body_path_cond; body_call ]
   in
   (* Free-var capture still drives the [Direct] path: any [Ident]
      surfaced by [Launch_arg.resolve] surfaces here as a parameter,
