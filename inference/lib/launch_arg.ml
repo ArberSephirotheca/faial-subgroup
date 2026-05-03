@@ -42,14 +42,24 @@ open Protocols
 type resolved =
   | Direct of Decl_expr.t
   | Const of D_lang.Expr.t
-    (* A literal launch-site argument ([IntegerLiteral],
-       [FloatingLiteral], [CharacterLiteral], [CXXBoolLiteralExpr]):
-       trivially uniform across threads by construction, so the
-       resolver passes it through to the kernel call as-is. The
-       inliner then substitutes the kernel formal with the literal
-       throughout the body, which collapses constant-folded
-       launch-site values (e.g. c-to-json folding a [const int N =
-       256] reference to [256]) into concrete index expressions. *)
+    (* A side-effect-free launch-site expression — a literal, an
+       [Ident], or arithmetic / conditional / unary operations
+       composing the two. Trivially uniform across threads by
+       construction, so the resolver passes it through to the
+       kernel call verbatim. Two consequences:
+
+       1. The inliner substitutes the kernel formal with the
+          expression throughout the body, so constant-folded
+          launch-site values (e.g. c-to-json folding [const int N =
+          256] to [256]) collapse into concrete index expressions.
+
+       2. When the expression appears in [gridDim] / [blockDim]
+          assertions, its structure reaches Z3 (e.g.
+          [gridDim.x == imageW / 128]). Combined with the existing
+          [gridDim.x >= 1] preamble, Z3 derives lower bounds on the
+          contained kernel args transitively (here, [imageW >=
+          128]) without needing a dedicated grid-arithmetic
+          inversion pass. *)
   | Uniform of {
       name : Variable.t;
       ty : J_type.t;
@@ -78,18 +88,50 @@ type cache = Variable.t ExprMap.t
 
 let cache_empty : cache = ExprMap.empty
 
-(* If [e] is a C-AST literal whose value is trivially uniform across
-   threads, lift it to its [D_lang.Expr.t] counterpart so it can be
-   passed straight through into the synthesised kernel call. Returns
-   [None] for everything else (function calls, identifiers, struct
-   accesses, etc.) — those go through the resolver's general
-   path. *)
-let lift_literal (e : C_lang.Expr.t) : D_lang.Expr.t option =
+(* If [e] is a pure expression over [Ident]s and integer / float /
+   bool / character literals — i.e. has no host-side side effects,
+   no function calls, no struct or array reads — lift it to its
+   [D_lang.Expr.t] counterpart so the launch's structure flows
+   through to the synthesised kernel verbatim. The captured
+   [Ident]s still surface via [free_vars_of_launch] as block-uniform
+   pseudo-parameters; preserving the surrounding arithmetic lets
+   Z3 reason transitively over the launch's relations (e.g.
+   deriving [imageW >= 128] from [gridDim.x == imageW / 128] and
+   the existing [gridDim.x >= 1] preamble).
+
+   Excludes [CallExpr], [ArraySubscriptExpr], [MemberExpr], etc. —
+   those carry host-side memory effects whose results c-to-json may
+   have folded but whose relations the analyser shouldn't try to
+   reason about; those still go through the [Uniform] / [ArrayId]
+   abstraction path. *)
+let rec lift_pure (e : C_lang.Expr.t) : D_lang.Expr.t option =
   match e with
+  | Ident d -> Some (Ident d)
   | IntegerLiteral n -> Some (IntegerLiteral n)
   | FloatingLiteral f -> Some (FloatingLiteral f)
   | CharacterLiteral c -> Some (CharacterLiteral c)
   | CXXBoolLiteralExpr b -> Some (CXXBoolLiteralExpr b)
+  | BinaryOperator { opcode; lhs; rhs; ty }
+    when not
+           (List.mem opcode
+              [ "="; "+="; "-="; "*="; "/="; "%=";
+                "&="; "|="; "^="; "<<="; ">>=" ]) -> (
+      match (lift_pure lhs, lift_pure rhs) with
+      | Some lhs, Some rhs ->
+          Some (BinaryOperator { opcode; lhs; rhs; ty })
+      | _ -> None)
+  | UnaryOperator { opcode; child; ty }
+    when List.mem opcode [ "-"; "+"; "!"; "~" ] -> (
+      match lift_pure child with
+      | Some child -> Some (UnaryOperator { opcode; child; ty })
+      | None -> None)
+  | ConditionalOperator { cond; then_expr; else_expr; ty } -> (
+      match
+        (lift_pure cond, lift_pure then_expr, lift_pure else_expr)
+      with
+      | Some cond, Some then_expr, Some else_expr ->
+          Some (ConditionalOperator { cond; then_expr; else_expr; ty })
+      | _ -> None)
   | _ -> None
 
 let mk_arg_name (idx : int) : Variable.t =
@@ -151,8 +193,8 @@ let resolve (cache : cache) (idx : int) (e : C_lang.Expr.t) :
     cache * resolved * fresh_param list =
   match e with
   | Ident d -> (cache, Direct d, [])
-  | _ when Option.is_some (lift_literal e) ->
-      (cache, Const (Option.get (lift_literal e)), [])
+  | _ when Option.is_some (lift_pure e) ->
+      (cache, Const (Option.get (lift_pure e)), [])
   | _ ->
       let ty = C_lang.Expr.to_type e in
       if is_pointer_like ty then
@@ -190,8 +232,8 @@ let resolve_axis (cache : cache) (base : string) (axis : string)
     (e : C_lang.Expr.t) : cache * resolved * fresh_param list =
   match e with
   | Ident d -> (cache, Direct d, [])
-  | _ when Option.is_some (lift_literal e) ->
-      (cache, Const (Option.get (lift_literal e)), [])
+  | _ when Option.is_some (lift_pure e) ->
+      (cache, Const (Option.get (lift_pure e)), [])
   | _ ->
       let ty = C_lang.Expr.to_type e in
       let key = C_lang.Expr.to_string e in

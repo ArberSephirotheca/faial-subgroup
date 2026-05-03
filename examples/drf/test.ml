@@ -190,6 +190,18 @@ let tests =
      threadIdx.x) pair writes a distinct address. *)
     ("drf-launch-const-arg.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Grid-arithmetic relation flowing transitively to a kernel
+     arg: launch picks [gridDim.x = imageW / 128]. The launch-arg
+     resolver passes the BinaryOp structure through verbatim
+     (Const path), so the assertion [gridDim.x == imageW / 128]
+     reaches Z3, which derives [imageW >= 128] transitively from
+     the existing [gridDim.x >= 1] preamble. Without
+     pass-through (when the resolver abstracts [imageW / 128]
+     into a fresh uniform), Z3 has no link between [gridDim.x]
+     and [imageW], witnesses [imageW < 128], and false-positive
+     reports racy. *)
+    ("drf-launch-grid-arith.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)
