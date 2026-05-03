@@ -149,45 +149,73 @@ let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
   in
   SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = int_ty })
 
-let dim_asserts (base : string) (e : C_lang.Expr.t) : Stmt.t * Stmt.t =
-  let x, y, z = dim3_axes e in
-  let prefix_x, x = run0 (rewrite_exp x) in
-  let prefix_y, y = run0 (rewrite_exp y) in
-  let prefix_z, z = run0 (rewrite_exp z) in
+(* Build the dim-axis assertions for one of [gridDim] or [blockDim].
+   Each axis expression goes through [Launch_arg.resolve_axis]: an
+   [Ident] is reused, an [IntegerLiteral] becomes a literal RHS, and
+   anything else folds into a fresh per-axis pseudo-parameter
+   ([__faial_launch_<base>_<axis>]) — or reuses a name already minted
+   for an identical expression elsewhere in this launch (via
+   [cache]). The host-side analysis domain matters here —
+   [D_lang.rewrite_exp] would introduce [@AccessState] decls whose
+   [CallExpr] inits get dropped by [d_to_imp.infer_call], producing
+   free per-thread variables. *)
+let dim_asserts (cache : Launch_arg.cache) (base : string)
+    (e : C_lang.Expr.t) :
+    Launch_arg.cache * Stmt.t * Launch_arg.fresh_param list =
+  let xe, ye, ze = dim3_axes e in
+  let axis_rhs (cache : Launch_arg.cache) (axis : string) (e : C_lang.Expr.t)
+      : Launch_arg.cache * Expr.t * Launch_arg.fresh_param list =
+    match e with
+    | IntegerLiteral n -> (cache, IntegerLiteral n, [])
+    | _ ->
+        let cache, resolved, fresh =
+          Launch_arg.resolve_axis cache base axis e
+        in
+        (cache, Launch_arg.to_d_expr resolved, fresh)
+  in
+  let cache, rhs_x, fx = axis_rhs cache "x" xe in
+  let cache, rhs_y, fy = axis_rhs cache "y" ye in
+  let cache, rhs_z, fz = axis_rhs cache "z" ze in
   let body =
     Stmt.from_list
       [
-        assert_axis_eq base "x" x;
-        assert_axis_eq base "y" y;
-        assert_axis_eq base "z" z;
+        assert_axis_eq base "x" rhs_x;
+        assert_axis_eq base "y" rhs_y;
+        assert_axis_eq base "z" rhs_z;
       ]
   in
-  (Stmt.from_list [ prefix_x; prefix_y; prefix_z ], body)
+  (cache, body, fx @ fy @ fz)
 
 (* Build [kernel(args...);] as a D_lang.Stmt.t. The function reference
    carries the kernel's full type string so the SignatureDB lookup hits
-   the right specialisation when multiple specialisations share a name. *)
-let call_stmt (kernel : Decl_expr.t) (args : C_lang.Expr.t list) : Stmt.t * Stmt.t =
-  let preludes_and_args : Stmt.t list * Expr.t list =
-    List.fold_left
-      (fun (preludes, exprs) a ->
-        let prelude, e = run0 (rewrite_exp a) in
-        (prelude :: preludes, e :: exprs))
-      ([], []) args
+   the right specialisation when multiple specialisations share a name.
+
+   Each launch arg goes through [Launch_arg.resolve]: bare [Ident]s
+   are reused as-is; pointer expressions of shape [a + offset]
+   surface as [a + ident_offset]; everything else collapses into a
+   fresh uniform parameter — or, when the same expression already
+   appeared in [cache] (e.g. as a dim-axis), the existing uniform is
+   reused so the analyser sees one symbol instead of two. *)
+let call_stmt (cache : Launch_arg.cache) (kernel : Decl_expr.t)
+    (args : C_lang.Expr.t list) :
+    Launch_arg.cache * Stmt.t * Launch_arg.fresh_param list =
+  let cache, rs_rev, fresh =
+    args
+    |> List.mapi (fun i a -> (i, a))
+    |> List.fold_left
+         (fun (cache, rs, fs) (i, a) ->
+           let cache, r, f = Launch_arg.resolve cache i a in
+           (cache, r :: rs, fs @ f))
+         (cache, [], [])
   in
-  let preludes, args =
-    let p, a = preludes_and_args in
-    (List.rev p, List.rev a)
-  in
+  let args = rs_rev |> List.rev |> List.map Launch_arg.to_d_expr in
   let func : Expr.t =
     Ident
       (Decl_expr.from_name ~ty:kernel.ty ~kind:Decl_expr.Kind.Function
          kernel.name)
   in
-  let call : Expr.t =
-    CallExpr { func; args; ty = kernel.ty }
-  in
-  (Stmt.from_list preludes, SExpr call)
+  let call : Expr.t = CallExpr { func; args; ty = kernel.ty } in
+  (cache, SExpr call, fresh)
 
 (* Stable name for the synthesised kernel. The launch's source location
    is unique per call site within a translation unit; combine with the
@@ -216,27 +244,49 @@ let param_of_free_var (d : Decl_expr.t) : C_lang.Param.t option =
     Some (C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false)
 
 let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
-  let prelude_grid, body_grid = dim_asserts "gridDim" lp.grid in
-  let prelude_block, body_block = dim_asserts "blockDim" lp.block in
-  let prelude_call, body_call = call_stmt lp.kernel lp.args in
+  (* One [Launch_arg.cache] per pseudo-kernel — gridDim, then
+     blockDim, then args. First slot to see a non-Ident expression
+     names it; later slots reuse the same uniform. This catches the
+     pattern where a host-side variable gets c-to-json-folded to the
+     same expression at multiple launch slots (e.g. [seq_len] both as
+     [gridDim.y] and as a scalar arg, both folded to
+     [atoi(argv[2])]). *)
+  let cache = Launch_arg.cache_empty in
+  let cache, body_grid, fresh_grid = dim_asserts cache "gridDim" lp.grid in
+  let cache, body_block, fresh_block = dim_asserts cache "blockDim" lp.block in
+  let _cache, body_call, fresh_args = call_stmt cache lp.kernel lp.args in
   (* shared_mem: skipped intentionally. Static [__shared__] arrays
      declare their own sizes inline; only [extern __shared__] consumes
      the launch's dynamic shared-mem arg, and faial doesn't yet model
      that binding. *)
   (* stream: not relevant to data-race analysis. *)
   let body =
-    Stmt.from_list
-      [
-        prelude_grid;
-        body_grid;
-        prelude_block;
-        body_block;
-        prelude_call;
-        body_call;
-      ]
+    Stmt.from_list [ body_grid; body_block; body_call ]
+  in
+  (* Free-var capture still drives the [Direct] path: any [Ident]
+     surfaced by [Launch_arg.resolve] surfaces here as a parameter,
+     same as before. The fresh-param list adds the [Uniform]/[ArrayId]
+     uniforms minted for non-[Ident] launch args and dim-axis
+     expressions. Dedup by variable name in case a fresh name
+     collides with a captured free var (shouldn't happen in practice
+     given the [__faial_launch_*] prefix, but be defensive). *)
+  let direct_params =
+    free_vars_of_launch lp |> List.filter_map param_of_free_var
+  in
+  let fresh_params =
+    fresh_grid @ fresh_block @ fresh_args |> List.map Launch_arg.fresh_to_param
+  in
+  let seen : Variable.Set.t ref = ref Variable.Set.empty in
+  let dedup (acc : C_lang.Param.t list) (p : C_lang.Param.t) :
+      C_lang.Param.t list =
+    let n = C_lang.Param.name p in
+    if Variable.Set.mem n !seen then acc
+    else (
+      seen := Variable.Set.add n !seen;
+      p :: acc)
   in
   let params =
-    free_vars_of_launch lp |> List.filter_map param_of_free_var
+    List.fold_left dedup [] (direct_params @ fresh_params) |> List.rev
   in
   let name = synth_name lp in
   let ty = J_type.to_string lp.kernel.ty in

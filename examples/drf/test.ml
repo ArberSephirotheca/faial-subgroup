@@ -172,6 +172,14 @@ let tests =
      races. *)
     ("racy-launch-mismatch.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
+    (* A scalar kernel arg supplied by a non-Ident launch-site
+     expression (here [params[0]]). The launch-arg resolver folds
+     the array-subscript into a fresh uniform pseudo-parameter so
+     the formal stays block-uniform; analyses DRF. Without the
+     resolver, this would false-positive racy because the launch
+     arg surfaces as a per-thread @AccessState. *)
+    ("drf-launch-complex-arg.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)
