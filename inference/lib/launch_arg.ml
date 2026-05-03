@@ -41,6 +41,15 @@ open Protocols
 
 type resolved =
   | Direct of Decl_expr.t
+  | Const of D_lang.Expr.t
+    (* A literal launch-site argument ([IntegerLiteral],
+       [FloatingLiteral], [CharacterLiteral], [CXXBoolLiteralExpr]):
+       trivially uniform across threads by construction, so the
+       resolver passes it through to the kernel call as-is. The
+       inliner then substitutes the kernel formal with the literal
+       throughout the body, which collapses constant-folded
+       launch-site values (e.g. c-to-json folding a [const int N =
+       256] reference to [256]) into concrete index expressions. *)
   | Uniform of {
       name : Variable.t;
       ty : J_type.t;
@@ -68,6 +77,20 @@ module ExprMap = Map.Make (String)
 type cache = Variable.t ExprMap.t
 
 let cache_empty : cache = ExprMap.empty
+
+(* If [e] is a C-AST literal whose value is trivially uniform across
+   threads, lift it to its [D_lang.Expr.t] counterpart so it can be
+   passed straight through into the synthesised kernel call. Returns
+   [None] for everything else (function calls, identifiers, struct
+   accesses, etc.) — those go through the resolver's general
+   path. *)
+let lift_literal (e : C_lang.Expr.t) : D_lang.Expr.t option =
+  match e with
+  | IntegerLiteral n -> Some (IntegerLiteral n)
+  | FloatingLiteral f -> Some (FloatingLiteral f)
+  | CharacterLiteral c -> Some (CharacterLiteral c)
+  | CXXBoolLiteralExpr b -> Some (CXXBoolLiteralExpr b)
+  | _ -> None
 
 let mk_arg_name (idx : int) : Variable.t =
   Variable.from_name (Printf.sprintf "__faial_launch_arg_%d" idx)
@@ -128,6 +151,8 @@ let resolve (cache : cache) (idx : int) (e : C_lang.Expr.t) :
     cache * resolved * fresh_param list =
   match e with
   | Ident d -> (cache, Direct d, [])
+  | _ when Option.is_some (lift_literal e) ->
+      (cache, Const (Option.get (lift_literal e)), [])
   | _ ->
       let ty = C_lang.Expr.to_type e in
       if is_pointer_like ty then
@@ -165,6 +190,8 @@ let resolve_axis (cache : cache) (base : string) (axis : string)
     (e : C_lang.Expr.t) : cache * resolved * fresh_param list =
   match e with
   | Ident d -> (cache, Direct d, [])
+  | _ when Option.is_some (lift_literal e) ->
+      (cache, Const (Option.get (lift_literal e)), [])
   | _ ->
       let ty = C_lang.Expr.to_type e in
       let key = C_lang.Expr.to_string e in
@@ -178,6 +205,7 @@ let resolve_axis (cache : cache) (base : string) (axis : string)
 let to_d_expr (r : resolved) : D_lang.Expr.t =
   match r with
   | Direct d -> Ident d
+  | Const e -> e
   | Uniform { name; ty } ->
       Ident (Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name)
   | ArrayId { base; offset = None; _ } -> Ident base

@@ -165,13 +165,10 @@ let dim_asserts (cache : Launch_arg.cache) (base : string)
   let xe, ye, ze = dim3_axes e in
   let axis_rhs (cache : Launch_arg.cache) (axis : string) (e : C_lang.Expr.t)
       : Launch_arg.cache * Expr.t * Launch_arg.fresh_param list =
-    match e with
-    | IntegerLiteral n -> (cache, IntegerLiteral n, [])
-    | _ ->
-        let cache, resolved, fresh =
-          Launch_arg.resolve_axis cache base axis e
-        in
-        (cache, Launch_arg.to_d_expr resolved, fresh)
+    let cache, resolved, fresh =
+      Launch_arg.resolve_axis cache base axis e
+    in
+    (cache, Launch_arg.to_d_expr resolved, fresh)
   in
   let cache, rhs_x, fx = axis_rhs cache "x" xe in
   let cache, rhs_y, fy = axis_rhs cache "y" ye in

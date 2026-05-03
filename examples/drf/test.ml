@@ -180,6 +180,16 @@ let tests =
      arg surfaces as a per-thread @AccessState. *)
     ("drf-launch-complex-arg.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* A scalar kernel arg fed by a [const int N = 256] host
+     variable that c-to-json const-folds to its literal value at
+     the launch site. The resolver passes literals through as
+     [Const] so the inliner substitutes the kernel formal with
+     [256] directly. Without pass-through, the formal stays
+     unbound and Z3 picks an adversarial witness, false-positive
+     reporting racy on a kernel where every (blockIdx.x,
+     threadIdx.x) pair writes a distinct address. *)
+    ("drf-launch-const-arg.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)
