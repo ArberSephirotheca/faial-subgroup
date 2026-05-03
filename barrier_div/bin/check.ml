@@ -283,7 +283,8 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
     (grid_dim : Dim3.t option) (all_dims : bool)
     (macros : string list) (includes : string list)
     (params : (string * int) list) (assumes : Exp.bexp list)
-    (assume_dims : bool) (only_kernel : string option) : unit =
+    (assume_dims : bool) (only_kernel : string option)
+    (list_kernels : bool) : unit =
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then begin
     prerr_endline
       "Cannot run with options: --all-dims and --grid-dim/--block-dim.\n\
@@ -297,6 +298,10 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
       ~block_dim ~grid_dim ~includes ~macros
       fname
   in
+  if list_kernels then begin
+    parsed.kernels |> List.iter (fun k -> print_endline (Kernel.name k));
+    exit 0
+  end;
   (* parsed.options has merged the user overrides on top of any
      GPUVerify pragma in the source (and the parser defaults). With
      --all-dims, leave the dims free; otherwise pin them so the
@@ -470,12 +475,21 @@ let only_kernel_arg : string option Term.t =
   let doc = "Only check a specific kernel." in
   Arg.(value & opt (some string) None & info [ "kernel" ] ~docv:"NAME" ~doc)
 
+let list_kernels_arg : bool Term.t =
+  let doc =
+    "Print one kernel name per line on stdout, taken from the parsed \
+     protocol-level kernel list, then exit. No analysis is run. \
+     Intended for scripting (e.g. piping into xargs or [--kernel] \
+     filters)."
+  in
+  Arg.(value & flag & info [ "list-kernels" ] ~doc)
+
 let main_t : unit Term.t =
   Term.(
     const main $ get_fname $ ignore_parsing_errors $ output_json $ show_map
     $ show_check $ show_symbexp $ check_arg $ block_dim_arg $ grid_dim_arg
     $ all_dims_arg $ macros $ includes $ params $ assumes_arg
-    $ assume_dims_arg $ only_kernel_arg)
+    $ assume_dims_arg $ only_kernel_arg $ list_kernels_arg)
 
 let info =
   let doc = "Check for barrier divergence errors" in

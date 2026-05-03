@@ -278,6 +278,17 @@ let main =
              called kernel's parameters and demotes the original \
              kernel to __device__ for inlining. Off by default; only \
              the parsed launch metadata is used.")
+  and+ list_kernels =
+    Arg.(
+      value & flag
+      & info [ "list-kernels" ]
+          ~doc:
+            "Print one kernel name per line on stdout, taken from the \
+             parsed protocol-level kernel list, then exit. No analysis \
+             is run. Synthesised pseudo-kernels emitted by \
+             [--assume-launch] are included if that flag is also set. \
+             Intended for scripting (e.g. piping into xargs or \
+             [--kernel] filters).")
   in
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then
     Error
@@ -305,7 +316,11 @@ let main =
         ~ignore_asserts ~assumes ~assume_dims ~assume_launch
     in
     let ui = if output_json then Jui.render else Tui.render in
-    if unreachable then App.check_unreachable app else App.run app |> ui;
+    if list_kernels then
+      app.kernels
+      |> List.iter (fun k -> print_endline (Protocols.Kernel.name k))
+    else if unreachable then App.check_unreachable app
+    else App.run app |> ui;
     Ok ()
 
 let () = exit (Cmd.eval_result main)
