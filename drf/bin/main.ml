@@ -289,6 +289,21 @@ let main =
              [--assume-launch] are included if that flag is also set. \
              Intended for scripting (e.g. piping into xargs or \
              [--kernel] filters).")
+  and+ stop_at =
+    let stages =
+      App.Stage.cmdliner_choices
+      |> List.map fst
+      |> String.concat "|"
+    in
+    Arg.(
+      value
+      & opt (some (enum App.Stage.cmdliner_choices)) None
+      & info [ "stop-at" ] ~docv:"STAGE"
+          ~doc:
+            ("Stop after the given pipeline stage and exit. Implies \
+              the matching --show-<stage>; the rest of the analysis \
+              (downstream stages and the SMT solver) is skipped. \
+              Stages, in pipeline order: " ^ stages ^ "."))
   in
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then
     Error
@@ -313,13 +328,21 @@ let main =
         ~block_idx_1 ~block_idx_2 ~archs ~inline_calls:(not ignore_calls)
         ~ignore_parsing_errors ~includes ~block_dim ~grid_dim ~params
         ~only_kernel ~only_true_data_races ~macros ~cu_to_json ~all_dims
-        ~ignore_asserts ~assumes ~assume_dims ~assume_launch
+        ~ignore_asserts ~assumes ~assume_dims ~assume_launch ~stop_at
     in
     let ui = if output_json then Jui.render else Tui.render in
     if list_kernels then
       app.kernels
       |> List.iter (fun k -> print_endline (Protocols.Kernel.name k))
     else if unreachable then App.check_unreachable app
+    else if Option.is_some stop_at then
+      (* Run the pipeline for its printing side effects (each
+         [show_or_stop] dumps the IR at its stage when matched), but
+         skip the UI render — an empty Analysis report from the
+         [Stop_at_stage] catch in [App.run] would otherwise print as
+         "Kernel ... is DRF!", which is misleading when no analysis
+         actually ran. *)
+      let _ = App.run app in ()
     else App.run app |> ui;
     Ok ()
 

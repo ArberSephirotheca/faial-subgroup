@@ -4,6 +4,23 @@ open Protocols
 open Protocols_parsing
 open Barrier_div
 
+(* The pipeline stages [--stop-at] can target. faial-sync's pipeline
+   is shorter than faial-drf's: the kernel goes through preprocessing
+   (always run), then the [Analysis.Check.of_kernel] phase (printable
+   via [--show-check]), then the [Analysis.Proof.of_check] phase
+   (printable via [--show-symbexp]), then the SMT solver. *)
+module Stage = struct
+  type t = Map | Check | Symbexp
+
+  let cmdliner_choices : (string * t) list =
+    [ ("map", Map); ("check", Check); ("symbexp", Symbexp) ]
+end
+
+(* Same machinery as faial-drf's [App.Stop_at_stage]: raised when a
+   stage's [show_or_stop] matches [stop_at], caught at the per-kernel
+   boundary so the surrounding fold continues to the next kernel. *)
+exception Stop_at_stage
+
 (* Both verification properties are checked on every kernel by default.
    See barrier_div/src/analysis.ml: [Property.Well_sync] catches barriers
    whose reachability depends on thread-private state; [Property.Barrier_div]
@@ -168,12 +185,16 @@ module TUI = struct
       ("(proof #" ^ string_of_int p.id ^ ")\n")
 
   let check_property (property : Analysis.Property.t)
-      (k : Protocols.Kernel.t) ~show_check ~show_symbexp : bool =
+      (k : Protocols.Kernel.t) ~show_check ~show_symbexp ~stop_at : bool =
     let ok_msg, banner, noun = labels property in
     let check = Analysis.Check.of_kernel ~property k in
-    if show_check then Analysis.Check.print check;
+    if show_check || stop_at = Some Stage.Check then
+      Analysis.Check.print check;
+    if stop_at = Some Stage.Check then raise Stop_at_stage;
     let proofs = Analysis.Proof.of_check check in
-    if show_symbexp then Analysis.Proof.print_seq proofs;
+    if show_symbexp || stop_at = Some Stage.Symbexp then
+      Analysis.Proof.print_seq proofs;
+    if stop_at = Some Stage.Symbexp then raise Stop_at_stage;
     let outcomes =
       proofs
       |> Seq.map (fun p -> (p, Analysis.Proof.solve p))
@@ -219,27 +240,32 @@ module TUI = struct
         false
 
   let check_kernel ~(properties : Analysis.Property.t list)
-      (k : Protocols.Kernel.t) ~show_map ~show_check ~show_symbexp : bool =
-    if show_map then Protocols.Kernel.print k;
+      (k : Protocols.Kernel.t) ~show_map ~show_check ~show_symbexp
+      ~stop_at : bool =
+    if show_map || stop_at = Some Stage.Map then Protocols.Kernel.print k;
+    if stop_at = Some Stage.Map then raise Stop_at_stage;
     (* Run each requested check; report independently. Use [List.fold_left]
        (not [List.for_all]) so a failure on one property doesn't suppress
        reporting of the other. *)
     List.fold_left
       (fun all_safe property ->
         let safe =
-          check_property property k ~show_check ~show_symbexp
+          check_property property k ~show_check ~show_symbexp ~stop_at
         in
         all_safe && safe)
       true properties
 
   let run ~(properties : Analysis.Property.t list)
-      ~show_map ~show_check ~show_symbexp
+      ~show_map ~show_check ~show_symbexp ~stop_at
       (protocol_kernels : Protocols.Kernel.t list) : bool =
     protocol_kernels
     |> List.fold_left
          (fun all_safe k ->
            let safe =
-             check_kernel ~properties k ~show_map ~show_check ~show_symbexp
+             try
+               check_kernel ~properties k ~show_map ~show_check
+                 ~show_symbexp ~stop_at
+             with Stop_at_stage -> true
            in
            all_safe && safe)
          true
@@ -284,7 +310,7 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
     (macros : string list) (includes : string list)
     (params : (string * int) list) (assumes : Exp.bexp list)
     (assume_dims : bool) (only_kernel : string option)
-    (list_kernels : bool) : unit =
+    (list_kernels : bool) (stop_at : Stage.t option) : unit =
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then begin
     prerr_endline
       "Cannot run with options: --all-dims and --grid-dim/--block-dim.\n\
@@ -330,8 +356,23 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
       parsed_kernels
   in
   if output_json then JUI.run properties kernels
+  else if Option.is_some stop_at then
+    (* Run the pipeline for its printing side effects only (every
+       [show_or_stop]-equivalent in [check_kernel] /
+       [check_property] dumps the IR at its stage when matched).
+       Skip the success/failure rendering — the per-kernel
+       [Stop_at_stage] catch in [TUI.run] returns [true] (no
+       failure), which the surrounding check would otherwise
+       interpret as "all kernels safe" and exit 0 silently. We
+       want exit 0 either way (no analysis ran), but skipping the
+       call avoids a TUI banner in case future renderings fire
+       early. *)
+    ignore
+      (TUI.run ~properties ~show_map ~show_check ~show_symbexp ~stop_at
+         kernels)
   else if
-    not (TUI.run ~properties ~show_map ~show_check ~show_symbexp kernels)
+    not (TUI.run ~properties ~show_map ~show_check ~show_symbexp ~stop_at
+           kernels)
   then exit 1
 
 open Cmdliner
@@ -484,12 +525,27 @@ let list_kernels_arg : bool Term.t =
   in
   Arg.(value & flag & info [ "list-kernels" ] ~doc)
 
+let stop_at_arg : Stage.t option Term.t =
+  let stages =
+    Stage.cmdliner_choices |> List.map fst |> String.concat "|"
+  in
+  let doc =
+    "Stop after the given pipeline stage and exit. Implies the \
+     matching --show-<stage>; the rest of the analysis (downstream \
+     stages and the SMT solver) is skipped. Stages, in pipeline \
+     order: " ^ stages ^ "."
+  in
+  Arg.(
+    value
+    & opt (some (enum Stage.cmdliner_choices)) None
+    & info [ "stop-at" ] ~docv:"STAGE" ~doc)
+
 let main_t : unit Term.t =
   Term.(
     const main $ get_fname $ ignore_parsing_errors $ output_json $ show_map
     $ show_check $ show_symbexp $ check_arg $ block_dim_arg $ grid_dim_arg
     $ all_dims_arg $ macros $ includes $ params $ assumes_arg
-    $ assume_dims_arg $ only_kernel_arg $ list_kernels_arg)
+    $ assume_dims_arg $ only_kernel_arg $ list_kernels_arg $ stop_at_arg)
 
 let info =
   let doc = "Check for barrier divergence errors" in
