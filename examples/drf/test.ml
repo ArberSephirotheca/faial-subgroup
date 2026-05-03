@@ -199,6 +199,13 @@ let tests =
      variable becomes [arr[__idx]] inside a bounded foreach,
      instead of an unbounded Star. *)
     ("drf-range-for.cu", [], 0);
+    (* Pointer parameter with [volatile T * const __restrict]
+     qualifier stack: c_type's pointer detection must normalise the
+     trailing qualifier soup so the parameter classifies as a
+     global array. Without normalisation, the parameter is
+     Unsupported and every access lowers to [skip], producing a
+     false-negative DRF on a kernel that races on every thread. *)
+    ("racy-qualified-pointer.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are
