@@ -1,5 +1,5 @@
 (* The three-way classification of variables in the NBD typing
-   judgment (see documentation/named-barriers-typing.md).
+   judgment.
 
    - [Unif]:  same value across iterations and across the two
               executions T1, T2.

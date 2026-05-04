@@ -3,8 +3,8 @@
    Reduces a single task structurally. Sync-headed tasks accumulate
    in the parked partition; everything else is consumed.
 
-   Implements the rules in documentation/named-barriers-typing.md:
-     [T-Done], [T-Stop], [T-Decl], [T-Acc], [T-If], [T-Loop].
+   Implements the rules [T-Done], [T-Stop], [T-Decl], [T-Acc],
+   [T-If], [T-Loop].
 
    Invariant: every reduction lands in ⟨0; R⟩ — the live partition is
    fully drained because [T-Stop] is the only rule that produces a

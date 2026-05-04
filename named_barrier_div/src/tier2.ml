@@ -1,8 +1,7 @@
 (* Tier 2 — ⊢ ⟨0; R⟩
 
    Acts on the parked partition (the live partition is always 0 by the
-   tier-1 invariant). Three pieces from
-   documentation/named-barriers-typing.md:
+   tier-1 invariant). Three pieces:
 
    - [group_at]:    G(R, n) — partition tasks by sync id.
    - [advance_n]:   R ⇒_n R' — inductive sync-advance.
