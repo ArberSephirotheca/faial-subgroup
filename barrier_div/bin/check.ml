@@ -309,7 +309,7 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
     (grid_dim : Dim3.t option) (all_dims : bool)
     (macros : string list) (includes : string list)
     (params : (string * int) list) (assumes : Exp.bexp list)
-    (assume_dims : bool) (only_kernel : string option)
+    (assume_dims : bool) (assume_launch : bool) (only_kernel : string option)
     (list_kernels : bool) (stop_at : Stage.t option) : unit =
   if all_dims && (Option.is_some block_dim || Option.is_some grid_dim) then begin
     prerr_endline
@@ -317,11 +317,19 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
        Use --all-dims and -p instead.";
     exit 2
   end;
+  if assume_launch && not all_dims then begin
+    prerr_endline
+      "--assume-launch requires --all-dims. The synthesised pseudo-kernels \
+       constrain blockDim/gridDim via assert(...) calls derived from the \
+       launch site; pinning the default block/grid dims on top would \
+       conflict and trivialise the precondition.";
+    exit 2
+  end;
   let properties = resolve_selector selector in
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
-      ~block_dim ~grid_dim ~includes ~macros
+      ~block_dim ~grid_dim ~includes ~macros ~assume_launch
       fname
   in
   if list_kernels then begin
@@ -512,6 +520,17 @@ let assume_dims_arg : bool Term.t =
   in
   Arg.(value & flag & info [ "assume-dims" ] ~doc)
 
+let assume_launch_arg : bool Term.t =
+  let doc =
+    "For every CUDA <<<grid, block>>> launch site emitted by cu-to-json, \
+     synthesise a pseudo-kernel that binds the launch's grid/block \
+     dimensions and arguments to the called kernel's parameters and \
+     demotes the original kernel to __device__ for inlining. Off by \
+     default; only the parsed launch metadata is used. Requires \
+     --all-dims."
+  in
+  Arg.(value & flag & info [ "assume-launch" ] ~doc)
+
 let only_kernel_arg : string option Term.t =
   let doc = "Only check a specific kernel." in
   Arg.(value & opt (some string) None & info [ "kernel" ] ~docv:"NAME" ~doc)
@@ -545,7 +564,8 @@ let main_t : unit Term.t =
     const main $ get_fname $ ignore_parsing_errors $ output_json $ show_map
     $ show_check $ show_symbexp $ check_arg $ block_dim_arg $ grid_dim_arg
     $ all_dims_arg $ macros $ includes $ params $ assumes_arg
-    $ assume_dims_arg $ only_kernel_arg $ list_kernels_arg $ stop_at_arg)
+    $ assume_dims_arg $ assume_launch_arg $ only_kernel_arg
+    $ list_kernels_arg $ stop_at_arg)
 
 let info =
   let doc = "Check for barrier divergence errors" in
