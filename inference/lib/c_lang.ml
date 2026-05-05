@@ -913,16 +913,17 @@ and parse_stmt (j : json) : c_stmt j_result =
               Ok (WhileStmt { cond; body })
           | [ decl; cond; body ] ->
               (* C++ [while (auto x = init) { body }]: clang emits
-                 [decl; cond; body] (with [hasVar: true]). Lift the
-                 declaration before the loop so [cond] and [body] see
-                 the binding. The re-init per iteration is dropped — an
-                 under-approximation that's fine for sync/DRF analysis,
-                 since correctness reasoning about the loop body is
-                 unaffected by how the loop variable is refreshed. *)
-              let* decl = parse_stmt decl in
+                 [decl; cond; body] (with [hasVar: true]). Render as
+                 [for (auto x = init; cond; ) body] — [parse_for_init]
+                 already lowers the [DeclStmt] node into a [Decls]
+                 init, so we keep [x] bound as the loop's own variable
+                 instead of hoisting it into the enclosing scope. *)
+              let* init = parse_for_init decl in
               let* cond = parse_expr cond in
               let* body = parse_stmt body in
-              Ok (Seq (decl, WhileStmt { cond; body }))
+              Ok
+                (ForStmt
+                   { init = Some init; cond = Some cond; inc = Skip; body })
           | _ ->
               let g = List.length l |> string_of_int in
               root_cause

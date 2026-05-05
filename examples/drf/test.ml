@@ -230,6 +230,11 @@ let tests =
      variable becomes [arr[__idx]] inside a bounded foreach,
      instead of an unbounded Star. *)
     ("drf-range-for.cu", [], 0);
+    (* C++ [while (auto i = n) { ...; i--; }]: clang emits a 3-item
+     [DeclStmt; cond; body] inner array. The parser lowers it to
+     [for (auto i = n; i; ) body], keeping [i] as the loop's own
+     binding; the step is inferred from [i--] in the body. *)
+    ("drf-while-decl.cu", [], 0);
     (* Pointer parameter with [volatile T * const __restrict]
      qualifier stack: c_type's pointer detection must normalise the
      trailing qualifier soup so the parameter classifies as a
