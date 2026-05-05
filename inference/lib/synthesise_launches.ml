@@ -28,84 +28,74 @@ open D_lang
 (* ---------- Free-variable extraction ---------- *)
 
 (* Walk a [C_lang.Expr.t] collecting [Decl_expr.t] for every identifier
-   reference whose [kind] is [Var] or [ParmVar]. De-dup by name in
-   first-seen order. Function/method/enum/template-parm references are
-   skipped — they don't carry runtime values. *)
-let free_vars_of_c_expr (e : C_lang.Expr.t) : Decl_expr.t list =
-  let seen : Variable.Set.t ref = ref Variable.Set.empty in
-  let acc : Decl_expr.t list ref = ref [] in
-  let push (d : Decl_expr.t) : unit =
-    let n = d.name in
-    if not (Variable.Set.mem n !seen) then (
-      seen := Variable.Set.add n !seen;
-      acc := d :: !acc)
-  in
-  let rec walk (e : C_lang.Expr.t) : unit =
-    match e with
-    | Ident d -> (
-        match d.kind with
-        | Decl_expr.Kind.Var | Decl_expr.Kind.ParmVar -> push d
-        | Decl_expr.Kind.Function
-        | Decl_expr.Kind.CXXMethod
-        | Decl_expr.Kind.NonTypeTemplateParm
-        | Decl_expr.Kind.EnumConstant ->
-            ())
-    | BinaryOperator b ->
-        walk b.lhs;
-        walk b.rhs
-    | UnaryOperator u -> walk u.child
-    | CallExpr { func; args; _ } ->
-        walk func;
-        List.iter walk args
-    | CXXOperatorCallExpr { func; args; _ } ->
-        walk func;
-        List.iter walk args
-    | CXXConstructExpr { args; _ } -> List.iter walk args
-    | CXXNewExpr { arg; _ } -> walk arg
-    | CXXDeleteExpr { arg; _ } -> walk arg
-    | ConditionalOperator c ->
-        walk c.cond;
-        walk c.then_expr;
-        walk c.else_expr
-    | MemberExpr { base; _ } -> walk base
-    | ArraySubscriptExpr a ->
-        walk a.lhs;
-        walk a.rhs
-    | StmtExpr e -> walk e.result
-    | PackExpansion e -> walk e
-    | LambdaExpr _
-    (* Lambdas in launch slots aren't expected — be defensive: skip. *)
-    | DependentScopeRef _
-    (* Dependent references in resolved-launch slots shouldn't survive
-       past Phase-2; defensive skip if they do. *)
-    | UnresolvedLookupExpr _
-    | RecoveryExpr _ | SizeOfExpr _ | CharacterLiteral _ | IntegerLiteral _
-    | FloatingLiteral _ | CXXBoolLiteralExpr _ ->
-        ()
-  in
-  walk e;
-  List.rev !acc
+   reference whose [kind] is [Var] or [ParmVar]. May produce duplicates;
+   [free_vars_of_launch] de-dups across the slot union. Function /
+   method / enum / template-parm references are skipped — they don't
+   carry runtime values. *)
+let rec free_vars_of_c_expr : C_lang.Expr.t -> Decl_expr.t list = function
+  | Ident d -> (
+      match d.kind with
+      | Decl_expr.Kind.Var | Decl_expr.Kind.ParmVar -> [ d ]
+      | Decl_expr.Kind.Function
+      | Decl_expr.Kind.CXXMethod
+      | Decl_expr.Kind.NonTypeTemplateParm
+      | Decl_expr.Kind.EnumConstant ->
+          [])
+  | BinaryOperator b ->
+      free_vars_of_c_expr b.lhs @ free_vars_of_c_expr b.rhs
+  | UnaryOperator u -> free_vars_of_c_expr u.child
+  | CallExpr { func; args; _ } | CXXOperatorCallExpr { func; args; _ } ->
+      free_vars_of_c_expr func @ List.concat_map free_vars_of_c_expr args
+  | CXXConstructExpr { args; _ } -> List.concat_map free_vars_of_c_expr args
+  | CXXNewExpr { arg; _ } | CXXDeleteExpr { arg; _ } -> free_vars_of_c_expr arg
+  | ConditionalOperator c ->
+      free_vars_of_c_expr c.cond
+      @ free_vars_of_c_expr c.then_expr
+      @ free_vars_of_c_expr c.else_expr
+  | MemberExpr { base; _ } -> free_vars_of_c_expr base
+  | ArraySubscriptExpr a ->
+      free_vars_of_c_expr a.lhs @ free_vars_of_c_expr a.rhs
+  | StmtExpr e -> free_vars_of_c_expr e.result
+  | PackExpansion e -> free_vars_of_c_expr e
+  (* Lambdas in launch slots aren't expected — be defensive: skip. *)
+  | LambdaExpr _
+  (* Dependent references in resolved-launch slots shouldn't survive
+     past Phase-2; defensive skip if they do. *)
+  | DependentScopeRef _
+  | UnresolvedLookupExpr _
+  | RecoveryExpr _ | SizeOfExpr _ | CharacterLiteral _ | IntegerLiteral _
+  | FloatingLiteral _ | CXXBoolLiteralExpr _ ->
+      []
 
-(* Union of free vars referenced anywhere in a [LaunchParam]'s slots. *)
+(* De-dup [xs] by the [Variable.t] returned by [name_of], keeping
+   first-seen order. *)
+let dedup_by_name (type a) ~(name_of : a -> Variable.t) (xs : a list) : a list =
+  let step (seen, acc) x =
+    let n = name_of x in
+    if Variable.Set.mem n seen then (seen, acc)
+    else (Variable.Set.add n seen, x :: acc)
+  in
+  List.fold_left step (Variable.Set.empty, []) xs |> snd |> List.rev
+
+(* Union of free vars referenced anywhere in a [LaunchParam]'s slots —
+   grid / block / shared_mem / stream / args / path_condition / each
+   const binding's init. The binding's [name] (LHS) is already
+   covered by the other slot walks (c-to-json's BFS only admits a
+   binding when its name is reachable from a slot Expr); walking
+   inits surfaces vars referenced *inside* an init (e.g. [numk] in
+   [inum = numk * 1024]) so they become synth-kernel parameters. *)
 let free_vars_of_launch (lp : C_lang.LaunchParam.t) : Decl_expr.t list =
-  let seen : Variable.Set.t ref = ref Variable.Set.empty in
-  let acc : Decl_expr.t list ref = ref [] in
-  let consider (d : Decl_expr.t) : unit =
-    let n = d.name in
-    if not (Variable.Set.mem n !seen) then (
-      seen := Variable.Set.add n !seen;
-      acc := d :: !acc)
+  let binding_inits =
+    List.map (fun (b : C_lang.ConstBinding.t) -> b.init) lp.const_bindings
   in
-  let from_one (e : C_lang.Expr.t) : unit =
-    List.iter consider (free_vars_of_c_expr e)
+  let exprs =
+    [ lp.grid; lp.block; lp.shared_mem; lp.stream ]
+    @ lp.args
+    @ Option.to_list lp.path_condition
+    @ binding_inits
   in
-  from_one lp.grid;
-  from_one lp.block;
-  from_one lp.shared_mem;
-  from_one lp.stream;
-  List.iter from_one lp.args;
-  Option.iter from_one lp.path_condition;
-  List.rev !acc
+  List.concat_map free_vars_of_c_expr exprs
+  |> dedup_by_name ~name_of:(fun (d : Decl_expr.t) -> d.name)
 
 (* ---------- Pseudo-kernel synthesis ---------- *)
 
@@ -272,6 +262,42 @@ let path_cond_asserts (lp : C_lang.LaunchParam.t) : Stmt.t =
       | Some d_expr -> assert_stmt d_expr
       | None -> Stmt.Skip)
 
+(* Lift c-to-json's [const_bindings] (host-local [const]-qualified
+   variables paired with their initialisers) into local [DeclStmt]s
+   at the top of the synth kernel body. Each binding becomes
+   [<ty> <name> = <init>;] — [d_to_imp.infer_decl] lowers the
+   declaration to [Imp.Stmt.decl_set], which gives Imp the
+   definitional binding [name = init]. The names are filtered out of
+   the synth kernel's parameter list (see [synth_kernel]) so they're
+   bound exactly once, as locals.
+
+   c-to-json's BFS only admits bindings whose name is reachable from
+   another slot Expr, and the init expression has already been
+   resolved (const-fold + trivial-init substitution + pure-helper
+   inlining) by the emitter, so it normally lifts cleanly via
+   [lift_pure]. If [lift_pure] declines (defensive — shouldn't fire
+   given the contract), the binding is skipped and its name stays as
+   a parameter. *)
+let const_binding_decl (b : C_lang.ConstBinding.t) : Stmt.t option =
+  match Launch_arg.lift_pure b.init with
+  | None -> None
+  | Some rhs ->
+      let ty_var = Ty_variable.make ~ty:b.ty ~name:b.name in
+      let d = D_lang.Decl.from_expr ty_var rhs in
+      Some (Stmt.DeclStmt [ d ])
+
+let const_binding_decls (lp : C_lang.LaunchParam.t) : Stmt.t =
+  lp.const_bindings |> List.filter_map const_binding_decl |> Stmt.from_list
+
+(* Names of const-bindings whose decl emission succeeded. Dropping
+   them from [direct_params] avoids declaring the same name as both
+   a synth-kernel parameter and a local. *)
+let bound_names_emitted (lp : C_lang.LaunchParam.t) : Variable.Set.t =
+  lp.const_bindings
+  |> List.filter_map (fun (b : C_lang.ConstBinding.t) ->
+         Option.map (fun _ -> b.name) (Launch_arg.lift_pure b.init))
+  |> Variable.Set.of_list
+
 let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
   (* One [Launch_arg.cache] per pseudo-kernel — gridDim, then
      blockDim, then args. First slot to see a non-Ident expression
@@ -285,38 +311,42 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
   let cache, body_block, fresh_block = dim_asserts cache "blockDim" lp.block in
   let _cache, body_call, fresh_args = call_stmt cache lp.kernel lp.args in
   let body_path_cond = path_cond_asserts lp in
+  let body_const_bindings = const_binding_decls lp in
   (* shared_mem: skipped intentionally. Static [__shared__] arrays
      declare their own sizes inline; only [extern __shared__] consumes
      the launch's dynamic shared-mem arg, and faial doesn't yet model
      that binding. *)
   (* stream: not relevant to data-race analysis. *)
+  (* Const-binding decls come first so the locals they introduce are
+     in scope for the dim asserts, the path-condition assert, and the
+     kernel call — any of those slots may reference a binding's
+     [name] as a [DeclRefExpr]. *)
   let body =
-    Stmt.from_list [ body_grid; body_block; body_path_cond; body_call ]
+    Stmt.from_list
+      [ body_const_bindings; body_grid; body_block; body_path_cond; body_call ]
   in
   (* Free-var capture still drives the [Direct] path: any [Ident]
      surfaced by [Launch_arg.resolve] surfaces here as a parameter,
      same as before. The fresh-param list adds the [Uniform]/[ArrayId]
      uniforms minted for non-[Ident] launch args and dim-axis
-     expressions. Dedup by variable name in case a fresh name
+     expressions. Names that became local const-binding decls are
+     dropped — they're bound by [body_const_bindings] now, not by
+     parameter passing. Dedup by variable name in case a fresh name
      collides with a captured free var (shouldn't happen in practice
      given the [__faial_launch_*] prefix, but be defensive). *)
+  let bound = bound_names_emitted lp in
   let direct_params =
-    free_vars_of_launch lp |> List.filter_map param_of_free_var
+    free_vars_of_launch lp
+    |> List.filter (fun (d : Decl_expr.t) ->
+           not (Variable.Set.mem d.name bound))
+    |> List.filter_map param_of_free_var
   in
   let fresh_params =
     fresh_grid @ fresh_block @ fresh_args |> List.map Launch_arg.fresh_to_param
   in
-  let seen : Variable.Set.t ref = ref Variable.Set.empty in
-  let dedup (acc : C_lang.Param.t list) (p : C_lang.Param.t) :
-      C_lang.Param.t list =
-    let n = C_lang.Param.name p in
-    if Variable.Set.mem n !seen then acc
-    else (
-      seen := Variable.Set.add n !seen;
-      p :: acc)
-  in
   let params =
-    List.fold_left dedup [] (direct_params @ fresh_params) |> List.rev
+    direct_params @ fresh_params
+    |> dedup_by_name ~name_of:C_lang.Param.name
   in
   let name = synth_name lp in
   let ty = J_type.to_string lp.kernel.ty in

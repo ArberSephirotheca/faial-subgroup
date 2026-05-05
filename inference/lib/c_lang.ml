@@ -2812,6 +2812,63 @@ let parse_bare_decl_ref (j : Yojson.Basic.t) : Decl_expr.t Rjson.j_result =
   | Ident d -> Ok d
   | _ -> root_cause "parse_bare_decl_ref: expected an Ident" j
 
+(* One [ConstBinding] entry inside [LaunchParam.const_bindings]. c-to-json
+   surfaces every host-local [const]-qualified variable reachable from the
+   launch's emitted expressions paired with its initialiser, so equalities
+   like [inum == numk * 1024] reach faial without the emitter rewriting use
+   sites: [inum] stays a named [DeclRefExpr] in the grid expression, the
+   path condition, and any kernel arg, and the equality travels alongside.
+
+   c-to-json filters by type-system const + no address-taken — the strongest
+   immutability guarantee available without value reconstruction — so each
+   binding is sound as a launch-time hypothesis. The init expression is
+   already resolved (const-fold + trivial-init substitution + pure-helper
+   inlining), so it round-trips through [parse_expr] like any other slot. *)
+module ConstBinding = struct
+  type t = {
+    name : Variable.t;
+    ty : J_type.t;
+    init : c_expr;
+  }
+
+  let parse (j : Yojson.Basic.t) : t Rjson.j_result =
+    let open Rjson in
+    (let* o = cast_object j in
+     let* () = expect_kind "ConstBinding" o in
+     let* name_str = with_field "name" cast_string o in
+     let* ty = get_field "type" o in
+     let* inner = with_field "inner" (cast_map parse_expr) o in
+     let* init =
+       match inner with
+       | [ e ] -> Ok e
+       | _ ->
+           root_cause
+             "ConstBinding: expected exactly one init Expr in inner[]" j
+     in
+     Ok
+       {
+         name = Variable.from_name name_str;
+         ty = J_type.from_json ty;
+         init;
+       })
+    |> Rjson.add_reason "ConstBinding" j
+
+  let to_string (b : t) : string =
+    Variable.name b.name ^ " = " ^ Expr.to_string b.init
+end
+
+(* Parse the [const_bindings] wrapper:
+     {kind: "ConstBindings", inner: [<ConstBinding>...]}
+   c-to-json wraps the list in a single named slot for streamer-layout
+   reasons (two labeled-array slots at the same level malform the JSON);
+   on this side we just project [inner]. *)
+let parse_const_bindings (j : Yojson.Basic.t) : ConstBinding.t list Rjson.j_result =
+  let open Rjson in
+  (let* o = cast_object j in
+   let* () = expect_kind "ConstBindings" o in
+   with_field "inner" (cast_map ConstBinding.parse) o)
+  |> Rjson.add_reason "ConstBindings" j
+
 module LaunchParam = struct
   (* One CUDA launch site, populated from c-to-json's [LaunchParam] node
      in TranslationUnitDecl.inner[]. The expression slots (grid / block
@@ -2840,6 +2897,14 @@ module LaunchParam = struct
        that [Launch_arg.lift_pure] handles directly. Absent when no
        conjunct survives the soundness check. *)
     path_condition : c_expr option;
+    (* Host-local [const]-qualified variables reachable from the
+       launch's emitted expressions, paired with their initialisers.
+       Surfaces equalities like [inum == numk * 1024] so a downstream
+       consumer can conjoin them to the wrapper invariant without
+       rewriting use sites — [inum] stays a named identifier in the
+       grid expression, the path condition, and any kernel arg.
+       Empty when c-to-json's BFS admits no bindings. *)
+    const_bindings : ConstBinding.t list;
     notes : string option;
   }
 
@@ -2862,6 +2927,9 @@ module LaunchParam = struct
      let* stream = with_field "stream" parse_expr o in
      let* args = with_field_or "args" (cast_map parse_expr) [] o in
      let* path_condition = with_opt_field "path_condition" parse_expr o in
+     let* const_bindings =
+       with_field_or "const_bindings" parse_const_bindings [] o
+     in
      let* notes = with_opt_field "notes" cast_string o in
      Ok
        {
@@ -2876,6 +2944,7 @@ module LaunchParam = struct
          stream;
          args;
          path_condition;
+         const_bindings;
          notes;
        })
     |> Rjson.add_reason "LaunchParam" j
@@ -2896,11 +2965,16 @@ module LaunchParam = struct
       | Some e -> " when " ^ Expr.to_string e
       | None -> ""
     in
+    let cb =
+      if lp.const_bindings = [] then ""
+      else " where " ^ list_to_s ConstBinding.to_string lp.const_bindings
+    in
     [
       Indent.Line
         ("<<<launch>>> "
         ^ Variable.name lp.kernel.name
-        ^ targs ^ host ^ "(" ^ list_to_s Expr.to_string lp.args ^ ")" ^ pc);
+        ^ targs ^ host ^ "(" ^ list_to_s Expr.to_string lp.args ^ ")"
+        ^ pc ^ cb);
     ]
 end
 

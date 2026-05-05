@@ -211,6 +211,19 @@ let tests =
      rules out small [n] and the kernel verifies DRF. *)
     ("drf-launch-path-cond.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Host-side const-binding ([const int inum = N * 1024]) used
+     nested in the grid axis ([dim3(inum / 256)]) reaches the
+     analyser via c-to-json's [const_bindings] slot. The synth
+     kernel lifts each binding into a local [const int <name> =
+     <init>;] decl, which [d_to_imp] lowers to a definitional
+     binding in Imp. Combined with [assert(gridDim.x == inum /
+     256)] and [gridDim.x >= 1], Z3 derives [N >= 1] transitively
+     and the stride-pattern kernel verifies DRF. Without the
+     binding lift, [inum] is a free uniform with no tie to [N],
+     Z3 picks [N == 0], and the kernel false-positive reports
+     racy. *)
+    ("drf-launch-const-binding.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)
