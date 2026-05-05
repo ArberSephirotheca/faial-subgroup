@@ -119,7 +119,8 @@ let rec to_stmt : t -> Stmt.t =
   | SyncOp { mode; array; index; loc } ->
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
-         return (Stmt.Sync { mode; array; index; count = None; loc }))
+         let id = List.fold_left Exp.n_plus (Exp.Var array) index in
+         return (Stmt.Sync { mode; id; participants = None; loc }))
   | Assert e -> ret_assert e Global
   | Read { array; target; index } ->
       Infer_exp.unknowns

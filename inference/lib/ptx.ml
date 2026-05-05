@@ -27,8 +27,6 @@ let re =
      \\(%[0-9]+\\|[0-9]+\\)\\([ \t]*,[ \t]*\\(%[0-9]+\\|[0-9]+\\)\\)?\
      [ \t]*;?[ \t]*$"
 
-let bar_array : Variable.t = Variable.from_name "bar"
-
 (* Resolve a single operand token. Literal integers always succeed;
    a `%N` placeholder is looked up in [operands] (and may itself be [None]
    if the C-side expression couldn't be lifted to an nexp). *)
@@ -49,7 +47,7 @@ let parse
     let mnemonic = Str.matched_group 2 asm_string in
     let mode : Sync.Mode.t =
       match mnemonic with
-      | "sync" -> Sync.Mode.Sync
+      | "sync" -> Sync.Mode.ArriveAndWait
       | "arrive" -> Sync.Mode.Arrive
       | _ -> assert false
     in
@@ -57,10 +55,10 @@ let parse
     let count_tok =
       try Some (Str.matched_group 6 asm_string) with Not_found -> None
     in
-    let* count =
+    let* participants =
       match count_tok with
       | None -> Some None
       | Some tok -> Option.map Option.some (resolve_token operands tok)
     in
-    Some Sync.{ mode; array = bar_array; index = [ id ]; count; loc }
+    Some Sync.{ mode; id; participants; loc }
   else None

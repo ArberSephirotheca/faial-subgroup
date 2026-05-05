@@ -158,8 +158,8 @@ module Code = struct
           Sync
             {
               s with
-              index = List.map (M.n_subst st) s.index;
-              count = Option.map (M.n_subst st) s.count;
+              id = M.n_subst st s.id;
+              participants = Option.map (M.n_subst st) s.participants;
             }
       | Skip -> Skip
   end

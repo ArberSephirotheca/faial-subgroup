@@ -429,12 +429,12 @@ module Make (L : Logger) = struct
           (CallExpr
              { func = Ident { name = n; kind = Function; _ }; args = []; _ })
         when Variable.name n = "__syncthreads" ->
-          Sync (Sync.threadsync ?loc:n.location ())
+          Sync (Sync.syncthreads ?loc:n.location ())
       | SExpr
           (CallExpr
              { func = Ident { name = n; kind = Function; _ }; args = [ _ ]; _ })
         when Variable.name n = "sync" ->
-          Sync (Sync.threadsync ?loc:n.location ())
+          Sync (Sync.syncthreads ?loc:n.location ())
           (* Static assert may have a message as second argument *)
       | SExpr
           (CallExpr

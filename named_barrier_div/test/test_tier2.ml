@@ -8,8 +8,8 @@ let v (name : string) : Variable.t = Variable.from_name name
 let access : Code.t =
   Code.Access { array = v "a"; index = [ Num 0 ]; mode = Access.Mode.Read }
 
-let sync_at ?(mode = Sync.Mode.Sync) (label : string) : Sync.t =
-  { Sync.mode; array = v label; index = []; count = None;
+let sync_at ?(mode = Sync.Mode.ArriveAndWait) (label : string) : Sync.t =
+  { Sync.mode; id = Var (v label); participants = None;
     loc = Some Location.empty }
 
 let mk_sync ?mode (label : string) : Code.t = Code.Sync (sync_at ?mode label)

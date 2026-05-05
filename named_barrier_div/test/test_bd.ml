@@ -15,10 +15,9 @@ let sigma_with_tidx_local : Sigma.t =
 let mk_task ?(sigma = sigma_with_tidx_local) ?(pi = Bool true)
     ?(delta = Bool true) () : Task.t =
   let s : Sync.t = {
-    Sync.mode = Sync.Mode.Sync;
-    array = v "n";
-    index = [];
-    count = None;
+    Sync.mode = Sync.Mode.ArriveAndWait;
+    id = Var (v "n");
+    participants = None;
     loc = Some Location.empty;
   } in
   Task.make ~sigma ~pi ~delta (Code.Sync s)

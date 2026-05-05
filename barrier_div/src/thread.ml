@@ -7,8 +7,8 @@ open Exp
 type t = { path_cond : bexp; proto : Code.t }
 
 (* Bundle of fields produced when a class hits a barrier. The Sync.t
-   is preserved verbatim so downstream code can read its mode, count,
-   array+index identity, and source location. *)
+   is preserved verbatim so downstream code can read its mode,
+   participant count, id, and source location. *)
 type sync_event = { sync : Sync.t; rest : t }
 
 (* The result of one reduction step. The State scheduler routes these:
@@ -52,7 +52,6 @@ let step (t : t) : action =
       | Sync sync ->
           let evt = mk_sync_event sync { t with proto = rest } in
           (match sync.mode with
-           | Sync.Mode.Sync -> Sync evt
            | Sync.Mode.Arrive -> Arrive evt
            | Sync.Mode.Wait -> Wait evt
            | Sync.Mode.ArriveAndWait -> Sync evt
@@ -85,7 +84,5 @@ let step (t : t) : action =
    whether a phase has "settled" — i.e., no class in the surrounding P
    could still arrive at, wait on, or sync at this barrier. *)
 let references ~(sync : Sync.t) (t : t) : bool =
-  let same_id (s : Sync.t) : bool =
-    Variable.equal s.array sync.array && s.index = sync.index
-  in
+  let same_id (s : Sync.t) : bool = s.id = sync.id in
   Code.exists (function Sync s -> same_id s | _ -> false) t.proto

@@ -191,7 +191,7 @@ let test_no_extras_symbolic_minus_preserved () =
   let init = Stmt.decl_set j (Var (var "ub")) in
   let cond = n_ge (Var j) (Var (var "lb")) in
   let inc = Stmt.assign C_type.int j (n_minus (Var j) (Var (var "step"))) in
-  let body = Stmt.Sync (Sync.threadsync ()) in
+  let body = Stmt.Sync (Sync.syncthreads ()) in
   let out = For.to_stmt { init; cond; inc } body in
   match find_for out with
   | None -> Alcotest.failf "expected a For; got: %s" (Stmt.to_string out)
