@@ -150,29 +150,25 @@ let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
    [D_lang.rewrite_exp] would introduce [@AccessState] decls whose
    [CallExpr] inits get dropped by [d_to_imp.infer_call], producing
    free per-thread variables. *)
-let dim_asserts (cache : Launch_arg.cache) (base : string)
-    (e : C_lang.Expr.t) :
-    Launch_arg.cache * Stmt.t * Launch_arg.fresh_param list =
+let dim_asserts (base : string) (e : C_lang.Expr.t) :
+    (Launch_arg.t, Stmt.t) State.t =
+  let open State.Syntax in
   let xe, ye, ze = dim3_axes e in
-  let axis_rhs (cache : Launch_arg.cache) (axis : string) (e : C_lang.Expr.t)
-      : Launch_arg.cache * Expr.t * Launch_arg.fresh_param list =
-    let cache, resolved, fresh =
-      Launch_arg.resolve_axis cache base axis e
-    in
-    (cache, Launch_arg.to_d_expr resolved, fresh)
+  let axis_rhs (axis : string) (e : C_lang.Expr.t) :
+      (Launch_arg.t, Expr.t) State.t =
+    let* resolved = Launch_arg.resolve_axis base axis e in
+    return (Launch_arg.to_d_expr resolved)
   in
-  let cache, rhs_x, fx = axis_rhs cache "x" xe in
-  let cache, rhs_y, fy = axis_rhs cache "y" ye in
-  let cache, rhs_z, fz = axis_rhs cache "z" ze in
-  let body =
-    Stmt.from_list
-      [
-        assert_axis_eq base "x" rhs_x;
-        assert_axis_eq base "y" rhs_y;
-        assert_axis_eq base "z" rhs_z;
-      ]
-  in
-  (cache, body, fx @ fy @ fz)
+  let* rhs_x = axis_rhs "x" xe in
+  let* rhs_y = axis_rhs "y" ye in
+  let* rhs_z = axis_rhs "z" ze in
+  return
+    (Stmt.from_list
+       [
+         assert_axis_eq base "x" rhs_x;
+         assert_axis_eq base "y" rhs_y;
+         assert_axis_eq base "z" rhs_z;
+       ])
 
 (* Build [kernel(args...);] as a D_lang.Stmt.t. The function reference
    carries the kernel's full type string so the SignatureDB lookup hits
@@ -184,26 +180,21 @@ let dim_asserts (cache : Launch_arg.cache) (base : string)
    fresh uniform parameter — or, when the same expression already
    appeared in [cache] (e.g. as a dim-axis), the existing uniform is
    reused so the analyser sees one symbol instead of two. *)
-let call_stmt (cache : Launch_arg.cache) (kernel : Decl_expr.t)
-    (args : C_lang.Expr.t list) :
-    Launch_arg.cache * Stmt.t * Launch_arg.fresh_param list =
-  let cache, rs_rev, fresh =
+let call_stmt (kernel : Decl_expr.t) (args : C_lang.Expr.t list) :
+    (Launch_arg.t, Stmt.t) State.t =
+  let open State.Syntax in
+  let* rs =
     args
     |> List.mapi (fun i a -> (i, a))
-    |> List.fold_left
-         (fun (cache, rs, fs) (i, a) ->
-           let cache, r, f = Launch_arg.resolve cache i a in
-           (cache, r :: rs, fs @ f))
-         (cache, [], [])
+    |> State.list_map (fun (i, a) -> Launch_arg.resolve i a)
   in
-  let args = rs_rev |> List.rev |> List.map Launch_arg.to_d_expr in
+  let args = List.map Launch_arg.to_d_expr rs in
   let func : Expr.t =
     Ident
       (Decl_expr.from_name ~ty:kernel.ty ~kind:Decl_expr.Kind.Function
          kernel.name)
   in
-  let call : Expr.t = CallExpr { func; args; ty = kernel.ty } in
-  (cache, SExpr call, fresh)
+  return (Stmt.SExpr (CallExpr { func; args; ty = kernel.ty }))
 
 (* Stable name for the synthesised kernel. The launch's source location
    is unique per call site within a translation unit; combine with the
@@ -299,17 +290,23 @@ let bound_names_emitted (lp : C_lang.LaunchParam.t) : Variable.Set.t =
   |> Variable.Set.of_list
 
 let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
-  (* One [Launch_arg.cache] per pseudo-kernel — gridDim, then
-     blockDim, then args. First slot to see a non-Ident expression
-     names it; later slots reuse the same uniform. This catches the
-     pattern where a host-side variable gets c-to-json-folded to the
-     same expression at multiple launch slots (e.g. [seq_len] both as
+  let open State.Syntax in
+  (* One resolver state per pseudo-kernel — gridDim, then blockDim,
+     then args. First slot to see a non-Ident expression names it;
+     later slots reuse the same uniform. This catches the pattern
+     where a host-side variable gets c-to-json-folded to the same
+     expression at multiple launch slots (e.g. [seq_len] both as
      [gridDim.y] and as a scalar arg, both folded to
      [atoi(argv[2])]). *)
-  let cache = Launch_arg.cache_empty in
-  let cache, body_grid, fresh_grid = dim_asserts cache "gridDim" lp.grid in
-  let cache, body_block, fresh_block = dim_asserts cache "blockDim" lp.block in
-  let _cache, body_call, fresh_args = call_stmt cache lp.kernel lp.args in
+  let m =
+    let* body_grid = dim_asserts "gridDim" lp.grid in
+    let* body_block = dim_asserts "blockDim" lp.block in
+    let* body_call = call_stmt lp.kernel lp.args in
+    return (body_grid, body_block, body_call)
+  in
+  let final, (body_grid, body_block, body_call) =
+    State.run m Launch_arg.empty
+  in
   let body_path_cond = path_cond_asserts lp in
   let body_const_bindings = const_binding_decls lp in
   (* shared_mem: skipped intentionally. Static [__shared__] arrays
@@ -342,7 +339,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     |> List.filter_map param_of_free_var
   in
   let fresh_params =
-    fresh_grid @ fresh_block @ fresh_args |> List.map Launch_arg.fresh_to_param
+    Launch_arg.fresh_params final |> List.map Launch_arg.fresh_to_param
   in
   let params =
     direct_params @ fresh_params
@@ -384,17 +381,20 @@ let demote_if_launched (launched : Variable.Set.t) (k : Kernel.t) : Kernel.t =
    [Auxiliary]. The synthesised kernels are ordered before the demoted
    originals so the call-inliner sees callees before callers. *)
 let rewrite_program (p : Program.t) : Program.t =
+  let open State.Syntax in
   let launched = launched_kernel_names p in
-  let synthesised : Def.t list ref = ref [] in
-  let rest =
-    List.filter_map
-      (fun def ->
+  let push_synth def = State.update (fun synth -> def :: synth) in
+  let m =
+    State.list_fold_left
+      (fun rest def ->
         match def with
         | Def.LaunchParam lp ->
-            synthesised := Def.Kernel (synth_kernel lp) :: !synthesised;
-            None
-        | Def.Kernel k -> Some (Def.Kernel (demote_if_launched launched k))
-        | other -> Some other)
-      p
+            let* () = push_synth (Def.Kernel (synth_kernel lp)) in
+            return rest
+        | Def.Kernel k ->
+            return (Def.Kernel (demote_if_launched launched k) :: rest)
+        | other -> return (other :: rest))
+      [] p
   in
-  rest @ List.rev !synthesised
+  let synth, rest_rev = State.run m [] in
+  List.rev rest_rev @ List.rev synth
