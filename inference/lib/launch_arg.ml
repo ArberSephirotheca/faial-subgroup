@@ -40,7 +40,62 @@ open Protocols
    and gives Z3 a single uniform to constrain instead of two
    unrelated symbols. *)
 
-type resolved =
+module Context = struct
+  (* A pseudo-parameter the resolver minted for a non-[Ident] launch
+     arg or for an extracted offset. The caller threads these into the
+     synthesised pseudo-kernel's [params] list so the analysis knows to
+     treat them as uniform globals. *)
+  type fresh_param = { name : Variable.t; ty : J_type.t }
+
+  (* Per-launch dedup map: keys are canonical-stringified launch
+     expressions, values are the fresh uniform that already represents
+     them. The key uses [C_lang.Expr.to_string] with default options,
+     which prints bare [Variable.name] (no source locations) — so two
+     structurally-identical expressions at different launch slots key
+     the same way. *)
+  module ExprMap = Map.Make (String)
+
+  (* Resolver state: the dedup cache plus the running list of fresh
+     params minted for this launch, accumulated newest-first. The
+     resolver functions are state monads over [t]; [synth_kernel] in
+     [synthesise_launches.ml] runs them once per pseudo-kernel and
+     pulls the final fresh-param list via [fresh_params]. *)
+  type t = {
+    cache : Variable.t ExprMap.t;
+    fresh : fresh_param list;
+  }
+
+  let empty : t = { cache = ExprMap.empty; fresh = [] }
+
+  (* Fresh params minted during the resolver run, in encounter order. *)
+  let fresh_params (st : t) : fresh_param list = List.rev st.fresh
+
+  (* Look up [key] in the cache. On hit, return the existing name. On
+     miss, mint a new uniform under [name]: extend the cache and push
+     a [fresh_param] entry that the caller pulls from [fresh_params]
+     after running the resolver. *)
+  let intern ~(key : string) ~(name : Variable.t) ~(ty : J_type.t) :
+      (t, Variable.t) State.t =
+    State.update_return (fun st ->
+      match ExprMap.find_opt key st.cache with
+      | Some existing -> (st, existing)
+      | None ->
+          ( {
+              cache = ExprMap.add key name st.cache;
+              fresh = { name; ty } :: st.fresh;
+            },
+            name ))
+
+  (* Convert a fresh param into the [C_lang.Param.t] shape that
+     [synth_kernel] folds into the pseudo-kernel's [params] list.
+     Mirrors [param_of_free_var] but takes a (name, ty) pair instead of
+     a [Decl_expr.t]. *)
+  let fresh_to_param (p : fresh_param) : C_lang.Param.t =
+    let ty_var = Ty_variable.make ~ty:p.ty ~name:p.name in
+    C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false
+end
+
+type t =
   | Direct of Decl_expr.t
   | Const of D_lang.Expr.t
     (* A side-effect-free launch-site expression — a literal, an
@@ -70,35 +125,6 @@ type resolved =
       offset : Decl_expr.t option;
       ty : J_type.t;
     }
-
-(* A pseudo-parameter the resolver minted for a non-[Ident] launch
-   arg or for an extracted offset. The caller threads these into the
-   synthesised pseudo-kernel's [params] list so the analysis knows to
-   treat them as uniform globals. *)
-type fresh_param = { name : Variable.t; ty : J_type.t }
-
-(* Per-launch dedup map: keys are canonical-stringified launch
-   expressions, values are the fresh uniform that already represents
-   them. The key uses [C_lang.Expr.to_string] with default options,
-   which prints bare [Variable.name] (no source locations) — so two
-   structurally-identical expressions at different launch slots key
-   the same way. *)
-module ExprMap = Map.Make (String)
-
-(* Resolver state: the dedup cache plus the running list of fresh
-   params minted for this launch, accumulated newest-first. The
-   resolver functions are state monads over [t]; [synth_kernel] in
-   [synthesise_launches.ml] runs them once per pseudo-kernel and
-   pulls the final fresh-param list via [fresh_params]. *)
-type t = {
-  cache : Variable.t ExprMap.t;
-  fresh : fresh_param list;
-}
-
-let empty : t = { cache = ExprMap.empty; fresh = [] }
-
-(* Fresh params minted during the resolver run, in encounter order. *)
-let fresh_params (st : t) : fresh_param list = List.rev st.fresh
 
 (* If [e] is a pure expression over [Ident]s and integer / float /
    bool / character literals — i.e. has no host-side side effects,
@@ -153,22 +179,6 @@ let mk_axis_name (base : string) (axis : string) : Variable.t =
 let is_pointer_like (ty : J_type.t) : bool =
   J_type.matches (fun ct -> C_type.is_pointer ct || C_type.is_array ct) ty
 
-(* Look up [key] in the cache. On hit, return the existing name. On
-   miss, mint a new uniform under [name]: extend the cache and push
-   a [fresh_param] entry that the caller pulls from [fresh_params]
-   after running the resolver. *)
-let intern ~(key : string) ~(name : Variable.t) ~(ty : J_type.t) :
-    (t, Variable.t) State.t =
-  State.update_return (fun st ->
-    match ExprMap.find_opt key st.cache with
-    | Some existing -> (st, existing)
-    | None ->
-        ( {
-            cache = ExprMap.add key name st.cache;
-            fresh = { name; ty } :: st.fresh;
-          },
-          name ))
-
 (* If [e] is [a + offset] (or [offset + a]) where [a] is a bare
    [Ident], return [(a, Some offset)]. If [e] is itself a bare
    [Ident], return [(e, None)]. Otherwise [None] — the caller treats
@@ -192,19 +202,19 @@ let rec strip_pointer_offset (e : C_lang.Expr.t) :
 (* If the offset is already an [Ident], reuse it; otherwise mint or
    reuse a fresh uniform via the cache. *)
 let resolve_offset (proposed_name : Variable.t) (off : C_lang.Expr.t) :
-    (t, Decl_expr.t) State.t =
+    (Context.t, Decl_expr.t) State.t =
   let open State.Syntax in
   match off with
   | Ident d -> return d
   | _ ->
       let ty = C_lang.Expr.to_type off in
       let key = C_lang.Expr.to_string off in
-      let* name = intern ~key ~name:proposed_name ~ty in
+      let* name = Context.intern ~key ~name:proposed_name ~ty in
       return (Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name)
 
 (* Resolve a launch-site argument at position [idx] within the
    call. *)
-let resolve (idx : int) (e : C_lang.Expr.t) : (t, resolved) State.t =
+let resolve (idx : int) (e : C_lang.Expr.t) : (Context.t, t) State.t =
   let open State.Syntax in
   match e with
   | Ident d -> return (Direct d)
@@ -215,7 +225,7 @@ let resolve (idx : int) (e : C_lang.Expr.t) : (t, resolved) State.t =
           let ty = C_lang.Expr.to_type e in
           let key = C_lang.Expr.to_string e in
           let mint_uniform proposed_name =
-            let* name = intern ~key ~name:proposed_name ~ty in
+            let* name = Context.intern ~key ~name:proposed_name ~ty in
             return (Uniform { name; ty })
           in
           if is_pointer_like ty then
@@ -238,7 +248,7 @@ let resolve (idx : int) (e : C_lang.Expr.t) : (t, resolved) State.t =
    axis expression already appeared elsewhere in this launch, it
    reuses the existing name regardless of axis. *)
 let resolve_axis (base : string) (axis : string) (e : C_lang.Expr.t) :
-    (t, resolved) State.t =
+    (Context.t, t) State.t =
   let open State.Syntax in
   match e with
   | Ident d -> return (Direct d)
@@ -248,12 +258,12 @@ let resolve_axis (base : string) (axis : string) (e : C_lang.Expr.t) :
       | None ->
           let ty = C_lang.Expr.to_type e in
           let key = C_lang.Expr.to_string e in
-          let* name = intern ~key ~name:(mk_axis_name base axis) ~ty in
+          let* name = Context.intern ~key ~name:(mk_axis_name base axis) ~ty in
           return (Uniform { name; ty }))
 
-(* Convert a [resolved] handle back into a [D_lang.Expr.t] for use as
-   a CallExpr argument or as the RHS of a dim-axis [assert]. *)
-let to_d_expr (r : resolved) : D_lang.Expr.t =
+(* Convert a resolved launch arg back into a [D_lang.Expr.t] for use
+   as a CallExpr argument or as the RHS of a dim-axis [assert]. *)
+let to_d_expr (r : t) : D_lang.Expr.t =
   match r with
   | Direct d -> Ident d
   | Const e -> e
@@ -263,11 +273,3 @@ let to_d_expr (r : resolved) : D_lang.Expr.t =
   | ArrayId { base; offset = Some off; ty } ->
       BinaryOperator
         { opcode = "+"; lhs = Ident base; rhs = Ident off; ty }
-
-(* Convert a fresh param into the [C_lang.Param.t] shape that
-   [synth_kernel] folds into the pseudo-kernel's [params] list.
-   Mirrors [param_of_free_var] but takes a (name, ty) pair instead of
-   a [Decl_expr.t]. *)
-let fresh_to_param (p : fresh_param) : C_lang.Param.t =
-  let ty_var = Ty_variable.make ~ty:p.ty ~name:p.name in
-  C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false
