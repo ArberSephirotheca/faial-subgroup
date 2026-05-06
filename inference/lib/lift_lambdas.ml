@@ -1,3 +1,4 @@
+open Stage0
 open Protocols
 open D_lang
 
@@ -16,191 +17,253 @@ open D_lang
    direct calls to the synthetic. So lambda-typed parameters never
    appear in the generated kernels.
 
-   State is threaded explicitly (no refs): a fresh-name counter and an
-   accumulator of synthetic kernels flow through the recursive
-   traversal. *)
+   State is threaded through the [State] monad: a fresh-name counter
+   and an accumulator of synthetic kernels flow through [Context.t]. *)
 
 module Param = C_lang.Param
-
-type binding = {
-  fname : Variable.t;
-  (* Effective captures (after lambda-of-lambda splicing): names that
-     appear in the synthetic kernel's parameter list, paired with the
-     init expression spliced as an argument at every call site. *)
-  captures : (Variable.t * Expr.t) list;
-}
-
-type state = {
-  next : int;
-  bindings : binding Variable.Map.t;
-  (* Synthetic kernels in reverse order of synthesis. *)
-  synthetics : Kernel.t list;
-}
 
 let mk_param ~(name : Variable.t) ~(ty : J_type.t) : Param.t =
   Param.make
     ~ty_var:(Ty_variable.make ~ty ~name)
     ~is_used:true ~is_shared:false
 
-(* Walk a D_lang.Expr.t with [env], replacing any lambda call sites. *)
-let rec rewrite_expr (env : binding Variable.Map.t) (e : Expr.t) : Expr.t =
-  let r = rewrite_expr env in
+module Context = struct
+  type binding = {
+    fname : Variable.t;
+    (* Effective captures (after lambda-of-lambda splicing): names that
+       appear in the synthetic kernel's parameter list, paired with the
+       init expression spliced as an argument at every call site. *)
+    captures : (Variable.t * Expr.t) list;
+  }
+
+  type t = {
+    next : int;
+    bindings : binding Variable.Map.t;
+    (* Synthetic kernels in reverse order of synthesis. *)
+    synthetics : Kernel.t list;
+  }
+
+  let make (next : int) : t =
+    { next; bindings = Variable.Map.empty; synthetics = [] }
+
+  let bindings : (t, binding Variable.Map.t) State.t =
+    State.get_return (fun s -> s.bindings)
+
+  let lookup (v : Variable.t) : (t, binding option) State.t =
+    State.get_return (fun s -> Variable.Map.find_opt v s.bindings)
+
+  let fresh_name (label : string) : (t, Variable.t) State.t =
+    State.update_return (fun s ->
+        let name = Printf.sprintf "__lambda_%s_%d" label s.next in
+        ({ s with next = s.next + 1 }, Variable.from_name name))
+
+  let add_binding (var : Variable.t) (b : binding) : (t, unit) State.t =
+    State.update (fun s ->
+        { s with bindings = Variable.Map.add var b s.bindings })
+
+  let add_synthetic (k : Kernel.t) : (t, unit) State.t =
+    State.update (fun s -> { s with synthetics = k :: s.synthetics })
+
+  (* Resolve lambda-of-lambda captures: replace a capture whose name is
+     itself a lambda binding with the lambda's effective captures. Then
+     dedupe (a single name might be reachable through multiple paths). *)
+  let splice_captures (caps : (Variable.t * Expr.t) list) :
+      (t, (Variable.t * Expr.t) list) State.t =
+    let open State.Syntax in
+    let* env = bindings in
+    let expanded =
+      List.concat_map
+        (fun (name, init_expr) ->
+          match Variable.Map.find_opt name env with
+          | Some b -> b.captures
+          | None -> [ (name, init_expr) ])
+        caps
+    in
+    let rec dedupe seen = function
+      | [] -> []
+      | (n, e) :: t ->
+          if Variable.Set.mem n seen then dedupe seen t
+          else (n, e) :: dedupe (Variable.Set.add n seen) t
+    in
+    return (dedupe Variable.Set.empty expanded)
+end
+
+type 'a state = (Context.t, 'a) State.t
+
+open State.Syntax
+
+(* Walk a D_lang.Expr.t, replacing any lambda call sites. *)
+let rec rewrite_expr (e : Expr.t) : Expr.t state =
   match e with
-  | CallExpr { func = Ident { name = v; _ }; args; ty }
-    when Variable.Map.mem v env ->
-      let b = Variable.Map.find v env in
-      let cap_args = List.map snd b.captures in
-      let func' =
-        Expr.Ident
-          (Decl_expr.from_name ~ty:J_type.unknown
-             ~kind:Decl_expr.Kind.Function b.fname)
-      in
-      let args = List.map r args in
-      CallExpr { func = func'; args = cap_args @ args; ty }
+  | CallExpr { func = Ident { name = v; _ } as func; args; ty } -> (
+      let* binding = Context.lookup v in
+      match binding with
+      | Some b ->
+          let cap_args = List.map snd b.captures in
+          let func' =
+            Expr.Ident
+              (Decl_expr.from_name ~ty:J_type.unknown
+                 ~kind:Decl_expr.Kind.Function b.fname)
+          in
+          let* args = State.list_map rewrite_expr args in
+          return
+            (Expr.CallExpr { func = func'; args = cap_args @ args; ty })
+      | None ->
+          let* args = State.list_map rewrite_expr args in
+          return (Expr.CallExpr { func; args; ty }))
   | CallExpr { func; args; ty } ->
-      CallExpr { func = r func; args = List.map r args; ty }
+      let* func = rewrite_expr func in
+      let* args = State.list_map rewrite_expr args in
+      return (Expr.CallExpr { func; args; ty })
   | CXXOperatorCallExpr { func; args; ty } ->
-      CXXOperatorCallExpr { func = r func; args = List.map r args; ty }
+      let* func = rewrite_expr func in
+      let* args = State.list_map rewrite_expr args in
+      return (Expr.CXXOperatorCallExpr { func; args; ty })
   | BinaryOperator { lhs; rhs; opcode; ty } ->
-      BinaryOperator { lhs = r lhs; rhs = r rhs; opcode; ty }
+      let* lhs = rewrite_expr lhs in
+      let* rhs = rewrite_expr rhs in
+      return (Expr.BinaryOperator { lhs; rhs; opcode; ty })
   | UnaryOperator { child; opcode; ty } ->
-      UnaryOperator { child = r child; opcode; ty }
+      let* child = rewrite_expr child in
+      return (Expr.UnaryOperator { child; opcode; ty })
   | ConditionalOperator { cond; then_expr; else_expr; ty } ->
-      ConditionalOperator
-        {
-          cond = r cond;
-          then_expr = r then_expr;
-          else_expr = r else_expr;
-          ty;
-        }
-  | CXXNewExpr { arg; ty } -> CXXNewExpr { arg = r arg; ty }
-  | CXXDeleteExpr { arg; ty } -> CXXDeleteExpr { arg = r arg; ty }
+      let* cond = rewrite_expr cond in
+      let* then_expr = rewrite_expr then_expr in
+      let* else_expr = rewrite_expr else_expr in
+      return
+        (Expr.ConditionalOperator { cond; then_expr; else_expr; ty })
+  | CXXNewExpr { arg; ty } ->
+      let* arg = rewrite_expr arg in
+      return (Expr.CXXNewExpr { arg; ty })
+  | CXXDeleteExpr { arg; ty } ->
+      let* arg = rewrite_expr arg in
+      return (Expr.CXXDeleteExpr { arg; ty })
   | CXXConstructExpr { args; ty } ->
-      CXXConstructExpr { args = List.map r args; ty }
-  | MemberExpr { name; base; ty } -> MemberExpr { name; base = r base; ty }
-  | (SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _
-    | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _ | Ident _
-    | UnresolvedLookupExpr _) as e ->
-      e
+      let* args = State.list_map rewrite_expr args in
+      return (Expr.CXXConstructExpr { args; ty })
+  | MemberExpr { name; base; ty } ->
+      let* base = rewrite_expr base in
+      return (Expr.MemberExpr { name; base; ty })
+  | ( SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _
+    | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _
+    | Ident _ | UnresolvedLookupExpr _ ) as e ->
+      return e
 
-let rewrite_init (env : binding Variable.Map.t) (i : Init.t) : Init.t =
-  let r = rewrite_expr env in
+let rewrite_init (i : Init.t) : Init.t state =
   match i with
-  | IExpr e -> IExpr (r e)
-  | InitListExpr { ty; args } -> InitListExpr { ty; args = List.map r args }
-  | CXXConstructExpr _ -> i
+  | IExpr e ->
+      let* e = rewrite_expr e in
+      return (Init.IExpr e)
+  | InitListExpr { ty; args } ->
+      let* args = State.list_map rewrite_expr args in
+      return (Init.InitListExpr { ty; args })
+  | CXXConstructExpr _ -> return i
 
-let rewrite_decl (env : binding Variable.Map.t) (d : Decl.t) : Decl.t =
-  { d with init = Option.map (rewrite_init env) d.init }
+let rewrite_decl (d : Decl.t) : Decl.t state =
+  let* init = State.option_map rewrite_init d.init in
+  return { d with init }
 
-let rewrite_for_init (env : binding Variable.Map.t) (f : ForInit.t) :
-    ForInit.t =
+let rewrite_for_init (f : ForInit.t) : ForInit.t state =
   match f with
-  | Decls ds -> Decls (List.map (rewrite_decl env) ds)
-  | Expr e -> Expr (rewrite_expr env e)
+  | Decls ds ->
+      let* ds = State.list_map rewrite_decl ds in
+      return (ForInit.Decls ds)
+  | Expr e ->
+      let* e = rewrite_expr e in
+      return (ForInit.Expr e)
 
-let rewrite_subscript (env : binding Variable.Map.t) (s : d_subscript) :
-    d_subscript =
-  { s with index = List.map (rewrite_expr env) s.index }
+let rewrite_subscript (s : d_subscript) : d_subscript state =
+  let* index = State.list_map rewrite_expr s.index in
+  return { s with index }
 
-(* Resolve lambda-of-lambda captures: replace a capture whose name is
-   itself a lambda binding with the lambda's effective captures. Then
-   dedupe (a single name might be reachable through multiple paths). *)
-let splice_captures (env : binding Variable.Map.t)
-    (caps : (Variable.t * Expr.t) list) : (Variable.t * Expr.t) list =
-  let expanded =
-    List.concat_map
-      (fun (name, init_expr) ->
-        match Variable.Map.find_opt name env with
-        | Some b -> b.captures
-        | None -> [ (name, init_expr) ])
-      caps
-  in
-  let rec dedupe seen = function
-    | [] -> []
-    | (n, e) :: t ->
-        if Variable.Set.mem n seen then dedupe seen t
-        else (n, e) :: dedupe (Variable.Set.add n seen) t
-  in
-  dedupe Variable.Set.empty expanded
-
-let fresh_name (s : state) (label : string) : state * Variable.t =
-  let name = Printf.sprintf "__lambda_%s_%d" label s.next in
-  ({ s with next = s.next + 1 }, Variable.from_name name)
-
-(* Walk a D_lang.Stmt.t threading [s], lifting any [LambdaDecl] into
-   [s.synthetics] and rewriting its call sites in subsequent siblings. *)
-let rec rewrite_stmt (s : state) (st : Stmt.t) : state * Stmt.t =
-  let r_e = rewrite_expr s.bindings in
-  let r_sub = rewrite_subscript s.bindings in
+(* Walk a D_lang.Stmt.t, lifting any [LambdaDecl] into [Context.synthetics]
+   and rewriting its call sites in subsequent siblings. *)
+let rec rewrite_stmt (st : Stmt.t) : Stmt.t state =
   match st with
-  | Skip | BreakStmt | GotoStmt | ContinueStmt -> (s, st)
+  | Skip | BreakStmt | GotoStmt | ContinueStmt -> return st
   | Seq (a, b) ->
-      let s, a = rewrite_stmt s a in
-      let s, b = rewrite_stmt s b in
-      (s, Stmt.seq a b)
+      let* a = rewrite_stmt a in
+      let* b = rewrite_stmt b in
+      return (Stmt.seq a b)
   | WriteAccessStmt w ->
-      ( s,
-        WriteAccessStmt
-          { w with target = r_sub w.target; source = r_e w.source } )
-  | ReadAccessStmt r -> (s, ReadAccessStmt { r with source = r_sub r.source })
+      let* target = rewrite_subscript w.target in
+      let* source = rewrite_expr w.source in
+      return (Stmt.WriteAccessStmt { w with target; source })
+  | ReadAccessStmt r ->
+      let* source = rewrite_subscript r.source in
+      return (Stmt.ReadAccessStmt { r with source })
   | AtomicAccessStmt a ->
-      (s, AtomicAccessStmt { a with source = r_sub a.source })
-  | ReturnStmt e -> (s, ReturnStmt (Option.map r_e e))
+      let* source = rewrite_subscript a.source in
+      return (Stmt.AtomicAccessStmt { a with source })
+  | ReturnStmt e ->
+      let* e = State.option_map rewrite_expr e in
+      return (Stmt.ReturnStmt e)
   | IfStmt { cond; then_stmt; else_stmt } ->
-      let s, t = rewrite_stmt s then_stmt in
-      let s, e = rewrite_stmt s else_stmt in
-      (s, IfStmt { cond = r_e cond; then_stmt = t; else_stmt = e })
-  | DeclStmt ds -> (s, DeclStmt (List.map (rewrite_decl s.bindings) ds))
+      let* cond = rewrite_expr cond in
+      let* then_stmt = rewrite_stmt then_stmt in
+      let* else_stmt = rewrite_stmt else_stmt in
+      return (Stmt.IfStmt { cond; then_stmt; else_stmt })
+  | DeclStmt ds ->
+      let* ds = State.list_map rewrite_decl ds in
+      return (Stmt.DeclStmt ds)
   | WhileStmt { cond; body } ->
-      let s, body = rewrite_stmt s body in
-      (s, WhileStmt { cond = r_e cond; body })
+      let* cond = rewrite_expr cond in
+      let* body = rewrite_stmt body in
+      return (Stmt.WhileStmt { cond; body })
   | DoStmt { cond; body } ->
-      let s, body = rewrite_stmt s body in
-      (s, DoStmt { cond = r_e cond; body })
+      let* cond = rewrite_expr cond in
+      let* body = rewrite_stmt body in
+      return (Stmt.DoStmt { cond; body })
   | ForStmt { init; cond; inc; body } ->
-      let init = Option.map (rewrite_for_init s.bindings) init in
-      let cond = Option.map r_e cond in
-      let s, inc = rewrite_stmt s inc in
-      let s, body = rewrite_stmt s body in
-      (s, ForStmt { init; cond; inc; body })
+      let* init = State.option_map rewrite_for_init init in
+      let* cond = State.option_map rewrite_expr cond in
+      let* inc = rewrite_stmt inc in
+      let* body = rewrite_stmt body in
+      return (Stmt.ForStmt { init; cond; inc; body })
   | SwitchStmt { cond; body } ->
-      let s, body = rewrite_stmt s body in
-      (s, SwitchStmt { cond = r_e cond; body })
+      let* cond = rewrite_expr cond in
+      let* body = rewrite_stmt body in
+      return (Stmt.SwitchStmt { cond; body })
   | DefaultStmt body ->
-      let s, body = rewrite_stmt s body in
-      (s, DefaultStmt body)
+      let* body = rewrite_stmt body in
+      return (Stmt.DefaultStmt body)
   | CaseStmt { case; body } ->
-      let s, body = rewrite_stmt s body in
-      (s, CaseStmt { case = r_e case; body })
-  | SExpr e -> (s, SExpr (r_e e))
+      let* case = rewrite_expr case in
+      let* body = rewrite_stmt body in
+      return (Stmt.CaseStmt { case; body })
+  | SExpr e ->
+      let* e = rewrite_expr e in
+      return (Stmt.SExpr e)
   | AsmStmt a ->
-      let r_op (op : Expr.t Asm.operand) : Expr.t Asm.operand =
-        { Asm.constr = op.constr; expr = r_e op.expr }
+      let r_op (op : Expr.t Asm.operand) : Expr.t Asm.operand state =
+        let* expr = rewrite_expr op.expr in
+        return { Asm.constr = op.constr; expr }
       in
-      ( s,
-        AsmStmt
-          {
-            a with
-            outputs = List.map r_op a.outputs;
-            inputs = List.map r_op a.inputs;
-          } )
+      let* outputs = State.list_map r_op a.outputs in
+      let* inputs = State.list_map r_op a.inputs in
+      return (Stmt.AsmStmt { a with outputs; inputs })
   | BarrierOp { op; target; args; loc } ->
-      ( s,
-        BarrierOp
-          { op; target = r_sub target; args = List.map r_e args; loc } )
+      let* target = rewrite_subscript target in
+      let* args = State.list_map rewrite_expr args in
+      return (Stmt.BarrierOp { op; target; args; loc })
   | LambdaDecl { var; captures; params; body; ret_ty } ->
       (* Step 1: rewrite captures' init exprs in the *outer* env. *)
-      let captures = List.map (fun (n, e) -> (n, r_e e)) captures in
+      let* captures =
+        State.list_map
+          (fun (n, e) ->
+            let* e = rewrite_expr e in
+            return (n, e))
+          captures
+      in
       (* Step 2: splice lambda-of-lambda captures so the synthetic
          kernel takes only first-class parameters. *)
-      let effective = splice_captures s.bindings captures in
+      let* effective = Context.splice_captures captures in
       (* Step 3: rewrite the lambda body using the *current* env so
          calls to in-scope sibling lambdas are inlined. *)
-      let s_inner, body = rewrite_stmt s body in
+      let* body = rewrite_stmt body in
       (* Step 4: emit the synthetic kernel. Param list = capture-params
          followed by explicit-params. *)
-      let s, fname = fresh_name s_inner (Variable.name var) in
+      let* fname = Context.fresh_name (Variable.name var) in
       let cap_params =
         List.map
           (fun (n, _) -> mk_param ~name:n ~ty:J_type.unknown)
@@ -216,20 +279,15 @@ let rec rewrite_stmt (s : state) (st : Stmt.t) : state * Stmt.t =
           attribute = KernelAttr.Auxiliary;
         }
       in
-      let s =
-        {
-          s with
-          bindings =
-            Variable.Map.add var { fname; captures = effective } s.bindings;
-          synthetics = synth :: s.synthetics;
-        }
+      let* () =
+        Context.add_binding var { fname; captures = effective }
       in
+      let* () = Context.add_synthetic synth in
       (* The original LambdaDecl has no runtime equivalent — drop it. *)
-      (s, Skip)
+      return Stmt.Skip
 
 let lift_kernel (next : int) (k : Kernel.t) : int * Kernel.t list * Kernel.t =
-  let s = { next; bindings = Variable.Map.empty; synthetics = [] } in
-  let s, code = rewrite_stmt s k.code in
+  let s, code = State.run (rewrite_stmt k.code) (Context.make next) in
   (s.next, List.rev s.synthetics, { k with code })
 
 (* Lift every [Def.Kernel] in [p], producing a new program where each

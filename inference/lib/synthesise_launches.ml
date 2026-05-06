@@ -1,6 +1,7 @@
 open Stage0
 open Protocols
 open D_lang
+open State.Syntax
 
 (* For every [Def.LaunchParam lp] in the program, synthesise a fresh
    [__global__] [Def.Kernel] whose body:
@@ -115,8 +116,6 @@ let dim3_axes (e : C_lang.Expr.t) : C_lang.Expr.t * C_lang.Expr.t * C_lang.Expr.
       | _ -> (e, one, one))
   | _ -> (e, one, one)
 
-let int_ty : J_type.t = J_type.int
-
 (* Build [assert(<base>.<axis> == <rhs>);] as a D_lang.Stmt.t. The LHS
    of the equality uses the flat name [Ident "<base>.<axis>"] (matching
    how [MemberExpr { base; name }] is rendered downstream as [Var
@@ -128,17 +127,17 @@ let int_ty : J_type.t = J_type.int
 let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
   let var = Variable.from_name (base ^ "." ^ axis) in
   let lhs : Expr.t =
-    Ident (Decl_expr.from_name ~ty:int_ty ~kind:Decl_expr.Kind.Var var)
+    Ident (Decl_expr.from_name ~ty:J_type.int ~kind:Decl_expr.Kind.Var var)
   in
   let cond : Expr.t =
     BinaryOperator { opcode = "=="; lhs; rhs; ty = J_type.bool }
   in
   let assert_func : Expr.t =
     Ident
-      (Decl_expr.from_name ~ty:int_ty ~kind:Decl_expr.Kind.Function
+      (Decl_expr.from_name ~ty:J_type.int ~kind:Decl_expr.Kind.Function
          (Variable.from_name "assert"))
   in
-  SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = int_ty })
+  SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = J_type.int })
 
 (* Build the dim-axis assertions for one of [gridDim] or [blockDim].
    Each axis expression goes through [Launch_arg.resolve_axis]: an
@@ -152,7 +151,6 @@ let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
    free per-thread variables. *)
 let dim_asserts (base : string) (e : C_lang.Expr.t) :
     (Launch_arg.t, Stmt.t) State.t =
-  let open State.Syntax in
   let xe, ye, ze = dim3_axes e in
   let axis_rhs (axis : string) (e : C_lang.Expr.t) :
       (Launch_arg.t, Expr.t) State.t =
@@ -182,7 +180,6 @@ let dim_asserts (base : string) (e : C_lang.Expr.t) :
    reused so the analyser sees one symbol instead of two. *)
 let call_stmt (kernel : Decl_expr.t) (args : C_lang.Expr.t list) :
     (Launch_arg.t, Stmt.t) State.t =
-  let open State.Syntax in
   let* rs =
     args
     |> List.mapi (fun i a -> (i, a))
@@ -230,10 +227,10 @@ let param_of_free_var (d : Decl_expr.t) : C_lang.Param.t option =
 let assert_stmt (cond : Expr.t) : Stmt.t =
   let assert_func : Expr.t =
     Ident
-      (Decl_expr.from_name ~ty:int_ty ~kind:Decl_expr.Kind.Function
+      (Decl_expr.from_name ~ty:J_type.int ~kind:Decl_expr.Kind.Function
          (Variable.from_name "assert"))
   in
-  SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = int_ty })
+  SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = J_type.int })
 
 (* Lift c-to-json's [path_condition] (a sound conjunction of
    enclosing [if]/[while]/[for] guards that hold when the launch
@@ -290,7 +287,6 @@ let bound_names_emitted (lp : C_lang.LaunchParam.t) : Variable.Set.t =
   |> Variable.Set.of_list
 
 let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
-  let open State.Syntax in
   (* One resolver state per pseudo-kernel — gridDim, then blockDim,
      then args. First slot to see a non-Ident expression names it;
      later slots reuse the same uniform. This catches the pattern
@@ -381,7 +377,6 @@ let demote_if_launched (launched : Variable.Set.t) (k : Kernel.t) : Kernel.t =
    [Auxiliary]. The synthesised kernels are ordered before the demoted
    originals so the call-inliner sees callees before callers. *)
 let rewrite_program (p : Program.t) : Program.t =
-  let open State.Syntax in
   let launched = launched_kernel_names p in
   let push_synth def = State.update (fun synth -> def :: synth) in
   let m =
