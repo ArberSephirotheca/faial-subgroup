@@ -136,6 +136,48 @@ module Expr = struct
   let opt_to_string : t option -> string = function
     | Some c -> to_string c
     | None -> ""
+
+  (* Post-order stateful rewrite: children of [e] are rewritten first, then
+     [f] is applied to the reconstructed node. *)
+  let rec st_map (f : t -> ('s, t) State.t) (e : t) : ('s, t) State.t =
+    let open State.Syntax in
+    match e with
+    | SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _
+    | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _ | Ident _
+    | UnresolvedLookupExpr _ ->
+        f e
+    | CXXNewExpr { arg; ty } ->
+        let* arg = st_map f arg in
+        f (CXXNewExpr { arg; ty })
+    | CXXDeleteExpr { arg; ty } ->
+        let* arg = st_map f arg in
+        f (CXXDeleteExpr { arg; ty })
+    | BinaryOperator { opcode; lhs; rhs; ty } ->
+        let* lhs = st_map f lhs in
+        let* rhs = st_map f rhs in
+        f (BinaryOperator { opcode; lhs; rhs; ty })
+    | CallExpr { func; args; ty } ->
+        let* func = st_map f func in
+        let* args = State.list_map (st_map f) args in
+        f (CallExpr { func; args; ty })
+    | ConditionalOperator { cond; then_expr; else_expr; ty } ->
+        let* cond = st_map f cond in
+        let* then_expr = st_map f then_expr in
+        let* else_expr = st_map f else_expr in
+        f (ConditionalOperator { cond; then_expr; else_expr; ty })
+    | CXXConstructExpr { args; ty } ->
+        let* args = State.list_map (st_map f) args in
+        f (CXXConstructExpr { args; ty })
+    | CXXOperatorCallExpr { func; args; ty } ->
+        let* func = st_map f func in
+        let* args = State.list_map (st_map f) args in
+        f (CXXOperatorCallExpr { func; args; ty })
+    | MemberExpr { name; base; ty } ->
+        let* base = st_map f base in
+        f (MemberExpr { name; base; ty })
+    | UnaryOperator { opcode; child; ty } ->
+        let* child = st_map f child in
+        f (UnaryOperator { opcode; child; ty })
 end
 
 module Init = struct

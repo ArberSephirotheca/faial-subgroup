@@ -117,6 +117,8 @@ let fresh_params (st : t) : fresh_param list = List.rev st.fresh
    reason about; those still go through the [Uniform] / [ArrayId]
    abstraction path. *)
 let rec lift_pure (e : C_lang.Expr.t) : D_lang.Expr.t option =
+  let open D_lang.Expr in
+  let ( let* ) = Option.bind in
   match e with
   | Ident d -> Some (Ident d)
   | IntegerLiteral n -> Some (IntegerLiteral n)
@@ -127,23 +129,19 @@ let rec lift_pure (e : C_lang.Expr.t) : D_lang.Expr.t option =
     when not
            (List.mem opcode
               [ "="; "+="; "-="; "*="; "/="; "%=";
-                "&="; "|="; "^="; "<<="; ">>=" ]) -> (
-      match (lift_pure lhs, lift_pure rhs) with
-      | Some lhs, Some rhs ->
-          Some (BinaryOperator { opcode; lhs; rhs; ty })
-      | _ -> None)
+                "&="; "|="; "^="; "<<="; ">>=" ]) ->
+      let* lhs = lift_pure lhs in
+      let* rhs = lift_pure rhs in
+      Some (BinaryOperator { opcode; lhs; rhs; ty })
   | UnaryOperator { opcode; child; ty }
-    when List.mem opcode [ "-"; "+"; "!"; "~" ] -> (
-      match lift_pure child with
-      | Some child -> Some (UnaryOperator { opcode; child; ty })
-      | None -> None)
-  | ConditionalOperator { cond; then_expr; else_expr; ty } -> (
-      match
-        (lift_pure cond, lift_pure then_expr, lift_pure else_expr)
-      with
-      | Some cond, Some then_expr, Some else_expr ->
-          Some (ConditionalOperator { cond; then_expr; else_expr; ty })
-      | _ -> None)
+    when List.mem opcode [ "-"; "+"; "!"; "~" ] ->
+      let* child = lift_pure child in
+      Some (UnaryOperator { opcode; child; ty })
+  | ConditionalOperator { cond; then_expr; else_expr; ty } ->
+      let* cond = lift_pure cond in
+      let* then_expr = lift_pure then_expr in
+      let* else_expr = lift_pure else_expr in
+      Some (ConditionalOperator { cond; then_expr; else_expr; ty })
   | _ -> None
 
 let mk_arg_name (idx : int) : Variable.t =

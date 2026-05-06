@@ -92,62 +92,26 @@ type 'a state = (Context.t, 'a) State.t
 
 open State.Syntax
 
-(* Walk a D_lang.Expr.t, replacing any lambda call sites. *)
-let rec rewrite_expr (e : Expr.t) : Expr.t state =
-  match e with
-  | CallExpr { func = Ident { name = v; _ } as func; args; ty } -> (
-      let* binding = Context.lookup v in
-      match binding with
-      | Some b ->
+(* Walk a D_lang.Expr.t, replacing any lambda call sites. The bindings map
+   is stable for the duration of an expression walk (only [rewrite_stmt]
+   ever adds bindings), so we snapshot it once and let [Expr.st_map] handle
+   the recursion. *)
+let rewrite_expr (e : Expr.t) : Expr.t state =
+  let* env = Context.bindings in
+  Expr.st_map
+    (function
+      | CallExpr { func = Ident { name = v; _ }; args; ty }
+        when Variable.Map.mem v env ->
+          let b = Variable.Map.find v env in
           let cap_args = List.map snd b.captures in
-          let func' =
+          let func =
             Expr.Ident
               (Decl_expr.from_name ~ty:J_type.unknown
                  ~kind:Decl_expr.Kind.Function b.fname)
           in
-          let* args = State.list_map rewrite_expr args in
-          return
-            (Expr.CallExpr { func = func'; args = cap_args @ args; ty })
-      | None ->
-          let* args = State.list_map rewrite_expr args in
-          return (Expr.CallExpr { func; args; ty }))
-  | CallExpr { func; args; ty } ->
-      let* func = rewrite_expr func in
-      let* args = State.list_map rewrite_expr args in
-      return (Expr.CallExpr { func; args; ty })
-  | CXXOperatorCallExpr { func; args; ty } ->
-      let* func = rewrite_expr func in
-      let* args = State.list_map rewrite_expr args in
-      return (Expr.CXXOperatorCallExpr { func; args; ty })
-  | BinaryOperator { lhs; rhs; opcode; ty } ->
-      let* lhs = rewrite_expr lhs in
-      let* rhs = rewrite_expr rhs in
-      return (Expr.BinaryOperator { lhs; rhs; opcode; ty })
-  | UnaryOperator { child; opcode; ty } ->
-      let* child = rewrite_expr child in
-      return (Expr.UnaryOperator { child; opcode; ty })
-  | ConditionalOperator { cond; then_expr; else_expr; ty } ->
-      let* cond = rewrite_expr cond in
-      let* then_expr = rewrite_expr then_expr in
-      let* else_expr = rewrite_expr else_expr in
-      return
-        (Expr.ConditionalOperator { cond; then_expr; else_expr; ty })
-  | CXXNewExpr { arg; ty } ->
-      let* arg = rewrite_expr arg in
-      return (Expr.CXXNewExpr { arg; ty })
-  | CXXDeleteExpr { arg; ty } ->
-      let* arg = rewrite_expr arg in
-      return (Expr.CXXDeleteExpr { arg; ty })
-  | CXXConstructExpr { args; ty } ->
-      let* args = State.list_map rewrite_expr args in
-      return (Expr.CXXConstructExpr { args; ty })
-  | MemberExpr { name; base; ty } ->
-      let* base = rewrite_expr base in
-      return (Expr.MemberExpr { name; base; ty })
-  | ( SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _
-    | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _
-    | Ident _ | UnresolvedLookupExpr _ ) as e ->
-      return e
+          return (Expr.CallExpr { func; args = cap_args @ args; ty })
+      | e -> return e)
+    e
 
 let rewrite_init (i : Init.t) : Init.t state =
   match i with
