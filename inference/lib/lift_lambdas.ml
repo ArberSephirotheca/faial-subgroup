@@ -141,114 +141,101 @@ let rewrite_subscript (s : d_subscript) : d_subscript state =
   return { s with index }
 
 (* Walk a D_lang.Stmt.t, lifting any [LambdaDecl] into [Context.synthetics]
-   and rewriting its call sites in subsequent siblings. *)
-let rec rewrite_stmt (st : Stmt.t) : Stmt.t state =
-  match st with
-  | Skip | BreakStmt | GotoStmt | ContinueStmt -> return st
-  | Seq (a, b) ->
-      let* a = rewrite_stmt a in
-      let* b = rewrite_stmt b in
-      return (Stmt.seq a b)
-  | WriteAccessStmt w ->
-      let* target = rewrite_subscript w.target in
-      let* source = rewrite_expr w.source in
-      return (Stmt.WriteAccessStmt { w with target; source })
-  | ReadAccessStmt r ->
-      let* source = rewrite_subscript r.source in
-      return (Stmt.ReadAccessStmt { r with source })
-  | AtomicAccessStmt a ->
-      let* source = rewrite_subscript a.source in
-      return (Stmt.AtomicAccessStmt { a with source })
-  | ReturnStmt e ->
-      let* e = State.option_map rewrite_expr e in
-      return (Stmt.ReturnStmt e)
-  | IfStmt { cond; then_stmt; else_stmt } ->
-      let* cond = rewrite_expr cond in
-      let* then_stmt = rewrite_stmt then_stmt in
-      let* else_stmt = rewrite_stmt else_stmt in
-      return (Stmt.IfStmt { cond; then_stmt; else_stmt })
-  | DeclStmt ds ->
-      let* ds = State.list_map rewrite_decl ds in
-      return (Stmt.DeclStmt ds)
-  | WhileStmt { cond; body } ->
-      let* cond = rewrite_expr cond in
-      let* body = rewrite_stmt body in
-      return (Stmt.WhileStmt { cond; body })
-  | DoStmt { cond; body } ->
-      let* cond = rewrite_expr cond in
-      let* body = rewrite_stmt body in
-      return (Stmt.DoStmt { cond; body })
-  | ForStmt { init; cond; inc; body } ->
-      let* init = State.option_map rewrite_for_init init in
-      let* cond = State.option_map rewrite_expr cond in
-      let* inc = rewrite_stmt inc in
-      let* body = rewrite_stmt body in
-      return (Stmt.ForStmt { init; cond; inc; body })
-  | SwitchStmt { cond; body } ->
-      let* cond = rewrite_expr cond in
-      let* body = rewrite_stmt body in
-      return (Stmt.SwitchStmt { cond; body })
-  | DefaultStmt body ->
-      let* body = rewrite_stmt body in
-      return (Stmt.DefaultStmt body)
-  | CaseStmt { case; body } ->
-      let* case = rewrite_expr case in
-      let* body = rewrite_stmt body in
-      return (Stmt.CaseStmt { case; body })
-  | SExpr e ->
-      let* e = rewrite_expr e in
-      return (Stmt.SExpr e)
-  | AsmStmt a ->
-      let r_op (op : Expr.t Asm.operand) : Expr.t Asm.operand state =
-        let* expr = rewrite_expr op.expr in
-        return { Asm.constr = op.constr; expr }
-      in
-      let* outputs = State.list_map r_op a.outputs in
-      let* inputs = State.list_map r_op a.inputs in
-      return (Stmt.AsmStmt { a with outputs; inputs })
-  | BarrierOp { op; target; args; loc } ->
-      let* target = rewrite_subscript target in
-      let* args = State.list_map rewrite_expr args in
-      return (Stmt.BarrierOp { op; target; args; loc })
-  | LambdaDecl { var; captures; params; body; ret_ty } ->
-      (* Step 1: rewrite captures' init exprs in the *outer* env. *)
-      let* captures =
-        State.list_map
-          (fun (n, e) ->
-            let* e = rewrite_expr e in
-            return (n, e))
-          captures
-      in
-      (* Step 2: splice lambda-of-lambda captures so the synthetic
-         kernel takes only first-class parameters. *)
-      let* effective = Context.splice_captures captures in
-      (* Step 3: rewrite the lambda body using the *current* env so
-         calls to in-scope sibling lambdas are inlined. *)
-      let* body = rewrite_stmt body in
-      (* Step 4: emit the synthetic kernel. Param list = capture-params
-         followed by explicit-params. *)
-      let* fname = Context.fresh_name (Variable.name var) in
-      let cap_params =
-        List.map
-          (fun (n, _) -> mk_param ~name:n ~ty:J_type.unknown)
-          effective
-      in
-      let synth : Kernel.t =
-        {
-          ty = J_type.to_string ret_ty;
-          name = Variable.name fname;
-          code = body;
-          type_params = [];
-          params = cap_params @ params;
-          attribute = KernelAttr.Auxiliary;
-        }
-      in
-      let* () =
-        Context.add_binding var { fname; captures = effective }
-      in
-      let* () = Context.add_synthetic synth in
-      (* The original LambdaDecl has no runtime equivalent — drop it. *)
-      return Stmt.Skip
+   and rewriting its call sites in subsequent siblings. [Stmt.st_map]
+   handles child-stmt recursion post-order, so by the time the algebra
+   sees a node, its child statements have already been rewritten. *)
+let rewrite_stmt (st : Stmt.t) : Stmt.t state =
+  Stmt.st_map
+    (fun st ->
+      match st with
+      | Skip | BreakStmt | GotoStmt | ContinueStmt | Seq _ | DefaultStmt _ ->
+          return st
+      | WriteAccessStmt w ->
+          let* target = rewrite_subscript w.target in
+          let* source = rewrite_expr w.source in
+          return (Stmt.WriteAccessStmt { w with target; source })
+      | ReadAccessStmt r ->
+          let* source = rewrite_subscript r.source in
+          return (Stmt.ReadAccessStmt { r with source })
+      | AtomicAccessStmt a ->
+          let* source = rewrite_subscript a.source in
+          return (Stmt.AtomicAccessStmt { a with source })
+      | ReturnStmt e ->
+          let* e = State.option_map rewrite_expr e in
+          return (Stmt.ReturnStmt e)
+      | IfStmt { cond; then_stmt; else_stmt } ->
+          let* cond = rewrite_expr cond in
+          return (Stmt.IfStmt { cond; then_stmt; else_stmt })
+      | DeclStmt ds ->
+          let* ds = State.list_map rewrite_decl ds in
+          return (Stmt.DeclStmt ds)
+      | WhileStmt { cond; body } ->
+          let* cond = rewrite_expr cond in
+          return (Stmt.WhileStmt { cond; body })
+      | DoStmt { cond; body } ->
+          let* cond = rewrite_expr cond in
+          return (Stmt.DoStmt { cond; body })
+      | ForStmt { init; cond; inc; body } ->
+          let* init = State.option_map rewrite_for_init init in
+          let* cond = State.option_map rewrite_expr cond in
+          return (Stmt.ForStmt { init; cond; inc; body })
+      | SwitchStmt { cond; body } ->
+          let* cond = rewrite_expr cond in
+          return (Stmt.SwitchStmt { cond; body })
+      | CaseStmt { case; body } ->
+          let* case = rewrite_expr case in
+          return (Stmt.CaseStmt { case; body })
+      | SExpr e ->
+          let* e = rewrite_expr e in
+          return (Stmt.SExpr e)
+      | AsmStmt a ->
+          let r_op (op : Expr.t Asm.operand) : Expr.t Asm.operand state =
+            let* expr = rewrite_expr op.expr in
+            return { Asm.constr = op.constr; expr }
+          in
+          let* outputs = State.list_map r_op a.outputs in
+          let* inputs = State.list_map r_op a.inputs in
+          return (Stmt.AsmStmt { a with outputs; inputs })
+      | BarrierOp { op; target; args; loc } ->
+          let* target = rewrite_subscript target in
+          let* args = State.list_map rewrite_expr args in
+          return (Stmt.BarrierOp { op; target; args; loc })
+      | LambdaDecl { var; captures; params; body; ret_ty } ->
+          (* Captures' init exprs are rewritten in the outer env
+             (st_map didn't recurse into them — only body). The body
+             above has already been rewritten in the env that was
+             current when we entered this LambdaDecl, so calls to
+             in-scope sibling lambdas were inlined. *)
+          let* captures =
+            State.list_map
+              (fun (n, e) ->
+                let* e = rewrite_expr e in
+                return (n, e))
+              captures
+          in
+          let* effective = Context.splice_captures captures in
+          let* fname = Context.fresh_name (Variable.name var) in
+          let cap_params =
+            List.map
+              (fun (n, _) -> mk_param ~name:n ~ty:J_type.unknown)
+              effective
+          in
+          let synth : Kernel.t =
+            {
+              ty = J_type.to_string ret_ty;
+              name = Variable.name fname;
+              code = body;
+              type_params = [];
+              params = cap_params @ params;
+              attribute = KernelAttr.Auxiliary;
+            }
+          in
+          let* () =
+            Context.add_binding var { fname; captures = effective }
+          in
+          let* () = Context.add_synthetic synth in
+          return Stmt.Skip)
+    st
 
 let lift_kernel (next : int) (k : Kernel.t) : int * Kernel.t list * Kernel.t =
   let s, code = State.run (rewrite_stmt k.code) (Context.make next) in

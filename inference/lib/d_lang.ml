@@ -545,6 +545,49 @@ module Stmt = struct
       | Seq _ as s -> stmt_to_s (first s) ^ "; ..."
     in
     stmt_to_s
+
+  (* Post-order stateful rewrite over child statements: each [t]-typed
+     child of [s] is rewritten first (via [Stmt.seq] for [Seq], so [Skip]
+     elision still happens), then [f] is applied to the reconstructed
+     node. Expression / decl / subscript fields are not recursed into —
+     the caller handles those in [f]. *)
+  let rec st_map (f : t -> ('s, t) State.t) (s : t) : ('s, t) State.t =
+    let open State.Syntax in
+    match s with
+    | Skip | BreakStmt | GotoStmt | ContinueStmt | ReturnStmt _
+    | DeclStmt _ | SExpr _ | AsmStmt _ | WriteAccessStmt _
+    | ReadAccessStmt _ | AtomicAccessStmt _ | BarrierOp _ ->
+        f s
+    | Seq (a, b) ->
+        let* a = st_map f a in
+        let* b = st_map f b in
+        f (seq a b)
+    | IfStmt { cond; then_stmt; else_stmt } ->
+        let* then_stmt = st_map f then_stmt in
+        let* else_stmt = st_map f else_stmt in
+        f (IfStmt { cond; then_stmt; else_stmt })
+    | WhileStmt { cond; body } ->
+        let* body = st_map f body in
+        f (WhileStmt { cond; body })
+    | DoStmt { cond; body } ->
+        let* body = st_map f body in
+        f (DoStmt { cond; body })
+    | ForStmt { init; cond; inc; body } ->
+        let* inc = st_map f inc in
+        let* body = st_map f body in
+        f (ForStmt { init; cond; inc; body })
+    | SwitchStmt { cond; body } ->
+        let* body = st_map f body in
+        f (SwitchStmt { cond; body })
+    | DefaultStmt body ->
+        let* body = st_map f body in
+        f (DefaultStmt body)
+    | CaseStmt { case; body } ->
+        let* body = st_map f body in
+        f (CaseStmt { case; body })
+    | LambdaDecl { var; captures; params; body; ret_ty } ->
+        let* body = st_map f body in
+        f (LambdaDecl { var; captures; params; body; ret_ty })
 end
 
 (*
