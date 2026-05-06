@@ -141,7 +141,7 @@ and to_bexp (e : t) : Exp.bexp state =
 
 (** Runs a state monad and returns the set of unknown variables *)
 let vars ?(init = Variable.Set.empty) (m : 'a state) : Variable.Set.t * 'a =
-  State.run init m
+  State.run m init
 
 let decls ?(init = Variable.Set.empty) (m : 'a state) : Stmt.t * 'a =
   let vs, a = vars ~init m in

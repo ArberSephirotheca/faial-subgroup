@@ -1753,7 +1753,7 @@ module Expr = struct
       | DependentScopeRef d -> return (DependentScopeRef d)
     in
     fun e ->
-      let st, e = State.run [] (rw e) in
+      let st, e = State.run (rw e) [] in
       (List.rev st, e)
 
   let compound (ty : J_type.t) (lhs : t) (opcode : string) (rhs : t) : t =
@@ -2197,10 +2197,7 @@ module Stmt = struct
       | None -> ([], None)
     in
 
-    let run (m : (t, unit) State.t) : t =
-      let s, () = State.run Skip m in
-      s
-    in
+    let run (m : (t, unit) State.t) : t = State.run_update m Skip in
 
     let rec rw : t -> t = function
       | ReturnStmt None -> ReturnStmt None
@@ -3316,7 +3313,7 @@ module Program = struct
     (* We declare a scope where side effects (variable declarations) are
        contained *)
     let scope (m : 'a state) : 'a state =
-      State.update_return (fun s -> (s, State.run s m |> snd))
+      State.update_return (fun s -> (s, State.run_result m s))
     in
 
     (* We now rewrite statements *)
@@ -3406,7 +3403,7 @@ module Program = struct
             let* args = State.list_map rw_e args in
             return (BarrierOp { op; target; args; loc })
       in
-      fun s -> s |> rw_s |> State.run vars |> snd
+      fun s -> State.run_result (rw_s s) vars
     in
     let rec rw_p (vars : Variable.Set.t) : t -> t = function
       | Declaration d :: p ->

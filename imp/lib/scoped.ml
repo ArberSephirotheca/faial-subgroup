@@ -270,7 +270,7 @@ module Code = struct
 
   (* Helper functions for variable distinctness state monad *)
   let vars_distinct ?(vars = Variable.Set.empty) : t -> t =
-   fun p -> State.run vars (Distinct.distinct p) |> snd
+   fun p -> State.run_result (Distinct.distinct p) vars
 
   (* Rewrite assigns that cannot be represented as lets *)
   let fix_assigns : t -> t =
@@ -407,7 +407,7 @@ module Code = struct
           imp_to_scoped (Seq (s, Skip))
     in
     fun (globals, s) ->
-      let (_, globals), p = State.run (1, globals) (imp_to_scoped s) in
+      let (_, globals), p = State.run (imp_to_scoped s) (1, globals) in
       (globals, p)
 end
 

@@ -998,7 +998,7 @@ let rewrite_for_init (f : C_lang.ForInit.t) : ForInit.t state =
 let add : Stmt.t -> unit state = AccessState.add
 
 let run0 (m : 'a state) : Stmt.t * 'a =
-  let st, a = State.run Stmt.Skip m in
+  let st, a = State.run m Stmt.Skip in
   (st, a)
 
 let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
