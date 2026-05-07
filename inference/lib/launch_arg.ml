@@ -63,12 +63,17 @@ module Context = struct
   (* Fresh params minted during the resolver run, in encounter order. *)
   let fresh_params (st : t) : Ty_variable.t list = List.rev st.fresh
 
-  (* Look up [key] in the cache. On hit, return the existing name. On
+  (* Look up [e] in the cache. On hit, return the existing name. On
      miss, mint a new uniform under [name]: extend the cache and push
      a fresh entry that the caller pulls from [fresh_params] after
-     running the resolver. *)
-  let intern ~(key : string) ~(name : Variable.t) ~(ty : J_type.t) :
+     running the resolver. The cache key is the canonical
+     stringification of [e] (location-stripped, so two structurally
+     identical exprs at different launch slots collide); the
+     accompanying [Ty_variable.t] picks up its type from [e] directly. *)
+  let intern (e : C_lang.Expr.t) ~(name : Variable.t) :
       (t, Variable.t) State.t =
+    let key = C_lang.Expr.to_string e in
+    let ty = C_lang.Expr.to_type e in
     State.update_return (fun st ->
       match Common.StringMap.find_opt key st.cache with
       | Some existing -> (st, existing)
@@ -195,8 +200,7 @@ let resolve_offset (proposed_name : Variable.t) (off : C_lang.Expr.t) :
   | Ident d -> return d
   | _ ->
       let ty = C_lang.Expr.to_type off in
-      let key = C_lang.Expr.to_string off in
-      let* name = Context.intern ~key ~name:proposed_name ~ty in
+      let* name = Context.intern off ~name:proposed_name in
       return (Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name)
 
 (* Resolve a launch-site argument at position [idx] within the
@@ -210,9 +214,8 @@ let resolve (idx : int) (e : C_lang.Expr.t) : (Context.t, t) State.t =
       | Some pure -> return (Const pure)
       | None ->
           let ty = C_lang.Expr.to_type e in
-          let key = C_lang.Expr.to_string e in
           let mint_uniform proposed_name =
-            let* name = Context.intern ~key ~name:proposed_name ~ty in
+            let* name = Context.intern e ~name:proposed_name in
             return (Uniform { name; ty })
           in
           if J_type.matches C_type.is_array ty then
@@ -244,8 +247,7 @@ let resolve_axis (base : string) (axis : string) (e : C_lang.Expr.t) :
       | Some pure -> return (Const pure)
       | None ->
           let ty = C_lang.Expr.to_type e in
-          let key = C_lang.Expr.to_string e in
-          let* name = Context.intern ~key ~name:(mk_axis_name base axis) ~ty in
+          let* name = Context.intern e ~name:(mk_axis_name base axis) in
           return (Uniform { name; ty }))
 
 (* Convert a resolved launch arg back into a [D_lang.Expr.t] for use
