@@ -3017,6 +3017,25 @@ module LaunchParam = struct
         ^ targs ^ host ^ "(" ^ list_to_s Expr.to_string lp.args ^ ")"
         ^ pc ^ cb);
     ]
+
+  (* Free variables referenced anywhere in the launch's expression
+     slots — grid / block / shared_mem / stream / args / path_condition
+     / each const binding's init. The binding's [name] (LHS) is
+     already covered by the other slot walks (c-to-json's BFS only
+     admits a binding when its name is reachable from a slot Expr);
+     walking inits surfaces vars referenced *inside* an init (e.g.
+     [numk] in [inum = numk * 1024]). All ident kinds are returned;
+     callers filter (e.g. by [Decl_expr.is_runtime_value]) as needed. *)
+  let free_vars (lp : t) : Decl_expr.Set.t =
+    let exprs =
+      [ lp.grid; lp.block; lp.shared_mem; lp.stream ]
+      @ lp.args
+      @ Option.to_list lp.path_condition
+      @ List.map (fun (b : ConstBinding.t) -> b.init) lp.const_bindings
+    in
+    List.fold_left
+      (fun acc e -> Decl_expr.Set.union acc (Expr.shallow_free_vars e))
+      Decl_expr.Set.empty exprs
 end
 
 (* c-to-json emits a [LaunchParamWarning] node for every [<<<>>>] /

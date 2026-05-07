@@ -26,33 +26,6 @@ open State.Syntax
    [Def.LaunchParam] entries are consumed and removed from the program
    regardless. *)
 
-(* ---------- Free-variable extraction ---------- *)
-
-(* Union of free vars referenced anywhere in a [LaunchParam]'s slots —
-   grid / block / shared_mem / stream / args / path_condition / each
-   const binding's init — restricted to [Var] / [ParmVar] kinds. The
-   binding's [name] (LHS) is already covered by the other slot walks
-   (c-to-json's BFS only admits a binding when its name is reachable
-   from a slot Expr); walking inits surfaces vars referenced *inside*
-   an init (e.g. [numk] in [inum = numk * 1024]) so they become
-   synth-kernel parameters. *)
-let free_vars_of_launch (lp : C_lang.LaunchParam.t) : Decl_expr.Set.t =
-  let binding_inits =
-    List.map (fun (b : C_lang.ConstBinding.t) -> b.init) lp.const_bindings
-  in
-  let exprs =
-    [ lp.grid; lp.block; lp.shared_mem; lp.stream ]
-    @ lp.args
-    @ Option.to_list lp.path_condition
-    @ binding_inits
-  in
-  exprs
-  |> List.fold_left
-       (fun acc e ->
-         Decl_expr.Set.union acc (C_lang.Expr.shallow_free_vars e))
-       Decl_expr.Set.empty
-  |> Decl_expr.Set.filter Decl_expr.is_runtime_value
-
 (* ---------- Pseudo-kernel synthesis ---------- *)
 
 (* The three axes of a synthesised [dim3(...)] (the [grid] / [block]
@@ -274,7 +247,8 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
      given the [__faial_launch_*] prefix, but be defensive). *)
   let bound = bound_names_emitted lp in
   let direct_params =
-    free_vars_of_launch lp
+    C_lang.LaunchParam.free_vars lp
+    |> Decl_expr.Set.filter Decl_expr.is_runtime_value
     |> Decl_expr.Set.filter (fun (d : Decl_expr.t) ->
            not (Variable.Set.mem d.name bound))
     |> Decl_expr.Set.elements
