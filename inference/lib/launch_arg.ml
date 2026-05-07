@@ -185,18 +185,22 @@ type pointer =
    a bare [Ident], return [Pointer e]. Otherwise [None] — the caller
    treats the whole expression as opaque. *)
 let rec strip_pointer_offset (e : C_lang.Expr.t) : pointer option =
+  let ( let* ) = Option.bind in
   match e with
   | Ident d -> Some (Pointer d)
   | BinaryOperator { opcode = "+"; lhs; rhs; _ } -> (
       match (lhs, rhs) with
-      | Ident d, offset -> Some (Indexed { base = d; offset })
-      | offset, Ident d -> Some (Indexed { base = d; offset })
-      | _ -> (
+      | Ident d, offset | offset, Ident d ->
+          Some (Indexed { base = d; offset })
+      | _ ->
           (* Recurse left only — pointer arithmetic associates left
              and the array identity is on the LHS in practice. *)
-          match strip_pointer_offset lhs with
-          | Some (Pointer d) -> Some (Indexed { base = d; offset = rhs })
-          | _ -> None))
+          let* p = strip_pointer_offset lhs in
+          (match p with
+           | Pointer d -> Some (Indexed { base = d; offset = rhs })
+           (* This [None] is a conservative choice; we could synthesize
+              [inner_off + rhs] and keep the array identity. *)
+           | Indexed _ -> None))
   | _ -> None
 
 (* If the offset is already an [Ident], reuse it; otherwise mint or
@@ -211,33 +215,43 @@ let resolve_offset (proposed_name : Variable.t) (off : C_lang.Expr.t) :
       let* name = Context.intern off ~name:proposed_name in
       return (Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name)
 
-(* Resolve a launch-site argument at position [idx] within the
-   call. *)
-let resolve (idx : int) (e : C_lang.Expr.t) : (Context.t, t) State.t =
+(* Side-effect-free fast path shared by [resolve] and [resolve_axis]:
+   bare [Ident]s become [Direct], pure expressions become [Const].
+   When neither applies, [opaque] runs in the resolver state to mint
+   or reuse a uniform / array-id form. *)
+let resolve_pure_or
+    (opaque : C_lang.Expr.t -> (Context.t, t) State.t)
+    (e : C_lang.Expr.t) : (Context.t, t) State.t =
   let open State.Syntax in
   match e with
   | Ident d -> return (Direct d)
   | _ -> (
       match lift_pure e with
       | Some pure -> return (Const pure)
-      | None ->
-          let ty = C_lang.Expr.to_type e in
-          let mint_uniform proposed_name =
-            let* name = Context.intern e ~name:proposed_name in
-            return (Uniform { name; ty })
-          in
-          if J_type.matches C_type.is_array ty then
-            match strip_pointer_offset e with
-            | Some (Pointer base) -> return (Direct base)
-            | Some (Indexed { base; offset }) ->
-                let off_name =
-                  Variable.from_name
-                    (Printf.sprintf "__faial_launch_arg_%d_off" idx)
-                in
-                let* off_decl = resolve_offset off_name offset in
-                return (ArrayId { base; offset = Some off_decl; ty })
-            | None -> mint_uniform (mk_arg_name idx)
-          else mint_uniform (mk_arg_name idx))
+      | None -> opaque e)
+
+(* Resolve a launch-site argument at position [idx] within the
+   call. *)
+let resolve (idx : int) : C_lang.Expr.t -> (Context.t, t) State.t =
+  let open State.Syntax in
+  resolve_pure_or (fun e ->
+      let ty = C_lang.Expr.to_type e in
+      let mint_uniform proposed_name =
+        let* name = Context.intern e ~name:proposed_name in
+        return (Uniform { name; ty })
+      in
+      if J_type.matches C_type.is_array ty then
+        match strip_pointer_offset e with
+        | Some (Pointer base) -> return (Direct base)
+        | Some (Indexed { base; offset }) ->
+            let off_name =
+              Variable.from_name
+                (Printf.sprintf "__faial_launch_arg_%d_off" idx)
+            in
+            let* off_decl = resolve_offset off_name offset in
+            return (ArrayId { base; offset = Some off_decl; ty })
+        | None -> mint_uniform (mk_arg_name idx)
+      else mint_uniform (mk_arg_name idx))
 
 (* Resolve a single dim-axis (one of x/y/z of [gridDim]/[blockDim]).
    Same shape as [resolve], but uses a stable axis-based name when
@@ -245,18 +259,13 @@ let resolve (idx : int) (e : C_lang.Expr.t) : (Context.t, t) State.t =
    deterministic across runs. The cache still applies — if the same
    axis expression already appeared elsewhere in this launch, it
    reuses the existing name regardless of axis. *)
-let resolve_axis (base : string) (axis : string) (e : C_lang.Expr.t) :
-    (Context.t, t) State.t =
+let resolve_axis (base : string) (axis : string) :
+    C_lang.Expr.t -> (Context.t, t) State.t =
   let open State.Syntax in
-  match e with
-  | Ident d -> return (Direct d)
-  | _ -> (
-      match lift_pure e with
-      | Some pure -> return (Const pure)
-      | None ->
-          let ty = C_lang.Expr.to_type e in
-          let* name = Context.intern e ~name:(mk_axis_name base axis) in
-          return (Uniform { name; ty }))
+  resolve_pure_or (fun e ->
+      let ty = C_lang.Expr.to_type e in
+      let* name = Context.intern e ~name:(mk_axis_name base axis) in
+      return (Uniform { name; ty }))
 
 (* Convert a resolved launch arg back into a [D_lang.Expr.t] for use
    as a CallExpr argument or as the RHS of a dim-axis [assert]. *)
