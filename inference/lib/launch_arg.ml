@@ -40,7 +40,42 @@ open Protocols
    and gives Z3 a single uniform to constrain instead of two
    unrelated symbols. *)
 
+type t =
+  | Direct of Decl_expr.t
+  | Const of D_lang.Expr.t
+    (* A side-effect-free launch-site expression — a literal, an
+       [Ident], or arithmetic / conditional / unary operations
+       composing the two. Trivially uniform across threads by
+       construction, so the resolver passes it through to the
+       kernel call verbatim. Two consequences:
+
+       1. The inliner substitutes the kernel formal with the
+          expression throughout the body, so constant-folded
+          launch-site values (e.g. c-to-json folding [const int N =
+          256] to [256]) collapse into concrete index expressions.
+
+       2. When the expression appears in [gridDim] / [blockDim]
+          assertions, its structure reaches Z3 (e.g.
+          [gridDim.x == imageW / 128]). Combined with the existing
+          [gridDim.x >= 1] preamble, Z3 derives lower bounds on the
+          contained kernel args transitively (here, [imageW >=
+          128]) without needing a dedicated grid-arithmetic
+          inversion pass. *)
+  | Uniform of {
+      name : Variable.t;
+      ty : J_type.t;
+    }
+  | ArrayId of {
+      base : Decl_expr.t;
+      offset : Decl_expr.t option;
+      ty : J_type.t;
+    }
+
 module Context = struct
+  (* Private alias to the outer [Launch_arg.t] before [Context.t]
+     shadows the name. *)
+  type _t = t
+
   (* Per-launch dedup map: keys are canonical-stringified launch
      expressions (via [C_lang.Expr.to_string] with default options,
      which prints bare [Variable.name] (no source locations) — so two
@@ -89,38 +124,16 @@ module Context = struct
             },
             name ))
 
+  (* [intern e ~name] then wrap as a [Uniform] launch arg — the
+     common case where the resolver decides [e] is opaque and hands
+     it off as a fresh uniform pseudo-parameter. *)
+  let intern_uniform (e : C_lang.Expr.t) ~(name : Variable.t) :
+      (t, _t) State.t =
+    let open State.Syntax in
+    let ty = C_lang.Expr.to_type e in
+    let* name = intern e ~name in
+    return (Uniform { name; ty })
 end
-
-type t =
-  | Direct of Decl_expr.t
-  | Const of D_lang.Expr.t
-    (* A side-effect-free launch-site expression — a literal, an
-       [Ident], or arithmetic / conditional / unary operations
-       composing the two. Trivially uniform across threads by
-       construction, so the resolver passes it through to the
-       kernel call verbatim. Two consequences:
-
-       1. The inliner substitutes the kernel formal with the
-          expression throughout the body, so constant-folded
-          launch-site values (e.g. c-to-json folding [const int N =
-          256] to [256]) collapse into concrete index expressions.
-
-       2. When the expression appears in [gridDim] / [blockDim]
-          assertions, its structure reaches Z3 (e.g.
-          [gridDim.x == imageW / 128]). Combined with the existing
-          [gridDim.x >= 1] preamble, Z3 derives lower bounds on the
-          contained kernel args transitively (here, [imageW >=
-          128]) without needing a dedicated grid-arithmetic
-          inversion pass. *)
-  | Uniform of {
-      name : Variable.t;
-      ty : J_type.t;
-    }
-  | ArrayId of {
-      base : Decl_expr.t;
-      offset : Decl_expr.t option;
-      ty : J_type.t;
-    }
 
 (* If [e] is a pure expression over [Ident]s and integer / float /
    bool / character literals — i.e. has no host-side side effects,
@@ -236,10 +249,6 @@ let resolve (idx : int) : C_lang.Expr.t -> (Context.t, t) State.t =
   let open State.Syntax in
   resolve_pure_or (fun e ->
       let ty = C_lang.Expr.to_type e in
-      let mint_uniform proposed_name =
-        let* name = Context.intern e ~name:proposed_name in
-        return (Uniform { name; ty })
-      in
       if J_type.matches C_type.is_array ty then
         match strip_pointer_offset e with
         | Some (Pointer base) -> return (Direct base)
@@ -250,8 +259,8 @@ let resolve (idx : int) : C_lang.Expr.t -> (Context.t, t) State.t =
             in
             let* off_decl = resolve_offset off_name offset in
             return (ArrayId { base; offset = Some off_decl; ty })
-        | None -> mint_uniform (mk_arg_name idx)
-      else mint_uniform (mk_arg_name idx))
+        | None -> Context.intern_uniform e ~name:(mk_arg_name idx)
+      else Context.intern_uniform e ~name:(mk_arg_name idx))
 
 (* Resolve a single dim-axis (one of x/y/z of [gridDim]/[blockDim]).
    Same shape as [resolve], but uses a stable axis-based name when
@@ -261,11 +270,8 @@ let resolve (idx : int) : C_lang.Expr.t -> (Context.t, t) State.t =
    reuses the existing name regardless of axis. *)
 let resolve_axis (base : string) (axis : string) :
     C_lang.Expr.t -> (Context.t, t) State.t =
-  let open State.Syntax in
   resolve_pure_or (fun e ->
-      let ty = C_lang.Expr.to_type e in
-      let* name = Context.intern e ~name:(mk_axis_name base axis) in
-      return (Uniform { name; ty }))
+      Context.intern_uniform e ~name:(mk_axis_name base axis))
 
 (* Convert a resolved launch arg back into a [D_lang.Expr.t] for use
    as a CallExpr argument or as the RHS of a dim-axis [assert]. *)
