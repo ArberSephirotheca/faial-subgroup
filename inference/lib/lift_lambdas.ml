@@ -113,97 +113,18 @@ let rewrite_expr (e : Expr.t) : Expr.t state =
       | e -> return e)
     e
 
-let rewrite_init (i : Init.t) : Init.t state =
-  match i with
-  | IExpr e ->
-      let* e = rewrite_expr e in
-      return (Init.IExpr e)
-  | InitListExpr { ty; args } ->
-      let* args = State.list_map rewrite_expr args in
-      return (Init.InitListExpr { ty; args })
-  | CXXConstructExpr _ -> return i
-
-let rewrite_decl (d : Decl.t) : Decl.t state =
-  let* init = State.option_map rewrite_init d.init in
-  return { d with init }
-
-let rewrite_for_init (f : ForInit.t) : ForInit.t state =
-  match f with
-  | Decls ds ->
-      let* ds = State.list_map rewrite_decl ds in
-      return (ForInit.Decls ds)
-  | Expr e ->
-      let* e = rewrite_expr e in
-      return (ForInit.Expr e)
-
-let rewrite_subscript (s : d_subscript) : d_subscript state =
-  let* index = State.list_map rewrite_expr s.index in
-  return { s with index }
-
 (* Walk a D_lang.Stmt.t, lifting any [LambdaDecl] into [Context.synthetics]
    and rewriting its call sites in subsequent siblings. [Stmt.st_map]
-   handles child-stmt recursion post-order, so by the time the algebra
-   sees a node, its child statements have already been rewritten. *)
+   handles child-stmt recursion post-order; [Stmt.st_map_expr] takes
+   care of every contained [Expr.t] for the non-lambda cases. Only
+   [LambdaDecl] needs custom handling. *)
 let rewrite_stmt (st : Stmt.t) : Stmt.t state =
   Stmt.st_map
     (fun st ->
       match st with
-      | Skip | BreakStmt | GotoStmt | ContinueStmt | Seq _ | DefaultStmt _ ->
-          return st
-      | WriteAccessStmt w ->
-          let* target = rewrite_subscript w.target in
-          let* source = rewrite_expr w.source in
-          return (Stmt.WriteAccessStmt { w with target; source })
-      | ReadAccessStmt r ->
-          let* source = rewrite_subscript r.source in
-          return (Stmt.ReadAccessStmt { r with source })
-      | AtomicAccessStmt a ->
-          let* source = rewrite_subscript a.source in
-          return (Stmt.AtomicAccessStmt { a with source })
-      | ReturnStmt e ->
-          let* e = State.option_map rewrite_expr e in
-          return (Stmt.ReturnStmt e)
-      | IfStmt { cond; then_stmt; else_stmt } ->
-          let* cond = rewrite_expr cond in
-          return (Stmt.IfStmt { cond; then_stmt; else_stmt })
-      | DeclStmt ds ->
-          let* ds = State.list_map rewrite_decl ds in
-          return (Stmt.DeclStmt ds)
-      | WhileStmt { cond; body } ->
-          let* cond = rewrite_expr cond in
-          return (Stmt.WhileStmt { cond; body })
-      | DoStmt { cond; body } ->
-          let* cond = rewrite_expr cond in
-          return (Stmt.DoStmt { cond; body })
-      | ForStmt { init; cond; inc; body } ->
-          let* init = State.option_map rewrite_for_init init in
-          let* cond = State.option_map rewrite_expr cond in
-          return (Stmt.ForStmt { init; cond; inc; body })
-      | SwitchStmt { cond; body } ->
-          let* cond = rewrite_expr cond in
-          return (Stmt.SwitchStmt { cond; body })
-      | CaseStmt { case; body } ->
-          let* case = rewrite_expr case in
-          return (Stmt.CaseStmt { case; body })
-      | SExpr e ->
-          let* e = rewrite_expr e in
-          return (Stmt.SExpr e)
-      | AsmStmt a ->
-          let r_op (op : Expr.t Asm.operand) : Expr.t Asm.operand state =
-            let* expr = rewrite_expr op.expr in
-            return { Asm.constr = op.constr; expr }
-          in
-          let* outputs = State.list_map r_op a.outputs in
-          let* inputs = State.list_map r_op a.inputs in
-          return (Stmt.AsmStmt { a with outputs; inputs })
-      | BarrierOp { op; target; args; loc } ->
-          let* target = rewrite_subscript target in
-          let* args = State.list_map rewrite_expr args in
-          return (Stmt.BarrierOp { op; target; args; loc })
       | LambdaDecl { var; captures; params; body; ret_ty } ->
-          (* Captures' init exprs are rewritten in the outer env
-             (st_map didn't recurse into them — only body). The body
-             above has already been rewritten in the env that was
+          (* Captures' init exprs are rewritten in the outer env. The
+             body above has already been rewritten in the env that was
              current when we entered this LambdaDecl, so calls to
              in-scope sibling lambdas were inlined. *)
           let* captures =
@@ -234,7 +155,8 @@ let rewrite_stmt (st : Stmt.t) : Stmt.t state =
             Context.add_binding var { fname; captures = effective }
           in
           let* () = Context.add_synthetic synth in
-          return Stmt.Skip)
+          return Stmt.Skip
+      | st -> Stmt.st_map_expr rewrite_expr st)
     st
 
 let lift_kernel (next : int) (k : Kernel.t) : int * Kernel.t list * Kernel.t =

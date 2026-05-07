@@ -200,6 +200,20 @@ module Init = struct
     | CXXConstructExpr _ -> "ctor"
     | InitListExpr i -> list_to_s Expr.to_string i.args
     | IExpr i -> Expr.to_string i
+
+  (* Thread an [Expr.t] rewriter through the [Expr.t] children of an
+     initializer. [CXXConstructExpr] has no Expr children, so it
+     passes through untouched. *)
+  let map_expr (f : Expr.t -> ('s, Expr.t) State.t) (i : t) : ('s, t) State.t =
+    let open State.Syntax in
+    match i with
+    | IExpr e ->
+        let* e = f e in
+        return (IExpr e)
+    | InitListExpr { ty; args } ->
+        let* args = State.list_map f args in
+        return (InitListExpr { ty; args })
+    | CXXConstructExpr _ -> return i
 end
 
 module Decl = struct
@@ -265,6 +279,12 @@ module Decl = struct
     let ty = J_type.to_string d.ty in
     let x = Variable.name d.var in
     attr ^ ty ^ " " ^ x ^ i
+
+  (* Thread an [Expr.t] rewriter through the decl's optional initializer. *)
+  let map_expr (f : Expr.t -> ('s, Expr.t) State.t) (d : t) : ('s, t) State.t =
+    let open State.Syntax in
+    let* init = State.option_map (Init.map_expr f) d.init in
+    return { d with init }
 end
 
 module ForInit = struct
@@ -294,6 +314,18 @@ module ForInit = struct
 
   let opt_to_string (o : t option) : string =
     o |> Option.map to_string |> Option.value ~default:""
+
+  (* Thread an [Expr.t] rewriter through a [ForInit.t]: for [Decls],
+     descend into each decl's initializer; for [Expr], rewrite directly. *)
+  let map_expr (f : Expr.t -> ('s, Expr.t) State.t) (fi : t) : ('s, t) State.t =
+    let open State.Syntax in
+    match fi with
+    | Decls ds ->
+        let* ds = State.list_map (Decl.map_expr f) ds in
+        return (Decls ds)
+    | Expr e ->
+        let* e = f e in
+        return (Expr e)
 end
 
 type d_subscript = {
@@ -588,6 +620,81 @@ module Stmt = struct
     | LambdaDecl { var; captures; params; body; ret_ty } ->
         let* body = st_map f body in
         f (LambdaDecl { var; captures; params; body; ret_ty })
+
+  (* Thread an [Expr.t] rewriter through every [Expr.t] child of [s]
+     (including those nested in [d_subscript], [Decl], [ForInit], and
+     [Asm] operands), without recursing into child statements. Compose
+     with [st_map] when both Stmt-level and Expr-level rewrites are
+     needed. *)
+  let st_map_expr (f : Expr.t -> ('s, Expr.t) State.t) (s : t) :
+      ('s, t) State.t =
+    let open State.Syntax in
+    let map_subscript (s : d_subscript) : ('s, d_subscript) State.t =
+      let* index = State.list_map f s.index in
+      return { s with index }
+    in
+    match s with
+    | Skip | BreakStmt | GotoStmt | ContinueStmt | Seq _ | DefaultStmt _ ->
+        return s
+    | WriteAccessStmt w ->
+        let* target = map_subscript w.target in
+        let* source = f w.source in
+        return (WriteAccessStmt { w with target; source })
+    | ReadAccessStmt r ->
+        let* source = map_subscript r.source in
+        return (ReadAccessStmt { r with source })
+    | AtomicAccessStmt a ->
+        let* source = map_subscript a.source in
+        return (AtomicAccessStmt { a with source })
+    | ReturnStmt e ->
+        let* e = State.option_map f e in
+        return (ReturnStmt e)
+    | IfStmt { cond; then_stmt; else_stmt } ->
+        let* cond = f cond in
+        return (IfStmt { cond; then_stmt; else_stmt })
+    | DeclStmt ds ->
+        let* ds = State.list_map (Decl.map_expr f) ds in
+        return (DeclStmt ds)
+    | WhileStmt { cond; body } ->
+        let* cond = f cond in
+        return (WhileStmt { cond; body })
+    | DoStmt { cond; body } ->
+        let* cond = f cond in
+        return (DoStmt { cond; body })
+    | ForStmt { init; cond; inc; body } ->
+        let* init = State.option_map (ForInit.map_expr f) init in
+        let* cond = State.option_map f cond in
+        return (ForStmt { init; cond; inc; body })
+    | SwitchStmt { cond; body } ->
+        let* cond = f cond in
+        return (SwitchStmt { cond; body })
+    | CaseStmt { case; body } ->
+        let* case = f case in
+        return (CaseStmt { case; body })
+    | SExpr e ->
+        let* e = f e in
+        return (SExpr e)
+    | AsmStmt a ->
+        let r_op (op : Expr.t Asm.operand) : ('s, Expr.t Asm.operand) State.t =
+          let* expr = f op.expr in
+          return { Asm.constr = op.constr; expr }
+        in
+        let* outputs = State.list_map r_op a.outputs in
+        let* inputs = State.list_map r_op a.inputs in
+        return (AsmStmt { a with outputs; inputs })
+    | BarrierOp { op; target; args; loc } ->
+        let* target = map_subscript target in
+        let* args = State.list_map f args in
+        return (BarrierOp { op; target; args; loc })
+    | LambdaDecl { var; captures; params; body; ret_ty } ->
+        let* captures =
+          State.list_map
+            (fun (n, e) ->
+              let* e = f e in
+              return (n, e))
+            captures
+        in
+        return (LambdaDecl { var; captures; params; body; ret_ty })
 end
 
 (*
