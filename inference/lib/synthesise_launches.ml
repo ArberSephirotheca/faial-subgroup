@@ -298,16 +298,6 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
 
 (* ---------- Demote launched kernels ---------- *)
 
-(* Collect the names of every kernel that is the target of at least one
-   [LaunchParam] in the program. *)
-let launched_kernel_names (p : Program.t) : Variable.Set.t =
-  List.fold_left
-    (fun acc def ->
-      match def with
-      | Def.LaunchParam lp -> Variable.Set.add lp.kernel.name acc
-      | _ -> acc)
-    Variable.Set.empty p
-
 let demote_if_launched (launched : Variable.Set.t) (k : Kernel.t) : Kernel.t =
   let n = Variable.from_name k.name in
   if Variable.Set.mem n launched && k.attribute = C_lang.KernelAttr.Default
@@ -321,7 +311,7 @@ let demote_if_launched (launched : Variable.Set.t) (k : Kernel.t) : Kernel.t =
    [Auxiliary]. The synthesised kernels are ordered before the demoted
    originals so the call-inliner sees callees before callers. *)
 let rewrite_program (p : Program.t) : Program.t =
-  let launched = launched_kernel_names p in
+  let launched = Program.launched_kernel_names p in
   let push_synth def = State.update (fun synth -> def :: synth) in
   let m =
     State.list_fold_left
