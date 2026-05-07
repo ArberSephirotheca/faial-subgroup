@@ -166,9 +166,6 @@ let mk_arg_name (idx : int) : Variable.t =
 let mk_axis_name (base : string) (axis : string) : Variable.t =
   Variable.from_name (Printf.sprintf "__faial_launch_%s_%s" base axis)
 
-let is_pointer_like (ty : J_type.t) : bool =
-  J_type.matches (fun ct -> C_type.is_pointer ct || C_type.is_array ct) ty
-
 (* If [e] is [a + offset] (or [offset + a]) where [a] is a bare
    [Ident], return [(a, Some offset)]. If [e] is itself a bare
    [Ident], return [(e, None)]. Otherwise [None] — the caller treats
@@ -218,7 +215,7 @@ let resolve (idx : int) (e : C_lang.Expr.t) : (Context.t, t) State.t =
             let* name = Context.intern ~key ~name:proposed_name ~ty in
             return (Uniform { name; ty })
           in
-          if is_pointer_like ty then
+          if J_type.matches C_type.is_array ty then
             match strip_pointer_offset e with
             | Some (base, None) -> return (Direct base)
             | Some (base, Some off) ->
