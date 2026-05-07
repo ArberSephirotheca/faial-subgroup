@@ -28,16 +28,6 @@ open State.Syntax
 
 (* ---------- Free-variable extraction ---------- *)
 
-(* Only [Var] / [ParmVar] references carry runtime values; function /
-   method / enum / template-parm references resolve at compile time
-   and aren't needed as wrapper-kernel parameters. *)
-let is_runtime_value (d : Decl_expr.t) : bool =
-  match d.kind with
-  | Decl_expr.Kind.Var | Decl_expr.Kind.ParmVar -> true
-  | Decl_expr.Kind.Function | Decl_expr.Kind.CXXMethod
-  | Decl_expr.Kind.NonTypeTemplateParm | Decl_expr.Kind.EnumConstant ->
-      false
-
 (* Union of free vars referenced anywhere in a [LaunchParam]'s slots —
    grid / block / shared_mem / stream / args / path_condition / each
    const binding's init — restricted to [Var] / [ParmVar] kinds. The
@@ -61,7 +51,7 @@ let free_vars_of_launch (lp : C_lang.LaunchParam.t) : Decl_expr.Set.t =
        (fun acc e ->
          Decl_expr.Set.union acc (C_lang.Expr.shallow_free_vars e))
        Decl_expr.Set.empty
-  |> Decl_expr.Set.filter is_runtime_value
+  |> Decl_expr.Set.filter Decl_expr.is_runtime_value
 
 (* ---------- Pseudo-kernel synthesis ---------- *)
 
