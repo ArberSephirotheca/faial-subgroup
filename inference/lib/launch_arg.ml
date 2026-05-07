@@ -172,23 +172,30 @@ let mk_arg_name (idx : int) : Variable.t =
 let mk_axis_name (base : string) (axis : string) : Variable.t =
   Variable.from_name (Printf.sprintf "__faial_launch_%s_%s" base axis)
 
+(* Decomposition of a pointer-shaped launch argument: either a bare
+   pointer or one with a recovered offset. The opaque case
+   ([strip_pointer_offset] returns [None]) is not encoded here —
+   callers handle it via [option]. *)
+type pointer =
+  | Pointer of Decl_expr.t
+  | Indexed of { base : Decl_expr.t; offset : C_lang.Expr.t }
+
 (* If [e] is [a + offset] (or [offset + a]) where [a] is a bare
-   [Ident], return [(a, Some offset)]. If [e] is itself a bare
-   [Ident], return [(e, None)]. Otherwise [None] — the caller treats
-   the whole expression as opaque. *)
-let rec strip_pointer_offset (e : C_lang.Expr.t) :
-    (Decl_expr.t * C_lang.Expr.t option) option =
+   [Ident], return [Indexed { base = a; offset }]. If [e] is itself
+   a bare [Ident], return [Pointer e]. Otherwise [None] — the caller
+   treats the whole expression as opaque. *)
+let rec strip_pointer_offset (e : C_lang.Expr.t) : pointer option =
   match e with
-  | Ident d -> Some (d, None)
+  | Ident d -> Some (Pointer d)
   | BinaryOperator { opcode = "+"; lhs; rhs; _ } -> (
       match (lhs, rhs) with
-      | Ident d, off -> Some (d, Some off)
-      | off, Ident d -> Some (d, Some off)
+      | Ident d, offset -> Some (Indexed { base = d; offset })
+      | offset, Ident d -> Some (Indexed { base = d; offset })
       | _ -> (
           (* Recurse left only — pointer arithmetic associates left
              and the array identity is on the LHS in practice. *)
           match strip_pointer_offset lhs with
-          | Some (d, None) -> Some (d, Some rhs)
+          | Some (Pointer d) -> Some (Indexed { base = d; offset = rhs })
           | _ -> None))
   | _ -> None
 
@@ -221,13 +228,13 @@ let resolve (idx : int) (e : C_lang.Expr.t) : (Context.t, t) State.t =
           in
           if J_type.matches C_type.is_array ty then
             match strip_pointer_offset e with
-            | Some (base, None) -> return (Direct base)
-            | Some (base, Some off) ->
+            | Some (Pointer base) -> return (Direct base)
+            | Some (Indexed { base; offset }) ->
                 let off_name =
                   Variable.from_name
                     (Printf.sprintf "__faial_launch_arg_%d_off" idx)
                 in
-                let* off_decl = resolve_offset off_name off in
+                let* off_decl = resolve_offset off_name offset in
                 return (ArrayId { base; offset = Some off_decl; ty })
             | None -> mint_uniform (mk_arg_name idx)
           else mint_uniform (mk_arg_name idx))
