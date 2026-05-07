@@ -180,12 +180,11 @@ let param_of_free_var (d : Decl_expr.t) : C_lang.Param.t option =
    (defensive — shouldn't fire given the contract), the assert is
    skipped silently. *)
 let path_cond_asserts (lp : C_lang.LaunchParam.t) : Stmt.t =
-  match lp.path_condition with
-  | None -> Stmt.Skip
-  | Some e -> (
-      match Launch_arg.lift_pure e with
-      | Some d_expr -> Stmt.assert_stmt d_expr
-      | None -> Stmt.Skip)
+  let ( let* ) = Option.bind in
+  (let* e = lp.path_condition in
+   let* d_expr = Launch_arg.lift_pure e in
+   Some (Stmt.assert_stmt d_expr))
+  |> Option.value ~default:Stmt.Skip
 
 (* Lift c-to-json's [const_bindings] (host-local [const]-qualified
    variables paired with their initialisers) into local [DeclStmt]s
@@ -204,12 +203,11 @@ let path_cond_asserts (lp : C_lang.LaunchParam.t) : Stmt.t =
    given the contract), the binding is skipped and its name stays as
    a parameter. *)
 let const_binding_decl (b : C_lang.ConstBinding.t) : Stmt.t option =
-  match Launch_arg.lift_pure b.init with
-  | None -> None
-  | Some rhs ->
-      let ty_var = Ty_variable.make ~ty:b.ty ~name:b.name in
-      let d = D_lang.Decl.from_expr ty_var rhs in
-      Some (Stmt.DeclStmt [ d ])
+  let ( let* ) = Option.bind in
+  let* rhs = Launch_arg.lift_pure b.init in
+  let ty_var = Ty_variable.make ~ty:b.ty ~name:b.name in
+  let d = D_lang.Decl.from_expr ty_var rhs in
+  Some (Stmt.DeclStmt [ d ])
 
 let const_binding_decls (lp : C_lang.LaunchParam.t) : Stmt.t =
   lp.const_bindings |> List.filter_map const_binding_decl |> Stmt.from_list
