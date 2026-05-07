@@ -41,57 +41,47 @@ open Protocols
    unrelated symbols. *)
 
 module Context = struct
-  (* A pseudo-parameter the resolver minted for a non-[Ident] launch
-     arg or for an extracted offset. The caller threads these into the
-     synthesised pseudo-kernel's [params] list so the analysis knows to
-     treat them as uniform globals. *)
-  type fresh_param = { name : Variable.t; ty : J_type.t }
-
   (* Per-launch dedup map: keys are canonical-stringified launch
-     expressions, values are the fresh uniform that already represents
-     them. The key uses [C_lang.Expr.to_string] with default options,
+     expressions (via [C_lang.Expr.to_string] with default options,
      which prints bare [Variable.name] (no source locations) — so two
      structurally-identical expressions at different launch slots key
-     the same way. *)
-  module ExprMap = Map.Make (String)
+     the same way), values are the fresh uniform already representing
+     them.
 
-  (* Resolver state: the dedup cache plus the running list of fresh
+     Resolver state: the dedup cache plus the running list of fresh
      params minted for this launch, accumulated newest-first. The
      resolver functions are state monads over [t]; [synth_kernel] in
      [synthesise_launches.ml] runs them once per pseudo-kernel and
      pulls the final fresh-param list via [fresh_params]. *)
   type t = {
-    cache : Variable.t ExprMap.t;
-    fresh : fresh_param list;
+    cache : Variable.t Common.StringMap.t;
+    fresh : Ty_variable.t list;
   }
 
-  let empty : t = { cache = ExprMap.empty; fresh = [] }
+  let empty : t = { cache = Common.StringMap.empty; fresh = [] }
 
   (* Fresh params minted during the resolver run, in encounter order. *)
-  let fresh_params (st : t) : fresh_param list = List.rev st.fresh
+  let fresh_params (st : t) : Ty_variable.t list = List.rev st.fresh
 
   (* Look up [key] in the cache. On hit, return the existing name. On
      miss, mint a new uniform under [name]: extend the cache and push
-     a [fresh_param] entry that the caller pulls from [fresh_params]
-     after running the resolver. *)
+     a fresh entry that the caller pulls from [fresh_params] after
+     running the resolver. *)
   let intern ~(key : string) ~(name : Variable.t) ~(ty : J_type.t) :
       (t, Variable.t) State.t =
     State.update_return (fun st ->
-      match ExprMap.find_opt key st.cache with
+      match Common.StringMap.find_opt key st.cache with
       | Some existing -> (st, existing)
       | None ->
           ( {
-              cache = ExprMap.add key name st.cache;
-              fresh = { name; ty } :: st.fresh;
+              cache = Common.StringMap.add key name st.cache;
+              fresh = Ty_variable.make ~name ~ty :: st.fresh;
             },
             name ))
 
   (* Convert a fresh param into the [C_lang.Param.t] shape that
-     [synth_kernel] folds into the pseudo-kernel's [params] list.
-     Mirrors [param_of_free_var] but takes a (name, ty) pair instead of
-     a [Decl_expr.t]. *)
-  let fresh_to_param (p : fresh_param) : C_lang.Param.t =
-    let ty_var = Ty_variable.make ~ty:p.ty ~name:p.name in
+     [synth_kernel] folds into the pseudo-kernel's [params] list. *)
+  let fresh_to_param (ty_var : Ty_variable.t) : C_lang.Param.t =
     C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false
 end
 
