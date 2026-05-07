@@ -76,9 +76,9 @@ module Equiv = struct
      classes are captured structurally rather than by stringifying every
      expression we look up. *)
 
-  (* Private alias to the outer [Launch_arg.t] before [Equiv.t]
-     shadows the name. *)
-  type _t = t
+  (* Private alias to the outer [Launch_arg.t] (the resolved launch
+     argument form) before [Equiv.t] shadows the name. *)
+  type _arg = t
 
   (* Per-launch dedup map: keys are canonical-stringified launch
      expressions (via [C_lang.Expr.to_string] with default options,
@@ -132,7 +132,7 @@ module Equiv = struct
      common case where the resolver decides [e] is opaque and hands
      it off as a fresh uniform pseudo-parameter. *)
   let intern_uniform (e : C_lang.Expr.t) ~(name : Variable.t) :
-      (t, _t) State.t =
+      (t, _arg) State.t =
     let open State.Syntax in
     let ty = C_lang.Expr.to_type e in
     let* name = intern e ~name in
