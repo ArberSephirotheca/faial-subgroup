@@ -158,8 +158,28 @@ let resolve (idx : int) :
         | _ -> abstract e ~name:(mk_arg_name idx)
       else abstract e ~name:(mk_arg_name idx))
 
-(** Resolves one of x/y/z of [gridDim]/[blockDim]. *)
-let resolve_axis (base : string) (axis : string) :
-    C_lang.Expr.t -> (t, D_lang.Expr.t) State.t =
-  resolve_pure_or (fun e ->
-      abstract e ~name:(mk_axis_name base axis))
+(** c-to-json wraps dim3 args in [CXXConstructExpr]; pad missing axes
+    with [1]. *)
+let dim3_axes (e : C_lang.Expr.t) : C_lang.Expr.t * C_lang.Expr.t * C_lang.Expr.t =
+  let one : C_lang.Expr.t = IntegerLiteral 1 in
+  match e with
+  | CXXConstructExpr { args; _ } -> (
+      match args with
+      | [ x; y; z ] -> (x, y, z)
+      | [ x; y ] -> (x, y, one)
+      | [ x ] -> (x, one, one)
+      | _ -> (e, one, one))
+  | _ -> (e, one, one)
+
+(** Resolves the x/y/z axes of a [gridDim]/[blockDim] expression. *)
+let resolve_axis (base : string) (e : C_lang.Expr.t) :
+    (t, D_lang.Expr.t * D_lang.Expr.t * D_lang.Expr.t) State.t =
+  let open State.Syntax in
+  let xe, ye, ze = dim3_axes e in
+  let one (axis : string) (e : C_lang.Expr.t) =
+    resolve_pure_or (fun e -> abstract e ~name:(mk_axis_name base axis)) e
+  in
+  let* rx = one "x" xe in
+  let* ry = one "y" ye in
+  let* rz = one "z" ze in
+  return (rx, ry, rz)

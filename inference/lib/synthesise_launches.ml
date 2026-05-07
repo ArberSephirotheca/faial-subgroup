@@ -11,19 +11,6 @@ open State.Syntax
 
 (** {1 Pseudo-kernel synthesis} *)
 
-(** c-to-json wraps dim3 args in [CXXConstructExpr]; pad missing axes
-    with [1]. *)
-let dim3_axes (e : C_lang.Expr.t) : C_lang.Expr.t * C_lang.Expr.t * C_lang.Expr.t =
-  let one : C_lang.Expr.t = IntegerLiteral 1 in
-  match e with
-  | CXXConstructExpr { args; _ } -> (
-      match args with
-      | [ x; y; z ] -> (x, y, z)
-      | [ x; y ] -> (x, y, one)
-      | [ x ] -> (x, one, one)
-      | _ -> (e, one, one))
-  | _ -> (e, one, one)
-
 (** [d_to_imp] lifts these asserts to [Global]-visibility SMT
     hypotheses on every subsequent access. *)
 let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
@@ -41,11 +28,7 @@ let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
     slots through the resolver cache. *)
 let dim_asserts (base : string) (e : C_lang.Expr.t) :
     (Launch_arg.t, Stmt.t) State.t =
-  let xe, ye, ze = dim3_axes e in
-  let axis_rhs = Launch_arg.resolve_axis base in
-  let* rhs_x = axis_rhs "x" xe in
-  let* rhs_y = axis_rhs "y" ye in
-  let* rhs_z = axis_rhs "z" ze in
+  let* rhs_x, rhs_y, rhs_z = Launch_arg.resolve_axis base e in
   return
     (Stmt.from_list
        [
