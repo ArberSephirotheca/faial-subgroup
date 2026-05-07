@@ -60,8 +60,13 @@ module Context = struct
 
   let empty : t = { cache = Common.StringMap.empty; fresh = [] }
 
-  (* Fresh params minted during the resolver run, in encounter order. *)
-  let fresh_params (st : t) : Ty_variable.t list = List.rev st.fresh
+  (* Fresh wrapper-kernel params minted during the resolver run, in
+     encounter order, ready to splice into [synth_kernel]'s [params]
+     list. *)
+  let fresh_params (st : t) : C_lang.Param.t list =
+    st.fresh
+    |> List.rev_map (fun ty_var ->
+           C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false)
 
   (* Look up [e] in the cache. On hit, return the existing name. On
      miss, mint a new uniform under [name]: extend the cache and push
@@ -84,10 +89,6 @@ module Context = struct
             },
             name ))
 
-  (* Convert a fresh param into the [C_lang.Param.t] shape that
-     [synth_kernel] folds into the pseudo-kernel's [params] list. *)
-  let fresh_to_param (ty_var : Ty_variable.t) : C_lang.Param.t =
-    C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false
 end
 
 type t =

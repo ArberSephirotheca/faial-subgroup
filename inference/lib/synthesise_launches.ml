@@ -334,10 +334,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
            not (Variable.Set.mem d.name bound))
     |> List.filter_map param_of_free_var
   in
-  let fresh_params =
-    Launch_arg.Context.fresh_params final
-    |> List.map Launch_arg.Context.fresh_to_param
-  in
+  let fresh_params = Launch_arg.Context.fresh_params final in
   let params =
     direct_params @ fresh_params
     |> dedup_by_name ~name_of:C_lang.Param.name
