@@ -158,8 +158,7 @@ let resolve (idx : int) :
         | _ -> abstract e ~name:(mk_arg_name idx)
       else abstract e ~name:(mk_arg_name idx))
 
-(** c-to-json wraps dim3 args in [CXXConstructExpr]; pad missing axes
-    with [1]. *)
+(** Given a dim3 extract the 3 axis. *)
 let dim3_axes (e : C_lang.Expr.t) : C_lang.Expr.t * C_lang.Expr.t * C_lang.Expr.t =
   let one : C_lang.Expr.t = IntegerLiteral 1 in
   match e with

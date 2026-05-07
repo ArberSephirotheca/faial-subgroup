@@ -109,14 +109,14 @@ let dedup_by_name (type a) ~(name_of : a -> Variable.t) (xs : a list) : a list =
 let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
   (* Shared resolver state across grid, block, and args so duplicate
      expressions across slots collapse to one uniform symbol. *)
-  let m =
-    let* body_grid = dim_asserts "gridDim" lp.grid in
-    let* body_block = dim_asserts "blockDim" lp.block in
-    let* body_call = call_stmt lp.kernel lp.args in
-    return (body_grid, body_block, body_call)
-  in
-  let final, (body_grid, body_block, body_call) =
-    State.run m Launch_arg.empty
+  let ctx, (body_grid, body_block, body_call) =
+    Launch_arg.empty
+    |> State.run (
+      let* body_grid = dim_asserts "gridDim" lp.grid in
+      let* body_block = dim_asserts "blockDim" lp.block in
+      let* body_call = call_stmt lp.kernel lp.args in
+      return (body_grid, body_block, body_call)
+    )
   in
   let body_path_cond = path_cond_asserts lp in
   let body_const_bindings = const_binding_decls lp in
@@ -135,7 +135,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     |> Decl_expr.Set.elements
     |> List.filter_map param_of_free_var
   in
-  let fresh_params = Launch_arg.fresh_params final in
+  let fresh_params = Launch_arg.fresh_params ctx in
   let params =
     direct_params @ fresh_params
     |> dedup_by_name ~name_of:C_lang.Param.name
