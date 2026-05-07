@@ -1443,6 +1443,50 @@ module Expr = struct
     | Some o -> to_string o
     | None -> ""
 
+  (* Free variable references in [e] at the expression level only:
+     every [Ident] reachable through pure [Expr.t] structure, plus the
+     captures' init exprs of any [LambdaExpr] and the [result] of any
+     [StmtExpr]. The nested [c_stmt] bodies of [LambdaExpr] /
+     [StmtExpr] are not descended into — that's [Stmt]'s job. Returned
+     as a [Decl_expr.Set.t] so callers can union / filter / iterate
+     deterministically. *)
+  let rec shallow_free_vars : t -> Decl_expr.Set.t =
+    let union_list (xs : Decl_expr.Set.t list) : Decl_expr.Set.t =
+      List.fold_left Decl_expr.Set.union Decl_expr.Set.empty xs
+    in
+    function
+    | Ident d -> Decl_expr.Set.singleton d
+    | SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _
+    | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _
+    | UnresolvedLookupExpr _ | DependentScopeRef _ ->
+        Decl_expr.Set.empty
+    | CXXNewExpr { arg; _ } | CXXDeleteExpr { arg; _ }
+    | UnaryOperator { child = arg; _ } | MemberExpr { base = arg; _ }
+    | PackExpansion arg ->
+        shallow_free_vars arg
+    | ArraySubscriptExpr { lhs; rhs; _ }
+    | BinaryOperator { lhs; rhs; _ } ->
+        Decl_expr.Set.union (shallow_free_vars lhs) (shallow_free_vars rhs)
+    | CallExpr { func; args; ty = _ }
+    | CXXOperatorCallExpr { func; args; ty = _ } ->
+        union_list (shallow_free_vars func :: List.map shallow_free_vars args)
+    | ConditionalOperator { cond; then_expr; else_expr; _ } ->
+        union_list
+          [ shallow_free_vars cond;
+            shallow_free_vars then_expr;
+            shallow_free_vars else_expr ]
+    | CXXConstructExpr { args; _ } ->
+        union_list (List.map shallow_free_vars args)
+    | StmtExpr { result; _ } ->
+        (* Nested [body] is a [c_stmt] — outside this function's
+           scope. We collect the result's free vars only. *)
+        shallow_free_vars result
+    | LambdaExpr { captures; _ } ->
+        (* Captures' init exprs evaluate in the outer scope, so their
+           free vars contribute. The [body] is a [c_stmt] — skipped
+           here, same as [StmtExpr]. *)
+        union_list (List.map (fun (_, init) -> shallow_free_vars init) captures)
+
   module Visit = struct
     type expr_t = t
 

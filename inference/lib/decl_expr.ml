@@ -45,3 +45,15 @@ let attr (e : t) : string = e.kind |> Kind.to_string
 
 let update_name (f : string -> string) (e : t) : t =
   { e with name = Variable.update_name f e.name }
+
+let compare (x : t) (y : t) : int = Variable.compare x.name y.name
+
+module OT = struct
+  type t' = t
+  type t = t'
+
+  let compare = compare
+end
+
+module Set = Set.Make (OT)
+module Map = Map.Make (OT)
