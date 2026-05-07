@@ -97,12 +97,7 @@ let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
   let cond : Expr.t =
     BinaryOperator { opcode = "=="; lhs; rhs; ty = J_type.bool }
   in
-  let assert_func : Expr.t =
-    Ident
-      (Decl_expr.from_name ~ty:J_type.int ~kind:Decl_expr.Kind.Function
-         (Variable.from_name "assert"))
-  in
-  SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = J_type.int })
+  Stmt.assert_stmt cond
 
 (* Build the dim-axis assertions for one of [gridDim] or [blockDim].
    Each axis expression goes through [Launch_arg.resolve_axis]: an
@@ -184,19 +179,6 @@ let param_of_free_var (d : Decl_expr.t) : C_lang.Param.t option =
     let ty_var = Ty_variable.make ~ty:d.ty ~name:d.name in
     Some (C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false)
 
-(* Build [assert(<cond>);] as a D_lang.Stmt.t. [d_to_imp] recognises
-   calls to [assert] and lifts them to [Imp.Stmt.Assert] with
-   [Global] visibility — the same machinery that pins gridDim /
-   blockDim in [dim_asserts] — so the body of the synth kernel can
-   carry arbitrary host-side hypotheses as SMT preconditions. *)
-let assert_stmt (cond : Expr.t) : Stmt.t =
-  let assert_func : Expr.t =
-    Ident
-      (Decl_expr.from_name ~ty:J_type.int ~kind:Decl_expr.Kind.Function
-         (Variable.from_name "assert"))
-  in
-  SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = J_type.int })
-
 (* Lift c-to-json's [path_condition] (a sound conjunction of
    enclosing [if]/[while]/[for] guards that hold when the launch
    executes) into an [assert(...)] in the pseudo-kernel body. The
@@ -212,7 +194,7 @@ let path_cond_asserts (lp : C_lang.LaunchParam.t) : Stmt.t =
   | None -> Stmt.Skip
   | Some e -> (
       match Launch_arg.lift_pure e with
-      | Some d_expr -> assert_stmt d_expr
+      | Some d_expr -> Stmt.assert_stmt d_expr
       | None -> Stmt.Skip)
 
 (* Lift c-to-json's [const_bindings] (host-local [const]-qualified

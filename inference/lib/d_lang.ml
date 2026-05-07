@@ -440,6 +440,18 @@ module Stmt = struct
     in
     AtomicAccessStmt { target; source; atomic; ty }
 
+  (* Build [assert(<cond>);] as a statement. [d_to_imp] recognises
+     calls to [assert] and lifts them to [Imp.Stmt.Assert] with
+     [Global] visibility, which becomes an SMT hypothesis on every
+     subsequent access. *)
+  let assert_stmt (cond : Expr.t) : t =
+    let assert_func : Expr.t =
+      Ident
+        (Decl_expr.from_name ~ty:J_type.int ~kind:Decl_expr.Kind.Function
+           (Variable.from_name "assert"))
+    in
+    SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = J_type.int })
+
   let rec to_s : t -> Indent.t list = function
     | Skip -> [ Line "skip;" ]
     | Seq (s1, s2) -> to_s s1 @ to_s s2
