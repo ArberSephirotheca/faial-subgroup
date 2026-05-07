@@ -11,52 +11,50 @@ open Protocols
     opaque sub-expressions behind fresh variables (deduped per
     launch). *)
 
-module Equiv = struct
-  (* TODO: replace the string-keyed dedup with an E-graph so equivalence
-     classes are captured structurally rather than by stringifying every
-     expression we look up. *)
+(* TODO: replace the string-keyed dedup with an E-graph so equivalence
+   classes are captured structurally rather than by stringifying every
+   expression we look up. *)
 
-  (** Resolver state: a per-launch dedup cache keyed by canonical
-      (location-stripped) stringification, plus the running list of
-      fresh params minted for this launch, newest-first. *)
-  type t = {
-    cache : Variable.t Common.StringMap.t;
-    fresh : Ty_variable.t list;
-  }
+(** Resolver state: a per-launch dedup cache keyed by canonical
+    (location-stripped) stringification, plus the running list of
+    fresh params minted for this launch, newest-first. *)
+type t = {
+  cache : Variable.t Common.StringMap.t;
+  fresh : Ty_variable.t list;
+}
 
-  let empty : t = { cache = Common.StringMap.empty; fresh = [] }
+let empty : t = { cache = Common.StringMap.empty; fresh = [] }
 
-  let fresh_params (st : t) : C_lang.Param.t list =
-    st.fresh
-    |> List.rev_map (fun ty_var ->
-           C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false)
+let fresh_params (st : t) : C_lang.Param.t list =
+  st.fresh
+  |> List.rev_map (fun ty_var ->
+         C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false)
 
-  (** Returns a fresh name for [e], reused for equivalent expressions
-      in the same launch. *)
-  let intern (e : C_lang.Expr.t) ~(name : Variable.t) :
-      (t, Variable.t) State.t =
-    let key = C_lang.Expr.to_string e in
-    let ty = C_lang.Expr.to_type e in
-    State.update_return (fun st ->
-      match Common.StringMap.find_opt key st.cache with
-      | Some existing -> (st, existing)
-      | None ->
-          ( {
-              cache = Common.StringMap.add key name st.cache;
-              fresh = Ty_variable.make ~name ~ty :: st.fresh;
-            },
-            name ))
+(** Returns a fresh name for [e], reused for equivalent expressions
+    in the same launch. *)
+let intern (e : C_lang.Expr.t) ~(name : Variable.t) :
+    (t, Variable.t) State.t =
+  let key = C_lang.Expr.to_string e in
+  let ty = C_lang.Expr.to_type e in
+  State.update_return (fun st ->
+    match Common.StringMap.find_opt key st.cache with
+    | Some existing -> (st, existing)
+    | None ->
+        ( {
+            cache = Common.StringMap.add key name st.cache;
+            fresh = Ty_variable.make ~name ~ty :: st.fresh;
+          },
+          name ))
 
-  (** Abstracts [e] behind a fresh variable, shared with equivalent
-      expressions in the same launch. *)
-  let abstract (e : C_lang.Expr.t) ~(name : Variable.t) :
-      (t, D_lang.Expr.t) State.t =
-    let open State.Syntax in
-    let ty = C_lang.Expr.to_type e in
-    let* name = intern e ~name in
-    let d = Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name in
-    return (D_lang.Expr.Ident d)
-end
+(** Abstracts [e] behind a fresh variable, shared with equivalent
+    expressions in the same launch. *)
+let abstract (e : C_lang.Expr.t) ~(name : Variable.t) :
+    (t, D_lang.Expr.t) State.t =
+  let open State.Syntax in
+  let ty = C_lang.Expr.to_type e in
+  let* name = intern e ~name in
+  let d = Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name in
+  return (D_lang.Expr.Ident d)
 
 (** Lifts [e] to a [D_lang.Expr.t] if it's side-effect-free —
     literals, idents, and pure arithmetic / conditional / unary
@@ -120,20 +118,20 @@ let rec strip_pointer_offset (e : C_lang.Expr.t) : pointer option =
   | _ -> None
 
 let resolve_offset (proposed_name : Variable.t) (off : C_lang.Expr.t) :
-    (Equiv.t, Decl_expr.t) State.t =
+    (t, Decl_expr.t) State.t =
   let open State.Syntax in
   match off with
   | Ident d -> return d
   | _ ->
       let ty = C_lang.Expr.to_type off in
-      let* name = Equiv.intern off ~name:proposed_name in
+      let* name = intern off ~name:proposed_name in
       return (Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name)
 
 (** Resolves [e] verbatim when possible; defers to [opaque] otherwise.
     Shared between [resolve] and [resolve_axis]. *)
 let resolve_pure_or
-    (opaque : C_lang.Expr.t -> (Equiv.t, D_lang.Expr.t) State.t)
-    (e : C_lang.Expr.t) : (Equiv.t, D_lang.Expr.t) State.t =
+    (opaque : C_lang.Expr.t -> (t, D_lang.Expr.t) State.t)
+    (e : C_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
   let open State.Syntax in
   match lift_pure e with
   | Some pure -> return pure
@@ -141,7 +139,7 @@ let resolve_pure_or
 
 (** Resolves the launch-site argument at position [idx]. *)
 let resolve (idx : int) :
-    C_lang.Expr.t -> (Equiv.t, D_lang.Expr.t) State.t =
+    C_lang.Expr.t -> (t, D_lang.Expr.t) State.t =
   let open State.Syntax in
   resolve_pure_or (fun e ->
       let ty = C_lang.Expr.to_type e in
@@ -157,11 +155,11 @@ let resolve (idx : int) :
               D_lang.Expr.(
                 BinaryOperator
                   { opcode = "+"; lhs = Ident base; rhs = Ident off_decl; ty })
-        | _ -> Equiv.abstract e ~name:(mk_arg_name idx)
-      else Equiv.abstract e ~name:(mk_arg_name idx))
+        | _ -> abstract e ~name:(mk_arg_name idx)
+      else abstract e ~name:(mk_arg_name idx))
 
 (** Resolves one of x/y/z of [gridDim]/[blockDim]. *)
 let resolve_axis (base : string) (axis : string) :
-    C_lang.Expr.t -> (Equiv.t, D_lang.Expr.t) State.t =
+    C_lang.Expr.t -> (t, D_lang.Expr.t) State.t =
   resolve_pure_or (fun e ->
-      Equiv.abstract e ~name:(mk_axis_name base axis))
+      abstract e ~name:(mk_axis_name base axis))

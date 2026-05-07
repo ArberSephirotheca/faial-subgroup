@@ -40,7 +40,7 @@ let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
     fresh per-axis pseudo-parameter, deduplicated against earlier
     slots through the resolver cache. *)
 let dim_asserts (base : string) (e : C_lang.Expr.t) :
-    (Launch_arg.Equiv.t, Stmt.t) State.t =
+    (Launch_arg.t, Stmt.t) State.t =
   let xe, ye, ze = dim3_axes e in
   let axis_rhs = Launch_arg.resolve_axis base in
   let* rhs_x = axis_rhs "x" xe in
@@ -55,7 +55,7 @@ let dim_asserts (base : string) (e : C_lang.Expr.t) :
        ])
 
 let call_stmt (kernel : Decl_expr.t) (args : C_lang.Expr.t list) :
-    (Launch_arg.Equiv.t, Stmt.t) State.t =
+    (Launch_arg.t, Stmt.t) State.t =
   let* args =
     args
     |> List.mapi (fun i a -> (i, a))
@@ -133,7 +133,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     return (body_grid, body_block, body_call)
   in
   let final, (body_grid, body_block, body_call) =
-    State.run m Launch_arg.Equiv.empty
+    State.run m Launch_arg.empty
   in
   let body_path_cond = path_cond_asserts lp in
   let body_const_bindings = const_binding_decls lp in
@@ -152,7 +152,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     |> Decl_expr.Set.elements
     |> List.filter_map param_of_free_var
   in
-  let fresh_params = Launch_arg.Equiv.fresh_params final in
+  let fresh_params = Launch_arg.fresh_params final in
   let params =
     direct_params @ fresh_params
     |> dedup_by_name ~name_of:C_lang.Param.name
