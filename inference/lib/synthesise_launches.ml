@@ -150,10 +150,10 @@ let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
    [CallExpr] inits get dropped by [d_to_imp.infer_call], producing
    free per-thread variables. *)
 let dim_asserts (base : string) (e : C_lang.Expr.t) :
-    (Launch_arg.Context.t, Stmt.t) State.t =
+    (Launch_arg.Equiv.t, Stmt.t) State.t =
   let xe, ye, ze = dim3_axes e in
   let axis_rhs (axis : string) (e : C_lang.Expr.t) :
-      (Launch_arg.Context.t, Expr.t) State.t =
+      (Launch_arg.Equiv.t, Expr.t) State.t =
     let* resolved = Launch_arg.resolve_axis base axis e in
     return (Launch_arg.to_d_expr resolved)
   in
@@ -179,7 +179,7 @@ let dim_asserts (base : string) (e : C_lang.Expr.t) :
    appeared in [cache] (e.g. as a dim-axis), the existing uniform is
    reused so the analyser sees one symbol instead of two. *)
 let call_stmt (kernel : Decl_expr.t) (args : C_lang.Expr.t list) :
-    (Launch_arg.Context.t, Stmt.t) State.t =
+    (Launch_arg.Equiv.t, Stmt.t) State.t =
   let* rs =
     args
     |> List.mapi (fun i a -> (i, a))
@@ -301,7 +301,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     return (body_grid, body_block, body_call)
   in
   let final, (body_grid, body_block, body_call) =
-    State.run m Launch_arg.Context.empty
+    State.run m Launch_arg.Equiv.empty
   in
   let body_path_cond = path_cond_asserts lp in
   let body_const_bindings = const_binding_decls lp in
@@ -334,7 +334,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
            not (Variable.Set.mem d.name bound))
     |> List.filter_map param_of_free_var
   in
-  let fresh_params = Launch_arg.Context.fresh_params final in
+  let fresh_params = Launch_arg.Equiv.fresh_params final in
   let params =
     direct_params @ fresh_params
     |> dedup_by_name ~name_of:C_lang.Param.name

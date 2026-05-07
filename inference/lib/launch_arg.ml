@@ -71,8 +71,12 @@ type t =
       ty : J_type.t;
     }
 
-module Context = struct
-  (* Private alias to the outer [Launch_arg.t] before [Context.t]
+module Equiv = struct
+  (* TODO: replace the string-keyed dedup with an E-graph so equivalence
+     classes are captured structurally rather than by stringifying every
+     expression we look up. *)
+
+  (* Private alias to the outer [Launch_arg.t] before [Equiv.t]
      shadows the name. *)
   type _t = t
 
@@ -219,13 +223,13 @@ let rec strip_pointer_offset (e : C_lang.Expr.t) : pointer option =
 (* If the offset is already an [Ident], reuse it; otherwise mint or
    reuse a fresh uniform via the cache. *)
 let resolve_offset (proposed_name : Variable.t) (off : C_lang.Expr.t) :
-    (Context.t, Decl_expr.t) State.t =
+    (Equiv.t, Decl_expr.t) State.t =
   let open State.Syntax in
   match off with
   | Ident d -> return d
   | _ ->
       let ty = C_lang.Expr.to_type off in
-      let* name = Context.intern off ~name:proposed_name in
+      let* name = Equiv.intern off ~name:proposed_name in
       return (Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name)
 
 (* Side-effect-free fast path shared by [resolve] and [resolve_axis]:
@@ -233,8 +237,8 @@ let resolve_offset (proposed_name : Variable.t) (off : C_lang.Expr.t) :
    When neither applies, [opaque] runs in the resolver state to mint
    or reuse a uniform / array-id form. *)
 let resolve_pure_or
-    (opaque : C_lang.Expr.t -> (Context.t, t) State.t)
-    (e : C_lang.Expr.t) : (Context.t, t) State.t =
+    (opaque : C_lang.Expr.t -> (Equiv.t, t) State.t)
+    (e : C_lang.Expr.t) : (Equiv.t, t) State.t =
   let open State.Syntax in
   match e with
   | Ident d -> return (Direct d)
@@ -245,7 +249,7 @@ let resolve_pure_or
 
 (* Resolve a launch-site argument at position [idx] within the
    call. *)
-let resolve (idx : int) : C_lang.Expr.t -> (Context.t, t) State.t =
+let resolve (idx : int) : C_lang.Expr.t -> (Equiv.t, t) State.t =
   let open State.Syntax in
   resolve_pure_or (fun e ->
       let ty = C_lang.Expr.to_type e in
@@ -259,8 +263,8 @@ let resolve (idx : int) : C_lang.Expr.t -> (Context.t, t) State.t =
             in
             let* off_decl = resolve_offset off_name offset in
             return (ArrayId { base; offset = Some off_decl; ty })
-        | None -> Context.intern_uniform e ~name:(mk_arg_name idx)
-      else Context.intern_uniform e ~name:(mk_arg_name idx))
+        | None -> Equiv.intern_uniform e ~name:(mk_arg_name idx)
+      else Equiv.intern_uniform e ~name:(mk_arg_name idx))
 
 (* Resolve a single dim-axis (one of x/y/z of [gridDim]/[blockDim]).
    Same shape as [resolve], but uses a stable axis-based name when
@@ -269,9 +273,9 @@ let resolve (idx : int) : C_lang.Expr.t -> (Context.t, t) State.t =
    axis expression already appeared elsewhere in this launch, it
    reuses the existing name regardless of axis. *)
 let resolve_axis (base : string) (axis : string) :
-    C_lang.Expr.t -> (Context.t, t) State.t =
+    C_lang.Expr.t -> (Equiv.t, t) State.t =
   resolve_pure_or (fun e ->
-      Context.intern_uniform e ~name:(mk_axis_name base axis))
+      Equiv.intern_uniform e ~name:(mk_axis_name base axis))
 
 (* Convert a resolved launch arg back into a [D_lang.Expr.t] for use
    as a CallExpr argument or as the RHS of a dim-axis [assert]. *)
