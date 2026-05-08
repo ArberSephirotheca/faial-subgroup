@@ -249,6 +249,15 @@ let main =
     Arg.(value & flag & info [ "ignore-asserts" ] ~doc:"Ignore asserts.")
   and+ log_delinearize =
     Arg.(value & flag & info [ "log-delinearize" ] ~doc:"Log delinearization info.")
+  and+ assume_delin =
+    Arg.(
+      value & flag
+      & info [ "assume-delin" ]
+          ~doc:
+            "Run the delinearization pass on aligned kernels, rewriting \
+             multidimensional accesses as flat offsets. UNSOUND in general: \
+             only valid when the inferred dimension sizes match the actual \
+             kernel allocations.")
   and+ assumes =
     Arg.(
       value & opt_all conv_bexp []
@@ -330,8 +339,8 @@ let main =
         ~block_idx_1 ~block_idx_2 ~archs ~inline_calls:(not ignore_calls)
         ~ignore_parsing_errors ~includes ~block_dim ~grid_dim ~params
         ~only_kernel ~only_true_data_races ~macros ~cu_to_json ~all_dims
-        ~ignore_asserts ~log_delinearize ~assumes ~assume_dims ~assume_launch
-        ~stop_at
+        ~ignore_asserts ~log_delinearize ~assume_delin ~assumes ~assume_dims
+        ~assume_launch ~stop_at
     in
     let ui = if output_json then Jui.render else Tui.render in
     if list_kernels then

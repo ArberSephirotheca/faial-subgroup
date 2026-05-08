@@ -76,6 +76,7 @@ type t = {
   macros : string list;
   ignore_asserts : bool;
   log_delinearize : bool;
+  assume_delin : bool;
   assumes : Exp.bexp list;
   assume_dims : bool;
   assume_launch : bool;
@@ -129,6 +130,7 @@ let to_string (app : t) : string =
    only_true_data_races;
    ignore_asserts;
    log_delinearize;
+   assume_delin;
    assumes;
    assume_dims;
    assume_launch;
@@ -148,6 +150,7 @@ let to_string (app : t) : string =
       ^ bool show_symbexp ^ "\nmacros = " ^ list_string macros
       ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
       ^ "\nlog_delinearize = " ^ bool log_delinearize ^ "\n"
+      ^ "\nassume_delin = " ^ bool assume_delin
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
       ^ "\nassume_launch = " ^ bool assume_launch
@@ -161,8 +164,8 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~ge_index ~le_index ~eq_index ~only_array ~only_kernel ~only_true_data_races
     ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~block_dim ~grid_dim
     ~includes ~inline_calls ~archs ~ignore_parsing_errors ~params ~macros
-    ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assumes ~assume_dims
-    ~assume_launch ~stop_at : t =
+    ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assume_delin
+    ~assumes ~assume_dims ~assume_launch ~stop_at : t =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
@@ -202,6 +205,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     macros;
     ignore_asserts;
     log_delinearize;
+    assume_delin;
     assumes;
     assume_dims;
     assume_launch;
@@ -265,9 +269,11 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   (* 5. align protocol *)
   |> Aligned.translate
   (* 6. delinearize accesses *)
-  |> Streamutil.map (if a.log_delinearize
-      then Delinearize.Silent.rewrite_kernel
-      else Delinearize.Warnings.rewrite_kernel)
+  |> (if a.assume_delin
+      then Streamutil.map (if a.log_delinearize
+          then Delinearize.Silent.rewrite_kernel
+          else Delinearize.Warnings.rewrite_kernel)
+      else Fun.id)
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned
        ~show:a.show_align Aligned.print_kernels
   (* 7. split per sync *)
