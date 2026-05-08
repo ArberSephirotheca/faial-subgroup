@@ -1,4 +1,9 @@
-(** State monad *)
+(** State monad: pure threading of mutable state through functional code.
+
+    [('s, 'a) t] is a function from an initial state ['s] to a pair of an
+    updated state and a result value ['a]. This module provides [return],
+    [bind], and [map] along with helpers for reading ([get]), writing
+    ([update]), and combining state transformers. *)
 
 type ('s, 'a) t = 's -> 's * 'a
 
@@ -29,7 +34,13 @@ let put (s : 's) : ('s, unit) t = update (fun _ -> s)
 let get : ('s, 's) t = fun s -> (s, s)
 
 (** Given a state and a monad, return the final state and the output result *)
-let run (st : 'st) (m : ('s, 'a) t) : 's * 'a = m st
+let run (m : ('s, 'a) t) (st : 'st) : 's * 'a = m st
+
+(** Given a state and a monad, return the final state *)
+let run_update (m : ('s, unit) t) (st : 's) : 's = run m st |> fst
+
+(** Given a state and a monad, return the final result *)
+let run_result (m : ('s, 'a) t) (st : 's) : 'a = run m st |> snd
 
 (** Monad syntax for let*: useful for making state monad operations readable *)
 module Syntax = struct
@@ -37,6 +48,14 @@ module Syntax = struct
   let ( >>= ) = bind
   let return = return
 end
+
+let list_iter (f : 'a -> ('s, unit) t) (l : 'a list) : ('s, unit) t =
+  let open Syntax in
+  List.fold_left
+    (fun m x ->
+      let* () = m in
+      f x)
+    (return ()) l
 
 let list_map (f : 'a -> ('s, 'b) t) (l : 'a list) : ('s, 'b list) t =
   let open Syntax in
@@ -49,6 +68,17 @@ let list_map (f : 'a -> ('s, 'b) t) (l : 'a list) : ('s, 'b list) t =
         return (x :: l)
   in
   handle_list l
+
+let list_fold_left (f : 'acc -> 'a -> ('s, 'acc) t) (init : 'acc) (l : 'a list)
+    : ('s, 'acc) t =
+  let open Syntax in
+  let rec go acc = function
+    | [] -> return acc
+    | x :: rest ->
+        let* acc = f acc x in
+        go acc rest
+  in
+  go init l
 
 let option_map (f : 'a -> ('s, 'b) t) (o : 'a option) : ('s, 'b option) t =
   let open Syntax in

@@ -407,23 +407,20 @@ module Make (L : Logger) = struct
         (args : D_lang.Expr.t list) : Infer_stmt.t =
       let arg_count = List.length args in
       match Context.lookup_sig func arg_count ctx with
-      | Some s ->
-          if List.length s.params <> arg_count then
-            let e : D_lang.Expr.t =
-              CallExpr { func; args; ty = J_type.unknown }
-            in
-            failwith
-              ("infer_call: CallExpr args mismatch: " ^ D_lang.Expr.to_string e)
-          else
-            let open Imp.Infer_stmt in
-            Call
-              {
-                result;
-                kernel = s.kernel;
-                ty = s.ty;
-                args = List.map infer_arg args;
-              }
-      | None -> Skip
+      | Some s when List.length s.params = arg_count ->
+          let open Imp.Infer_stmt in
+          Call
+            {
+              result;
+              kernel = s.kernel;
+              ty = s.ty;
+              args = List.map infer_arg args;
+            }
+      (* Either no signature found, or the matched signature has a
+         different param count — happens with variadic-template /
+         pack-expansion specialisations whose ty-string aliases a
+         stored entry. Skip rather than abort the whole analysis. *)
+      | Some _ | None -> Skip
     in
 
     let rec infer : D_lang.Stmt.t -> Imp.Infer_stmt.t = function
@@ -432,12 +429,12 @@ module Make (L : Logger) = struct
           (CallExpr
              { func = Ident { name = n; kind = Function; _ }; args = []; _ })
         when Variable.name n = "__syncthreads" ->
-          Sync (Sync.threadsync ?loc:n.location ())
+          Sync (Sync.syncthreads ?loc:n.location ())
       | SExpr
           (CallExpr
              { func = Ident { name = n; kind = Function; _ }; args = [ _ ]; _ })
         when Variable.name n = "sync" ->
-          Sync (Sync.threadsync ?loc:n.location ())
+          Sync (Sync.syncthreads ?loc:n.location ())
           (* Static assert may have a message as second argument *)
       | SExpr
           (CallExpr
@@ -518,6 +515,26 @@ module Make (L : Logger) = struct
           let rhs = infer_expr rhs in
           let ty = J_type.to_c_type ~default:C_type.int ty |> resolve in
           Infer_stmt.Assign { var; ty; data = rhs }
+      (* [++x] / [--x] / [x++] / [x--] as a statement-expression. Clang
+         normalises these to [x = x + 1] inside [for]-loop inc slots
+         before c-to-json sees them, but they survive in other
+         positions (e.g. statement-expressions, synthesised increments
+         from CXXForRangeStmt lowering). Lower them to the same
+         Assign shape so the loop-inference in [imp/lib/for.ml]
+         recognises them as well-formed increments and avoids
+         falling back to an unbounded [Star]. *)
+      | SExpr
+          (UnaryOperator
+             { opcode = ("++" | "--") as opcode;
+               child = Ident { name = var; _ };
+               ty;
+             }) ->
+          let op : N_binary.t = if opcode = "++" then Plus else Minus in
+          let data : Infer_exp.t =
+            NExp (Binary (op, NExp (Var var), NExp (Num 1)))
+          in
+          let ty = J_type.to_c_type ~default:C_type.int ty |> resolve in
+          Infer_stmt.Assign { var; ty; data }
       | ContinueStmt -> Continue
       | BreakStmt -> Break
       | GotoStmt -> Skip
@@ -753,6 +770,11 @@ module Make (L : Logger) = struct
           k :: ks
       | Typedef d :: l -> parse_p (Context.add_typedef d ctx) l
       | Enum e :: l -> parse_p (Context.add_enum e ctx) l
+      | LaunchParam _ :: l ->
+          (* Launch metadata flows through the pipeline as data only;
+             d_to_imp produces Imp.Kernel.t which has no slot for
+             launches. Drop here until a downstream stage consumes. *)
+          parse_p ctx l
       | [] -> []
     in
     let sigs = D_lang.SignatureDB.from_program p in

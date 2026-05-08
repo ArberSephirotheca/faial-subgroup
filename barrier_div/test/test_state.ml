@@ -5,13 +5,17 @@ open Barrier_div
 
 let v (name : string) : Variable.t = Variable.from_name name
 
-let mk_sync ?(array = "__syncthreads") ?(index = []) ?(count = None) () : Sync.t
-    =
+let mk_sync ?(array = "__syncthreads") ?(addend : nexp option = None)
+    ?(participants = None) () : Sync.t =
+  let id : nexp =
+    match addend with
+    | None -> Var (v array)
+    | Some a -> Exp.n_plus (Var (v array)) a
+  in
   {
-    Sync.mode = Sync.Mode.Sync;
-    array = v array;
-    index;
-    count;
+    Sync.mode = Sync.Mode.ArriveAndWait;
+    id;
+    participants;
     loc = Some Location.empty;
   }
 

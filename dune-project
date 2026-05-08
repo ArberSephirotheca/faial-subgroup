@@ -22,7 +22,7 @@
   (depends
     ; Runtime dependencies
     (ocaml (>= 5.3.0))
-    (cmdliner (>= 2.1.0))
+    (cmdliner (>= 2.1.1))
     (ANSITerminal (>= 0.8.5))
     (otoml (>= 1.0.5))
     (yojson (>= 3.0.0))
@@ -32,7 +32,7 @@
     (menhir (>= 20250912))
     
     ; Build dependencies
-    (dune (>= 3.17))
+    (dune (>= 3.23))
     
     ; Test dependencies
     (ounit (and (>= 2.2.7) :with-test))

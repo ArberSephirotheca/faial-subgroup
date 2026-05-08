@@ -9,7 +9,7 @@ homepage: "https://gitlab.com/umb-svl/faial"
 bug-reports: "https://gitlab.com/umb-svl/faial/-/issues"
 depends: [
   "ocaml" {>= "5.3.0"}
-  "cmdliner" {>= "2.1.0"}
+  "cmdliner" {>= "2.1.1"}
   "ANSITerminal" {>= "0.8.5"}
   "otoml" {>= "1.0.5"}
   "yojson" {>= "3.0.0"}
@@ -17,7 +17,7 @@ depends: [
   "fpath" {>= "0.7.3"}
   "z3" {>= "4.15.2"}
   "menhir" {>= "20250912"}
-  "dune" {>= "3.17" & >= "3.17"}
+  "dune" {>= "3.23"}
   "ounit" {>= "2.2.7" & with-test}
   "alcotest" {>= "1.9.0" & with-test}
   "ocamlformat" {dev}

@@ -60,12 +60,14 @@ module Variables = struct
     |> fold (function
       | Ident v when v.kind = Var || v.kind = ParmVar -> Seq.return v.name
       | CXXBoolLiteral _ | SizeOf _ | Recovery _ | CharacterLiteral _
-      | FloatingLiteral _ | IntegerLiteral _ | UnresolvedLookup _ | Ident _ ->
+      | FloatingLiteral _ | IntegerLiteral _ | UnresolvedLookup _ | Ident _
+      | DependentScopeRef _ ->
           Seq.empty
       | UnaryOperator { child = e; _ }
       | Member { base = e; _ }
       | CXXNew { arg = e; _ }
-      | CXXDelete { arg = e; _ } ->
+      | CXXDelete { arg = e; _ }
+      | PackExpansion e ->
           e
       | ArraySubscript { lhs = s1; rhs = s2; _ }
       | BinaryOperator { lhs = s1; rhs = s2; _ } ->
@@ -175,12 +177,13 @@ module Calls = struct
           Seq.return { func = f; args = a }
       | CXXBoolLiteralExpr _ | SizeOfExpr _ | RecoveryExpr _
       | CharacterLiteral _ | Ident _ | FloatingLiteral _ | IntegerLiteral _
-      | UnresolvedLookupExpr _ ->
+      | UnresolvedLookupExpr _ | DependentScopeRef _ ->
           Seq.empty
       | UnaryOperator { child = e; _ }
       | MemberExpr { base = e; _ }
       | CXXNewExpr { arg = e; _ }
-      | CXXDeleteExpr { arg = e; _ } ->
+      | CXXDeleteExpr { arg = e; _ }
+      | PackExpansion e ->
           to_seq e
       | ArraySubscriptExpr { lhs = s1; rhs = s2; _ }
       | BinaryOperator { lhs = s1; rhs = s2; _ } ->
@@ -432,12 +435,13 @@ module MutatedVar = struct
         f :: a |> List.fold_left (fun writes e -> get_writes e writes) writes
     | Ident _ | CXXBoolLiteralExpr _ | SizeOfExpr _ | RecoveryExpr _
     | CharacterLiteral _ | FloatingLiteral _ | IntegerLiteral _
-    | UnresolvedLookupExpr _ ->
+    | UnresolvedLookupExpr _ | DependentScopeRef _ ->
         writes
     | UnaryOperator { child = e; _ }
     | MemberExpr { base = e; _ }
     | CXXNewExpr { arg = e; _ }
-    | CXXDeleteExpr { arg = e; _ } ->
+    | CXXDeleteExpr { arg = e; _ }
+    | PackExpansion e ->
         get_writes e writes
     | BinaryOperator { lhs = s1; rhs = s2; _ }
     | ArraySubscriptExpr { lhs = s1; rhs = s2; _ } ->

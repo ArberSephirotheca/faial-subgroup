@@ -3,6 +3,49 @@ open Protocols
 open Drf
 open Inference
 
+(* The pipeline stages [--stop-at] can target. Mirrors the order in
+   [translate]: each stage prints what's left after its own
+   transformation runs. Listed roughly innermost-to-outermost in the
+   pipeline so [--help] reads in execution order. *)
+module Stage = struct
+  type t =
+    | Map
+    | Well_formed
+    | Aligned
+    | Phase_split
+    | Loc_split
+    | Flat_acc
+    | Symbexp
+
+  let to_string : t -> string = function
+    | Map -> "map"
+    | Well_formed -> "well-formed"
+    | Aligned -> "aligned"
+    | Phase_split -> "phase-split"
+    | Loc_split -> "loc-split"
+    | Flat_acc -> "flat-acc"
+    | Symbexp -> "symbexp"
+
+  let cmdliner_choices : (string * t) list =
+    [
+      ("map", Map);
+      ("well-formed", Well_formed);
+      ("aligned", Aligned);
+      ("phase-split", Phase_split);
+      ("loc-split", Loc_split);
+      ("flat-acc", Flat_acc);
+      ("symbexp", Symbexp);
+    ]
+end
+
+(* Raised by [show_or_stop] when [stop_at] matches the current
+   stage. Caught at the per-kernel boundary in [run] /
+   [check_unreachable] so the surrounding [List.map] / [List.iter]
+   continues to the next kernel. The exception unwinds the lazy
+   stream computation cleanly: every downstream stage in the [|>]
+   chain is bypassed without forcing further work. *)
+exception Stop_at_stage
+
 type t = {
   filename : string;
   kernels : Kernel.t list;
@@ -35,6 +78,8 @@ type t = {
   log_delinearize : bool;
   assumes : Exp.bexp list;
   assume_dims : bool;
+  assume_launch : bool;
+  stop_at : Stage.t option;
 }
 
 let to_string (app : t) : string =
@@ -86,6 +131,8 @@ let to_string (app : t) : string =
    log_delinearize;
    assumes;
    assume_dims;
+   assume_launch;
+   stop_at;
   } ->
       let only_kernel = Option.value ~default:"(null)" only_kernel in
       let kernels = List.length kernels |> string_of_int in
@@ -103,6 +150,8 @@ let to_string (app : t) : string =
       ^ "\nlog_delinearize = " ^ bool log_delinearize ^ "\n"
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
+      ^ "\nassume_launch = " ^ bool assume_launch
+      ^ "\nstop_at = " ^ opt Stage.to_string stop_at
       ^ "\nassumes: "
       ^ list_string (List.map Exp.b_to_string assumes)
       ^ "\n"
@@ -112,13 +161,13 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~ge_index ~le_index ~eq_index ~only_array ~only_kernel ~only_true_data_races
     ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~block_dim ~grid_dim
     ~includes ~inline_calls ~archs ~ignore_parsing_errors ~params ~macros
-    ~cu_to_json ~all_dims ~ignore_asserts ~assumes ~assume_dims
-    ~log_delinearize : t =
+    ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assumes ~assume_dims
+    ~assume_launch ~stop_at : t =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
       ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
-      ~ignore_asserts filename
+      ~ignore_asserts ~assume_launch filename
   in
   let kernels = parsed.kernels in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
@@ -155,11 +204,25 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     log_delinearize;
     assumes;
     assume_dims;
+    assume_launch;
+    stop_at;
   }
 
 let show (b : bool) (call : 'a -> unit) (x : 'a) : 'a =
   if b then call x else ();
   x
+
+(* [show_or_stop] is the [--stop-at]-aware sibling of [show]. It
+   prints when either (a) the matching [--show-X] flag is set, or
+   (b) [stop_at] names this stage; then raises [Stop_at_stage] in
+   case (b) to unwind the rest of the pipeline. The exception is
+   caught at the per-kernel boundary in [run] /
+   [check_unreachable]. *)
+let show_or_stop ~(stop_at : Stage.t option) ~(stage : Stage.t)
+    ~(show : bool) (call : 'a -> unit) (x : 'a) : 'a =
+  let matched = stop_at = Some stage in
+  if show || matched then call x;
+  if matched then raise Stop_at_stage else x
 
 let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
     Flatacc.Kernel.t Streamutil.stream =
@@ -189,29 +252,36 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   | _, _ -> k)
   |> Protocols.Kernel.add_missing_binders
   |> (if a.only_true_data_races then Protocols.Kernel.to_ci_di else Fun.id)
-  |> show a.show_proto Protocols.Kernel.print
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Map ~show:a.show_proto
+       Protocols.Kernel.print
   (* 3. constant folding optimization *)
   |> Protocols.Kernel.opt
   (* 4. convert to well-formed protocol *)
   |> Wellformed.translate
   (* 4.1. remove unnecessary binders *)
   |> Streamutil.map Wellformed.Kernel.trim_binders
-  |> show a.show_wf Wellformed.print_kernels
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Well_formed
+       ~show:a.show_wf Wellformed.print_kernels
   (* 5. align protocol *)
   |> Aligned.translate
+  (* 6. delinearize accesses *)
   |> Streamutil.map (if a.log_delinearize
       then Delinearize.Silent.rewrite_kernel
       else Delinearize.Warnings.rewrite_kernel)
-  |> show a.show_align Aligned.print_kernels
-  (* 6. split per sync *)
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned
+       ~show:a.show_align Aligned.print_kernels
+  (* 7. split per sync *)
   |> Phasesplit.translate
-  |> show a.show_phase_split Phasesplit.print_kernels
-  (* 7. split per location *)
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Phase_split
+       ~show:a.show_phase_split Phasesplit.print_kernels
+  (* 8. split per location *)
   |> Locsplit.translate
-  |> show a.show_loc_split Locsplit.print_kernels
-  (* 8. flatten control-flow structures *)
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Loc_split
+       ~show:a.show_loc_split Locsplit.print_kernels
+  (* 9. flatten control-flow structures *)
   |> Flatacc.translate arch
-  |> show a.show_flat_acc Flatacc.print_kernels
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Flat_acc
+       ~show:a.show_flat_acc Flatacc.print_kernels
 
 let only_kernel (a : t) (ks : Protocols.Kernel.t list) : Protocols.Kernel.t list
     =
@@ -227,23 +297,26 @@ let only_kernel (a : t) (ks : Protocols.Kernel.t list) : Protocols.Kernel.t list
 let check_unreachable (a : t) : unit =
   a.kernels |> only_kernel a
   |> List.iter (fun kernel ->
-      let report =
-        kernel
-        |> translate Architecture.Block a
-        |> Symbexp.sanity_check Architecture.Block
-        |> show a.show_symbexp Symbexp.print_kernels
-        |> Streamutil.map (fun b ->
-            (b, Solve_drf.solve ~timeout:a.timeout ~logic:a.logic b))
-        |> Streamutil.to_list
-      in
-      Stdlib.flush_all ();
-      report
-      |> List.iter (fun (p, s) ->
-          let open Z3.Solver in
-          match s with
-          | UNSATISFIABLE | UNKNOWN ->
-              Symbexp.Proof.to_string p |> print_endline
-          | SATISFIABLE -> ()))
+      try
+        let report =
+          kernel
+          |> translate Architecture.Block a
+          |> Symbexp.sanity_check Architecture.Block
+          |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Symbexp
+               ~show:a.show_symbexp Symbexp.print_kernels
+          |> Streamutil.map (fun b ->
+              (b, Solve_drf.solve ~timeout:a.timeout ~logic:a.logic b))
+          |> Streamutil.to_list
+        in
+        Stdlib.flush_all ();
+        report
+        |> List.iter (fun (p, s) ->
+            let open Z3.Solver in
+            match s with
+            | UNSATISFIABLE | UNKNOWN ->
+                Symbexp.Proof.to_string p |> print_endline
+            | SATISFIABLE -> ())
+      with Stop_at_stage -> ())
 
 let run (a : t) : Analysis.t list =
   let check_kernel arch (kernel : Protocols.Kernel.t) : Analysis.t =
@@ -254,7 +327,8 @@ let run (a : t) : Analysis.t list =
       |> Symbexp.add_rel_index N_rel.Eq a.eq_index
       |> Symbexp.add ~tid:a.thread_idx_1 ~bid:a.block_idx_1
       |> Symbexp.add ~tid:a.thread_idx_2 ~bid:a.block_idx_2
-      |> show a.show_symbexp Symbexp.print_kernels
+      |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Symbexp
+           ~show:a.show_symbexp Symbexp.print_kernels
       |> Solve_drf.Solution.solve ~timeout:a.timeout ~_show_proofs:a.show_proofs
            ~logic:a.logic
       |> Streamutil.to_list
@@ -271,4 +345,5 @@ let run (a : t) : Analysis.t list =
             let a = check_kernel arch kernel in
             if Analysis.is_safe a then check_until archs else a
       in
-      check_until a.archs)
+      try check_until a.archs
+      with Stop_at_stage -> Analysis.{ kernel; report = [] })

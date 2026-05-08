@@ -5,13 +5,17 @@ open Barrier_div
 
 let v (name : string) : Variable.t = Variable.from_name name
 
-let mk_sync ?(array = "__syncthreads") ?(index = []) ?(count = None) () : Sync.t
-    =
+let mk_sync ?(array = "__syncthreads") ?(addend : nexp option = None)
+    ?(participants = None) () : Sync.t =
+  let id : nexp =
+    match addend with
+    | None -> Var (v array)
+    | Some a -> Exp.n_plus (Var (v array)) a
+  in
   {
-    Sync.mode = Sync.Mode.Sync;
-    array = v array;
-    index;
-    count;
+    Sync.mode = Sync.Mode.ArriveAndWait;
+    id;
+    participants;
     loc = Some Location.empty;
   }
 
@@ -54,8 +58,8 @@ let test_missing_participants_diagnostic () =
 
 let test_count_mismatch_diagnostic () =
   (* Two phases on same id, different counts → Count_mismatch *)
-  let s_16 = mk_sync ~count:(Some (Num 16)) () in
-  let s_32 = mk_sync ~count:(Some (Num 32)) () in
+  let s_16 = mk_sync ~participants:(Some (Num 16)) () in
+  let s_32 = mk_sync ~participants:(Some (Num 32)) () in
   let p1 =
     Phase.of_sync cfg { sync = s_16; rest = mk_thread (Bool true) }
   in

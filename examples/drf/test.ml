@@ -130,6 +130,100 @@ let tests =
     ("drf-comma.cu", [], 0);
     (* index of a templated type *)
     ("drf-template-index.cu", [], 0);
+    (* Each launch of a templated kernel produces its own specialisation
+     alongside the primary template; every specialisation must be
+     parsed as a separate kernel, not collapsed into the primary. *)
+    ("drf-template-instances.cu", [], 0);
+    (* Variadic-template kernel: the [vals...] parameter-pack expansion
+     in the primary template body must be preserved through parsing
+     rather than collapsed away. *)
+    ("drf-template-pack.cu", [], 0);
+    (* Variadic-template kernel with explicit launches generating
+     [variadic<int>] and [variadic<int, int>] specialisations. The
+     resolved template arguments must reach faial as a pack-shaped
+     TemplateArgument whose elements are the individual concrete
+     types. *)
+    ("drf-template-pack-instances.cu", [], 0);
+    (* Templated kernel writing [Traits<T>::value] to a single shared
+     index from every thread. With no explicit launch, the primary
+     template body is parsed and the qualified dependent reference
+     reaches the analyser as a [DependentScopeRef] rather than
+     collapsing to RecoveryExpr. *)
+    ("racy-template-dep-scope.cu", [], 1);
+    (* Launch metadata: one [<<<grid, block>>>] launch with host-side
+     dim3 locals and a templated kernel argument. The LaunchParam node
+     emitted alongside the AST must parse without disturbing the
+     kernel-level DRF analysis. *)
+    ("drf-launch-param.cu", [], 0);
+    (* --assume-launch must rescue an under-constrained kernel that is
+     racy when blockDim/gridDim's [y]/[z] axes are free: synthesising
+     the launch's [dim3((n+255)/256)] / [dim3(256)] pins the unused
+     axes to 1 via [assert(...)] in the pseudo-kernel body. *)
+    ("drf-launch-rescue.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Two distinct launches of the same templated kernel must each
+     produce their own pseudo-kernel and analyse independently with
+     the launch's concrete dims. *)
+    ("drf-launch-multi.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Negative control: a kernel that races regardless of launch
+     dims (every thread writes [out[0]]) stays racy under
+     [--assume-launch] — pinning blockDim doesn't suppress real
+     races. *)
+    ("racy-launch-mismatch.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
+    (* A scalar kernel arg supplied by a non-Ident launch-site
+     expression (here [params[0]]). The launch-arg resolver folds
+     the array-subscript into a fresh uniform pseudo-parameter so
+     the formal stays block-uniform; analyses DRF. Without the
+     resolver, this would false-positive racy because the launch
+     arg surfaces as a per-thread @AccessState. *)
+    ("drf-launch-complex-arg.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* A scalar kernel arg fed by a [const int N = 256] host
+     variable that c-to-json const-folds to its literal value at
+     the launch site. The resolver passes literals through as
+     [Const] so the inliner substitutes the kernel formal with
+     [256] directly. Without pass-through, the formal stays
+     unbound and Z3 picks an adversarial witness, false-positive
+     reporting racy on a kernel where every (blockIdx.x,
+     threadIdx.x) pair writes a distinct address. *)
+    ("drf-launch-const-arg.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Grid-arithmetic relation flowing transitively to a kernel
+     arg: launch picks [gridDim.x = imageW / 128]. The launch-arg
+     resolver passes the BinaryOp structure through verbatim
+     (Const path), so the assertion [gridDim.x == imageW / 128]
+     reaches Z3, which derives [imageW >= 128] transitively from
+     the existing [gridDim.x >= 1] preamble. Without
+     pass-through (when the resolver abstracts [imageW / 128]
+     into a fresh uniform), Z3 has no link between [gridDim.x]
+     and [imageW], witnesses [imageW < 128], and false-positive
+     reports racy. *)
+    ("drf-launch-grid-arith.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Host-side guard ([if (n >= 256)]) enclosing the launch
+     reaches the analyser via c-to-json's [path_condition] slot;
+     the synth kernel lifts it into [assert(n >= 256)] alongside
+     the dim asserts. The kernel races without the bound (a
+     stride pattern: two threads in different blocks collide
+     when [n < blockDim.x]); with the lifted path condition Z3
+     rules out small [n] and the kernel verifies DRF. *)
+    ("drf-launch-path-cond.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Host-side const-binding ([const int inum = N * 1024]) used
+     nested in the grid axis ([dim3(inum / 256)]) reaches the
+     analyser via c-to-json's [const_bindings] slot. The synth
+     kernel lifts each binding into a local [const int <name> =
+     <init>;] decl, which [d_to_imp] lowers to a definitional
+     binding in Imp. Combined with [assert(gridDim.x == inum /
+     256)] and [gridDim.x >= 1], Z3 derives [N >= 1] transitively
+     and the stride-pattern kernel verifies DRF. Without the
+     binding lift, [inum] is a free uniform with no tie to [N],
+     Z3 picks [N == 0], and the kernel false-positive reports
+     racy. *)
+    ("drf-launch-const-binding.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)
@@ -139,6 +233,28 @@ let tests =
     ("drf-inline-var.cu", [], 0);
     (* ensure that an aligned protocol remains aligned *)
     ("drf-loop-aligned-1.cu", [], 0);
+    (* End-to-end smoke test for IntegerLiteral parsing of uint64
+     sentinels that exceed OCaml's 63-bit int — they must reach the
+     analyser as concrete two's-complement values, not the
+     [Int.max_int] fallback. *)
+    ("drf-uint64-sentinel.cu", [], 0);
+    (* C++11 range-based for over a fixed-size array: the bound is
+     extracted from the RangeStmt's qualType so the iteration
+     variable becomes [arr[__idx]] inside a bounded foreach,
+     instead of an unbounded Star. *)
+    ("drf-range-for.cu", [], 0);
+    (* C++ [while (auto i = n) { ...; i--; }]: clang emits a 3-item
+     [DeclStmt; cond; body] inner array. The parser lowers it to
+     [for (auto i = n; i; ) body], keeping [i] as the loop's own
+     binding; the step is inferred from [i--] in the body. *)
+    ("drf-while-decl.cu", [], 0);
+    (* Pointer parameter with [volatile T * const __restrict]
+     qualifier stack: c_type's pointer detection must normalise the
+     trailing qualifier soup so the parameter classifies as a
+     global array. Without normalisation, the parameter is
+     Unsupported and every access lowers to [skip], producing a
+     false-negative DRF on a kernel that races on every thread. *)
+    ("racy-qualified-pointer.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are

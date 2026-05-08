@@ -18,6 +18,12 @@ module Kind = struct
     | EnumConstant -> "enum"
     | Var -> "var"
     | ParmVar -> "parm"
+
+  (* Only [Var] / [ParmVar] references carry runtime values; function /
+     method / enum / template-parm references resolve at compile time. *)
+  let is_runtime_value : t -> bool = function
+    | Var | ParmVar -> true
+    | Function | CXXMethod | NonTypeTemplateParm | EnumConstant -> false
 end
 
 (* A program variable *)
@@ -42,6 +48,19 @@ let to_string ?(modifier : bool = false) (e : t) : string =
   attr ^ name
 
 let attr (e : t) : string = e.kind |> Kind.to_string
+let is_runtime_value (e : t) : bool = Kind.is_runtime_value e.kind
 
 let update_name (f : string -> string) (e : t) : t =
   { e with name = Variable.update_name f e.name }
+
+let compare (x : t) (y : t) : int = Variable.compare x.name y.name
+
+module OT = struct
+  type t' = t
+  type t = t'
+
+  let compare = compare
+end
+
+module Set = Set.Make (OT)
+module Map = Map.Make (OT)

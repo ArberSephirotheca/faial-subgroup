@@ -14,8 +14,8 @@ let access : Code.t =
    produce distinct sync ids. Real kernels will use the __syncthreads
    sentinel or named-barrier variables. *)
 let sync_at (label : string) : Sync.t =
-  { Sync.mode = Sync.Mode.Sync; array = v label; index = [];
-    count = None; loc = Some Location.empty }
+  { Sync.mode = Sync.Mode.ArriveAndWait; id = Var (v label);
+    participants = None; loc = Some Location.empty }
 
 let mk_sync (label : string) : Code.t = Code.Sync (sync_at label)
 
@@ -78,7 +78,7 @@ let test_step_access () =
 let test_step_sync () =
   let t = { Thread.path_cond = Bool true; proto = mk_sync "s1" } in
   match Thread.step t with
-  | Sync { sync = s; rest = { proto = Code.Skip; _ } } when s.mode = Sync.Mode.Sync ->
+  | Sync { sync = s; rest = { proto = Code.Skip; _ } } when s.mode = Sync.Mode.ArriveAndWait ->
       ()
   | _ -> Alcotest.fail "sync should yield Sync action"
 
@@ -123,7 +123,7 @@ let test_references_present () =
 
 let test_references_absent () =
   let s1 = sync_at "s1" in
-  let s2 = { (sync_at "s1") with array = v "other_barrier" } in
+  let s2 = { (sync_at "s1") with id = Var (v "other_barrier") } in
   let proto = Code.Sync s2 in
   let t = { Thread.path_cond = Bool true; proto } in
   Alcotest.(check bool) "does not reference s1" false

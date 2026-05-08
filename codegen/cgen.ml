@@ -146,17 +146,14 @@ let inc_to_s (r : Range.t) : string =
 let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
   | Access e -> acc_expr_to_dummy e
   | Sync s ->
-      if Protocols.Sync.is_threadsync s then [ Line "__syncthreads();" ]
+      if Protocols.Sync.is_syncthreads s then [ Line "__syncthreads();" ]
       else
         let mnem = Protocols.Sync.Mode.to_string s.mode in
-        let id_s =
-          match s.index with
-          | [ i ] -> n_to_string i
-          | _ -> Variable.name s.array
-        in
         let operand_exprs : string list =
-          id_s
-          :: (match s.count with Some c -> [ n_to_string c ] | None -> [])
+          n_to_string s.id
+          :: (match s.participants with
+              | Some c -> [ n_to_string c ]
+              | None -> [])
         in
         let template =
           operand_exprs

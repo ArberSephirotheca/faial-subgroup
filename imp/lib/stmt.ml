@@ -198,8 +198,8 @@ module State = struct
   type 'a state = (t, 'a) Stage0.State.t
 
   let add (s : t) : unit state = Stage0.State.update (fun s' -> seq s' s)
-  let run (m : unit state) : t = Stage0.State.run Skip m |> fst
+  let run (m : unit state) : t = Stage0.State.run_update m Skip
 
   let try_run (m : 'a state) : 'a option =
-    match Stage0.State.run Skip m with Skip, a -> Some a | _ -> None
+    match Stage0.State.run m Skip with Skip, a -> Some a | _ -> None
 end

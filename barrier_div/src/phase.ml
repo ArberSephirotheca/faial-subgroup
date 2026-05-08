@@ -22,13 +22,12 @@ type t = {
    __syncthreads — its implicit count is the warp size; [Some (Num k)]
    pins it explicitly. Symbolic counts are deferred to Phase 2. *)
 let resolve_count (cfg : Rel_cost.Config.t) (sync : Sync.t) : int =
-  match sync.count with
+  match sync.participants with
   | None -> cfg.threads_per_warp
   | Some (Num k) -> k
   | Some _ -> failwith "Phase 1: only constant barrier counts supported"
 
-let id_eq (a : Sync.t) (b : Sync.t) : bool =
-  Variable.equal a.array b.array && a.index = b.index
+let id_eq (a : Sync.t) (b : Sync.t) : bool = a.id = b.id
 
 (* construction from arrival events *)
 

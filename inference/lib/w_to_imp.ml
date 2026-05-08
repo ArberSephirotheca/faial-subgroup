@@ -425,7 +425,7 @@ module Expressions = struct
 
   let run (e : Infer_stmt.t state) : Infer_stmt.t =
     (* given an empty context, output the final statement and context *)
-    let reads, post = State.run empty e in
+    let reads, post = State.run e empty in
     (* convert each read to a statement, and output unknowns *)
     let reads =
       List.map
@@ -446,9 +446,10 @@ module Expressions = struct
 
   let pure (e : W_lang.Expression.t) : Imp.Infer_exp.t option =
     let ctx, e =
-      Stage0.State.run empty
+      Stage0.State.run
         (let* e = rewrite e in
          return (to_i_exp e))
+        empty
     in
     if ctx = [] then Some e else None
 
@@ -737,7 +738,7 @@ module Statements = struct
                    body = tr (Block body);
                    inc = tr (Block c);
                  })
-        | Barrier _ -> Some (Infer_stmt.Sync (Sync.threadsync ()))
+        | Barrier _ -> Some (Infer_stmt.Sync (Sync.syncthreads ()))
         | Call { result; function_ = kernel; arguments = args } ->
             let k = Context.lookup kernel ctx in
             Some

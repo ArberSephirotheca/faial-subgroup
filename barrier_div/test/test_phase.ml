@@ -7,13 +7,17 @@ open Exp
 
 let v (name : string) : Variable.t = Variable.from_name name
 
-let mk_sync ?(array = "__syncthreads") ?(index = []) ?(count = None) () : Sync.t
-    =
+let mk_sync ?(array = "__syncthreads") ?(addend : nexp option = None)
+    ?(participants = None) () : Sync.t =
+  let id : nexp =
+    match addend with
+    | None -> Var (v array)
+    | Some a -> Exp.n_plus (Var (v array)) a
+  in
   {
-    Sync.mode = Sync.Mode.Sync;
-    array = v array;
-    index;
-    count;
+    Sync.mode = Sync.Mode.ArriveAndWait;
+    id;
+    participants;
     loc = Some Location.empty;
   }
 
@@ -39,8 +43,8 @@ let test_id_eq_distinct_arrays () =
   Alcotest.(check bool) "distinct arrays" false (Phase.id_eq s1 s2)
 
 let test_id_eq_distinct_indices () =
-  let s1 = mk_sync ~index:[ Num 0 ] () in
-  let s2 = mk_sync ~index:[ Num 1 ] () in
+  let s1 = mk_sync ~addend:(Some (Num 0)) () in
+  let s2 = mk_sync ~addend:(Some (Num 1)) () in
   Alcotest.(check bool) "distinct indices" false (Phase.id_eq s1 s2)
 
 (* absorb *)
@@ -115,15 +119,15 @@ let test_no_rival_count_no_others () =
     (Phase.no_rival_count [ p ] p)
 
 let test_no_rival_count_same_count_ok () =
-  let s = mk_sync ~count:(Some (Num 16)) () in
+  let s = mk_sync ~participants:(Some (Num 16)) () in
   let p1 = Phase.of_sync cfg (evt s (thread (Bool true))) in
   let p2 = Phase.of_sync cfg (evt s (thread (Bool false))) in
   Alcotest.(check bool) "same count is not a rival" true
     (Phase.no_rival_count [ p1; p2 ] p1)
 
 let test_no_rival_count_different_count_blocks () =
-  let s_16 = mk_sync ~count:(Some (Num 16)) () in
-  let s_32 = mk_sync ~count:(Some (Num 32)) () in
+  let s_16 = mk_sync ~participants:(Some (Num 16)) () in
+  let s_32 = mk_sync ~participants:(Some (Num 32)) () in
   let p_small = Phase.of_sync cfg (evt s_16 (thread (Bool true))) in
   let p_large = Phase.of_sync cfg (evt s_32 (thread (Bool false))) in
   Alcotest.(check bool) "rival with different count blocks" false

@@ -1,16 +1,47 @@
 open Stage0
 
+(* C/C++ qualifiers that may follow the [*] in a pointer type:
+   [const], [volatile], [restrict] (C99), and the GCC/Clang variants
+   [__restrict] / [__restrict__]. None of these change the
+   pointer-vs-not classification — they're orthogonal properties.
+
+   c-to-json's qualType strings stack these in declaration order, so
+   a parameter declared [volatile T* const __restrict] reaches us as
+   ["volatile T *const __restrict"]; the suffix is variable. Strip
+   recognised qualifiers off the tail until the bare [... *] remains
+   so downstream string matching only has to handle the canonical
+   form. *)
+let pointer_qualifiers : string list =
+  [ "__restrict__"; "__restrict"; "restrict"; "volatile"; "const" ]
+
+let strip_pointer_quals (s : string) : string =
+  let rec loop s =
+    let s = String.trim s in
+    let s' =
+      List.fold_left
+        (fun acc q ->
+          if String.ends_with ~suffix:q acc then
+            String.sub acc 0 (String.length acc - String.length q)
+          else acc)
+        s pointer_qualifiers
+    in
+    if s = s' then s else loop s'
+  in
+  loop s
+
 let split_array_type (x : string) : (string * string) option =
   match Common.split '[' x with
   | Some (x, y) ->
       let x = String.trim x in
       Some (x, "[" ^ y)
-  | None -> (
-      match Common.rsplit ' ' x with
-      | Some (_, "*") as o -> o
-      | Some (e, "*__restrict") -> Some (e, "*")
-      | Some (e, "*const") -> Some (e, "*")
-      | _ -> None)
+  | None ->
+      let stripped = strip_pointer_quals x in
+      if String.ends_with ~suffix:" *" stripped then
+        let e =
+          String.sub stripped 0 (String.length stripped - 2) |> String.trim
+        in
+        Some (e, "*")
+      else None
 
 let parse_dim (x : string) : int list =
   (*
@@ -56,8 +87,8 @@ let unknown : t = make "?"
 let to_string (c : t) : string = match c with CType x -> x
 
 let is_pointer (c : t) =
-  let c = to_string c in
-  String.ends_with ~suffix:" *" c || String.ends_with ~suffix:" *__restrict" c
+  let s = to_string c |> strip_pointer_quals in
+  String.ends_with ~suffix:" *" s
 
 let is_function (c : t) : bool = Common.contains ~substring:"(*)" (to_string c)
 let is_void (c : t) = to_string c = "void"

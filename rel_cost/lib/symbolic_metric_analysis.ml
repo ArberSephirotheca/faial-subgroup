@@ -559,12 +559,12 @@ let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
   (* Compute globals as: free_names - locals *)
   let globals = Variable.Set.diff fns locals in
 
-  State.run
-    (make generator config locals globals |> add_active_threads active_threads)
+  State.run_result
     (let* n = cost_of metric index in
      let* st = State.get in
      return (optimize ~verbose ~strategy ~solver ~default_cost:0 ~timeout n st))
-  |> snd |> Result.to_option
+    (make generator config locals globals |> add_active_threads active_threads)
+  |> Result.to_option
 
 let count_active_threads = optimize_metric encode_count_active_threads
 
@@ -865,7 +865,7 @@ module Theorem = struct
     in
     thm.goals
     |> List.map (fun g ->
-        State.run st
+        State.run_result
           (match g with
           | Goal.Optimize { strategy; expr } ->
               let* expr = n_inline_cost expr in
@@ -877,7 +877,7 @@ module Theorem = struct
               let* st = State.get in
               let r = prove ~solver ~debug ~verbose ~tactic g st in
               return (r |> Result.map TheoremResult.of_solver))
-        |> snd)
+          st)
 
   let to_string (thm : t) : string =
     Printf.sprintf

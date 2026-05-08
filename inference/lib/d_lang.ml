@@ -136,6 +136,48 @@ module Expr = struct
   let opt_to_string : t option -> string = function
     | Some c -> to_string c
     | None -> ""
+
+  (* Post-order stateful rewrite: children of [e] are rewritten first, then
+     [f] is applied to the reconstructed node. *)
+  let rec st_map (f : t -> ('s, t) State.t) (e : t) : ('s, t) State.t =
+    let open State.Syntax in
+    match e with
+    | SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _
+    | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _ | Ident _
+    | UnresolvedLookupExpr _ ->
+        f e
+    | CXXNewExpr { arg; ty } ->
+        let* arg = st_map f arg in
+        f (CXXNewExpr { arg; ty })
+    | CXXDeleteExpr { arg; ty } ->
+        let* arg = st_map f arg in
+        f (CXXDeleteExpr { arg; ty })
+    | BinaryOperator { opcode; lhs; rhs; ty } ->
+        let* lhs = st_map f lhs in
+        let* rhs = st_map f rhs in
+        f (BinaryOperator { opcode; lhs; rhs; ty })
+    | CallExpr { func; args; ty } ->
+        let* func = st_map f func in
+        let* args = State.list_map (st_map f) args in
+        f (CallExpr { func; args; ty })
+    | ConditionalOperator { cond; then_expr; else_expr; ty } ->
+        let* cond = st_map f cond in
+        let* then_expr = st_map f then_expr in
+        let* else_expr = st_map f else_expr in
+        f (ConditionalOperator { cond; then_expr; else_expr; ty })
+    | CXXConstructExpr { args; ty } ->
+        let* args = State.list_map (st_map f) args in
+        f (CXXConstructExpr { args; ty })
+    | CXXOperatorCallExpr { func; args; ty } ->
+        let* func = st_map f func in
+        let* args = State.list_map (st_map f) args in
+        f (CXXOperatorCallExpr { func; args; ty })
+    | MemberExpr { name; base; ty } ->
+        let* base = st_map f base in
+        f (MemberExpr { name; base; ty })
+    | UnaryOperator { opcode; child; ty } ->
+        let* child = st_map f child in
+        f (UnaryOperator { opcode; child; ty })
 end
 
 module Init = struct
@@ -158,6 +200,20 @@ module Init = struct
     | CXXConstructExpr _ -> "ctor"
     | InitListExpr i -> list_to_s Expr.to_string i.args
     | IExpr i -> Expr.to_string i
+
+  (* Thread an [Expr.t] rewriter through the [Expr.t] children of an
+     initializer. [CXXConstructExpr] has no Expr children, so it
+     passes through untouched. *)
+  let map_expr (f : Expr.t -> ('s, Expr.t) State.t) (i : t) : ('s, t) State.t =
+    let open State.Syntax in
+    match i with
+    | IExpr e ->
+        let* e = f e in
+        return (IExpr e)
+    | InitListExpr { ty; args } ->
+        let* args = State.list_map f args in
+        return (InitListExpr { ty; args })
+    | CXXConstructExpr _ -> return i
 end
 
 module Decl = struct
@@ -223,6 +279,12 @@ module Decl = struct
     let ty = J_type.to_string d.ty in
     let x = Variable.name d.var in
     attr ^ ty ^ " " ^ x ^ i
+
+  (* Thread an [Expr.t] rewriter through the decl's optional initializer. *)
+  let map_expr (f : Expr.t -> ('s, Expr.t) State.t) (d : t) : ('s, t) State.t =
+    let open State.Syntax in
+    let* init = State.option_map (Init.map_expr f) d.init in
+    return { d with init }
 end
 
 module ForInit = struct
@@ -252,6 +314,18 @@ module ForInit = struct
 
   let opt_to_string (o : t option) : string =
     o |> Option.map to_string |> Option.value ~default:""
+
+  (* Thread an [Expr.t] rewriter through a [ForInit.t]: for [Decls],
+     descend into each decl's initializer; for [Expr], rewrite directly. *)
+  let map_expr (f : Expr.t -> ('s, Expr.t) State.t) (fi : t) : ('s, t) State.t =
+    let open State.Syntax in
+    match fi with
+    | Decls ds ->
+        let* ds = State.list_map (Decl.map_expr f) ds in
+        return (Decls ds)
+    | Expr e ->
+        let* e = f e in
+        return (Expr e)
 end
 
 type d_subscript = {
@@ -365,6 +439,18 @@ module Stmt = struct
       |> C_type.strip_array
     in
     AtomicAccessStmt { target; source; atomic; ty }
+
+  (* Build [assert(<cond>);] as a statement. [d_to_imp] recognises
+     calls to [assert] and lifts them to [Imp.Stmt.Assert] with
+     [Global] visibility, which becomes an SMT hypothesis on every
+     subsequent access. *)
+  let assert_stmt (cond : Expr.t) : t =
+    let assert_func : Expr.t =
+      Ident
+        (Decl_expr.from_name ~ty:J_type.int ~kind:Decl_expr.Kind.Function
+           (Variable.from_name "assert"))
+    in
+    SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = J_type.int })
 
   let rec to_s : t -> Indent.t list = function
     | Skip -> [ Line "skip;" ]
@@ -503,6 +589,124 @@ module Stmt = struct
       | Seq _ as s -> stmt_to_s (first s) ^ "; ..."
     in
     stmt_to_s
+
+  (* Post-order stateful rewrite over child statements: each [t]-typed
+     child of [s] is rewritten first (via [Stmt.seq] for [Seq], so [Skip]
+     elision still happens), then [f] is applied to the reconstructed
+     node. Expression / decl / subscript fields are not recursed into —
+     the caller handles those in [f]. *)
+  let rec st_map (f : t -> ('s, t) State.t) (s : t) : ('s, t) State.t =
+    let open State.Syntax in
+    match s with
+    | Skip | BreakStmt | GotoStmt | ContinueStmt | ReturnStmt _
+    | DeclStmt _ | SExpr _ | AsmStmt _ | WriteAccessStmt _
+    | ReadAccessStmt _ | AtomicAccessStmt _ | BarrierOp _ ->
+        f s
+    | Seq (a, b) ->
+        let* a = st_map f a in
+        let* b = st_map f b in
+        f (seq a b)
+    | IfStmt { cond; then_stmt; else_stmt } ->
+        let* then_stmt = st_map f then_stmt in
+        let* else_stmt = st_map f else_stmt in
+        f (IfStmt { cond; then_stmt; else_stmt })
+    | WhileStmt { cond; body } ->
+        let* body = st_map f body in
+        f (WhileStmt { cond; body })
+    | DoStmt { cond; body } ->
+        let* body = st_map f body in
+        f (DoStmt { cond; body })
+    | ForStmt { init; cond; inc; body } ->
+        let* inc = st_map f inc in
+        let* body = st_map f body in
+        f (ForStmt { init; cond; inc; body })
+    | SwitchStmt { cond; body } ->
+        let* body = st_map f body in
+        f (SwitchStmt { cond; body })
+    | DefaultStmt body ->
+        let* body = st_map f body in
+        f (DefaultStmt body)
+    | CaseStmt { case; body } ->
+        let* body = st_map f body in
+        f (CaseStmt { case; body })
+    | LambdaDecl { var; captures; params; body; ret_ty } ->
+        let* body = st_map f body in
+        f (LambdaDecl { var; captures; params; body; ret_ty })
+
+  (* Thread an [Expr.t] rewriter through every [Expr.t] child of [s]
+     (including those nested in [d_subscript], [Decl], [ForInit], and
+     [Asm] operands), without recursing into child statements. Compose
+     with [st_map] when both Stmt-level and Expr-level rewrites are
+     needed. *)
+  let st_map_expr (f : Expr.t -> ('s, Expr.t) State.t) (s : t) :
+      ('s, t) State.t =
+    let open State.Syntax in
+    let map_subscript (s : d_subscript) : ('s, d_subscript) State.t =
+      let* index = State.list_map f s.index in
+      return { s with index }
+    in
+    match s with
+    | Skip | BreakStmt | GotoStmt | ContinueStmt | Seq _ | DefaultStmt _ ->
+        return s
+    | WriteAccessStmt w ->
+        let* target = map_subscript w.target in
+        let* source = f w.source in
+        return (WriteAccessStmt { w with target; source })
+    | ReadAccessStmt r ->
+        let* source = map_subscript r.source in
+        return (ReadAccessStmt { r with source })
+    | AtomicAccessStmt a ->
+        let* source = map_subscript a.source in
+        return (AtomicAccessStmt { a with source })
+    | ReturnStmt e ->
+        let* e = State.option_map f e in
+        return (ReturnStmt e)
+    | IfStmt { cond; then_stmt; else_stmt } ->
+        let* cond = f cond in
+        return (IfStmt { cond; then_stmt; else_stmt })
+    | DeclStmt ds ->
+        let* ds = State.list_map (Decl.map_expr f) ds in
+        return (DeclStmt ds)
+    | WhileStmt { cond; body } ->
+        let* cond = f cond in
+        return (WhileStmt { cond; body })
+    | DoStmt { cond; body } ->
+        let* cond = f cond in
+        return (DoStmt { cond; body })
+    | ForStmt { init; cond; inc; body } ->
+        let* init = State.option_map (ForInit.map_expr f) init in
+        let* cond = State.option_map f cond in
+        return (ForStmt { init; cond; inc; body })
+    | SwitchStmt { cond; body } ->
+        let* cond = f cond in
+        return (SwitchStmt { cond; body })
+    | CaseStmt { case; body } ->
+        let* case = f case in
+        return (CaseStmt { case; body })
+    | SExpr e ->
+        let* e = f e in
+        return (SExpr e)
+    | AsmStmt a ->
+        let r_op (op : Expr.t Asm.operand) : ('s, Expr.t Asm.operand) State.t =
+          let* expr = f op.expr in
+          return { Asm.constr = op.constr; expr }
+        in
+        let* outputs = State.list_map r_op a.outputs in
+        let* inputs = State.list_map r_op a.inputs in
+        return (AsmStmt { a with outputs; inputs })
+    | BarrierOp { op; target; args; loc } ->
+        let* target = map_subscript target in
+        let* args = State.list_map f args in
+        return (BarrierOp { op; target; args; loc })
+    | LambdaDecl { var; captures; params; body; ret_ty } ->
+        let* captures =
+          State.list_map
+            (fun (n, e) ->
+              let* e = f e in
+              return (n, e))
+            captures
+        in
+        return (LambdaDecl { var; captures; params; body; ret_ty })
 end
 
 (*
@@ -554,6 +758,13 @@ module Def = struct
     | Declaration of Decl.t
     | Typedef of Typedef.t
     | Enum of Imp.Enum.t
+    (* Launch metadata is propagated through the C->D lowering as-is:
+       the expression slots stay in [C_lang.Expr.t] form because no
+       D_lang consumer rewrites or analyses them yet. If a downstream
+       stage starts driving assumptions (e.g. on grid/block shape), a
+       parallel [D_lang.LaunchParam.t] with rewritten expressions can
+       be introduced and rewrite_def updated to convert. *)
+    | LaunchParam of C_lang.LaunchParam.t
 
   let is_device_kernel : t -> bool = function
     | Kernel k when Kernel.is_global k -> true
@@ -566,6 +777,7 @@ module Def = struct
     | Kernel k -> Kernel.to_s k
     | Typedef d -> Typedef.to_s d
     | Enum e -> Imp.Enum.to_s e
+    | LaunchParam lp -> C_lang.LaunchParam.to_s lp
 end
 
 module Program = struct
@@ -576,6 +788,16 @@ module Program = struct
 
   let print (p : t) : unit = Indent.print (to_s p)
   let filter (pred : Def.t -> bool) (p : t) : t = List.filter pred p
+
+  (* Names of every kernel that is the target of at least one
+     [LaunchParam] in the program. *)
+  let launched_kernel_names (p : t) : Variable.Set.t =
+    List.fold_left
+      (fun acc def ->
+        match def with
+        | Def.LaunchParam lp -> Variable.Set.add lp.kernel.name acc
+        | _ -> acc)
+      Variable.Set.empty p
 end
 
 module SignatureDB = struct
@@ -642,7 +864,7 @@ module SignatureDB = struct
         let open Def in
         match d with
         | Kernel k -> add k kernels
-        | Declaration _ | Typedef _ | Enum _ -> kernels)
+        | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> kernels)
       StringMap.empty p
 end
 
@@ -904,6 +1126,20 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       failwith
         "D_lang.rewrite_exp: LambdaExpr in non-binding position — only \
          [auto v = lambda { ... }] is supported"
+  | PackExpansion e ->
+      (* C_lang preserves the parameter-pack-expansion wrapper, but no
+         D_lang consumer uses it today: drop the wrapper at the
+         boundary and lower the pattern. If a downstream stage starts
+         caring about pack semantics, mirror the constructor in
+         [D_lang.Expr.t]. *)
+      rewrite_exp e
+  | DependentScopeRef d ->
+      (* C_lang preserves [Traits<T>::value]-style references with name
+         and qualifier so analyses can equate them by syntactic
+         identity. D_lang has no consumer that uses this today, so
+         lower to [RecoveryExpr]. Mirror in [D_lang.Expr.t] when a
+         downstream stage starts caring. *)
+      return (RecoveryExpr d.ty)
 
 and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
   let rec rewrite_subscript (c : C_lang.Expr.c_array_subscript)
@@ -976,7 +1212,7 @@ let rewrite_for_init (f : C_lang.ForInit.t) : ForInit.t state =
 let add : Stmt.t -> unit state = AccessState.add
 
 let run0 (m : 'a state) : Stmt.t * 'a =
-  let st, a = State.run Stmt.Skip m in
+  let st, a = State.run m Stmt.Skip in
   (st, a)
 
 let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
@@ -1138,5 +1374,6 @@ let rewrite_def (d : C_lang.Def.t) : Def.t =
       Declaration d
   | Typedef d -> Typedef d
   | Enum e -> Enum e
+  | LaunchParam lp -> LaunchParam lp
 
 let rewrite_program : C_lang.Program.t -> Program.t = List.map rewrite_def

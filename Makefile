@@ -12,6 +12,7 @@ all: c-ast \
 	faial-sync \
 	faial-sync-mut \
 	faial-sync-sym \
+	faial-nbd \
 	faial-gen \
 	faial-cost \
 	faial-cost-diff \
@@ -61,6 +62,9 @@ faial-sync-mut: build
 
 faial-sync-sym: build
 	cp -f $(BUILD)/barrier_div/bin/participants.exe faial-sync-sym
+
+faial-nbd: build
+	cp -f $(BUILD)/named_barrier_div/bin/check.exe faial-nbd
 
 faial-gen: build
 	cp -f $(BUILD)/codegen/corvo.exe faial-gen
