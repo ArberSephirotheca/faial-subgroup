@@ -200,7 +200,7 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   (* 5. align protocol *)
   |> Aligned.translate
   |> Streamutil.map (if a.log_delinearize
-      then Delinearize.Default.rewrite_kernel
+      then Delinearize.Silent.rewrite_kernel
       else Delinearize.Warnings.rewrite_kernel)
   |> show a.show_align Aligned.print_kernels
   (* 6. split per sync *)

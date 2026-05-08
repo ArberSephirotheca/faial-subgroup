@@ -321,7 +321,7 @@ module Make(L:Logger.Logger) : sig
 end = struct
 
   let size_params_all (ts : Expr.t list) : Term.t list = ts
-      |> List.map (fun t -> t
+      |> List.map (fun t -> (*print_endline (Expr.to_string t);*) t
         |> Expr.to_list
         |> List.filter (fun t ->
           Term.has_induction t && Term.has_parameter t
@@ -336,7 +336,7 @@ end = struct
 
   (* Divides out size params *)
   let rec dims: Term.t list -> Term.t list option = function
-    | [] -> Some []
+    | [] -> (*print_endline "no dim";*) Some []
     | [x] -> Some [x]
     | x :: y :: ys ->
       let ( let* ) = Option.bind in
@@ -356,17 +356,22 @@ end = struct
     (*turn this into a fold later*)
 
   let from_exp (ds : Term.t list) (expr : Expr.t) : t option =
+    L.info ("Dims = \n" ^ list_to_string Term.to_string ds);
     L.info ("Expr = \n" ^ Expr.to_string expr);
     let is = accesses ds expr in
     L.info ("Indices = \n" ^ list_to_string Expr.to_string is);
     let conditions ds is = match ds, is with
     | ds, _ :: is -> List.map2 (fun d i -> 
         let open Exp in
-        b_and (n_ge (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Expr.Term.to_nexp d))
+        (* print_endline "condition"; *)
+        b_and (n_le (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Expr.Term.to_nexp d))
       ) ds is 
     | _ -> failwith "unreachable?"
     in
-    L.warning ("Unchecked conditions = \n" ^ (conditions ds is |> Exp.b_and_ex |> Exp.b_to_string));
+    let conds = conditions ds is |> list_to_string Exp.b_to_string in
+    (* let conds = conditions ds is |> List.map Exp.b_to_string |> Exp.b_and_ex |> Exp.b_to_string in *)
+    if conds <> "true" then
+      L.info ("Unchecked conditions = \n" ^ conds);
     Some {
       indices = List.map Expr.to_nexp is;
       dims = List.map Expr.Term.to_nexp ds;
@@ -387,36 +392,38 @@ end = struct
 
   (* TODO: this should simply not rewrite if there is a failure *)
 
-  let get_accesses (unsync : Unsync.t) : Exp.nexp list list Variable.Map.t =
-    let open Unsync in
+  let get_accesses (unsync : Unsynced.t) : Exp.nexp list list Variable.Map.t =
+    let open Unsynced in
     let rec get_accesses_unsync = function
       | Skip | Assert _ -> Fun.id
-      | Access {array; index; _} -> Variable.Map.add_to_list array index
+      | Access {array; index; _} -> 
+        L.info (Printf.sprintf "array %s has %d dimensions" array.name (List.length index));
+        Variable.Map.add_to_list array index
       | Cond (_, u) -> get_accesses_unsync u
       | Loop (_, u) -> get_accesses_unsync u
       | Seq (u, v) -> Fun.compose (get_accesses_unsync u) (get_accesses_unsync v)
     in get_accesses_unsync unsync Variable.Map.empty
 
-  let rewrite_unsync ~(globals : Variable.Set.t) (unsync : Unsync.t) : Unsync.t =
+  let rewrite_unsync ~(globals : Variable.Set.t) (unsync : Unsynced.t) : Unsynced.t =
     let (let*) = Option.bind in
-    let open Unsync in
+    let open Unsynced in
     let dims = unsync
       |> get_accesses
       |> Variable.Map.filter_map (fun _ accesses -> accesses
         |> List.map (List.map (Expr.from_nexp ~globals))
         (* Only handle single index accesses for now *)
         |> List.map (function
-          | [acc] -> acc 
+          | [acc] -> acc
           | _ -> failwith "multidimensional TODO"
         )
         |> size_params_all
         |> dims)
     in
-    let rec rewrite_unsync : Unsync.t -> Unsync.t = function
+    let rec rewrite_unsync : Unsynced.t -> Unsynced.t = function
       | Access ({ array; index = [a]; _ } as acc) -> 
         (match (
           let a = Expr.from_nexp ~globals a in
-          let* dim = Variable.Map.find_opt array  dims in
+          let* dim = Variable.Map.find_opt array dims in
           let* rewritten = from_exp dim a in
           Some rewritten.indices
         ) with
