@@ -23,29 +23,25 @@ and bexp =
 
 
 
+  let ( let@ ) c k = if c <> 0 then c else k ()
+
   let rec n_compare a b =
     match a, b with
     | Var x, Var y -> Variable.compare x y
     | Num x, Num y -> compare x y
     | Binary (op1, l1, r1), Binary (op2, l2, r2) ->
-        let c = compare op1 op2 in
-        if c <> 0 then c else
-        let c = n_compare l1 l2 in
-        if c <> 0 then c else
+        let@ () = compare op1 op2 in
+        let@ () = n_compare l1 l2 in
         n_compare r1 r2
     | Unary (op1, e1), Unary (op2, e2) ->
-        let c = compare op1 op2 in
-        if c <> 0 then c else
+        let@ () = compare op1 op2 in
         n_compare e1 e2
     | NCall (f1, e1), NCall (f2, e2) ->
-        let c = compare f1 f2 in
-        if c <> 0 then c else
+        let@ () = compare f1 f2 in
         n_compare e1 e2
     | NIf (b1, t1, f1), NIf (b2, t2, f2) ->
-        let c = b_compare b1 b2 in
-        if c <> 0 then c else
-        let c = n_compare t1 t2 in
-        if c <> 0 then c else
+        let@ () = b_compare b1 b2 in
+        let@ () = n_compare t1 t2 in
         n_compare f1 f2
     | Other e1, Other e2 -> n_compare e1 e2
     | CastInt b1, CastInt b2 -> b_compare b1 b2
@@ -63,26 +59,21 @@ and bexp =
     | _, NIf _ -> 1
     | Other _, _ -> -1
     | _, Other _ -> 1
-  
+
   and b_compare a b =
     match a, b with
     | Bool x, Bool y -> compare x y
     | NRel (op1, l1, r1), NRel (op2, l2, r2) ->
-        let c = compare op1 op2 in
-        if c <> 0 then c else
-        let c = n_compare l1 l2 in
-        if c <> 0 then c else
+        let@ () = compare op1 op2 in
+        let@ () = n_compare l1 l2 in
         n_compare r1 r2
     | BRel (op1, l1, r1), BRel (op2, l2, r2) ->
-        let c = compare op1 op2 in
-        if c <> 0 then c else
-        let c = b_compare l1 l2 in
-        if c <> 0 then c else
+        let@ () = compare op1 op2 in
+        let@ () = b_compare l1 l2 in
         b_compare r1 r2
     | BNot e1, BNot e2 -> b_compare e1 e2
     | Pred (p1, e1), Pred (p2, e2) ->
-        let c = compare p1 p2 in
-        if c <> 0 then c else
+        let@ () = compare p1 p2 in
         n_compare e1 e2
     | CastBool e1, CastBool e2 -> n_compare e1 e2
     | Distinct l1, Distinct l2 -> List.compare n_compare l1 l2
@@ -97,7 +88,7 @@ and bexp =
     | Pred _, _ -> -1
     | _, Pred _ -> 1
     | CastBool _, _ -> -1
-    | _, CastBool _ -> -1
+    | _, CastBool _ -> 1
 
 let rec n_eval_res (n : nexp) : (int, string) Result.t =
   let ( let* ) = Result.bind in
