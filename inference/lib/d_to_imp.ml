@@ -83,7 +83,7 @@ module Make (L : Logger) = struct
     | "|" -> NExp (Binary (BitOr, l, r))
     | "&" -> NExp (Binary (BitAnd, l, r))
     | _ ->
-        L.warning ("parse_bin: rewriting to unknown binary operator: " ^ op);
+        L.warning (fun () -> "parse_bin: rewriting to unknown binary operator: " ^ op);
         let lbl =
           "(" ^ Infer_exp.to_string l ^ ") " ^ op ^ " " ^ "("
           ^ Infer_exp.to_string r ^ ")"
@@ -102,17 +102,17 @@ module Make (L : Logger) = struct
         match J_type.to_c_type_res ty with
         | Ok ty ->
             let size = C_type.sizeof ty |> Option.value ~default:4 in
-            L.warning
-              ("sizeof(" ^ C_type.to_string ty ^ ") = " ^ string_of_int size);
+            L.warning (fun () ->
+              "sizeof(" ^ C_type.to_string ty ^ ") = " ^ string_of_int size);
             NExp (Num size)
         | Error _ ->
             let lbl = "sizeof(" ^ J_type.to_string ty ^ ")" in
-            L.warning ("could not parse type: " ^ lbl ^ " = ?");
+            L.warning (fun () -> "could not parse type: " ^ lbl ^ " = ?");
             Unknown lbl)
     | IntegerLiteral n | CharacterLiteral n -> NExp (Num n)
     | FloatingLiteral n ->
-        L.warning
-          ("parse_nexp: converting float '" ^ Float.to_string n ^ "' to integer");
+        L.warning (fun () ->
+          "parse_nexp: converting float '" ^ Float.to_string n ^ "' to integer");
         NExp (Num (Float.to_int n))
     | ConditionalOperator o ->
         let b = infer_expr o.cond in
@@ -202,7 +202,7 @@ module Make (L : Logger) = struct
     | RecoveryExpr _ | CXXConstructExpr _ | MemberExpr _ | CallExpr _
     | UnaryOperator _ | CXXOperatorCallExpr _ | UnresolvedLookupExpr _ ->
         let lbl = D_lang.Expr.to_string e in
-        L.warning ("parse_exp: rewriting to unknown: " ^ lbl);
+        L.warning (fun () -> "parse_exp: rewriting to unknown: " ^ lbl);
         Unknown lbl
     | _ ->
         failwith
@@ -397,8 +397,8 @@ module Make (L : Logger) = struct
       | None ->
           let x = Variable.name x in
           let ty = J_type.to_string d.ty in
-          L.warning
-            ("parse_decl: skipping non-int local variable '" ^ x ^ "' "
+          L.warning (fun () ->
+            "parse_decl: skipping non-int local variable '" ^ x ^ "' "
            ^ "type: " ^ ty);
           Skip
     in
@@ -579,8 +579,8 @@ module Make (L : Logger) = struct
           (match Ptx.parse ?loc:a.loc ~operands a.asm_string with
            | Some s -> Infer_stmt.Sync s
            | None ->
-               L.warning
-                 ("asm: dropping (unrecognized PTX template): " ^ a.asm_string);
+               L.warning (fun () ->
+                 "asm: dropping (unrecognized PTX template): " ^ a.asm_string);
                Skip)
       | BarrierOp { op; target; args = _; loc } ->
           let mode : Sync.Mode.t =

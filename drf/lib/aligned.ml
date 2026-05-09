@@ -180,6 +180,7 @@ module Kernel = struct
       Line "; end of code";
     ]
 
+  let to_string (k:t) : string = Indent.to_string (to_s k)
   let print (k : t) : unit = Indent.print (to_s k)
 
   let from_wellformed (k : Wellformed.Kernel.t) : t =

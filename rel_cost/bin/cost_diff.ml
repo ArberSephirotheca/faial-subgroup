@@ -8,7 +8,7 @@ type kernel = Protocols.Kernel.t
 
 let abort_when (b : bool) (msg : string) : unit =
   if b then (
-    Logger.Colors.error msg;
+    Logger.Colors.error (fun () -> msg);
     exit (-2))
   else ()
 

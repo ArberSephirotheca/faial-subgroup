@@ -191,8 +191,8 @@ module Make (L : Logger.Logger) = struct
       | e, Any -> e
     in
     if index <> after then
-      L.info
-        ("BC: removed offset: " ^ Exp.n_to_string index ^ " 🡆 "
+      L.info (fun () ->
+        "BC: removed offset: " ^ Exp.n_to_string index ^ " 🡆 "
        ^ Exp.n_to_string after);
     after
 
@@ -204,8 +204,8 @@ module Make (L : Logger.Logger) = struct
     if Result.is_ok (Vectorized.b_eval_res ctx.divergence vec) then
       Vectorized.restrict ctx.divergence vec
     else (
-      L.info
-        ("Index analysis: ignoring divergence: "
+      L.info (fun () ->
+        "Index analysis: ignoring divergence: "
         ^ Exp.b_to_string ctx.divergence);
       vec)
 
@@ -215,8 +215,8 @@ module Make (L : Logger.Logger) = struct
     (match Vectorized.bank_conflicts index vec with
       | Ok cost -> cost
       | Error msg ->
-          L.info
-            ("BC: could not simulate cost " ^ Exp.n_to_string index ^ ": " ^ msg);
+          L.info (fun () ->
+            "BC: could not simulate cost " ^ Exp.n_to_string index ^ ": " ^ msg);
           Vectorized.max_cost Metric.BankConflicts vec)
     |> IndexCost.from_cost
 
@@ -224,13 +224,13 @@ module Make (L : Logger.Logger) = struct
     let vec = to_vectorized ctx in
     let index, ty = UA.from_nexp ctx.config ctx.locals ctx.index in
     if ctx.index <> index then
-      L.info
-        (Printf.sprintf "UA: removed offset: %s 🡆 %s"
+      L.info (fun () ->
+        Printf.sprintf "UA: removed offset: %s 🡆 %s"
            (Exp.n_to_string ctx.index)
            (Exp.n_to_string index));
     if ty = UA.Uniform || ty = UA.Constant then (
-      L.info
-        ("UA: found coalesced access (warp-uniform): "
+      L.info (fun () ->
+        "UA: found coalesced access (warp-uniform): "
        ^ Exp.n_to_string ctx.index);
       Cost.from_int ~value:Metric.UncoalescedAccesses.min_cost ~exact:true ()
       |> IndexCost.from_cost)
@@ -239,8 +239,8 @@ module Make (L : Logger.Logger) = struct
         (match Vectorized.uncoalesced index vec with
           | Ok cost ->
               if ty = UA.Inc then (
-                L.info
-                  ("UA: incrementing approximated cost: " ^ Cost.to_string cost);
+                L.info (fun () ->
+                  "UA: incrementing approximated cost: " ^ Cost.to_string cost);
                 let v =
                   min (cost.value + 1)
                     (Vectorized.max_cost UncoalescedAccesses vec |> Cost.value)
@@ -248,8 +248,8 @@ module Make (L : Logger.Logger) = struct
                 Cost.set_value v cost)
               else cost
           | Error msg ->
-              L.info
-                ("UA: could not simulate cost " ^ Exp.n_to_string index ^ ": "
+              L.info (fun () ->
+                "UA: could not simulate cost " ^ Exp.n_to_string index ^ ": "
                ^ msg);
               Vectorized.max_cost UncoalescedAccesses vec)
         |> IndexCost.from_cost
@@ -266,8 +266,8 @@ module Make (L : Logger.Logger) = struct
         (* Try to find tidx * uniform *)
         match const_tid Variable.tid_x index with
         | Some coef ->
-            L.info
-              (Printf.sprintf
+            L.info (fun () ->
+              Printf.sprintf
                  "UA: found uniform-times-tid, generating exact cost: %s 🡆 %s"
                  (Exp.n_to_string index) (Exp.n_to_string coef));
             let code =

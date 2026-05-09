@@ -15,7 +15,7 @@ type kernel = Protocols.Kernel.t
 
 let abort_when (b : bool) (msg : string) : unit =
   if b then (
-    Logger.Colors.error msg;
+    Logger.Colors.error (fun () -> msg);
     exit (-2))
   else ()
 
@@ -149,8 +149,8 @@ let pico (fname : string) (block_dim : Dim3.t option)
            with
            | Ok k -> k
            | Error e ->
-               Logger.Colors.error
-                 ("preprocessing kernel " ^ k.Kernel.name ^ ": " ^ e);
+               Logger.Colors.error (fun () ->
+                 "preprocessing kernel " ^ k.Kernel.name ^ ": " ^ e);
                exit (-1))
   in
   abort_when (kernels = []) "No kernels found.";
@@ -181,7 +181,7 @@ let pico (fname : string) (block_dim : Dim3.t option)
       ~extra_header_info kernels
   with
   | Error e ->
-      Logger.Colors.error e;
+      Logger.Colors.error (fun () -> e);
       exit (-1)
   | Ok lines ->
       let s = Rocq.to_string lines in

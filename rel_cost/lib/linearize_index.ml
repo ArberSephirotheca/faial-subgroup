@@ -30,7 +30,7 @@ module Make (L : Logger.Logger) = struct
           (fun n -> n_mult (Num byte_count) (n_div n (Num bytes_per_word)))
           l
       in
-      L.info ("Applied byte-modifier : " ^ bs ^ " " ^ arr l ^ " -> " ^ arr l');
+      L.info (fun () -> "Applied byte-modifier : " ^ bs ^ " " ^ arr l ^ " -> " ^ arr l');
       l'
 
   (* Given an n-dimensional array access apply type modifiers *)
@@ -40,7 +40,7 @@ module Make (L : Logger.Logger) = struct
     let bs = string_of_int byte_count in
     let arr l = List.map n_s l |> String.concat ", " in
     let l' = List.map (fun n -> n_mult (Num byte_count) n) l in
-    L.info ("Applied byte-modifier : " ^ bs ^ " " ^ arr l ^ " -> " ^ arr l');
+    L.info (fun () -> "Applied byte-modifier : " ^ bs ^ " " ^ arr l ^ " -> " ^ arr l');
     l'
 
   (* Convert an n-dimensional array access into a 1-d array access *)

@@ -31,7 +31,7 @@ end
 
 let abort_when (b : bool) (msg : string) : unit =
   if b then (
-    Logger.Colors.error msg;
+    Logger.Colors.error (fun () -> msg);
     exit (-2))
   else ()
 
@@ -186,7 +186,7 @@ module TUI = struct
       ANSITerminal.(
         print_string [ Bold; Foreground Green ]
           ("\n### Kernel '" ^ k.name ^ "' ###\n\n"));
-      Logger.Colors.info ("Accesses found: " ^ string_of_int (List.length s));
+      Logger.Colors.info (fun () -> "Accesses found: " ^ string_of_int (List.length s));
       Stdlib.flush_all ();
       s
       |> List.iter (fun conflict ->

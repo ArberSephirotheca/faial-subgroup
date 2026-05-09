@@ -21,8 +21,8 @@ module Make (L : Logger.Logger) = struct
     let options : Gv_parser.t =
       match Gv_parser.parse fname with
       | Some gv ->
-          Logger.Colors.info
-            ("Found GPUVerify args in source file: " ^ Gv_parser.to_string gv);
+          Logger.Colors.info (fun () ->
+            "Found GPUVerify args in source file: " ^ Gv_parser.to_string gv);
           gv
       | None -> Gv_parser.make ()
     in
