@@ -1,10 +1,12 @@
 open Stage0
 
 let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
-    ?(macros = []) (fname : string) : (Yojson.Basic.t, int * string) Result.t =
+    ?(macros = []) ?(launch_params = false) (fname : string) :
+    (Yojson.Basic.t, int * string) Result.t =
   let includes = List.map (fun x -> "-I" ^ x) includes in
   let macros = List.map (fun x -> "-D" ^ x) macros in
-  let args = [ fname ] @ includes @ macros in
+  let extra = if launch_params then [ "--launch-params" ] else [] in
+  let args = [ fname ] @ includes @ macros @ extra in
   let cmd = Filename.quote_command exe args in
   let r, j =
     Unix.open_process_in cmd
@@ -22,11 +24,11 @@ let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
   | _, _ -> Error (1, "Unknown error")
 
 let cu_to_json ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
-    ?(macros = [])
+    ?(macros = []) ?(launch_params = false)
     (* If some integer is given, then we return that on exit, otherwise we return
      whatever cu-to-json returns *)
     ?(on_error = exit) (fname : string) : Yojson.Basic.t =
-  match cu_to_json_res ~exe ~includes ~ignore_fail ~macros fname with
+  match cu_to_json_res ~exe ~includes ~ignore_fail ~macros ~launch_params fname with
   | Ok x -> x
   | Error (r, m) ->
       prerr_endline ("cu-to-json: " ^ m);
