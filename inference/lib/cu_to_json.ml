@@ -1,5 +1,19 @@
 open Stage0
 
+(* Drains the subprocess pipe into a Buffer.t. Kept separate from JSON
+   parsing so [Phase_timer] can attribute pipe-read+subprocess time to
+   "inference/cu-to-json" and parse time to "inference/yojson-parse".
+   Streaming via [Yojson.Basic.from_channel] would conflate both. *)
+let read_all (ic : in_channel) : string =
+  let buf = Buffer.create (1 lsl 20) in
+  let chunk = Bytes.create (1 lsl 16) in
+  let rec loop () =
+    let n = input ic chunk 0 (Bytes.length chunk) in
+    if n > 0 then (Buffer.add_subbytes buf chunk 0 n; loop ())
+  in
+  loop ();
+  Buffer.contents buf
+
 let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
     ?(macros = []) ?(launch_params = false) (fname : string) :
     (Yojson.Basic.t, int * string) Result.t =
@@ -8,11 +22,15 @@ let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
   let extra = if launch_params then [ "--launch-params" ] else [] in
   let args = [ fname ] @ includes @ macros @ extra in
   let cmd = Filename.quote_command exe args in
-  let r, j =
-    Unix.open_process_in cmd
-    |> Subprocess.with_process_in (fun ic ->
-        try Ok (Yojson.Basic.from_channel ic)
-        with Yojson.Json_error e -> Error e)
+  let r, raw =
+    Phase_timer.measure "inference/cu-to-json" (fun () ->
+      Unix.open_process_in cmd
+      |> Subprocess.with_process_in read_all)
+  in
+  let j =
+    Phase_timer.measure "inference/yojson-parse" (fun () ->
+      try Ok (Yojson.Basic.from_string raw)
+      with Yojson.Json_error e -> Error e)
   in
   match (r, j) with
   | Unix.WEXITED 0, Ok j -> Ok j
