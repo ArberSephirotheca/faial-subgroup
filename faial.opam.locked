@@ -22,13 +22,13 @@ depends: [
   "base-threads" {= "base"}
   "base-unix" {= "base"}
   "camlp-streams" {= "5.0.1" & dev}
-  "cmdliner" {= "2.1.0"}
+  "cmdliner" {= "2.1.1"}
   "conf-c++" {= "1.0"}
   "conf-gmp" {= "5"}
   "conf-pkg-config" {= "4"}
   "conf-python-3" {= "9.0.0"}
   "csexp" {= "1.5.2" & dev}
-  "dune" {= "3.20.2"}
+  "dune" {= "3.23.0"}
   "dune-build-info" {= "3.20.2" & dev}
   "dune-configurator" {= "3.20.2" & dev}
   "either" {= "1.0.0" & dev}
