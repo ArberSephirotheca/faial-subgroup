@@ -76,6 +76,13 @@ let main =
       & info [ "show-well-formed" ] ~doc:"Show the well-formed kernel.")
   and+ show_align =
     Arg.(value & flag & info [ "show-aligned" ] ~doc:"Show the aligned kernel.")
+  and+ show_delin =
+    Arg.(
+      value & flag
+      & info [ "show-delin" ]
+          ~doc:
+            "Show the kernel after the delinearization pass. Identical to \
+             --show-aligned when --assume-delin is off.")
   and+ show_phase_split =
     Arg.(
       value & flag
@@ -334,13 +341,13 @@ let main =
     in
     let app =
       App.parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
-        ~show_phase_split ~show_loc_split ~show_flat_acc ~show_symbexp ~logic
-        ~ge_index ~le_index ~eq_index ~only_array ~thread_idx_1 ~thread_idx_2
-        ~block_idx_1 ~block_idx_2 ~archs ~inline_calls:(not ignore_calls)
-        ~ignore_parsing_errors ~includes ~block_dim ~grid_dim ~params
-        ~only_kernel ~only_true_data_races ~macros ~cu_to_json ~all_dims
-        ~ignore_asserts ~log_delinearize ~assume_delin ~assumes ~assume_dims
-        ~assume_launch ~stop_at
+        ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc
+        ~show_symbexp ~logic ~ge_index ~le_index ~eq_index ~only_array
+        ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~archs
+        ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
+        ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
+        ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assume_delin
+        ~assumes ~assume_dims ~assume_launch ~stop_at
     in
     let ui = if output_json then Jui.render else Tui.render in
     if list_kernels then

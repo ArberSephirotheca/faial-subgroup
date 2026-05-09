@@ -12,6 +12,7 @@ module Stage = struct
     | Map
     | Well_formed
     | Aligned
+    | Delin
     | Phase_split
     | Loc_split
     | Flat_acc
@@ -21,6 +22,7 @@ module Stage = struct
     | Map -> "map"
     | Well_formed -> "well-formed"
     | Aligned -> "aligned"
+    | Delin -> "delin"
     | Phase_split -> "phase-split"
     | Loc_split -> "loc-split"
     | Flat_acc -> "flat-acc"
@@ -31,6 +33,7 @@ module Stage = struct
       ("map", Map);
       ("well-formed", Well_formed);
       ("aligned", Aligned);
+      ("delin", Delin);
       ("phase-split", Phase_split);
       ("loc-split", Loc_split);
       ("flat-acc", Flat_acc);
@@ -54,6 +57,7 @@ type t = {
   show_proto : bool;
   show_wf : bool;
   show_align : bool;
+  show_delin : bool;
   show_phase_split : bool;
   show_loc_split : bool;
   show_flat_acc : bool;
@@ -108,6 +112,7 @@ let to_string (app : t) : string =
    show_proto;
    show_wf;
    show_align;
+   show_delin;
    show_phase_split;
    show_loc_split;
    show_flat_acc;
@@ -144,7 +149,8 @@ let to_string (app : t) : string =
       ^ opt int timeout ^ "\nlogic: " ^ opt_s logic ^ "\narchs: "
       ^ list_arch archs ^ "\nshow_proofs: " ^ bool show_proofs
       ^ "\nshow_proto: " ^ bool show_proto ^ "\nshow_wf: " ^ bool show_wf
-      ^ "\nshow_align: " ^ bool show_align ^ "\nshow_phase_split: "
+      ^ "\nshow_align: " ^ bool show_align ^ "\nshow_delin: "
+      ^ bool show_delin ^ "\nshow_phase_split: "
       ^ bool show_phase_split ^ "\nshow_loc_split: " ^ bool show_loc_split
       ^ "\nshow_flat_acc: " ^ bool show_flat_acc ^ "\nshow_symbexp: "
       ^ bool show_symbexp ^ "\nmacros = " ^ list_string macros
@@ -160,12 +166,12 @@ let to_string (app : t) : string =
       ^ "\n"
 
 let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
-    ~show_phase_split ~show_loc_split ~show_flat_acc ~show_symbexp ~logic
-    ~ge_index ~le_index ~eq_index ~only_array ~only_kernel ~only_true_data_races
-    ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~block_dim ~grid_dim
-    ~includes ~inline_calls ~archs ~ignore_parsing_errors ~params ~macros
-    ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assume_delin
-    ~assumes ~assume_dims ~assume_launch ~stop_at : t =
+    ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc ~show_symbexp
+    ~logic ~ge_index ~le_index ~eq_index ~only_array ~only_kernel
+    ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
+    ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
+    ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize
+    ~assume_delin ~assumes ~assume_dims ~assume_launch ~stop_at : t =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
@@ -182,6 +188,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     show_proto;
     show_wf;
     show_align;
+    show_delin;
     show_phase_split;
     show_loc_split;
     show_flat_acc;
@@ -279,15 +286,19 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
        ~show:a.show_wf Wellformed.print_kernels
   (* 5. align protocol *)
   |> Aligned.translate
-  (* 6. delinearize accesses *)
+  |> Phase_timer.boundary "aligned"
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned
+       ~show:a.show_align Aligned.print_kernels
+  (* 6. delinearize accesses (no-op when --assume-delin is off, but the
+     boundary still emits a "delin" entry — 0 in that case). *)
   |> (if a.assume_delin
       then Streamutil.map (if a.log_delinearize
           then Delinearize.Silent.rewrite_kernel
           else Delinearize.Warnings.rewrite_kernel)
       else Fun.id)
-  |> Phase_timer.boundary "aligned"
-  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned
-       ~show:a.show_align Aligned.print_kernels
+  |> Phase_timer.boundary "delin"
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Delin
+       ~show:a.show_delin Aligned.print_kernels
   (* 7. split per sync *)
   |> Phasesplit.translate
   |> Phase_timer.boundary "phase-split"
