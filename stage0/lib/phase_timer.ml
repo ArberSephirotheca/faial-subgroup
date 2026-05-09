@@ -1,5 +1,3 @@
-open Stage0
-
 (* Accumulating wall-clock timer keyed by phase name.
 
    Why keep this around the streaming pipeline:
