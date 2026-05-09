@@ -20,9 +20,15 @@ type 'a j_result = 'a Rjson.j_result
 
 let to_c_type_res (j : t) : C_type.t j_result =
   let open Rjson in
-  let* o = cast_object j in
-  let* ty = with_field "qualType" cast_string o in
-  Ok (C_type.make ty)
+  match j with
+  (* cu-to-json emits the type as a flat string when there is no
+     desugared form to surface; fall back to the legacy
+     [{"qualType": "..."}] wrapper for the case that still does. *)
+  | `String s -> Ok (C_type.make s)
+  | _ ->
+      let* o = cast_object j in
+      let* ty = with_field "qualType" cast_string o in
+      Ok (C_type.make ty)
 
 let to_c_type ?(default = C_type.unknown) (j : t) : C_type.t =
   j |> to_c_type_res |> Result.value ~default

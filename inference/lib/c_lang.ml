@@ -773,12 +773,12 @@ let rec parse_expr (j : json) : c_expr j_result =
       let ret_ty =
         let r =
           let* op_ty_j = get_field "type" op_o in
-          let* op_ty_o = cast_object op_ty_j in
-          let* qt = with_field "qualType" cast_string op_ty_o in
+          let* c_ty = J_type.to_c_type_res (J_type.from_json op_ty_j) in
+          let qt = C_type.to_string c_ty in
           match String.index_opt qt '(' with
           | Some i ->
               let s = String.trim (String.sub qt 0 i) in
-              Ok (J_type.from_json (`Assoc [ ("qualType", `String s) ]))
+              Ok (J_type.from_string s)
           | None -> Ok (J_type.from_json op_ty_j)
         in
         Result.value ~default:J_type.unknown r
@@ -1109,8 +1109,8 @@ and parse_stmt (j : json) : c_stmt j_result =
           in
           let* vo = cast_object var_j in
           let* ty_j = get_field "type" vo in
-          let* ty_o = cast_object ty_j in
-          let* qual_type = with_field "qualType" cast_string ty_o in
+          let* c_ty = J_type.to_c_type_res (J_type.from_json ty_j) in
+          let qual_type = C_type.to_string c_ty in
           let* arr_expr = with_field "inner" (cast_list_1 parse_expr) vo in
           match parse_array_bound qual_type with
           | Some n -> Ok (arr_expr, n, J_type.from_json ty_j)
