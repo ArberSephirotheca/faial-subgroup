@@ -321,7 +321,7 @@ let only_kernel (a : t) (ks : Protocols.Kernel.t list) : Protocols.Kernel.t list
   | Some name ->
       let ks = ks |> List.filter (fun k -> Protocols.Kernel.name k = name) in
       if ks = [] then (
-        Logger.Colors.error ("kernel '" ^ name ^ "' not found!");
+        Logger.Colors.error (fun () -> "kernel '" ^ name ^ "' not found!");
         exit (-1))
       else ks
   | None -> ks

@@ -207,8 +207,8 @@ module Make (LOG : Logger.Logger) = struct
       let unif = UnifAnalysis.from_bexp ~locals:ctx.locals cond in
       (match UnifAnalysis.approx_non_unif unif with
       | Some b ->
-          LOG.info
-            (Printf.sprintf "RA: approximate conditional: %s"
+          LOG.info (fun () ->
+            Printf.sprintf "RA: approximate conditional: %s"
                (Exp.b_to_string b))
       | None -> ());
       let stats = Stats.make ~conditions:(UnifAnalysis.to_counter unif) () in
@@ -235,8 +235,8 @@ module Make (LOG : Logger.Logger) = struct
         match uniform_loop range with
         | Some new_range ->
             let loc = range |> Range.var |> pretty_location in
-            LOG.info
-              (loc ^ "RA: approximating range: " ^ "for ("
+            LOG.info (fun () ->
+              loc ^ "RA: approximating range: " ^ "for ("
              ^ Range.to_string range ^ ") 🡆 " ^ "for ("
              ^ Range.to_string new_range ^ ")");
             let ctx =

@@ -354,7 +354,7 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
           List.filter (fun k -> Kernel.name k = name) parsed.kernels
         in
         if ks = [] then (
-          Logger.Colors.error ("kernel '" ^ name ^ "' not found!");
+          Logger.Colors.error (fun () -> "kernel '" ^ name ^ "' not found!");
           exit (-1))
         else ks
   in

@@ -1,49 +1,56 @@
+(* Logger interface. Each method takes a [unit -> string] thunk so
+   modules whose log level discards a category (e.g. [Warnings.info])
+   pay nothing — the message string is only built when the implementation
+   actually consumes it. Call sites should wrap their argument in
+   [fun () -> ...] when it does any non-trivial concatenation, sprintf,
+   or to_string work. *)
+
 module type Logger = sig
-  val error : string -> unit
-  val warning : string -> unit
-  val info : string -> unit
+  val error : (unit -> string) -> unit
+  val warning : (unit -> string) -> unit
+  val info : (unit -> string) -> unit
 end
 
 module Default : Logger = struct
-  let info : string -> unit = fun x -> prerr_endline ("INFO: " ^ x)
-  let warning : string -> unit = fun x -> prerr_endline ("WARNING: " ^ x)
-  let error : string -> unit = fun x -> prerr_endline ("ERROR: " ^ x)
+  let info f = prerr_endline ("INFO: " ^ f ())
+  let warning f = prerr_endline ("WARNING: " ^ f ())
+  let error f = prerr_endline ("ERROR: " ^ f ())
 end
 
 module Colors : Logger = struct
-  let info (x : string) : unit =
+  let info f =
     let open ANSITerminal in
-    prerr_string [ Foreground Magenta ] ("INFO: " ^ x ^ "\n")
+    prerr_string [ Foreground Magenta ] ("INFO: " ^ f () ^ "\n")
 
-  let warning (x : string) : unit =
+  let warning f =
     let open ANSITerminal in
-    prerr_string [ Foreground Yellow ] ("WARNING: " ^ x ^ "\n")
+    prerr_string [ Foreground Yellow ] ("WARNING: " ^ f () ^ "\n")
 
-  let error (x : string) : unit =
+  let error f =
     let open ANSITerminal in
-    prerr_string [ Bold; Foreground Red ] ("ERROR: " ^ x ^ "\n")
+    prerr_string [ Bold; Foreground Red ] ("ERROR: " ^ f () ^ "\n")
 end
 
 module Warnings : Logger = struct
-  let info : string -> unit = fun (_ : string) -> ()
-  let warning : string -> unit = fun x -> prerr_endline ("WARNING: " ^ x)
-  let error : string -> unit = fun x -> prerr_endline ("ERROR: " ^ x)
+  let info _ = ()
+  let warning f = prerr_endline ("WARNING: " ^ f ())
+  let error f = prerr_endline ("ERROR: " ^ f ())
 end
 
 module WarningsColors : Logger = struct
-  let info (_x : string) : unit = ()
+  let info _ = ()
 
-  let warning (x : string) : unit =
+  let warning f =
     let open ANSITerminal in
-    prerr_string [ Foreground Yellow ] ("WARNING: " ^ x ^ "\n")
+    prerr_string [ Foreground Yellow ] ("WARNING: " ^ f () ^ "\n")
 
-  let error (x : string) : unit =
+  let error f =
     let open ANSITerminal in
-    prerr_string [ Bold; Foreground Red ] ("ERROR: " ^ x ^ "\n")
+    prerr_string [ Bold; Foreground Red ] ("ERROR: " ^ f () ^ "\n")
 end
 
 module Silent : Logger = struct
-  let info : string -> unit = fun (_ : string) -> ()
-  let warning : string -> unit = fun (_ : string) -> ()
-  let error : string -> unit = fun (_ : string) -> ()
+  let info _ = ()
+  let warning _ = ()
+  let error _ = ()
 end

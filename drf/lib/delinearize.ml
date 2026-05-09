@@ -356,22 +356,21 @@ end = struct
     (*turn this into a fold later*)
 
   let from_exp (ds : Term.t list) (expr : Expr.t) : t option =
-    L.info ("Dims = \n" ^ list_to_string Term.to_string ds);
-    L.info ("Expr = \n" ^ Expr.to_string expr);
+    L.info (fun () -> "Dims = \n" ^ list_to_string Term.to_string ds);
+    L.info (fun () -> "Expr = \n" ^ Expr.to_string expr);
     let is = accesses ds expr in
-    L.info ("Indices = \n" ^ list_to_string Expr.to_string is);
+    L.info (fun () -> "Indices = \n" ^ list_to_string Expr.to_string is);
     let conditions ds is = match ds, is with
-    | ds, _ :: is -> List.map2 (fun d i -> 
+    | ds, _ :: is -> List.map2 (fun d i ->
         let open Exp in
-        (* print_endline "condition"; *)
         b_and (n_le (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Expr.Term.to_nexp d))
-      ) ds is 
+      ) ds is
     | _ -> failwith "unreachable?"
     in
-    let conds = conditions ds is |> list_to_string Exp.b_to_string in
-    (* let conds = conditions ds is |> List.map Exp.b_to_string |> Exp.b_and_ex |> Exp.b_to_string in *)
-    if conds <> "true" then
-      L.info ("Unchecked conditions = \n" ^ conds);
+    L.info (fun () ->
+      let conds = conditions ds is |> list_to_string Exp.b_to_string in
+      if conds <> "true" then "Unchecked conditions = \n" ^ conds
+      else "Conditions = true");
     Some {
       indices = List.map Expr.to_nexp is;
       dims = List.map Expr.Term.to_nexp ds;
@@ -397,7 +396,7 @@ end = struct
     let rec get_accesses_unsync = function
       | Skip | Assert _ -> Fun.id
       | Access {array; index; _} -> 
-        L.info (Printf.sprintf "array %s has %d dimensions" array.name (List.length index));
+        L.info (fun () -> Printf.sprintf "array %s has %d dimensions" array.name (List.length index));
         Variable.Map.add_to_list array index
       | Cond (_, u) -> get_accesses_unsync u
       | Loop (_, u) -> get_accesses_unsync u
@@ -407,8 +406,15 @@ end = struct
   let rewrite_unsync ~(globals : Variable.Set.t) (unsync : Unsynced.t) : Unsynced.t =
     let (let*) = Option.bind in
     let open Unsynced in
-    let dims = unsync
-      |> get_accesses
+    (* Three sub-phases of [rewrite_unsync], measured separately so the
+       JSON phase_times shows where delin time actually goes. They sum
+       to ~all of [rewrite_unsync] (modulo glue), which itself sums
+       across Sync blocks into the top-level "delin" boundary. *)
+    let accs =
+      Phase_timer.measure "delin/get-accesses" (fun () -> get_accesses unsync)
+    in
+    let dims = Phase_timer.measure "delin/dims" (fun () ->
+      accs
       |> Variable.Map.filter_map (fun _ accesses ->
         (* Skip arrays that already have multi-index accesses — there is
            nothing to delinearize for those. Returning [None] drops the
@@ -420,14 +426,16 @@ end = struct
             | _ -> None
           ) (Some [])
         in
-        singletons |> size_params_all |> dims)
+        singletons |> size_params_all |> dims))
     in
     let rec rewrite_unsync : Unsynced.t -> Unsynced.t = function
-      | Access ({ array; index = [a]; _ } as acc) -> 
+      | Access ({ array; index = [a]; _ } as acc) ->
         (match (
           let a = Expr.from_nexp ~globals a in
           let* dim = Variable.Map.find_opt array dims in
-          let* rewritten = from_exp dim a in
+          let* rewritten =
+            Phase_timer.measure "delin/from-exp" (fun () -> from_exp dim a)
+          in
           Some rewritten.indices
         ) with
         | Some indices -> Access { acc with index = indices }
@@ -438,7 +446,7 @@ end = struct
       | Seq (a, b) -> Seq (rewrite_unsync a, rewrite_unsync b)
       | code -> code
     in
-    rewrite_unsync unsync
+    Phase_timer.measure "delin/rewrite" (fun () -> rewrite_unsync unsync)
 
   let rec rewrite_aligned ~(globals : Variable.Set.t): Aligned.Code.t -> Aligned.Code.t =
     let open Aligned.Code in
