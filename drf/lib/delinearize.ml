@@ -409,15 +409,18 @@ end = struct
     let open Unsynced in
     let dims = unsync
       |> get_accesses
-      |> Variable.Map.filter_map (fun _ accesses -> accesses
-        |> List.map (List.map (Expr.from_nexp ~globals))
-        (* Only handle single index accesses for now *)
-        |> List.map (function
-          | [acc] -> acc
-          | _ -> failwith "multidimensional TODO"
-        )
-        |> size_params_all
-        |> dims)
+      |> Variable.Map.filter_map (fun _ accesses ->
+        (* Skip arrays that already have multi-index accesses — there is
+           nothing to delinearize for those. Returning [None] drops the
+           entry from the dims map, so the rewriter's [find_opt] misses
+           and leaves the access unchanged. *)
+        let* singletons = accesses
+          |> List.fold_left (fun acc -> function
+            | [a] -> Option.map (fun xs -> Expr.from_nexp ~globals a :: xs) acc
+            | _ -> None
+          ) (Some [])
+        in
+        singletons |> size_params_all |> dims)
     in
     let rec rewrite_unsync : Unsynced.t -> Unsynced.t = function
       | Access ({ array; index = [a]; _ } as acc) -> 
@@ -429,7 +432,7 @@ end = struct
         ) with
         | Some indices -> Access { acc with index = indices }
         | None -> Access acc)
-      | Access _ -> failwith "multidimensional access TODO"
+      | Access _ as code -> code
       | Cond (p, b) -> Cond (p, rewrite_unsync b)
       | Loop (r, b) -> Loop (r, rewrite_unsync b)
       | Seq (a, b) -> Seq (rewrite_unsync a, rewrite_unsync b)
