@@ -13,10 +13,11 @@ module Make (L : Logger.Logger) = struct
       ?(cu_to_json = "cu-to-json") ?(ignore_asserts = false)
       ?(assume_launch = false) (fname : string) : imp_kernel t =
     let j =
-      Cu_to_json.cu_to_json
-        ~ignore_fail:(not abort_on_parsing_failure)
-        ~on_error:(fun _ -> exit exit_status)
-        ~includes ~macros ~exe:cu_to_json fname
+      Phase_timer.measure "inference/cu-to-json" (fun () ->
+        Cu_to_json.cu_to_json
+          ~ignore_fail:(not abort_on_parsing_failure)
+          ~on_error:(fun _ -> exit exit_status)
+          ~includes ~macros ~exe:cu_to_json fname)
     in
     let options : Gv_parser.t =
       match Gv_parser.parse fname with
@@ -36,13 +37,21 @@ module Make (L : Logger.Logger) = struct
           (match grid_dim with Some g -> g | None -> options.grid_dim);
       }
     in
-    match C_lang.Program.parse j with
+    match Phase_timer.measure "inference/c-lang" (fun () ->
+            C_lang.Program.parse j) with
     | Ok k1 ->
         let synth =
           if assume_launch then Synthesise_launches.rewrite_program
           else Fun.id
         in
-        let kernels = k1 |> D_lang.rewrite_program |> synth |> D.parse_program in
+        let d_ast =
+          Phase_timer.measure "inference/d-lang" (fun () ->
+            k1 |> D_lang.rewrite_program |> synth)
+        in
+        let kernels =
+          Phase_timer.measure "inference/d-to-imp" (fun () ->
+            D.parse_program d_ast)
+        in
         let kernels =
           if ignore_asserts then
             List.map Imp.Kernel.remove_global_asserts kernels
@@ -58,9 +67,10 @@ module Make (L : Logger.Logger) = struct
       ?(wgsl_to_json = "wgsl-to-json") ?(ignore_asserts = false)
       (fname : string) : imp_kernel t =
     let j =
-      Wgsl_to_json.wgsl_to_json
-        ~on_error:(fun _ -> exit exit_status)
-        ~exe:wgsl_to_json fname
+      Phase_timer.measure "inference/wgsl-to-json" (fun () ->
+        Wgsl_to_json.wgsl_to_json
+          ~on_error:(fun _ -> exit exit_status)
+          ~exe:wgsl_to_json fname)
     in
     let options : Gv_parser.t = Gv_parser.make () in
     (* Override block_dim/grid_dim if they user provided *)
@@ -73,9 +83,13 @@ module Make (L : Logger.Logger) = struct
           (match grid_dim with Some g -> g | None -> options.grid_dim);
       }
     in
-    match W_lang.Program.parse j with
+    match Phase_timer.measure "inference/w-lang" (fun () ->
+            W_lang.Program.parse j) with
     | Ok p ->
-        let kernels = W_to_imp.translate p in
+        let kernels =
+          Phase_timer.measure "inference/w-to-imp" (fun () ->
+            W_to_imp.translate p)
+        in
         let kernels =
           if ignore_asserts then
             List.map Imp.Kernel.remove_global_asserts kernels
@@ -108,11 +122,14 @@ module Make (L : Logger.Logger) = struct
       to_imp ~cu_to_json ~abort_on_parsing_failure ~block_dim ~grid_dim
         ~includes ~exit_status ~macros ~ignore_asserts ~assume_launch fname
     in
+    let compiled =
+      Phase_timer.measure "inference/imp-to-proto" (fun () ->
+        Imp.Compiler.compile_all ~inline_calls parsed.kernels)
+    in
     {
       parsed with
       kernels =
-        parsed.kernels
-        |> Imp.Compiler.compile_all ~inline_calls
+        compiled
         |> List.filter (fun k ->
             (not only_globals) || (only_globals && Protocols.Kernel.is_global k));
     }

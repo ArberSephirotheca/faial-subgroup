@@ -173,10 +173,11 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize
     ~assume_delin ~assumes ~assume_dims ~assume_launch ~stop_at : t =
   let parsed =
-    Protocol_parser.Silent.to_proto
-      ~abort_on_parsing_failure:(not ignore_parsing_errors)
-      ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
-      ~ignore_asserts ~assume_launch filename
+    Phase_timer.measure "inference" (fun () ->
+      Protocol_parser.Silent.to_proto
+        ~abort_on_parsing_failure:(not ignore_parsing_errors)
+        ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
+        ~ignore_asserts ~assume_launch filename)
   in
   let kernels = parsed.kernels in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
