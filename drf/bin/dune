@@ -3,7 +3,7 @@
  (public_name faial-drf)
  (name main)
  (modes exe)
- (modules main app analysis tui jui solve_drf)
+ (modules main app analysis tui jui solve_drf phase_timer)
  (libraries
   ; 3rd-party
   cmdliner printbox printbox-text

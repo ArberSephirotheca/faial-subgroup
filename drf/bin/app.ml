@@ -230,40 +230,51 @@ let show_or_stop ~(stop_at : Stage.t option) ~(stage : Stage.t)
 
 let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
     Flatacc.Kernel.t Streamutil.stream =
+  (* The "map" phase is single-kernel work (no stream), so we wrap it
+     in [Phase_timer.measure] rather than using [boundary]. The
+     constant-folding [Kernel.opt] is folded in too: it runs eagerly on
+     the kernel before [Wellformed.translate] turns it into a stream,
+     so attributing it to "map" keeps "well-formed" measuring only the
+     stream-producing work. *)
+  let k =
+    Phase_timer.measure "map" (fun () ->
+      k
+      (* 0. filter arrays *)
+      |> (fun k ->
+      match a.only_array with
+      | Some arr -> Protocols.Kernel.filter_array (fun x -> Variable.name x = arr) k
+      | None -> k)
+      (* 1. apply block-level/grid-level analysis constraints and set dimensions *)
+      |> Protocols.Kernel.try_set_block_dim a.block_dim
+      |> Protocols.Kernel.try_set_grid_dim a.grid_dim
+      |> Protocols.Kernel.apply_arch arch
+      (* 1.1 inject user-provided assumptions into the kernel precondition *)
+      |> (fun k ->
+        List.fold_left (fun k b -> Protocols.Kernel.add_pre b k) k a.assumes)
+      (* 1.2 optionally pin unreferenced launch dimensions to 1 *)
+      |> (if a.assume_dims then Protocols.Kernel.add_dim_assumptions else Fun.id)
+      (* 2. inline global assignments, including block_dim/grid_dim *)
+      |> Protocols.Kernel.inline_globals a.params
+      (* 2.1 inline block_id as a constant when architecture is Grid *)
+      |> (fun k ->
+      match (arch, a.block_idx_1) with
+      | Architecture.Block, Some bid ->
+          let kvs = Dim3.to_assoc ~prefix:"blockIdx." bid in
+          Protocols.Kernel.assign_globals kvs k
+      | _, _ -> k)
+      |> Protocols.Kernel.add_missing_binders
+      |> (if a.only_true_data_races then Protocols.Kernel.to_ci_di else Fun.id)
+      |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Map ~show:a.show_proto
+           Protocols.Kernel.print
+      (* 3. constant folding optimization *)
+      |> Protocols.Kernel.opt)
+  in
   k
-  (* 0. filter arrays *)
-  |> (fun k ->
-  match a.only_array with
-  | Some arr -> Protocols.Kernel.filter_array (fun x -> Variable.name x = arr) k
-  | None -> k)
-  (* 1. apply block-level/grid-level analysis constraints and set dimensions *)
-  |> Protocols.Kernel.try_set_block_dim a.block_dim
-  |> Protocols.Kernel.try_set_grid_dim a.grid_dim
-  |> Protocols.Kernel.apply_arch arch
-  (* 1.1 inject user-provided assumptions into the kernel precondition *)
-  |> (fun k ->
-    List.fold_left (fun k b -> Protocols.Kernel.add_pre b k) k a.assumes)
-  (* 1.2 optionally pin unreferenced launch dimensions to 1 *)
-  |> (if a.assume_dims then Protocols.Kernel.add_dim_assumptions else Fun.id)
-  (* 2. inline global assignments, including block_dim/grid_dim *)
-  |> Protocols.Kernel.inline_globals a.params
-  (* 2.1 inline block_id as a constant when architecture is Grid *)
-  |> (fun k ->
-  match (arch, a.block_idx_1) with
-  | Architecture.Block, Some bid ->
-      let kvs = Dim3.to_assoc ~prefix:"blockIdx." bid in
-      Protocols.Kernel.assign_globals kvs k
-  | _, _ -> k)
-  |> Protocols.Kernel.add_missing_binders
-  |> (if a.only_true_data_races then Protocols.Kernel.to_ci_di else Fun.id)
-  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Map ~show:a.show_proto
-       Protocols.Kernel.print
-  (* 3. constant folding optimization *)
-  |> Protocols.Kernel.opt
   (* 4. convert to well-formed protocol *)
   |> Wellformed.translate
   (* 4.1. remove unnecessary binders *)
   |> Streamutil.map Wellformed.Kernel.trim_binders
+  |> Phase_timer.boundary "well-formed"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Well_formed
        ~show:a.show_wf Wellformed.print_kernels
   (* 5. align protocol *)
@@ -274,18 +285,22 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
           then Delinearize.Silent.rewrite_kernel
           else Delinearize.Warnings.rewrite_kernel)
       else Fun.id)
+  |> Phase_timer.boundary "aligned"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned
        ~show:a.show_align Aligned.print_kernels
   (* 7. split per sync *)
   |> Phasesplit.translate
+  |> Phase_timer.boundary "phase-split"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Phase_split
        ~show:a.show_phase_split Phasesplit.print_kernels
   (* 8. split per location *)
   |> Locsplit.translate
+  |> Phase_timer.boundary "loc-split"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Loc_split
        ~show:a.show_loc_split Locsplit.print_kernels
   (* 9. flatten control-flow structures *)
   |> Flatacc.translate arch
+  |> Phase_timer.boundary "flat-acc"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Flat_acc
        ~show:a.show_flat_acc Flatacc.print_kernels
 
@@ -333,10 +348,12 @@ let run (a : t) : Analysis.t list =
       |> Symbexp.add_rel_index N_rel.Eq a.eq_index
       |> Symbexp.add ~tid:a.thread_idx_1 ~bid:a.block_idx_1
       |> Symbexp.add ~tid:a.thread_idx_2 ~bid:a.block_idx_2
+      |> Phase_timer.boundary "symbexp"
       |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Symbexp
            ~show:a.show_symbexp Symbexp.print_kernels
       |> Solve_drf.Solution.solve ~timeout:a.timeout ~_show_proofs:a.show_proofs
            ~logic:a.logic
+      |> Phase_timer.boundary "solve"
       |> Streamutil.to_list
     in
     Analysis.{ kernel; report }
