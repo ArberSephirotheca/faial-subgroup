@@ -148,13 +148,20 @@ and extract_text byte1 r : string =
     let n = extract_number byte1 r in
     get_s r n
 
+(* Reads a map field directly into [(string * json)], bypassing the
+   [`String s] polyvariant box that [extract] would produce for a text
+   key. [Break] from the head byte propagates out for the enclosing
+   [extract_list] to finalize an indefinite-length map. *)
 and extract_field r : string * json =
-  let k = extract r in
-  let v =
-    try extract r with Break -> fail "extract_field: unexpected break"
-  in
-  match k with
-  | `String s -> (s, v)
+  let byte1 = get_byte r in
+  match byte1 lsr 5 with
+  | 7 when get_additional byte1 = 31 -> raise Break
+  | 3 ->
+      let s = extract_text byte1 r in
+      let v =
+        try extract r with Break -> fail "extract_field: unexpected break"
+      in
+      (s, v)
   | _ -> fail "CBOR map key is not a text string"
 
 let from_string (s : string) : (json, string) result =
