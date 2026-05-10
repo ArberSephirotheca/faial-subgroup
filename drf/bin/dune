@@ -1,9 +1,9 @@
 
-(executable
- (public_name faial-drf)
- (name main)
+(executables
+ (public_names faial-drf faial-genie)
+ (names main genie)
  (modes exe)
- (modules main app analysis tui jui solve_drf)
+ (modules main genie app analysis tui jui solve_drf)
  (libraries
   ; 3rd-party
   cmdliner printbox printbox-text
