@@ -75,6 +75,103 @@ let get_s s i n =
 let get_additional byte1 = byte1 land 0b11111
 let is_indefinite byte1 = get_additional byte1 = 31
 
+(* Open-addressing pool of canonical map-key strings, keyed by source
+   bytes [s.[off..off+len-1]] without first allocating a new string.
+   On a hit the existing canonical string is returned and the source
+   range is never copied; on a miss we allocate once and insert.
+
+   c-to-json's output is dominated by a small set of keys repeated
+   millions of times ("kind", "id", "inner", "range", ...); sharing
+   the canonical allocation across the resulting Yojson.Basic.t tree
+   measurably reduces resident memory.
+
+   The pool persists at module scope and is cleared by [from_string]
+   on each decode. Open addressing with a power-of-two capacity, 50%
+   max load factor; empty slots use [-1] in a parallel hash array
+   so the empty string is a valid key without sentinel ambiguity. *)
+module Key_pool = struct
+  let initial_capacity = 256
+
+  let hashes = ref (Array.make initial_capacity (-1))
+  let keys = ref (Array.make initial_capacity "")
+  let size = ref 0
+  let mask = ref (initial_capacity - 1)
+
+  let clear () =
+    Array.fill !hashes 0 (Array.length !hashes) (-1);
+    size := 0
+
+  let hash_substr s off len =
+    let h = ref 0 in
+    for k = 0 to len - 1 do
+      h := (!h * 31) + Char.code (String.unsafe_get s (off + k))
+    done;
+    !h land max_int
+
+  let substr_eq s off len e =
+    String.length e = len
+    &&
+    let rec loop k =
+      k = len
+      || (String.unsafe_get s (off + k) = String.unsafe_get e k
+         && loop (k + 1))
+    in
+    loop 0
+
+  let copy_substr s off len =
+    let b = Bytes.create len in
+    Bytes.unsafe_blit_string s off b 0 len;
+    Bytes.unsafe_to_string b
+
+  let rec insert h k =
+    let m = !mask in
+    let buckets_h = !hashes in
+    let buckets_k = !keys in
+    let rec probe idx =
+      if buckets_h.(idx) = -1 then begin
+        buckets_h.(idx) <- h;
+        buckets_k.(idx) <- k;
+        incr size
+      end
+      else probe ((idx + 1) land m)
+    in
+    probe (h land m)
+
+  and resize () =
+    let old_h = !hashes in
+    let old_k = !keys in
+    let new_cap = Array.length old_h * 2 in
+    hashes := Array.make new_cap (-1);
+    keys := Array.make new_cap "";
+    mask := new_cap - 1;
+    size := 0;
+    for idx = 0 to Array.length old_h - 1 do
+      let h = old_h.(idx) in
+      if h >= 0 then insert h old_k.(idx)
+    done
+
+  let intern s off len =
+    let h = hash_substr s off len in
+    let m = !mask in
+    let buckets_h = !hashes in
+    let buckets_k = !keys in
+    let rec probe idx =
+      let entry_h = buckets_h.(idx) in
+      if entry_h = -1 then begin
+        let canon = copy_substr s off len in
+        buckets_h.(idx) <- h;
+        buckets_k.(idx) <- canon;
+        incr size;
+        if !size * 2 > Array.length buckets_h then resize ();
+        canon
+      end
+      else if entry_h = h && substr_eq s off len buckets_k.(idx) then
+        buckets_k.(idx)
+      else probe ((idx + 1) land m)
+    in
+    probe (h land m)
+end
+
 let int64_max_int = Int64.of_int max_int
 let two_min_int32 = 2 * Int32.to_int Int32.min_int
 
@@ -184,14 +281,26 @@ and extract_text byte1 s i : string =
 
 (* Reads a map field directly into [(string * json)], bypassing the
    [`String s] polyvariant box that [extract] would produce for a text
-   key. [Break] from the head byte propagates out for the enclosing
-   [extract_map] to finalize an indefinite-length map. *)
+   key. Definite-length keys are interned by hashing the source bytes
+   in place via [Key_pool.intern], so a repeated key never allocates
+   a fresh string. Indefinite-length keys (rare) are built by
+   [extract_text] and then interned post-hoc. [Break] from the head
+   byte propagates out for the enclosing [extract_map] to finalize an
+   indefinite-length map. *)
 and extract_field s i : string * json =
   let byte1 = get_byte s i in
   match byte1 lsr 5 with
   | 7 when get_additional byte1 = 31 -> raise Break
   | 3 ->
-      let k = extract_text byte1 s i in
+      let k =
+        if is_indefinite byte1 then
+          let str = extract_text byte1 s i in
+          Key_pool.intern str 0 (String.length str)
+        else
+          let n = extract_number byte1 s i in
+          let off = need s i n in
+          Key_pool.intern s off n
+      in
       let v =
         try extract s i with Break -> fail "extract_field: unexpected break"
       in
@@ -199,6 +308,7 @@ and extract_field s i : string * json =
   | _ -> fail "CBOR map key is not a text string"
 
 let from_string (s : string) : (json, string) result =
+  Key_pool.clear ();
   let i = ref 0 in
   match extract s i with
   | exception Decode_error msg -> Error msg
