@@ -201,6 +201,20 @@ let get_float16 s i =
   in
   if half land 0x8000 = 0 then value else ~-.value
 
+(* Pre-allocated [`Int n] boxes for small non-negative values. c-to-json
+   typically emits ~1.6M [`Int n] per kernel — column numbers, line
+   numbers, AST tags, small literals — and the vast majority fall in
+   [0, int_cache_size). Returning a shared box on a hit removes one
+   3-word polyvariant allocation per int decoded on the hot path; the
+   cache itself is ~32 KB resident. *)
+let int_cache_size = 1024
+let int_cache : json array =
+  Array.init int_cache_size (fun n -> `Int n)
+
+let make_int n : json =
+  if n >= 0 && n < int_cache_size then Array.unsafe_get int_cache n
+  else `Int n
+
 (* Arrays and maps are read by [extract_array] / [extract_map] — separate
    specializations rather than passing the per-element extractor as a
    parameter. This removes one indirect call per element and lets the
@@ -214,7 +228,7 @@ let get_float16 s i =
 let rec extract s i : json =
   let byte1 = get_byte s i in
   match byte1 lsr 5 with
-  | 0 -> `Int (extract_number byte1 s i)
+  | 0 -> make_int (extract_number byte1 s i)
   | 1 -> `Int (-1 - extract_number byte1 s i)
   | 2 -> fail "byte string is not representable as JSON"
   | 3 -> `String (extract_text byte1 s i)
