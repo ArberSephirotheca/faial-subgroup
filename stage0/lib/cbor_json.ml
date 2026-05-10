@@ -175,9 +175,14 @@ end
 let int64_max_int = Int64.of_int max_int
 let two_min_int32 = 2 * Int32.to_int Int32.min_int
 
-let extract_number byte1 s i =
-  match get_additional byte1 with
-  | n when n < 24 -> n
+(* Hot path: the overwhelming majority of CBOR length/value encodings
+   in c-to-json output have [additional < 24], meaning the value is
+   the additional itself with no further bytes to read. Splitting
+   that one-branch fast case from the multi-byte cases keeps the
+   wrapper tiny enough for the compiler to inline at every call
+   site. *)
+let extract_number_long add s i =
+  match add with
   | 24 -> get_byte s i
   | 25 -> get_n s i 2 SE.get_uint16
   | 26 ->
@@ -187,7 +192,11 @@ let extract_number byte1 s i =
       let n = get_n s i 8 SE.get_int64 in
       if n > int64_max_int || n < 0L then fail "extract_number: %Lu" n;
       Int64.to_int n
-  | n -> fail "bad additional %d" n
+  | _ -> fail "bad additional %d" add
+
+let[@inline always] extract_number byte1 s i =
+  let add = byte1 land 0x1f in
+  if add < 24 then add else extract_number_long add s i
 
 let get_float16 s i =
   let half = (Char.code s.[i] lsl 8) + Char.code s.[i + 1] in
