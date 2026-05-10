@@ -50,7 +50,11 @@ type json = Yojson.Basic.t
 
 let fail fmt = ksprintf (fun s -> raise (Decode_error s)) fmt
 
-let need (s, i) n =
+(* The reader is the source string [s] and a mutable cursor [i] passed
+   side-by-side. Threading them as a tuple (or wrapping in a record)
+   would cost one tuple/record load per primitive read; passing the two
+   words directly avoids that on the hot path. *)
+let need s i n =
   if n > String.length s || !i + n > String.length s then
     fail "truncated: len %d pos %d need %d" (String.length s) !i n;
   let j = !i in
@@ -60,12 +64,12 @@ let need (s, i) n =
 (* [need] has already validated that the read fits in the buffer, so
    the per-byte and per-substring bounds check that [s.[]] / [String.sub]
    would do is redundant; [SE]'s [_unsafe] variants skip the same check. *)
-let get_byte ((s, _) as r) = Char.code (String.unsafe_get s (need r 1))
-let get_n ((s, _) as r) n f = f s (need r n)
-let get_s ((s, _) as r) n =
-  let i = need r n in
+let get_byte s i = Char.code (String.unsafe_get s (need s i 1))
+let get_n s i n f = f s (need s i n)
+let get_s s i n =
+  let j = need s i n in
   let b = Bytes.create n in
-  Bytes.unsafe_blit_string s i b 0 n;
+  Bytes.unsafe_blit_string s j b 0 n;
   Bytes.unsafe_to_string b
 
 let get_additional byte1 = byte1 land 0b11111
@@ -74,16 +78,16 @@ let is_indefinite byte1 = get_additional byte1 = 31
 let int64_max_int = Int64.of_int max_int
 let two_min_int32 = 2 * Int32.to_int Int32.min_int
 
-let extract_number byte1 r =
+let extract_number byte1 s i =
   match get_additional byte1 with
   | n when n < 24 -> n
-  | 24 -> get_byte r
-  | 25 -> get_n r 2 SE.get_uint16
+  | 24 -> get_byte s i
+  | 25 -> get_n s i 2 SE.get_uint16
   | 26 ->
-      let n = Int32.to_int (get_n r 4 SE.get_int32) in
+      let n = Int32.to_int (get_n s i 4 SE.get_int32) in
       if n < 0 then n - two_min_int32 else n
   | 27 ->
-      let n = get_n r 8 SE.get_int64 in
+      let n = get_n s i 8 SE.get_int64 in
       if n > int64_max_int || n < 0L then fail "extract_number: %Lu" n;
       Int64.to_int n
   | n -> fail "bad additional %d" n
@@ -105,15 +109,20 @@ let get_float16 s i =
    parameter. This removes one indirect call per element and lets the
    compiler inline the body of [extract] / [extract_field] into the
    loop. *)
-let rec extract r : json =
-  let byte1 = get_byte r in
+(* Arrays and maps are read by [extract_array] / [extract_map] — separate
+   specializations rather than passing the per-element extractor as a
+   parameter. This removes one indirect call per element and lets the
+   compiler inline the body of [extract] / [extract_field] into the
+   loop. *)
+let rec extract s i : json =
+  let byte1 = get_byte s i in
   match byte1 lsr 5 with
-  | 0 -> `Int (extract_number byte1 r)
-  | 1 -> `Int (-1 - extract_number byte1 r)
+  | 0 -> `Int (extract_number byte1 s i)
+  | 1 -> `Int (-1 - extract_number byte1 s i)
   | 2 -> fail "byte string is not representable as JSON"
-  | 3 -> `String (extract_text byte1 r)
-  | 4 -> `List (extract_array byte1 r)
-  | 5 -> `Assoc (extract_map byte1 r)
+  | 3 -> `String (extract_text byte1 s i)
+  | 4 -> `List (extract_array byte1 s i)
+  | 5 -> `Assoc (extract_map byte1 s i)
   | 6 -> fail "tag is not representable as JSON"
   | 7 -> (
       match get_additional byte1 with
@@ -123,75 +132,75 @@ let rec extract r : json =
       | 22 -> `Null
       | 23 -> fail "undefined value is not representable as JSON"
       | 24 ->
-          fail "simple value (%d) is not representable as JSON" (get_byte r)
-      | 25 -> `Float (get_n r 2 get_float16)
-      | 26 -> `Float (get_n r 4 SE.get_float)
-      | 27 -> `Float (get_n r 8 SE.get_double)
+          fail "simple value (%d) is not representable as JSON" (get_byte s i)
+      | 25 -> `Float (get_n s i 2 get_float16)
+      | 26 -> `Float (get_n s i 4 SE.get_float)
+      | 27 -> `Float (get_n s i 8 SE.get_double)
       | 31 -> raise Break
       | a -> fail "extract: (7,%d)" a)
   | _ -> assert false
 
-and extract_array byte1 r : json list =
+and extract_array byte1 s i : json list =
   if is_indefinite byte1 then
     let l = ref [] in
     try
       while true do
-        l := extract r :: !l
+        l := extract s i :: !l
       done;
       assert false
     with Break -> List.rev !l
   else
-    let n = extract_number byte1 r in
-    Array.to_list (Array.init n (fun _ -> extract r))
+    let n = extract_number byte1 s i in
+    Array.to_list (Array.init n (fun _ -> extract s i))
 
-and extract_map byte1 r : (string * json) list =
+and extract_map byte1 s i : (string * json) list =
   if is_indefinite byte1 then
     let l = ref [] in
     try
       while true do
-        l := extract_field r :: !l
+        l := extract_field s i :: !l
       done;
       assert false
     with Break -> List.rev !l
   else
-    let n = extract_number byte1 r in
-    Array.to_list (Array.init n (fun _ -> extract_field r))
+    let n = extract_number byte1 s i in
+    Array.to_list (Array.init n (fun _ -> extract_field s i))
 
-and extract_text byte1 r : string =
+and extract_text byte1 s i : string =
   if is_indefinite byte1 then
     let b = Buffer.create 10 in
     try
       while true do
         Buffer.add_string b
-          (match extract r with
-          | `String s -> s
+          (match extract s i with
+          | `String chunk -> chunk
           | _ -> fail "indefinite text string chunk is not a text string")
       done;
       assert false
     with Break -> Buffer.contents b
   else
-    let n = extract_number byte1 r in
-    get_s r n
+    let n = extract_number byte1 s i in
+    get_s s i n
 
 (* Reads a map field directly into [(string * json)], bypassing the
    [`String s] polyvariant box that [extract] would produce for a text
    key. [Break] from the head byte propagates out for the enclosing
-   [extract_list] to finalize an indefinite-length map. *)
-and extract_field r : string * json =
-  let byte1 = get_byte r in
+   [extract_map] to finalize an indefinite-length map. *)
+and extract_field s i : string * json =
+  let byte1 = get_byte s i in
   match byte1 lsr 5 with
   | 7 when get_additional byte1 = 31 -> raise Break
   | 3 ->
-      let s = extract_text byte1 r in
+      let k = extract_text byte1 s i in
       let v =
-        try extract r with Break -> fail "extract_field: unexpected break"
+        try extract s i with Break -> fail "extract_field: unexpected break"
       in
-      (s, v)
+      (k, v)
   | _ -> fail "CBOR map key is not a text string"
 
 let from_string (s : string) : (json, string) result =
   let i = ref 0 in
-  match extract (s, i) with
+  match extract s i with
   | exception Decode_error msg -> Error msg
   | exception Break -> Error "decode: unexpected break"
   | x ->
