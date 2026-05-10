@@ -57,9 +57,16 @@ let need (s, i) n =
   i := !i + n;
   j
 
-let get_byte ((s, _) as r) = int_of_char s.[need r 1]
+(* [need] has already validated that the read fits in the buffer, so
+   the per-byte and per-substring bounds check that [s.[]] / [String.sub]
+   would do is redundant; [SE]'s [_unsafe] variants skip the same check. *)
+let get_byte ((s, _) as r) = Char.code (String.unsafe_get s (need r 1))
 let get_n ((s, _) as r) n f = f s (need r n)
-let get_s ((s, _) as r) n = String.sub s (need r n) n
+let get_s ((s, _) as r) n =
+  let i = need r n in
+  let b = Bytes.create n in
+  Bytes.unsafe_blit_string s i b 0 n;
+  Bytes.unsafe_to_string b
 
 let get_additional byte1 = byte1 land 0b11111
 let is_indefinite byte1 = get_additional byte1 = 31
