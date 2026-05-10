@@ -52,15 +52,16 @@ module Make (L : Logger.Logger) = struct
   let cu_to_imp ?(abort_on_parsing_failure = true) ?(block_dim = None)
       ?(grid_dim = None) ?(includes = []) ?(macros = []) ?(exit_status = 2)
       ?(cu_to_json = "cu-to-json") ?(ignore_asserts = false)
-      ?(assume_launch = false) ?(launch_params = false) (fname : string) :
-      imp_kernel t =
+      ?(assume_launch = false) ?(launch_params = false) ?(cbor = false)
+      (fname : string) : imp_kernel t =
     (* [Cu_to_json.cu_to_json] internally records "inference/cu-to-json"
-       (subprocess + pipe read) and "inference/yojson-parse" (Yojson). *)
+       (subprocess + pipe read) and either "inference/yojson-parse" or
+       "inference/cbor-decode" depending on the wire format. *)
     let j =
       Cu_to_json.cu_to_json
         ~ignore_fail:(not abort_on_parsing_failure)
         ~on_error:(fun _ -> exit exit_status)
-        ~includes ~macros ~exe:cu_to_json ~launch_params fname
+        ~includes ~macros ~exe:cu_to_json ~launch_params ~cbor fname
     in
     let options : Gv_parser.t =
       match Gv_parser.parse fname with
@@ -139,7 +140,8 @@ module Make (L : Logger.Logger) = struct
       ?(grid_dim = None) ?(includes = []) ?(macros = []) ?(exit_status = 2)
       ?(cu_to_json = "cu-to-json") ?(wgsl_to_json = "wgsl-to-json")
       ?(ignore_asserts = false) ?(assume_launch = false)
-      ?(launch_params = false) (fname : string) : imp_kernel t =
+      ?(launch_params = false) ?(cbor = false) (fname : string) :
+      imp_kernel t =
     if String.ends_with ~suffix:".wgsl" fname then
       wgsl_to_imp ~block_dim ~grid_dim ~exit_status ~wgsl_to_json
         ~ignore_asserts fname
@@ -149,18 +151,18 @@ module Make (L : Logger.Logger) = struct
     else
       cu_to_imp ~abort_on_parsing_failure ~block_dim ~grid_dim ~includes ~macros
         ~exit_status ~cu_to_json ~ignore_asserts ~assume_launch ~launch_params
-        fname
+        ~cbor fname
 
   let to_proto ?(abort_on_parsing_failure = true) ?(block_dim = None)
       ?(grid_dim = None) ?(includes = []) ?(exit_status = 2)
       ?(inline_calls = true) ?(only_globals = true) ?(macros = [])
       ?(cu_to_json = "cu-to-json") ?(ignore_asserts = false)
-      ?(assume_launch = false) ?(launch_params = false) (fname : string) :
-      proto_kernel t =
+      ?(assume_launch = false) ?(launch_params = false) ?(cbor = false)
+      (fname : string) : proto_kernel t =
     let parsed =
       to_imp ~cu_to_json ~abort_on_parsing_failure ~block_dim ~grid_dim
         ~includes ~exit_status ~macros ~ignore_asserts ~assume_launch
-        ~launch_params fname
+        ~launch_params ~cbor fname
     in
     let compiled =
       Phase_timer.measure "inference/imp-to-proto" (fun () ->

@@ -26,6 +26,7 @@
     (ANSITerminal (>= 0.8.5))
     (otoml (>= 1.0.5))
     (yojson (>= 3.0.0))
+    (ocplib-endian (>= 1.2))
     (printbox-text (>= 0.12))
     (fpath (>= 0.7.3))
     (z3 (>= 4.15.2))

@@ -296,6 +296,14 @@ let main =
              called kernel's parameters and demotes the original \
              kernel to __device__ for inlining. Off by default; only \
              the parsed launch metadata is used.")
+  and+ cbor =
+    Arg.(
+      value & flag
+      & info [ "cbor" ]
+          ~doc:
+            "Run cu-to-json with --cbor and decode its output as CBOR \
+             instead of JSON. Produces a smaller wire payload; the \
+             decoded tree is identical.")
   and+ list_kernels =
     Arg.(
       value & flag
@@ -347,7 +355,7 @@ let main =
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assume_delin
-        ~assumes ~assume_dims ~assume_launch ~stop_at
+        ~assumes ~assume_dims ~assume_launch ~cbor ~stop_at
     in
     let ui = if output_json then Jui.render else Tui.render in
     if list_kernels then

@@ -15,11 +15,14 @@ let read_all (ic : in_channel) : string =
   Buffer.contents buf
 
 let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
-    ?(macros = []) ?(launch_params = false) (fname : string) :
+    ?(macros = []) ?(launch_params = false) ?(cbor = false) (fname : string) :
     (Yojson.Basic.t, int * string) Result.t =
   let includes = List.map (fun x -> "-I" ^ x) includes in
   let macros = List.map (fun x -> "-D" ^ x) macros in
-  let extra = if launch_params then [ "--launch-params" ] else [] in
+  let extra =
+    (if launch_params then [ "--launch-params" ] else [])
+    @ if cbor then [ "--cbor" ] else []
+  in
   let args = [ fname ] @ includes @ macros @ extra in
   let cmd = Filename.quote_command exe args in
   let r, raw =
@@ -28,9 +31,14 @@ let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
       |> Subprocess.with_process_in read_all)
   in
   let j =
-    Phase_timer.measure "inference/yojson-parse" (fun () ->
-      try Ok (Yojson.Basic.from_string raw)
-      with Yojson.Json_error e -> Error e)
+    if cbor then
+      Phase_timer.measure "inference/cbor-decode" (fun () ->
+        Cbor_json.from_string raw
+        |> Result.map_error (fun e -> "CBOR decode error: " ^ e))
+    else
+      Phase_timer.measure "inference/yojson-parse" (fun () ->
+        try Ok (Yojson.Basic.from_string raw)
+        with Yojson.Json_error e -> Error e)
   in
   match (r, j) with
   | Unix.WEXITED 0, Ok j -> Ok j
@@ -42,11 +50,14 @@ let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
   | _, _ -> Error (1, "Unknown error")
 
 let cu_to_json ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
-    ?(macros = []) ?(launch_params = false)
+    ?(macros = []) ?(launch_params = false) ?(cbor = false)
     (* If some integer is given, then we return that on exit, otherwise we return
      whatever cu-to-json returns *)
     ?(on_error = exit) (fname : string) : Yojson.Basic.t =
-  match cu_to_json_res ~exe ~includes ~ignore_fail ~macros ~launch_params fname with
+  match
+    cu_to_json_res ~exe ~includes ~ignore_fail ~macros ~launch_params ~cbor
+      fname
+  with
   | Ok x -> x
   | Error (r, m) ->
       prerr_endline ("cu-to-json: " ^ m);
