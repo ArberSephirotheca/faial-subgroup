@@ -100,19 +100,11 @@ let get_float16 s i =
   in
   if half land 0x8000 = 0 then value else ~-.value
 
-let extract_list byte1 r f =
-  if is_indefinite byte1 then
-    let l = ref [] in
-    try
-      while true do
-        l := f r :: !l
-      done;
-      assert false
-    with Break -> List.rev !l
-  else
-    let n = extract_number byte1 r in
-    Array.to_list (Array.init n (fun _ -> f r))
-
+(* Arrays and maps are read by [extract_array] / [extract_map] — separate
+   specializations rather than passing the per-element extractor as a
+   parameter. This removes one indirect call per element and lets the
+   compiler inline the body of [extract] / [extract_field] into the
+   loop. *)
 let rec extract r : json =
   let byte1 = get_byte r in
   match byte1 lsr 5 with
@@ -120,8 +112,8 @@ let rec extract r : json =
   | 1 -> `Int (-1 - extract_number byte1 r)
   | 2 -> fail "byte string is not representable as JSON"
   | 3 -> `String (extract_text byte1 r)
-  | 4 -> `List (extract_list byte1 r extract)
-  | 5 -> `Assoc (extract_list byte1 r extract_field)
+  | 4 -> `List (extract_array byte1 r)
+  | 5 -> `Assoc (extract_map byte1 r)
   | 6 -> fail "tag is not representable as JSON"
   | 7 -> (
       match get_additional byte1 with
@@ -138,6 +130,32 @@ let rec extract r : json =
       | 31 -> raise Break
       | a -> fail "extract: (7,%d)" a)
   | _ -> assert false
+
+and extract_array byte1 r : json list =
+  if is_indefinite byte1 then
+    let l = ref [] in
+    try
+      while true do
+        l := extract r :: !l
+      done;
+      assert false
+    with Break -> List.rev !l
+  else
+    let n = extract_number byte1 r in
+    Array.to_list (Array.init n (fun _ -> extract r))
+
+and extract_map byte1 r : (string * json) list =
+  if is_indefinite byte1 then
+    let l = ref [] in
+    try
+      while true do
+        l := extract_field r :: !l
+      done;
+      assert false
+    with Break -> List.rev !l
+  else
+    let n = extract_number byte1 r in
+    Array.to_list (Array.init n (fun _ -> extract_field r))
 
 and extract_text byte1 r : string =
   if is_indefinite byte1 then
