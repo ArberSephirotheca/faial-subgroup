@@ -3216,10 +3216,20 @@ module Def = struct
               | `List l -> List.filter is_constant l
               | _ -> []
             in
+            (* Route the [type] lookup through [J_type] so the
+               bare-string form (e.g. "type": "int", emitted when no
+               desugared variant is needed) is handled alongside the
+               legacy [{"qualType": ...}] object form. Going at it
+               directly via [member "type" |> member "qualType"]
+               raises [Type_error] on the bare-string case. *)
             match consts with
             | first :: _ ->
-                first |> member "type" |> member "qualType"
-                |> to_string_option
+                first
+                |> member "type"
+                |> J_type.from_json
+                |> J_type.to_c_type_res
+                |> Result.to_option
+                |> Option.map C_type.to_string
             | [] -> None
           in
           (match name with
