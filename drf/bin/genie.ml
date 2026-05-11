@@ -379,9 +379,15 @@ let main =
   in
   let baseline = App.run app in
   if all_safe baseline then begin
-    print_endline "DRF under baseline (--assume-launch --assume-dims --assume-delin).";
-    print_endline "No extra --assume needed.";
-    Ok ()
+    if preconditions_reachable app then begin
+      print_endline "DRF under baseline (--assume-launch --assume-dims --assume-delin).";
+      print_endline "No extra --assume needed.";
+      Ok ()
+    end else begin
+      print_endline "Baseline preconditions are unsatisfiable — kernel is vacuously DRF.";
+      print_endline "Check that the kernel and any user --assume flags are mutually satisfiable.";
+      Ok ()
+    end
   end else begin
     match witness_loop app [] 0 with
     | Some extras when extras <> [] ->
