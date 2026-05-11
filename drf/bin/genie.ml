@@ -129,7 +129,26 @@ let propose_from_witness (w : Solve_drf.Witness.t) : Exp.bexp list =
         then Some (Exp.n_ge (Exp.Var (var_of k1)) (Exp.Var (var_of k2)))
         else None))
   in
-  sign_preds @ bound_preds @ mul_preds @ div_preds @ cross_preds
+  (* Scaled bound: scan / reduction / 2-element-per-thread kernels use
+     [block_size = 2 * blockDim.x] or [4 * blockDim.x]. When a param
+     sits below [K * dim] in the model, propose [p >= K * dim]. *)
+  let scaled_pairs = [
+    (2, "blockDim.x"); (2, "blockDim.y"); (2, "blockDim.z");
+    (2, "gridDim.x");  (2, "gridDim.y");  (2, "gridDim.z");
+    (4, "blockDim.x"); (4, "blockDim.y"); (4, "blockDim.z");
+    (4, "gridDim.x");  (4, "gridDim.y");  (4, "gridDim.z");
+  ] in
+  let scaled_preds =
+    params |> List.concat_map (fun (k, vp) ->
+      scaled_pairs |> List.filter_map (fun (kk, dn) ->
+        match List.assoc_opt dn dims with
+        | Some vd when abs vp < kk * vd ->
+          Some (Exp.n_ge
+                  (Exp.Var (var_of k))
+                  (Exp.n_mult (Exp.Num kk) (Exp.Var (var_of dn))))
+        | _ -> None))
+  in
+  sign_preds @ bound_preds @ mul_preds @ div_preds @ cross_preds @ scaled_preds
 
 let witnesses_of (rs : Analysis.t list) : Solve_drf.Witness.t list =
   rs |> List.concat_map (fun (a : Analysis.t) ->
