@@ -92,16 +92,94 @@ let verifies_drf_only (app : App.t) (assumptions : Exp.bexp list) : bool =
   |> run_assuming assumptions
   |> all_safe
 
-let abductive_loop ?(iter_cap = 32) (app : App.t) : Exp.bexp list option =
+let shrink (_baseline : Reachability.AccessSet.t) (app : App.t)
+    (extras : Exp.bexp list) : Exp.bexp list =
+  let rec loop kept remaining =
+    match remaining with
+    | [] -> kept
+    | c :: rest ->
+      if verifies_drf_only app (kept @ rest)
+      then loop kept rest
+      else loop (kept @ [c]) rest
+  in
+  loop [] extras
+
+(* Per-clause weakening lattice. Replacing an equality with one of its
+   one-sided variants admits strictly more models; if the kernel still
+   clears DRF and passes the gate under the weaker variant, prefer it.
+   In the bm3d-style synthesis miss [size == gridDim.x ∧ size == bdim*gdim],
+   weakening the first clause to [size >= gridDim.x] breaks the
+   conjunction's implied [bdim.x == 1] and lets the gate accept. *)
+let weaken_clause : Exp.bexp -> Exp.bexp list = function
+  | Exp.NRel (Eq, e1, e2) -> [ Exp.n_ge e1 e2; Exp.n_le e1 e2 ]
+  | _ -> []
+
+(* Walk [extras] left-to-right; for each clause, if some weaker variant
+   keeps the predicate [check] true, swap it in. Single-pass and
+   per-clause (no joint weakening) — keeps the search tractable. *)
+let weaken_for_gate
+    (check : Exp.bexp list -> bool) (extras : Exp.bexp list) : Exp.bexp list =
+  let rec loop acc = function
+    | [] -> acc
+    | c :: rest ->
+      let weakers = weaken_clause c in
+      let best =
+        List.find_opt
+          (fun w -> check (acc @ (w :: rest)))
+          weakers
+      in
+      let kept = match best with Some w -> w | None -> c in
+      loop (acc @ [ kept ]) rest
+  in
+  loop [] extras
+
+(* Abductive search with weakening and CEGIS-style gate-rejection
+   feedback. On each iteration:
+     - Solve MaxSAT for a minimum-cardinality clearance.
+     - Run faial; if still racy, add witnesses, re-solve.
+     - If DRF: shrink, then check the gate. If gate accepts, return.
+       If gate rejects, try clause-wise weakening; if that recovers,
+       return the weakened set. Otherwise add [¬extras] to the session
+       (CEGIS) and re-solve. *)
+let abductive_loop
+    ?(iter_cap = 32)
+    (app : App.t)
+    (baseline_reachable : Reachability.AccessSet.t) : Exp.bexp list option =
   let kernels = App.only_kernel app app.kernels in
   if kernels = [] then None
   else
     let session = Abduction.create_for_kernels kernels in
+    let drf_and_gate extras =
+      verifies_drf_only app extras
+      && gate_holds baseline_reachable
+           { app with assumes = app.assumes @ extras }
+    in
+    let try_finalize extras =
+      let minimal = shrink baseline_reachable app extras in
+      let app' = { app with assumes = app.assumes @ minimal } in
+      if gate_holds baseline_reachable app' then Some minimal
+      else
+        let weakened = weaken_for_gate drf_and_gate minimal in
+        let weakened_min = shrink baseline_reachable app weakened in
+        let app'' = { app with assumes = app.assumes @ weakened_min } in
+        if gate_holds baseline_reachable app'' then Some weakened_min
+        else None
+    in
     let rec loop iter extras =
-      if iter >= iter_cap then Some extras
+      if iter >= iter_cap then None
       else
         let result = run_assuming extras app in
-        if all_safe result then Some extras
+        if all_safe result then
+          match try_finalize extras with
+          | Some final -> Some final
+          | None ->
+            (* Gate rejected even after weakening — ban this exact
+               combination and re-solve. *)
+            if Abduction.reject_combination session extras = 0 then None
+            else
+              (match Abduction.solve session with
+               | None -> None
+               | Some new_extras -> loop (iter + 1) new_extras)
         else
           let added = Abduction.add_all result session in
           if added = 0 then None
@@ -127,22 +205,46 @@ let blanket_extras (app : App.t) : Exp.bexp list =
   in
   signs @ bounds
 
-let shrink (_baseline : Reachability.AccessSet.t) (app : App.t)
-    (extras : Exp.bexp list) : Exp.bexp list =
-  let rec loop kept remaining =
-    match remaining with
-    | [] -> kept
-    | c :: rest ->
-      if verifies_drf_only app (kept @ rest)
-      then loop kept rest
-      else loop (kept @ [c]) rest
-  in
-  loop [] extras
-
 let format_assume_flags (extras : Exp.bexp list) : string =
   extras
   |> List.map (fun b -> "--assume \"" ^ Exp.b_to_string b ^ "\"")
   |> String.concat " "
+
+(* Use-derived dim bounds. For each axis (x, y, z) and level (thread,
+   block): if the corresponding index variable is referenced in the
+   kernel code, the dim is constrained to [>= 2]; otherwise the dim is
+   pinned to [== 1]. The [>= 2] half is what stops abductive from
+   landing on trivialising clearances (e.g. bm3d's
+   [size == gridDim.x ∧ size == blockDim.x * gridDim.x] entailing
+   [blockDim.x == 1]).
+
+   Each candidate is pre-flight SAT-checked against the kernel's
+   prepared pre. Constraints that conflict with an existing pin
+   (most commonly a launch literal — [bm3d]'s launch site pins
+   [blockDim.y == 1] via [--assume-launch]) are dropped. *)
+let usage_constrained_kernel
+    ?(timeout : int option)
+    ~(params : (string * int) list)
+    (k : Kernel.t) : Kernel.t =
+  let used = Code.free_names k.code Variable.Set.empty in
+  let probe0 =
+    Reachability.prepare_kernel ~assumes:[] ~assume_dims:false ~params k
+  in
+  let open Variable in
+  [ tid_x, bdim_x; tid_y, bdim_y; tid_z, bdim_z;
+    bid_x, gdim_x; bid_y, gdim_y; bid_z, gdim_z ]
+  |> List.fold_left (fun (probe, k_acc) (idx, dim) ->
+    let candidate =
+      if Set.mem idx used
+      then Exp.n_ge (Var dim) (Num 2)
+      else Exp.n_eq (Var dim) (Num 1)
+    in
+    let probe' = Kernel.add_pre candidate probe in
+    if Reachability.preconditions_satisfiable ?timeout probe'
+    then (probe', Kernel.add_pre candidate k_acc)
+    else (probe, k_acc))
+    (probe0, k)
+  |> snd
 
 let compute_verdict (app : App.t) : verdict =
   let baseline_reachable = access_set_of app in
@@ -151,26 +253,17 @@ let compute_verdict (app : App.t) : verdict =
     if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
     else Drf { source = Source_baseline; assumes = [] }
   else
-    let try_with extras =
-      let minimal = shrink baseline_reachable app extras in
-      let app' = { app with assumes = app.assumes @ minimal } in
-      if gate_holds baseline_reachable app' then Some minimal else None
-    in
-    let from_abductive =
-      match abductive_loop app with
-      | Some (_ :: _ as extras) when verifies_drf_only app extras ->
-        try_with extras
-      | _ -> None
-    in
-    match from_abductive with
+    match abductive_loop app baseline_reachable with
     | Some minimal -> Drf { source = Source_abductive; assumes = minimal }
     | None ->
       let blanket = blanket_extras app in
       if blanket = [] || not (verifies_drf_only app blanket) then Racy
       else
-        match try_with blanket with
-        | Some minimal -> Drf { source = Source_blanket; assumes = minimal }
-        | None -> Racy
+        let minimal = shrink baseline_reachable app blanket in
+        let app' = { app with assumes = app.assumes @ minimal } in
+        if gate_holds baseline_reachable app'
+        then Drf { source = Source_blanket; assumes = minimal }
+        else Racy
 
 let report_prose (v : verdict) : unit =
   match v with
@@ -261,9 +354,6 @@ let main =
     Arg.(value & opt string "cu-to-json"
          & info [ "cu-to-json" ] ~docv:"PATH"
              ~doc:"Path to cu-to-json.")
-  and+ cbor =
-    Arg.(value & flag
-         & info [ "cbor" ] ~doc:"Use cu-to-json's CBOR output.")
   and+ ignore_parsing_errors =
     Arg.(value & flag
          & info [ "ignore-parsing-errors" ] ~doc:"Ignore parsing errors.")
@@ -309,10 +399,17 @@ let main =
       ~log_delinearize:false
       ~assume_delin:true
       ~assumes:extra_assumes
-      ~assume_dims:true
+      ~assume_dims:false
       ~assume_launch:true
-      ~cbor
+      ~cbor:true
       ~stop_at:None
+  in
+  let app =
+    let kernels =
+      List.map (usage_constrained_kernel ?timeout ~params:app.params)
+        app.kernels
+    in
+    { app with kernels }
   in
   let v = compute_verdict app in
   if output_json then report_json app v else report_prose v;

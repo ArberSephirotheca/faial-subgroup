@@ -92,9 +92,17 @@ let build_pool (k : Kernel.t) : bexp list =
     |> push_prod  all_dims [ 2; 4 ]
                   (fun d c -> n_ge v (n_mult (Num c) (Var d)))
   in
+  (* Dim upper bounds. Launch dimensions are typically pinned to a
+     specific value by the launch literal, but at synthesised
+     pseudo-kernels where the literal is symbolic, the kernel often
+     requires [dim <= K] for some kernel-specific constant K (e.g.
+     bm3d's shared-memory stride pattern needs [blockDim.x <= 8]). The
+     constants below are common GPU block / tile sizes. *)
+  let dim_upper_caps = [ 2; 4; 8; 16; 32; 64; 128; 256; 512; 1024 ] in
   []
   |> (fun acc -> List.fold_left per_param acc params)
   |> push_pairs ~when_:ne params (fun a b -> n_ge (Var a) (Var b))
+  |> push_prod all_dims dim_upper_caps (fun d k -> n_le (Var d) (Num k))
 
 let build_pool_union (ks : Kernel.t list) : bexp list =
   ks |> List.concat_map build_pool |> List.sort_uniq Exp.b_compare
@@ -148,6 +156,23 @@ let add_sample (s : t) (vars : (string * string) list) : int =
   | _ ->
     Z3.Optimize.add s.opt [ Z3.Boolean.mk_or s.ctx bad ];
     List.length bad
+
+(* CEGIS rejection: ban a specific selector combination from future
+   solutions by asserting [¬(s_1 ∧ ... ∧ s_n)]. Returns the number of
+   selectors that were resolved; if no [chosen] bexp is found in the
+   pool the call is a no-op. *)
+let reject_combination (s : t) (chosen : bexp list) : int =
+  let neg_selectors =
+    List.filter_map (fun c ->
+      List.find_opt (fun (cand, _) -> Exp.b_compare cand c = 0) s.candidates
+      |> Option.map (fun (_, sel) -> Z3.Boolean.mk_not s.ctx sel))
+      chosen
+  in
+  match neg_selectors with
+  | [] -> 0
+  | _ ->
+    Z3.Optimize.add s.opt [ Z3.Boolean.mk_or s.ctx neg_selectors ];
+    List.length neg_selectors
 
 let add_all (analyses : Analysis.t list) (session : t) : int =
   List.fold_left (fun acc (a : Analysis.t) ->
