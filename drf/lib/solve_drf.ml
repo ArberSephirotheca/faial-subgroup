@@ -1,6 +1,5 @@
 open Stage0
 open Protocols
-open Drf
 open Gen_z3
 open Exp
 module Solver = Z3.Solver

@@ -1,7 +1,8 @@
-open Solve_drf
+open Drf
 open Protocols
 open Stage0
 module T = ANSITerminal
+open Solve_drf
 
 (*
   Renders the local state as a PrintBox

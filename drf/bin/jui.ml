@@ -1,7 +1,7 @@
 open Stage0
-open Solve_drf
 open Protocols
 open Drf
+open Solve_drf
 
 let render (output : Analysis.t list) : unit =
   let kernels =
