@@ -1,5 +1,7 @@
+open Stage0
 open Protocols
 open Protocols_parsing
+open Drf
 open Cmdliner
 
 (* genie searches for a set of [--assume] preconditions that make a CUDA
@@ -194,6 +196,26 @@ let dedupe (xs : Exp.bexp list) : Exp.bexp list =
 let all_safe (rs : Analysis.t list) : bool =
   List.for_all Analysis.is_safe rs
 
+(* Reachability gate: when the accumulated preconditions are
+   contradictory, every sanity proof becomes UNSAT and the kernel
+   "verifies as DRF" vacuously. We require at least one SATISFIABLE
+   sanity proof per kernel — per-access UNSAT is normal (dead
+   branches), but if every access is unreachable the precondition
+   itself is unsatisfiable. *)
+let preconditions_reachable (app : App.t) : bool =
+  try
+    app.kernels |> App.only_kernel app
+    |> List.for_all (fun kernel ->
+      kernel
+      |> App.translate Architecture.Block app
+      |> Symbexp.sanity_check Architecture.Block
+      |> Streamutil.to_list
+      |> List.exists (fun p ->
+        match Solve_drf.solve ~timeout:app.timeout ~logic:app.logic p with
+        | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN -> true
+        | Z3.Solver.UNSATISFIABLE -> false))
+  with App.Stop_at_stage -> true
+
 (* CEGAR loop. [accumulated] grows monotonically; each iteration runs
    the analysis once, and either declares DRF, proposes new predicates
    to add, or gives up because no witness suggests anything we don't
@@ -206,7 +228,7 @@ let rec witness_loop ?(iter_cap = 16) (app : App.t)
   else
     let app' = { app with assumes = app.assumes @ accumulated } in
     let result = App.run app' in
-    if all_safe result then Some accumulated
+    if all_safe result && preconditions_reachable app' then Some accumulated
     else
       let proposed = witnesses_of result |> List.concat_map propose_from_witness |> dedupe in
       let fresh =
@@ -219,7 +241,7 @@ let rec witness_loop ?(iter_cap = 16) (app : App.t)
 
 let verifies (app : App.t) (extras : Exp.bexp list) : bool =
   let app' = { app with assumes = app.assumes @ extras } in
-  all_safe (App.run app')
+  all_safe (App.run app') && preconditions_reachable app'
 
 (* Blanket fallback for cases where the witness loop exits without
    clearing — that happens when Z3 picks witnesses whose values
