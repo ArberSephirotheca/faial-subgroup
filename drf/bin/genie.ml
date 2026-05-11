@@ -33,10 +33,10 @@ let launch_config_set : Variable.Set.t =
   let open Variable in
   Set.union (Set.union tid_set bid_set) (Set.union bdim_set gdim_set)
 
-let is_launch_config_name (n : string) : bool =
+let[@warning "-32"] is_launch_config_name (n : string) : bool =
   List.mem n launch_config_names
 
-let is_dim_name (n : string) : bool =
+let[@warning "-32"] is_dim_name (n : string) : bool =
   let open Variable in
   List.mem n (List.map name (bdim_list @ gdim_list))
 
@@ -50,147 +50,6 @@ let unique_int_params (app : App.t) : Variable.t list =
   app.kernels
   |> List.concat_map int_params
   |> List.sort_uniq Variable.compare
-
-let parse_int_opt (s : string) : int option =
-  try Some (int_of_string (String.trim s))
-  with Failure _ -> None
-
-let int_globals (w : Solve_drf.Witness.t) : (string * int) list =
-  w.globals.variables
-  |> List.filter_map (fun (k, v) ->
-      match parse_int_opt v with
-      | Some n -> Some (k, n)
-      | None -> None)
-
-(* Predicates contradicting a single witness: sign-fix for params Z3
-   picked at non-positive values, and bound-fix for params whose
-   absolute value is below some referenced launch dim. *)
-let propose_from_witness (w : Solve_drf.Witness.t) : Exp.bexp list =
-  let kvs = int_globals w in
-  let params = List.filter (fun (k, _) -> not (is_launch_config_name k)) kvs in
-  let dims = List.filter (fun (k, _) -> is_dim_name k) kvs in
-  let var_of (n : string) : Variable.t = Variable.from_name n in
-  let sign_preds =
-    params
-    |> List.filter_map (fun (k, v) ->
-        if v <= 0
-        then Some (Exp.n_gt (Exp.Var (var_of k)) (Exp.Num 0))
-        else None)
-  in
-  let bound_preds =
-    params |> List.concat_map (fun (k, vp) ->
-      dims |> List.filter_map (fun (d, vd) ->
-        if abs vp < vd
-        then Some (Exp.n_ge (Exp.Var (var_of k)) (Exp.Var (var_of d)))
-        else None))
-  in
-  (* Multiplicative bound: total threads on an axis is [gridDim.x *
-     blockDim.x] (and analogously for y/z). When a param sits below
-     that product in the model, propose [p >= gridDim.X * blockDim.X]. *)
-  let mul_pairs = [
-    ("gridDim.x", "blockDim.x");
-    ("gridDim.y", "blockDim.y");
-    ("gridDim.z", "blockDim.z");
-    ("blockDim.x", "blockDim.y");
-    ("blockDim.y", "blockDim.z");
-    ("blockDim.x", "blockDim.z");
-    ("gridDim.x", "gridDim.y");
-    ("gridDim.y", "gridDim.z");
-    ("gridDim.x", "gridDim.z");
-  ] in
-  let mul_preds =
-    params |> List.concat_map (fun (k, vp) ->
-      mul_pairs |> List.filter_map (fun (gn, bn) ->
-        match List.assoc_opt gn dims, List.assoc_opt bn dims with
-        | Some vg, Some vb when abs vp < vg * vb ->
-          Some (Exp.n_ge
-                  (Exp.Var (var_of k))
-                  (Exp.n_mult (Exp.Var (var_of gn)) (Exp.Var (var_of bn))))
-        | _ -> None))
-  in
-  (* Divisibility: if the witness has [p] not a multiple of dim [d]
-     (and |p| >= d so the constraint isn't trivially false), propose
-     [p % d == 0]. Captures stride/offset alignment patterns. *)
-  let div_preds =
-    params |> List.concat_map (fun (k, vp) ->
-      dims |> List.filter_map (fun (d, vd) ->
-        if vd > 0 && abs vp >= vd && (abs vp) mod vd <> 0
-        then Some (Exp.n_eq
-                     (Exp.n_mod (Exp.Var (var_of k)) (Exp.Var (var_of d)))
-                     (Exp.Num 0))
-        else None))
-  in
-  (* Cross-param bound: when two source params are both in the racing
-     access and the witness ordered them [v1 < v2], propose [p1 >= p2].
-     Captures source-level invariants like [width >= height]. *)
-  let cross_preds =
-    params |> List.concat_map (fun (k1, v1) ->
-      params |> List.filter_map (fun (k2, v2) ->
-        if k1 <> k2 && v1 < v2
-        then Some (Exp.n_ge (Exp.Var (var_of k1)) (Exp.Var (var_of k2)))
-        else None))
-  in
-  (* Scaled bound: scan / reduction / 2-element-per-thread kernels use
-     [block_size = 2 * blockDim.x] or [4 * blockDim.x]. When a param
-     sits below [K * dim] in the model, propose [p >= K * dim]. *)
-  let scaled_pairs = [
-    (2, "blockDim.x"); (2, "blockDim.y"); (2, "blockDim.z");
-    (2, "gridDim.x");  (2, "gridDim.y");  (2, "gridDim.z");
-    (4, "blockDim.x"); (4, "blockDim.y"); (4, "blockDim.z");
-    (4, "gridDim.x");  (4, "gridDim.y");  (4, "gridDim.z");
-  ] in
-  let scaled_preds =
-    params |> List.concat_map (fun (k, vp) ->
-      scaled_pairs |> List.filter_map (fun (kk, dn) ->
-        match List.assoc_opt dn dims with
-        | Some vd when abs vp < kk * vd ->
-          Some (Exp.n_ge
-                  (Exp.Var (var_of k))
-                  (Exp.n_mult (Exp.Num kk) (Exp.Var (var_of dn))))
-        | _ -> None))
-  in
-  (* Param-equals-dim: kernels that mirror a launch axis in a param
-     (e.g. [width = blockDim.x], [size = blockDim.x * gridDim.x]).
-     When the witness has [p != dim], propose [p == dim]. *)
-  let eq_dim_preds =
-    let single_dims =
-      ["blockDim.x"; "blockDim.y"; "blockDim.z";
-       "gridDim.x"; "gridDim.y"; "gridDim.z"]
-    in
-    let from_single =
-      params |> List.concat_map (fun (k, vp) ->
-        single_dims |> List.filter_map (fun dn ->
-          match List.assoc_opt dn dims with
-          | Some vd when vp <> vd ->
-            Some (Exp.n_eq (Exp.Var (var_of k)) (Exp.Var (var_of dn)))
-          | _ -> None))
-    in
-    let from_product =
-      params |> List.concat_map (fun (k, vp) ->
-        mul_pairs |> List.filter_map (fun (gn, bn) ->
-          match List.assoc_opt gn dims, List.assoc_opt bn dims with
-          | Some vg, Some vb when vp <> vg * vb ->
-            Some (Exp.n_eq
-                    (Exp.Var (var_of k))
-                    (Exp.n_mult (Exp.Var (var_of gn)) (Exp.Var (var_of bn))))
-          | _ -> None))
-    in
-    from_single @ from_product
-  in
-  sign_preds @ bound_preds @ mul_preds @ div_preds @ cross_preds
-  @ scaled_preds @ eq_dim_preds
-
-let witnesses_of (rs : Analysis.t list) : Solve_drf.Witness.t list =
-  rs |> List.concat_map (fun (a : Analysis.t) ->
-    a.report |> List.filter_map (fun (s : Solve_drf.Solution.t) ->
-      match s.outcome with
-      | Solve_drf.Outcome.Racy w -> Some w
-      | _ -> None))
-
-let bexp_eq (a : Exp.bexp) (b : Exp.bexp) : bool = Exp.b_compare a b = 0
-
-let dedupe (xs : Exp.bexp list) : Exp.bexp list =
-  List.sort_uniq Exp.b_compare xs
 
 let all_safe (rs : Analysis.t list) : bool =
   List.for_all Analysis.is_safe rs
@@ -263,29 +122,6 @@ let gate_holds = gate_holds_simple
    already have. The [iter] cap is a safety net — termination is
    already guaranteed because each iteration adds at least one new
    predicate over a finite param/dim space. *)
-(* Witness loop runs DRF-only — no per-iteration reachability call.
-   Reachability is checked exactly once on the final candidate set
-   by [main] after shrink. This dramatically cuts gate cost on
-   long-running cases (e.g. burger-cuda went from >90s to ~30s when
-   shrink stopped calling the gate; deferring it out of the loop
-   too should compound). *)
-let rec witness_loop ?(iter_cap = 16) (app : App.t)
-    (accumulated : Exp.bexp list) (iter : int) : Exp.bexp list option =
-  if iter >= iter_cap then None
-  else
-    let app' = { app with assumes = app.assumes @ accumulated } in
-    let result = App.run app' in
-    if all_safe result then Some accumulated
-    else
-      let proposed = witnesses_of result |> List.concat_map propose_from_witness |> dedupe in
-      let fresh =
-        List.filter (fun p ->
-          not (List.exists (fun a -> bexp_eq a p) accumulated))
-          proposed
-      in
-      if fresh = [] then None
-      else witness_loop ~iter_cap app (accumulated @ fresh) (iter + 1)
-
 (* Shrink-time verification: skip the reachability gate.
    Shrink only ever removes clauses, which monotonically weakens
    the precondition. A weaker precondition can only grow the
@@ -431,28 +267,19 @@ let main =
       Ok ()
     end
   end else begin
-    let try_finalize (extras : Exp.bexp list) (source : string) : bool =
-      let minimal = shrink baseline_reachable app extras in
+    let blanket = blanket_extras app in
+    if blanket = [] || not (verifies_drf_only app blanket) then begin
+      print_endline "Racy; either a real race or a modelling gap.";
+      Ok ()
+    end else begin
+      let minimal = shrink baseline_reachable app blanket in
       let app' = { app with assumes = app.assumes @ minimal } in
       if gate_holds baseline_reachable app' then begin
-        print_endline ("DRF after " ^ source ^ ".");
+        print_endline "DRF after blanket+shrink refinement.";
         print_endline ("Discovered: " ^ format_assume_flags minimal);
-        true
-      end else false
-    in
-    let witness_result =
-      match witness_loop app [] 0 with
-      | Some (_ :: _ as extras) when try_finalize extras "witness-driven refinement" -> true
-      | _ -> false
-    in
-    if witness_result then Ok ()
-    else begin
-      let blanket = blanket_extras app in
-      if blanket <> [] && verifies_drf_only app blanket
-         && try_finalize blanket "blanket fallback"
-      then Ok ()
-      else begin
-        print_endline "Racy; either a real race or a modelling gap (or vacuous DRF rejected).";
+        Ok ()
+      end else begin
+        print_endline "Racy; preconditions found but reachability gate rejected (vacuous).";
         Ok ()
       end
     end
