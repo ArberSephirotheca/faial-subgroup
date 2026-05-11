@@ -8,8 +8,7 @@ let rec norm (b : bexp) : bexp list =
   | Bool _
   | BNot (CastBool _)
   | NRel _ | Distinct _
-  | BNot (Distinct _)
-  | BNot (NRel (ULt, _, _)) ->
+  | BNot (Distinct _) ->
       [ b ]
   | BRel (BAnd, b1, b2) -> List.append (norm b1) (norm b2)
   | BNot (Bool b) -> [ Bool (not b) ]
@@ -19,8 +18,10 @@ let rec norm (b : bexp) : bexp list =
   | BNot (NRel (Neq, n1, n2)) -> norm (n_eq n1 n2)
   | BNot (NRel (Gt, n1, n2)) -> norm (n_le n1 n2)
   | BNot (NRel (Lt, n1, n2)) -> norm (n_ge n1 n2)
+  | BNot (NRel (ULt, n1, n2)) -> norm (n_uge n1 n2)
   | BNot (NRel (Le, n1, n2)) -> norm (n_gt n1 n2)
   | BNot (NRel (Ge, n1, n2)) -> norm (n_lt n1 n2)
+  | BNot (NRel (UGe, n1, n2)) -> norm (n_ult n1 n2)
   | BNot (BNot b) -> norm b
   | CastBool (CastInt b) -> norm b
   | CastBool _ -> [ b ]

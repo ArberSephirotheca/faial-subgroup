@@ -34,7 +34,7 @@ module Comparator = struct
     | Lt | ULt -> Some Lt
     | Gt -> Some Gt
     | Le -> Some Le
-    | Ge -> Some Ge
+    | Ge | UGe -> Some Ge
     | _ -> None
 end
 

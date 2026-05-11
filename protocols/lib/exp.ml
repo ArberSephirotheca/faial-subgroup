@@ -171,6 +171,11 @@ let n_ge (e1 : nexp) (e2 : nexp) : bexp =
   | Num e1, Num e2 -> Bool (e1 >= e2)
   | _, _ -> NRel (Ge, e1, e2)
 
+let n_uge (e1 : nexp) (e2 : nexp) : bexp =
+  match (e1, e2) with
+  | Num e1, Num e2 -> Bool (e1 >= e2)
+  | _, _ -> NRel (UGe, e1, e2)
+
 let n_eq (e1 : nexp) (e2 : nexp) : bexp =
   match (e1, e2) with
   | CastInt e, Num 0 | Num 0, CastInt e -> BNot e
@@ -192,6 +197,7 @@ let n_rel : N_rel.t -> nexp -> nexp -> bexp = function
   | Neq -> n_neq
   | Le -> n_le
   | Ge -> n_ge
+  | UGe -> n_uge
 
 let n_if b n1 n2 =
   match b with Bool b -> if b then n1 else n2 | _ -> NIf (b, n1, n2)
@@ -296,9 +302,11 @@ let rec b_not : bexp -> bexp = function
   | NRel (Eq, n1, n2) -> n_neq n1 n2
   | NRel (Neq, n1, n2) -> n_eq n1 n2
   | NRel (Lt, n1, n2) -> n_ge n1 n2
+  | NRel (ULt, n1, n2) -> n_uge n1 n2
   | NRel (Gt, n1, n2) -> n_le n1 n2
   | NRel (Le, n1, n2) -> n_gt n1 n2
   | NRel (Ge, n1, n2) -> n_lt n1 n2
+  | NRel (UGe, n1, n2) -> n_ult n1 n2
   | Bool b -> Bool (not b)
   | b -> BNot b
 

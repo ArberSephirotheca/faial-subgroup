@@ -69,7 +69,7 @@ module Make (L : Logger) = struct
     | "!=" -> BExp (NRel (Neq, l, r))
     | "<=" -> BExp (NRel (Le, l, r))
     | "<" -> BExp (NRel ((if unsigned then ULt else Lt), l, r))
-    | ">=" -> BExp (NRel (Ge, l, r))
+    | ">=" -> BExp (NRel ((if unsigned then UGe else Ge), l, r))
     | ">" -> BExp (NRel (Gt, l, r))
     (* int -> int -> int *)
     | "+" -> NExp (Binary ((if unsigned then UPlus else Plus), l, r))

@@ -18,6 +18,7 @@ let eval_nrel : N_rel.t -> Int32.t -> Int32.t -> bool = function
   | Neq -> ( <> )
   | Le -> ( <= )
   | Ge -> ( >= )
+  | UGe -> ( >= )
   | Lt -> ( < )
   | ULt -> ( < )
   | Gt -> ( > )

@@ -132,6 +132,7 @@ let n_rel_to_op : N_rel.t -> string = function
   | Le -> "NLe"
   | Gt -> "NGt"
   | Ge -> "NGe"
+  | UGe -> "NGe"
 
 let b_rel_to_op : B_rel.t -> string = function
   | BAnd -> "And"

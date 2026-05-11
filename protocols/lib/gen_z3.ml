@@ -63,6 +63,7 @@ module type NUMERIC_OPS = sig
   val mk_mod : binop
   val mk_le : binop
   val mk_ge : binop
+  val mk_uge : binop
   val mk_gt : binop
   val mk_lt : binop
   val mk_ult : binop
@@ -90,6 +91,7 @@ module ArithmeticOps : NUMERIC_OPS = struct
   let mk_mod = Arithmetic.Integer.mk_mod
   let mk_le = Arithmetic.mk_le
   let mk_ge = Arithmetic.mk_ge
+  let mk_uge = Arithmetic.mk_ge
   let mk_gt = Arithmetic.mk_gt
   let mk_lt = Arithmetic.mk_lt
   let mk_ult = Arithmetic.mk_lt
@@ -152,6 +154,7 @@ module BitVectorOps (W : WordSize) = struct
   let mk_mod = BitVector.mk_smod
   let mk_le = BitVector.mk_sle
   let mk_ge = BitVector.mk_sge
+  let mk_uge = BitVector.mk_uge
   let mk_gt = BitVector.mk_sgt
   let mk_lt = BitVector.mk_slt
   let mk_ult = BitVector.mk_ult
@@ -515,6 +518,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Lt -> N.mk_lt
     | ULt -> N.mk_ult
     | Gt -> N.mk_gt
+    | UGe -> N.mk_uge
 
   let brel_to_expr :
       B_rel.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr = function
@@ -720,6 +724,7 @@ module SignedBitVectorOps (W : WordSize) = struct
   let mk_mod = BitVector.mk_smod
   let mk_le = BitVector.mk_sle
   let mk_ge = BitVector.mk_sge
+  let mk_uge = BitVector.mk_sge
   let mk_gt = BitVector.mk_sgt
   let mk_lt = BitVector.mk_slt
   let mk_ult = BitVector.mk_slt
