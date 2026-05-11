@@ -231,14 +231,19 @@ let gate_holds (baseline : Reachability.AccessSet.t) (app : App.t) : bool =
    already have. The [iter] cap is a safety net — termination is
    already guaranteed because each iteration adds at least one new
    predicate over a finite param/dim space. *)
-let rec witness_loop ?(iter_cap = 16) (baseline : Reachability.AccessSet.t)
-    (app : App.t) (accumulated : Exp.bexp list) (iter : int)
-    : Exp.bexp list option =
+(* Witness loop runs DRF-only — no per-iteration reachability call.
+   Reachability is checked exactly once on the final candidate set
+   by [main] after shrink. This dramatically cuts gate cost on
+   long-running cases (e.g. burger-cuda went from >90s to ~30s when
+   shrink stopped calling the gate; deferring it out of the loop
+   too should compound). *)
+let rec witness_loop ?(iter_cap = 16) (app : App.t)
+    (accumulated : Exp.bexp list) (iter : int) : Exp.bexp list option =
   if iter >= iter_cap then None
   else
     let app' = { app with assumes = app.assumes @ accumulated } in
     let result = App.run app' in
-    if all_safe result && gate_holds baseline app' then Some accumulated
+    if all_safe result then Some accumulated
     else
       let proposed = witnesses_of result |> List.concat_map propose_from_witness |> dedupe in
       let fresh =
@@ -247,18 +252,13 @@ let rec witness_loop ?(iter_cap = 16) (baseline : Reachability.AccessSet.t)
           proposed
       in
       if fresh = [] then None
-      else witness_loop ~iter_cap baseline app (accumulated @ fresh) (iter + 1)
-
-let verifies (baseline : Reachability.AccessSet.t) (app : App.t)
-    (extras : Exp.bexp list) : bool =
-  let app' = { app with assumes = app.assumes @ extras } in
-  all_safe (App.run app') && gate_holds baseline app'
+      else witness_loop ~iter_cap app (accumulated @ fresh) (iter + 1)
 
 (* Shrink-time verification: skip the reachability gate.
-   [shrink] only ever removes clauses, which monotonically weakens
+   Shrink only ever removes clauses, which monotonically weakens
    the precondition. A weaker precondition can only grow the
-   reachable set, so if [extras] passed the gate, every subset of
-   [extras] does too. We need only re-check DRF as we drop. *)
+   reachable set, so the gate's verdict for [extras] carries to
+   every subset. We need only re-check DRF as we drop. *)
 let verifies_drf_only (app : App.t) (extras : Exp.bexp list) : bool =
   let app' = { app with assumes = app.assumes @ extras } in
   all_safe (App.run app')
@@ -399,23 +399,31 @@ let main =
       Ok ()
     end
   end else begin
-    match witness_loop baseline_reachable app [] 0 with
-    | Some extras when extras <> [] ->
+    let try_finalize (extras : Exp.bexp list) (source : string) : bool =
       let minimal = shrink baseline_reachable app extras in
-      print_endline "DRF after witness-driven refinement.";
-      print_endline ("Discovered: " ^ format_assume_flags minimal);
-      Ok ()
-    | _ ->
-      let blanket = blanket_extras app in
-      if blanket <> [] && verifies baseline_reachable app blanket then begin
-        let minimal = shrink baseline_reachable app blanket in
-        print_endline "DRF after blanket fallback.";
+      let app' = { app with assumes = app.assumes @ minimal } in
+      if gate_holds baseline_reachable app' then begin
+        print_endline ("DRF after " ^ source ^ ".");
         print_endline ("Discovered: " ^ format_assume_flags minimal);
-        Ok ()
-      end else begin
-        print_endline "Racy; either a real race or a modelling gap.";
+        true
+      end else false
+    in
+    let witness_result =
+      match witness_loop app [] 0 with
+      | Some (_ :: _ as extras) when try_finalize extras "witness-driven refinement" -> true
+      | _ -> false
+    in
+    if witness_result then Ok ()
+    else begin
+      let blanket = blanket_extras app in
+      if blanket <> [] && verifies_drf_only app blanket
+         && try_finalize blanket "blanket fallback"
+      then Ok ()
+      else begin
+        print_endline "Racy; either a real race or a modelling gap (or vacuous DRF rejected).";
         Ok ()
       end
+    end
   end
 
 let () = exit (Cmd.eval_result main)
