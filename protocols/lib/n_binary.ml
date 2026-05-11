@@ -10,6 +10,7 @@ type t =
   | UPlus
   | Minus
   | Mult
+  | UMult
   | Div
   | Mod
 
@@ -21,6 +22,7 @@ let eval : t -> int -> int -> int = function
   | UPlus -> ( + )
   | Minus -> ( - )
   | Mult -> ( * )
+  | UMult -> ( * )
   | Div -> ( / )
   | Mod -> Common.modulo
   | LeftShift -> ( lsl )
@@ -31,6 +33,7 @@ let to_string : t -> string = function
   | UPlus -> "+u"
   | Minus -> "-"
   | Mult -> "*"
+  | UMult -> "*u"
   | Div -> "/"
   | Mod -> "%"
   | LeftShift -> "<<"

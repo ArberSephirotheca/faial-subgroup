@@ -113,6 +113,7 @@ let n_binary_to_op : N_binary.t -> (string, error) Result.t = function
   | UPlus -> Ok "Add"
   | Minus -> Ok "Sub"
   | Mult -> Ok "Mult"
+  | UMult -> Ok "Mult"
   | Div -> Ok "Div"
   | Mod -> Ok "Mod"
   | (BitOr | BitXOr | BitAnd | LeftShift | RightShift) as o ->

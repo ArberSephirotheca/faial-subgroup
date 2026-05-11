@@ -24,6 +24,7 @@ module BinOp = struct
     | UPlus -> Plus
     | Minus -> Minus
     | Mult -> Mult
+    | UMult -> Mult
     | Div -> Div
     | Mod -> Mod
 

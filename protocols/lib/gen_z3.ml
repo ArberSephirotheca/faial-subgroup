@@ -502,6 +502,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | UPlus -> N.mk_plus
     | Minus -> N.mk_minus
     | Mult -> N.mk_mult
+    | UMult -> N.mk_mult
     | Div -> N.mk_div
     | Mod -> N.mk_mod
 
