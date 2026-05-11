@@ -246,24 +246,29 @@ let usage_constrained_kernel
     (probe0, k)
   |> snd
 
+(* Z3 raises [Z3.Error "max. memory exceeded"] when a query exhausts
+   its memory cap (default ~6 GB). Treat it as an inconclusive result —
+   we couldn't prove DRF, so report [Racy] and let the caller decide. *)
 let compute_verdict (app : App.t) : verdict =
-  let baseline_reachable = access_set_of app in
-  let baseline = App.run app in
-  if all_safe baseline then
-    if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
-    else Drf { source = Source_baseline; assumes = [] }
-  else
-    match abductive_loop app baseline_reachable with
-    | Some minimal -> Drf { source = Source_abductive; assumes = minimal }
-    | None ->
-      let blanket = blanket_extras app in
-      if blanket = [] || not (verifies_drf_only app blanket) then Racy
-      else
-        let minimal = shrink baseline_reachable app blanket in
-        let app' = { app with assumes = app.assumes @ minimal } in
-        if gate_holds baseline_reachable app'
-        then Drf { source = Source_blanket; assumes = minimal }
-        else Racy
+  try
+    let baseline_reachable = access_set_of app in
+    let baseline = App.run app in
+    if all_safe baseline then
+      if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
+      else Drf { source = Source_baseline; assumes = [] }
+    else
+      match abductive_loop app baseline_reachable with
+      | Some minimal -> Drf { source = Source_abductive; assumes = minimal }
+      | None ->
+        let blanket = blanket_extras app in
+        if blanket = [] || not (verifies_drf_only app blanket) then Racy
+        else
+          let minimal = shrink baseline_reachable app blanket in
+          let app' = { app with assumes = app.assumes @ minimal } in
+          if gate_holds baseline_reachable app'
+          then Drf { source = Source_blanket; assumes = minimal }
+          else Racy
+  with Z3.Error _ -> Racy
 
 let report_prose (v : verdict) : unit =
   match v with
