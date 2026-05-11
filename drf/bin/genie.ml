@@ -148,7 +148,36 @@ let propose_from_witness (w : Solve_drf.Witness.t) : Exp.bexp list =
                   (Exp.n_mult (Exp.Num kk) (Exp.Var (var_of dn))))
         | _ -> None))
   in
-  sign_preds @ bound_preds @ mul_preds @ div_preds @ cross_preds @ scaled_preds
+  (* Param-equals-dim: kernels that mirror a launch axis in a param
+     (e.g. [width = blockDim.x], [size = blockDim.x * gridDim.x]).
+     When the witness has [p != dim], propose [p == dim]. *)
+  let eq_dim_preds =
+    let single_dims =
+      ["blockDim.x"; "blockDim.y"; "blockDim.z";
+       "gridDim.x"; "gridDim.y"; "gridDim.z"]
+    in
+    let from_single =
+      params |> List.concat_map (fun (k, vp) ->
+        single_dims |> List.filter_map (fun dn ->
+          match List.assoc_opt dn dims with
+          | Some vd when vp <> vd ->
+            Some (Exp.n_eq (Exp.Var (var_of k)) (Exp.Var (var_of dn)))
+          | _ -> None))
+    in
+    let from_product =
+      params |> List.concat_map (fun (k, vp) ->
+        mul_pairs |> List.filter_map (fun (gn, bn) ->
+          match List.assoc_opt gn dims, List.assoc_opt bn dims with
+          | Some vg, Some vb when vp <> vg * vb ->
+            Some (Exp.n_eq
+                    (Exp.Var (var_of k))
+                    (Exp.n_mult (Exp.Var (var_of gn)) (Exp.Var (var_of bn))))
+          | _ -> None))
+    in
+    from_single @ from_product
+  in
+  sign_preds @ bound_preds @ mul_preds @ div_preds @ cross_preds
+  @ scaled_preds @ eq_dim_preds
 
 let witnesses_of (rs : Analysis.t list) : Solve_drf.Witness.t list =
   rs |> List.concat_map (fun (a : Analysis.t) ->
