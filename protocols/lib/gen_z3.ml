@@ -65,6 +65,7 @@ module type NUMERIC_OPS = sig
   val mk_ge : binop
   val mk_gt : binop
   val mk_lt : binop
+  val mk_ult : binop
   val mk_not : unop
   val mk_unary_minus : unop
   val parse_num : string -> string
@@ -91,6 +92,7 @@ module ArithmeticOps : NUMERIC_OPS = struct
   let mk_ge = Arithmetic.mk_ge
   let mk_gt = Arithmetic.mk_gt
   let mk_lt = Arithmetic.mk_lt
+  let mk_ult = Arithmetic.mk_lt
   let mk_unary_minus = Arithmetic.mk_unary_minus
   let mk_not = missing1 "~"
   let parse_num (x : string) = x
@@ -152,6 +154,7 @@ module BitVectorOps (W : WordSize) = struct
   let mk_ge = BitVector.mk_sge
   let mk_gt = BitVector.mk_sgt
   let mk_lt = BitVector.mk_slt
+  let mk_ult = BitVector.mk_ult
   let mk_not = BitVector.mk_not
   let mk_unary_minus = BitVector.mk_neg
 
@@ -509,7 +512,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Le -> N.mk_le
     | Ge -> N.mk_ge
     | Lt -> N.mk_lt
-    | ULt -> N.mk_lt
+    | ULt -> N.mk_ult
     | Gt -> N.mk_gt
 
   let brel_to_expr :
@@ -718,6 +721,7 @@ module SignedBitVectorOps (W : WordSize) = struct
   let mk_ge = BitVector.mk_sge
   let mk_gt = BitVector.mk_sgt
   let mk_lt = BitVector.mk_slt
+  let mk_ult = BitVector.mk_slt
   let mk_not = BitVector.mk_not
   let mk_unary_minus = BitVector.mk_neg
 

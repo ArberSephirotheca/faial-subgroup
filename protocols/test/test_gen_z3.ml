@@ -87,6 +87,23 @@ let test_tactic_fail () : unit =
           Printf.sprintf "debug=%b, unexpected: %s" debug (Solver.to_string e)
           |> Alcotest.fail)
 
+let test_ult_vs_lt_on_zero () : unit =
+  (* ULt should be encoded as bvult: no unsigned BV value is < 0, so UNSAT.
+     Lt should be encoded as bvslt: half the signed BV range is < 0, so SAT.
+     This pins the encoder distinction at the only place ULt currently
+     diverges from Lt in [Gen_z3]. *)
+  let x = Variable.from_name "x" in
+  let ult_zero = NRel (N_rel.ULt, Var x, Num 0) in
+  let slt_zero = NRel (N_rel.Lt, Var x, Num 0) in
+  (match Bv64Gen.solve ult_zero with
+  | Ok Solver.Unsat -> ()
+  | Ok (Solver.Sat _) -> Alcotest.fail "ULt(x, 0) should be UNSAT, got SAT"
+  | Error msg -> Alcotest.failf "ULt(x, 0) solver error: %s" msg);
+  match Bv64Gen.solve slt_zero with
+  | Ok (Solver.Sat _) -> ()
+  | Ok Solver.Unsat -> Alcotest.fail "Lt(x, 0) should be SAT, got UNSAT"
+  | Error msg -> Alcotest.failf "Lt(x, 0) solver error: %s" msg
+
 let test_tactic_skip () : unit =
   (* Test Skip tactic in production mode - should solve tautology *)
   let tautology = Bool true in
@@ -117,6 +134,7 @@ let tests : unit Alcotest.test_case list =
     ("optimize_expr_with_timeout", `Quick, test_optimize_expr_with_timeout);
     ("tactic_fail", `Quick, test_tactic_fail);
     ("tactic_skip", `Quick, test_tactic_skip);
+    ("ult_vs_lt_on_zero", `Quick, test_ult_vs_lt_on_zero);
   ]
 
 let () = Alcotest.run "Gen_z3" [ ("test_gen_z3", tests) ]
