@@ -3,19 +3,6 @@ open Protocols_parsing
 open Drf
 open Cmdliner
 
-(* genie searches for a set of [--assume] preconditions that make a CUDA
-   kernel verify as DRF, on top of the always-on baseline of
-   [--assume-launch], [--assume-dims], [--assume-delin].
-
-   Refinement is witness-driven: each racy [Solve_drf] outcome carries a
-   [Witness.t] with the model values Z3 picked for the symbolic
-   parameters and launch dimensions. We propose only predicates that
-   contradict the witness — [p > 0] for params at non-positive values,
-   [p >= dim] for params whose magnitude is below a referenced launch
-   dim — and iterate until DRF or until no new predicate is suggested.
-   A final shrink pass drops anything that became redundant once later
-   iterations strengthened other clauses. *)
-
 let conv_bexp =
   let parse s =
     match Parsers.BExpParser.of_string s with
@@ -54,20 +41,6 @@ let unique_int_params (app : App.t) : Variable.t list =
 let all_safe (rs : Analysis.t list) : bool =
   List.for_all Analysis.is_safe rs
 
-(* Reachability gate.
-
-   Per-access: for each [CondAccess] in each [Flatacc.Kernel.t] the
-   pipeline produces, ask Z3 (via [Gen_z3.Bv64Gen]) whether the
-   kernel's precondition admits a thread state that reaches the
-   access. SAT = reachable; UNSAT = unreachable; UNKNOWN = treated
-   as reachable so we don't reject on solver indecision.
-
-   The set of reachable accesses computed at baseline (with no
-   discovered extras) is the invariant: every access reachable at
-   baseline must remain reachable after extras are added. A
-   constraint that excludes parameter values is fine; a constraint
-   that makes an access unreachable is not (that's a vacuous DRF in
-   disguise). *)
 let access_set_of (app : App.t) : Reachability.AccessSet.t =
   app.kernels |> App.only_kernel app
   |> List.concat_map (fun k ->
@@ -79,27 +52,11 @@ let access_set_of (app : App.t) : Reachability.AccessSet.t =
     |> Reachability.check_kernel ?timeout:app.timeout)
   |> Reachability.reachable_set
 
-(* Per-access gate: every access reachable at baseline must remain
-   reachable after extras. Stricter in principle but ~N× more
-   expensive (one Z3 query per access × per verify call). Kept
-   alive for comparison with the simple gate; not currently the
-   active one. *)
+(* Stricter alternative kept for comparison; one Z3 query per access. *)
 let[@warning "-32"] gate_holds_per_access
     (baseline : Reachability.AccessSet.t) (app : App.t) : bool =
   Reachability.AccessSet.subset baseline (access_set_of app)
 
-(* Simple gate: a single SAT query per kernel asking whether
-   [k.pre ∧ runtime] (with all user assumes applied via
-   [prepare_kernel]) admits at least one thread state. UNSAT means
-   the conjunction is contradictory — either the extras conflict
-   among themselves or with the kernel context.
-
-   Misses access-specific trivialisations the per-access gate
-   catches, but on the observed dataset the two variants agree on
-   every clearance and this one is ~N× faster. The [baseline]
-   argument is ignored; kept for signature uniformity so the
-   active gate can be swapped via the [gate_holds] binding
-   below. *)
 let gate_holds_simple (_baseline : Reachability.AccessSet.t)
     (app : App.t) : bool =
   app.kernels |> App.only_kernel app
@@ -111,35 +68,17 @@ let gate_holds_simple (_baseline : Reachability.AccessSet.t)
          ~params:app.params
     |> Reachability.preconditions_satisfiable ?timeout:app.timeout)
 
-(* Active gate. Swap to [gate_holds_per_access] to study the
-   per-access variant; [gate_holds_simple] is the production
-   default. *)
 let gate_holds = gate_holds_simple
 
-(* CEGAR loop. [accumulated] grows monotonically; each iteration runs
-   the analysis once, and either declares DRF, proposes new predicates
-   to add, or gives up because no witness suggests anything we don't
-   already have. The [iter] cap is a safety net — termination is
-   already guaranteed because each iteration adds at least one new
-   predicate over a finite param/dim space. *)
-(* Shrink-time verification: skip the reachability gate.
-   Shrink only ever removes clauses, which monotonically weakens
-   the precondition. A weaker precondition can only grow the
-   reachable set, so the gate's verdict for [extras] carries to
-   every subset. We need only re-check DRF as we drop. *)
-let verifies_drf_only (app : App.t) (extras : Exp.bexp list) : bool =
-  let app' = { app with assumes = app.assumes @ extras } in
-  all_safe (App.run app')
+let run_assuming (assumptions : Exp.bexp list) (app : App.t) : Analysis.t list =
+  { app with assumes = app.assumes @ assumptions }
+  |> App.run
 
-(* Abductive loop. One [Abduction.session] per genie invocation,
-   pool built once over the union of all (filtered) kernel pools.
-   Each iteration:
-     - Run faial under current selection.
-     - If all kernels DRF, return.
-     - Else for each racy witness, add it to the session's sample.
-     - Solve the propositional MaxSAT (smallest selector set that
-       excludes every accumulated bad model). If UNSAT, vocabulary
-       exhausted — return None. *)
+let verifies_drf_only (app : App.t) (assumptions : Exp.bexp list) : bool =
+  app
+  |> run_assuming assumptions
+  |> all_safe
+
 let abductive_loop ?(iter_cap = 32) (app : App.t) : Exp.bexp list option =
   let kernels = App.only_kernel app app.kernels in
   if kernels = [] then None
@@ -148,20 +87,10 @@ let abductive_loop ?(iter_cap = 32) (app : App.t) : Exp.bexp list option =
     let rec loop iter extras =
       if iter >= iter_cap then Some extras
       else
-        let app' = { app with assumes = app.assumes @ extras } in
-        let result = App.run app' in
+        let result = run_assuming extras app in
         if all_safe result then Some extras
         else
-          let added =
-            List.fold_left (fun acc (a : Analysis.t) ->
-              List.fold_left (fun acc (s : Solve_drf.Solution.t) ->
-                match s.outcome with
-                | Solve_drf.Outcome.Racy w ->
-                  acc + Abduction.add_sample session w.globals.variables
-                | _ -> acc)
-                acc a.report)
-              0 result
-          in
+          let added = Abduction.add_all result session in
           if added = 0 then None
           else
             match Abduction.solve session with
@@ -170,11 +99,6 @@ let abductive_loop ?(iter_cap = 32) (app : App.t) : Exp.bexp list option =
     in
     loop 0 []
 
-(* Blanket fallback for cases where the witness loop exits without
-   clearing — that happens when Z3 picks witnesses whose values
-   already satisfy the structurally-needed predicate (so witness-
-   driven can't propose it). Predicates over all int kernel params
-   against every block/grid axis; shrink trims the redundant ones. *)
 let blanket_extras (app : App.t) : Exp.bexp list =
   let dims = [
     Variable.bdim_x; Variable.bdim_y; Variable.bdim_z;
@@ -190,9 +114,6 @@ let blanket_extras (app : App.t) : Exp.bexp list =
   in
   signs @ bounds
 
-(* Greedy drop-clause shrinker. Walks [extras] in order and keeps a
-   clause iff dropping it causes some kernel to fail DRF. Locally
-   minimal; not globally minimal. *)
 let shrink (_baseline : Reachability.AccessSet.t) (app : App.t)
     (extras : Exp.bexp list) : Exp.bexp list =
   let rec loop kept remaining =
