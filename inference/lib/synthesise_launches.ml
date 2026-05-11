@@ -25,17 +25,17 @@ let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
 
 (** One assert per axis; non-[Ident] axis expressions fold into a
     fresh per-axis pseudo-parameter, deduplicated against earlier
-    slots through the resolver cache. *)
+    slots through the resolver cache. An axis that [resolve_axis]
+    returns as [None] emits [Skip] instead — under [--all-dims] that
+    dim then ranges freely, which is sound but imprecise. *)
 let dim_asserts (base : string) (e : C_lang.Expr.t) :
     (Launch_arg.t, Stmt.t) State.t =
   let* rhs_x, rhs_y, rhs_z = Launch_arg.resolve_axis base e in
-  return
-    (Stmt.from_list
-       [
-         assert_axis_eq base "x" rhs_x;
-         assert_axis_eq base "y" rhs_y;
-         assert_axis_eq base "z" rhs_z;
-       ])
+  let mk axis = function
+    | None -> Stmt.Skip
+    | Some rhs -> assert_axis_eq base axis rhs
+  in
+  return (Stmt.from_list [ mk "x" rhs_x; mk "y" rhs_y; mk "z" rhs_z ])
 
 let call_stmt (kernel : Decl_expr.t) (args : C_lang.Expr.t list) :
     (Launch_arg.t, Stmt.t) State.t =

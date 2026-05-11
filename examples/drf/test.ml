@@ -224,6 +224,27 @@ let tests =
      racy. *)
     ("drf-launch-const-binding.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Opaque-block launch: the launch supplies a struct field of
+     type [dim3] as the block dim, which cu-to-json wraps in a
+     copy-ctor [CXXConstructExpr] whose first arg is itself
+     [dim3]-typed. The launch-arg resolver does not decompose that
+     shape and emits no per-axis assert for [blockDim], leaving the
+     dims universally quantified under [--all-dims]. The kernel
+     writes via [atomicInc], DRF regardless of contention. Pins
+     that the "no constraint" output for opaque axes doesn't lose
+     legitimate DRF cases. *)
+    ("drf-launch-opaque-block.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* Opaque-block launch on a kernel whose index uses only
+     [threadIdx.x] and thus races when [blockDim.y]/[.z] can exceed
+     1. With the resolver emitting no constraint on the opaque
+     axes, [blockDim.y] stays free under [--all-dims] and Z3
+     witnesses a race between two threads differing on
+     [threadIdx.y]. A prior implementation fabricated
+     [blockDim.y == 1] / [blockDim.z == 1] for this case,
+     suppressing the race (false-negative DRF). *)
+    ("racy-launch-opaque-block.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)

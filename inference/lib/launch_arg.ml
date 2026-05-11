@@ -158,25 +158,54 @@ let resolve (idx : int) :
         | _ -> abstract e ~name:(mk_arg_name idx)
       else abstract e ~name:(mk_arg_name idx))
 
-(** Given a dim3 extract the 3 axis. *)
-let dim3_axes (e : C_lang.Expr.t) : C_lang.Expr.t * C_lang.Expr.t * C_lang.Expr.t =
-  let one : C_lang.Expr.t = IntegerLiteral 1 in
-  match e with
-  | CXXConstructExpr { args; _ } -> (
-      match args with
-      | [ x; y; z ] -> (x, y, z)
-      | [ x; y ] -> (x, y, one)
-      | [ x ] -> (x, one, one)
-      | _ -> (e, one, one))
-  | _ -> (e, one, one)
+(** Given a dim3 expression, extract each axis independently. [None]
+    on an axis signals that no static information is available and no
+    per-axis constraint should be emitted; fabricating
+    [IntegerLiteral 1] for an unknown axis would be unsound. For
+    [CXXConstructExpr], unspecified trailing args are CUDA-semantically
+    [1] (e.g. [dim3(32)] means [(32, 1, 1)]) and stay [Some].
 
-(** Resolves the x/y/z axes of a [gridDim]/[blockDim] expression. *)
+    Arms are gated by "all args integer-typed" — Clang sometimes
+    materialises a 3-arg [CXXConstructExpr] whose first arg is itself
+    a dim3-typed copy/move construct (when the launch slot receives an
+    existing dim3 value like a function return or struct field). The
+    value ctor [dim3(unsigned int, ...)] only applies when each arg is
+    integer; the dim3-typed shape falls through to [None]. *)
+let dim3_axes (e : C_lang.Expr.t) :
+    C_lang.Expr.t option * C_lang.Expr.t option * C_lang.Expr.t option =
+  let one : C_lang.Expr.t = IntegerLiteral 1 in
+  let is_int_arg (a : C_lang.Expr.t) : bool =
+    J_type.matches C_type.is_int (C_lang.Expr.to_type a)
+  in
+  match e with
+  | CXXConstructExpr { args = [ x; y; z ]; _ }
+    when is_int_arg x && is_int_arg y && is_int_arg z ->
+      (Some x, Some y, Some z)
+  | CXXConstructExpr { args = [ x; y ]; _ }
+    when is_int_arg x && is_int_arg y ->
+      (Some x, Some y, Some one)
+  | CXXConstructExpr { args = [ x ]; _ } when is_int_arg x ->
+      (Some x, Some one, Some one)
+  | _ -> (None, None, None)
+
+(** Resolves the x/y/z axes of a [gridDim]/[blockDim] expression.
+    [None] propagates per axis from [dim3_axes] when that slot can't
+    be decomposed. *)
 let resolve_axis (base : string) (e : C_lang.Expr.t) :
-    (t, D_lang.Expr.t * D_lang.Expr.t * D_lang.Expr.t) State.t =
+    (t, D_lang.Expr.t option * D_lang.Expr.t option * D_lang.Expr.t option)
+    State.t =
   let open State.Syntax in
   let xe, ye, ze = dim3_axes e in
-  let one (axis : string) (e : C_lang.Expr.t) =
-    resolve_pure_or (fun e -> abstract e ~name:(mk_axis_name base axis)) e
+  let one (axis : string) (e_opt : C_lang.Expr.t option) =
+    match e_opt with
+    | None -> return None
+    | Some e ->
+        let* d =
+          resolve_pure_or
+            (fun e -> abstract e ~name:(mk_axis_name base axis))
+            e
+        in
+        return (Some d)
   in
   let* rx = one "x" xe in
   let* ry = one "y" ye in
