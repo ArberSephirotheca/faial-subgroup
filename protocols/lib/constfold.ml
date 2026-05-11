@@ -8,7 +8,8 @@ let rec norm (b : bexp) : bexp list =
   | Bool _
   | BNot (CastBool _)
   | NRel _ | Distinct _
-  | BNot (Distinct _) ->
+  | BNot (Distinct _)
+  | BNot (NRel (ULt, _, _)) ->
       [ b ]
   | BRel (BAnd, b1, b2) -> List.append (norm b1) (norm b2)
   | BNot (Bool b) -> [ Bool (not b) ]

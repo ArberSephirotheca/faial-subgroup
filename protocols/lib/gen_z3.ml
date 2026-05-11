@@ -509,6 +509,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Le -> N.mk_le
     | Ge -> N.mk_ge
     | Lt -> N.mk_lt
+    | ULt -> N.mk_lt
     | Gt -> N.mk_gt
 
   let brel_to_expr :

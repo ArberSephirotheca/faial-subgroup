@@ -151,6 +151,11 @@ let n_lt (e1 : nexp) (e2 : nexp) : bexp =
   | Num e1, Num e2 -> Bool (e1 < e2)
   | _, _ -> NRel (Lt, e1, e2)
 
+let n_ult (e1 : nexp) (e2 : nexp) : bexp =
+  match (e1, e2) with
+  | Num e1, Num e2 -> Bool (e1 < e2)
+  | _, _ -> NRel (ULt, e1, e2)
+
 let n_gt (e1 : nexp) (e2 : nexp) : bexp =
   match (e1, e2) with
   | Num e1, Num e2 -> Bool (e1 > e2)
@@ -181,6 +186,7 @@ let n_neq (e1 : nexp) (e2 : nexp) : bexp =
 
 let n_rel : N_rel.t -> nexp -> nexp -> bexp = function
   | N_rel.Lt -> n_lt
+  | ULt -> n_ult
   | Gt -> n_gt
   | Eq -> n_eq
   | Neq -> n_neq

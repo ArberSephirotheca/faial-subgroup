@@ -18,6 +18,7 @@ let eval_nrel : N_rel.t -> Int32.t -> Int32.t -> bool = function
   | Le -> ( <= )
   | Ge -> ( >= )
   | Lt -> ( < )
+  | ULt -> ( < )
   | Gt -> ( > )
 
 let default_env (x : Variable.t) : (Int32.t, string) Result.t =

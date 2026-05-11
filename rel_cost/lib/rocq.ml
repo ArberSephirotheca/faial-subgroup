@@ -127,6 +127,7 @@ let n_rel_to_op : N_rel.t -> string = function
   | Eq -> "NEq"
   | Neq -> "NNeq"
   | Lt -> "NLt"
+  | ULt -> "NLt"
   | Le -> "NLe"
   | Gt -> "NGt"
   | Ge -> "NGe"
