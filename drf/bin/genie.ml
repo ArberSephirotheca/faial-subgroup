@@ -203,28 +203,29 @@ let all_safe (rs : Analysis.t list) : bool =
    branches), but if every access is unreachable the precondition
    itself is unsatisfiable. *)
 let preconditions_reachable (app : App.t) : bool =
-  let solve_safe p =
-    try
-      match Solve_drf.solve ~timeout:app.timeout ~logic:app.logic p with
-      | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN -> `Reachable
-      | Z3.Solver.UNSATISFIABLE -> `Unreachable
-    with Gen_z3.Not_implemented _ -> `Unknown
-  in
   try
     app.kernels |> App.only_kernel app
     |> List.for_all (fun kernel ->
-      let results =
+      let solutions =
         kernel
         |> App.translate Architecture.Block app
         |> Symbexp.sanity_check Architecture.Block
+        |> Solve_drf.Solution.solve ~timeout:app.timeout ~logic:app.logic
         |> Streamutil.to_list
-        |> List.map solve_safe
       in
-      (* If any proof says reachable, the kernel is reachable. If
-         every solve raised Not_implemented (BV-only operators), we
-         can't decide; treat as reachable rather than reject. *)
-      List.exists (fun r -> r = `Reachable) results
-      || List.for_all (fun r -> r = `Unknown) results)
+      (* On a sanity proof: [Drf] = UNSAT = unreachable; [Racy _] =
+         SAT = reachable; [Unknown] = inconclusive (we don't reject).
+         At least one reachable proof or all-inconclusive accepts
+         the kernel. *)
+      List.exists
+        (fun (s : Solve_drf.Solution.t) ->
+          match s.outcome with
+          | Solve_drf.Outcome.Racy _ -> true
+          | _ -> false)
+        solutions
+      || List.for_all
+        (fun (s : Solve_drf.Solution.t) -> s.outcome = Solve_drf.Outcome.Unknown)
+        solutions)
   with App.Stop_at_stage -> true
 
 (* CEGAR loop. [accumulated] grows monotonically; each iteration runs
