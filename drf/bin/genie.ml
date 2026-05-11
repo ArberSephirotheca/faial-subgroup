@@ -1,4 +1,3 @@
-open Stage0
 open Protocols
 open Protocols_parsing
 open Drf
@@ -196,37 +195,35 @@ let dedupe (xs : Exp.bexp list) : Exp.bexp list =
 let all_safe (rs : Analysis.t list) : bool =
   List.for_all Analysis.is_safe rs
 
-(* Reachability gate: when the accumulated preconditions are
-   contradictory, every sanity proof becomes UNSAT and the kernel
-   "verifies as DRF" vacuously. We require at least one SATISFIABLE
-   sanity proof per kernel — per-access UNSAT is normal (dead
-   branches), but if every access is unreachable the precondition
-   itself is unsatisfiable. *)
-let preconditions_reachable (app : App.t) : bool =
-  try
-    app.kernels |> App.only_kernel app
-    |> List.for_all (fun kernel ->
-      let solutions =
-        kernel
-        |> App.translate Architecture.Block app
-        |> Symbexp.sanity_check Architecture.Block
-        |> Solve_drf.Solution.solve ~timeout:app.timeout ~logic:app.logic
-        |> Streamutil.to_list
-      in
-      (* On a sanity proof: [Drf] = UNSAT = unreachable; [Racy _] =
-         SAT = reachable; [Unknown] = inconclusive (we don't reject).
-         At least one reachable proof or all-inconclusive accepts
-         the kernel. *)
-      List.exists
-        (fun (s : Solve_drf.Solution.t) ->
-          match s.outcome with
-          | Solve_drf.Outcome.Racy _ -> true
-          | _ -> false)
-        solutions
-      || List.for_all
-        (fun (s : Solve_drf.Solution.t) -> s.outcome = Solve_drf.Outcome.Unknown)
-        solutions)
-  with App.Stop_at_stage -> true
+(* Reachability gate.
+
+   Per-access: for each [CondAccess] in each [Flatacc.Kernel.t] the
+   pipeline produces, ask Z3 (via [Gen_z3.Bv64Gen]) whether the
+   kernel's precondition admits a thread state that reaches the
+   access. SAT = reachable; UNSAT = unreachable; UNKNOWN = treated
+   as reachable so we don't reject on solver indecision.
+
+   The set of reachable accesses computed at baseline (with no
+   discovered extras) is the invariant: every access reachable at
+   baseline must remain reachable after extras are added. A
+   constraint that excludes parameter values is fine; a constraint
+   that makes an access unreachable is not (that's a vacuous DRF in
+   disguise). *)
+let access_set_of (app : App.t) : Reachability.AccessSet.t =
+  app.kernels |> App.only_kernel app
+  |> List.concat_map (fun k ->
+    k
+    |> Reachability.prepare_kernel
+         ~assumes:app.assumes
+         ~assume_dims:app.assume_dims
+         ~params:app.params
+    |> Reachability.check_kernel ?timeout:app.timeout)
+  |> Reachability.reachable_set
+
+(* Returns true when every access in [baseline] is still reachable
+   under the current [app]. *)
+let gate_holds (baseline : Reachability.AccessSet.t) (app : App.t) : bool =
+  Reachability.AccessSet.subset baseline (access_set_of app)
 
 (* CEGAR loop. [accumulated] grows monotonically; each iteration runs
    the analysis once, and either declares DRF, proposes new predicates
@@ -234,13 +231,14 @@ let preconditions_reachable (app : App.t) : bool =
    already have. The [iter] cap is a safety net — termination is
    already guaranteed because each iteration adds at least one new
    predicate over a finite param/dim space. *)
-let rec witness_loop ?(iter_cap = 16) (app : App.t)
-    (accumulated : Exp.bexp list) (iter : int) : Exp.bexp list option =
+let rec witness_loop ?(iter_cap = 16) (baseline : Reachability.AccessSet.t)
+    (app : App.t) (accumulated : Exp.bexp list) (iter : int)
+    : Exp.bexp list option =
   if iter >= iter_cap then None
   else
     let app' = { app with assumes = app.assumes @ accumulated } in
     let result = App.run app' in
-    if all_safe result && preconditions_reachable app' then Some accumulated
+    if all_safe result && gate_holds baseline app' then Some accumulated
     else
       let proposed = witnesses_of result |> List.concat_map propose_from_witness |> dedupe in
       let fresh =
@@ -249,11 +247,21 @@ let rec witness_loop ?(iter_cap = 16) (app : App.t)
           proposed
       in
       if fresh = [] then None
-      else witness_loop ~iter_cap app (accumulated @ fresh) (iter + 1)
+      else witness_loop ~iter_cap baseline app (accumulated @ fresh) (iter + 1)
 
-let verifies (app : App.t) (extras : Exp.bexp list) : bool =
+let verifies (baseline : Reachability.AccessSet.t) (app : App.t)
+    (extras : Exp.bexp list) : bool =
   let app' = { app with assumes = app.assumes @ extras } in
-  all_safe (App.run app') && preconditions_reachable app'
+  all_safe (App.run app') && gate_holds baseline app'
+
+(* Shrink-time verification: skip the reachability gate.
+   [shrink] only ever removes clauses, which monotonically weakens
+   the precondition. A weaker precondition can only grow the
+   reachable set, so if [extras] passed the gate, every subset of
+   [extras] does too. We need only re-check DRF as we drop. *)
+let verifies_drf_only (app : App.t) (extras : Exp.bexp list) : bool =
+  let app' = { app with assumes = app.assumes @ extras } in
+  all_safe (App.run app')
 
 (* Blanket fallback for cases where the witness loop exits without
    clearing — that happens when Z3 picks witnesses whose values
@@ -278,12 +286,13 @@ let blanket_extras (app : App.t) : Exp.bexp list =
 (* Greedy drop-clause shrinker. Walks [extras] in order and keeps a
    clause iff dropping it causes some kernel to fail DRF. Locally
    minimal; not globally minimal. *)
-let shrink (app : App.t) (extras : Exp.bexp list) : Exp.bexp list =
+let shrink (_baseline : Reachability.AccessSet.t) (app : App.t)
+    (extras : Exp.bexp list) : Exp.bexp list =
   let rec loop kept remaining =
     match remaining with
     | [] -> kept
     | c :: rest ->
-      if verifies app (kept @ rest)
+      if verifies_drf_only app (kept @ rest)
       then loop kept rest
       else loop (kept @ [c]) rest
   in
@@ -377,9 +386,10 @@ let main =
       ~cbor
       ~stop_at:None
   in
+  let baseline_reachable = access_set_of app in
   let baseline = App.run app in
   if all_safe baseline then begin
-    if preconditions_reachable app then begin
+    if not (Reachability.AccessSet.is_empty baseline_reachable) then begin
       print_endline "DRF under baseline (--assume-launch --assume-dims --assume-delin).";
       print_endline "No extra --assume needed.";
       Ok ()
@@ -389,16 +399,16 @@ let main =
       Ok ()
     end
   end else begin
-    match witness_loop app [] 0 with
+    match witness_loop baseline_reachable app [] 0 with
     | Some extras when extras <> [] ->
-      let minimal = shrink app extras in
+      let minimal = shrink baseline_reachable app extras in
       print_endline "DRF after witness-driven refinement.";
       print_endline ("Discovered: " ^ format_assume_flags minimal);
       Ok ()
     | _ ->
       let blanket = blanket_extras app in
-      if blanket <> [] && verifies app blanket then begin
-        let minimal = shrink app blanket in
+      if blanket <> [] && verifies baseline_reachable app blanket then begin
+        let minimal = shrink baseline_reachable app blanket in
         print_endline "DRF after blanket fallback.";
         print_endline ("Discovered: " ^ format_assume_flags minimal);
         Ok ()
