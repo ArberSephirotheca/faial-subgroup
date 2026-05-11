@@ -156,3 +156,8 @@ let to_int_dom (c : t) : Int_dom.t option =
   | _ -> None
 
 let is_int (c : t) : bool = to_int_dom c |> Option.is_some
+
+let is_unsigned (c : t) : bool =
+  match to_int_dom c with
+  | Some d -> not d.signed
+  | None -> false

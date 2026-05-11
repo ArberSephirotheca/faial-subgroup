@@ -37,8 +37,8 @@ module UA = struct
    fun o (e1, x1) (e2, x2) ->
     let both : Exp.nexp = Binary (o, e1, e2) in
     match (o, x1, x2) with
-    | (Plus | Minus), Uniform, (AnyAccurate | Inc) -> (e2, Inc)
-    | (Plus | Minus), (AnyAccurate | Inc), Uniform -> (e1, Inc)
+    | (Plus | UPlus | Minus), Uniform, (AnyAccurate | Inc) -> (e2, Inc)
+    | (Plus | UPlus | Minus), (AnyAccurate | Inc), Uniform -> (e1, Inc)
     | _, _, _ -> (both, max x1 x2)
 
   let map (f : Exp.nexp -> Exp.nexp) ((e, x) : Exp.nexp * t) : Exp.nexp * t =
@@ -70,9 +70,10 @@ module UA = struct
           from_nexp Exp.(n_mult (Num (n1 * n2)) e)
       | Binary (Mult, Num n, Binary (Mult, e1, e2)) ->
           from_nexp Exp.(n_mult (n_mult (Num n) e1) e2)
-      | Binary (Mult, Num n, Binary (Plus, e1, e2))
-      | Binary (Mult, Binary (Plus, e1, e2), Num n) ->
-          from_nexp Exp.(n_plus (n_mult (Num n) e1) (n_mult (Num n) e2))
+      | Binary (Mult, Num n, Binary (((Plus | UPlus) as op), e1, e2))
+      | Binary (Mult, Binary (((Plus | UPlus) as op), e1, e2), Num n) ->
+          from_nexp
+            (Binary (op, Exp.n_mult (Num n) e1, Exp.n_mult (Num n) e2))
       | Binary (Mult, e1, e2) ->
           let e1, ty1 = from_nexp e1 in
           let e2, ty2 = from_nexp e2 in

@@ -58,8 +58,8 @@ module TypeAlias = struct
 end
 
 module Make (L : Logger) = struct
-  let parse_bin (op : string) (l : Imp.Infer_exp.t) (r : Infer_exp.t) :
-      Infer_exp.t =
+  let parse_bin ?(unsigned = false) (op : string) (l : Imp.Infer_exp.t)
+      (r : Infer_exp.t) : Infer_exp.t =
     match op with
     (* bool -> bool -> bool *)
     | "||" -> BExp (BRel (BOr, l, r))
@@ -68,11 +68,11 @@ module Make (L : Logger) = struct
     | "==" -> BExp (NRel (Eq, l, r))
     | "!=" -> BExp (NRel (Neq, l, r))
     | "<=" -> BExp (NRel (Le, l, r))
-    | "<" -> BExp (NRel (Lt, l, r))
+    | "<" -> BExp (NRel ((if unsigned then ULt else Lt), l, r))
     | ">=" -> BExp (NRel (Ge, l, r))
     | ">" -> BExp (NRel (Gt, l, r))
     (* int -> int -> int *)
-    | "+" -> NExp (Binary (Plus, l, r))
+    | "+" -> NExp (Binary ((if unsigned then UPlus else Plus), l, r))
     | "-" -> NExp (Binary (Minus, l, r))
     | "*" -> NExp (Binary (Mult, l, r))
     | "/" -> NExp (Binary (Div, l, r))
@@ -192,9 +192,18 @@ module Make (L : Logger) = struct
              (BExp (Infer_exp.n_eq n (NExp (Num 0)))))
     | BinaryOperator { opcode = ","; lhs = _; rhs = e; _ } -> infer_expr e
     | BinaryOperator { opcode = o; lhs = n1; rhs = n2; _ } ->
+        let is_unsigned_operand (e : D_lang.Expr.t) : bool =
+          e
+          |> D_lang.Expr.to_type
+          |> J_type.to_c_type_res
+          |> Result.to_option
+          |> Option.map C_type.is_unsigned
+          |> Option.value ~default:false
+        in
+        let unsigned = is_unsigned_operand n1 || is_unsigned_operand n2 in
         let n1 = infer_expr n1 in
         let n2 = infer_expr n2 in
-        parse_bin o n1 n2
+        parse_bin ~unsigned o n1 n2
     | CXXBoolLiteralExpr b -> BExp (Bool b)
     | UnaryOperator u when u.opcode = "!" ->
         let b = infer_expr u.child in
