@@ -7,6 +7,7 @@ type t =
   | LeftShift
   | RightShift
   | Plus
+  | UPlus
   | Minus
   | Mult
   | Div
@@ -17,6 +18,7 @@ let eval : t -> int -> int -> int = function
   | BitXOr -> ( lxor )
   | BitOr -> ( lor )
   | Plus -> ( + )
+  | UPlus -> ( + )
   | Minus -> ( - )
   | Mult -> ( * )
   | Div -> ( / )
@@ -26,6 +28,7 @@ let eval : t -> int -> int -> int = function
 
 let to_string : t -> string = function
   | Plus -> "+"
+  | UPlus -> "+u"
   | Minus -> "-"
   | Mult -> "*"
   | Div -> "/"

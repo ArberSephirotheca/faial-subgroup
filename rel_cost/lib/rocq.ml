@@ -110,6 +110,7 @@ let sanitize_name (name : string) : string =
 
 let n_binary_to_op : N_binary.t -> (string, error) Result.t = function
   | Plus -> Ok "Add"
+  | UPlus -> Ok "Add"
   | Minus -> Ok "Sub"
   | Mult -> Ok "Mult"
   | Div -> Ok "Div"

@@ -496,6 +496,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | LeftShift -> N.mk_left_shift
     | RightShift -> N.mk_right_shift
     | Plus -> N.mk_plus
+    | UPlus -> N.mk_plus
     | Minus -> N.mk_minus
     | Mult -> N.mk_mult
     | Div -> N.mk_div

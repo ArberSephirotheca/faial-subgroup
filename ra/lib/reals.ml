@@ -21,6 +21,7 @@ module BinOp = struct
     | LeftShift -> LeftShift
     | RightShift -> RightShift
     | Plus -> Plus
+    | UPlus -> Plus
     | Minus -> Minus
     | Mult -> Mult
     | Div -> Div
