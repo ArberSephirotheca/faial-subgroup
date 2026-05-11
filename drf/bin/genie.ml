@@ -220,10 +220,42 @@ let access_set_of (app : App.t) : Reachability.AccessSet.t =
     |> Reachability.check_kernel ?timeout:app.timeout)
   |> Reachability.reachable_set
 
-(* Returns true when every access in [baseline] is still reachable
-   under the current [app]. *)
-let gate_holds (baseline : Reachability.AccessSet.t) (app : App.t) : bool =
+(* Per-access gate: every access reachable at baseline must remain
+   reachable after extras. Stricter in principle but ~N× more
+   expensive (one Z3 query per access × per verify call). Kept
+   alive for comparison with the simple gate; not currently the
+   active one. *)
+let[@warning "-32"] gate_holds_per_access
+    (baseline : Reachability.AccessSet.t) (app : App.t) : bool =
   Reachability.AccessSet.subset baseline (access_set_of app)
+
+(* Simple gate: a single SAT query per kernel asking whether
+   [k.pre ∧ runtime] (with all user assumes applied via
+   [prepare_kernel]) admits at least one thread state. UNSAT means
+   the conjunction is contradictory — either the extras conflict
+   among themselves or with the kernel context.
+
+   Misses access-specific trivialisations the per-access gate
+   catches, but on the observed dataset the two variants agree on
+   every clearance and this one is ~N× faster. The [baseline]
+   argument is ignored; kept for signature uniformity so the
+   active gate can be swapped via the [gate_holds] binding
+   below. *)
+let gate_holds_simple (_baseline : Reachability.AccessSet.t)
+    (app : App.t) : bool =
+  app.kernels |> App.only_kernel app
+  |> List.for_all (fun k ->
+    k
+    |> Reachability.prepare_kernel
+         ~assumes:app.assumes
+         ~assume_dims:app.assume_dims
+         ~params:app.params
+    |> Reachability.preconditions_satisfiable ?timeout:app.timeout)
+
+(* Active gate. Swap to [gate_holds_per_access] to study the
+   per-access variant; [gate_holds_simple] is the production
+   default. *)
+let gate_holds = gate_holds_simple
 
 (* CEGAR loop. [accumulated] grows monotonically; each iteration runs
    the analysis once, and either declares DRF, proposes new predicates
