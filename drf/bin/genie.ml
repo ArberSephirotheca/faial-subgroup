@@ -1,7 +1,20 @@
+open Stage0
 open Protocols
 open Protocols_parsing
 open Drf
 open Cmdliner
+
+type verdict_source = Source_baseline | Source_abductive | Source_blanket
+
+let source_to_string = function
+  | Source_baseline -> "baseline"
+  | Source_abductive -> "abductive"
+  | Source_blanket -> "blanket"
+
+type verdict =
+  | Drf of { source : verdict_source; assumes : Exp.bexp list }
+  | Drf_vacuous
+  | Racy
 
 let conv_bexp =
   let parse s =
@@ -131,6 +144,90 @@ let format_assume_flags (extras : Exp.bexp list) : string =
   |> List.map (fun b -> "--assume \"" ^ Exp.b_to_string b ^ "\"")
   |> String.concat " "
 
+let compute_verdict (app : App.t) : verdict =
+  let baseline_reachable = access_set_of app in
+  let baseline = App.run app in
+  if all_safe baseline then
+    if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
+    else Drf { source = Source_baseline; assumes = [] }
+  else
+    let try_with extras =
+      let minimal = shrink baseline_reachable app extras in
+      let app' = { app with assumes = app.assumes @ minimal } in
+      if gate_holds baseline_reachable app' then Some minimal else None
+    in
+    let from_abductive =
+      match abductive_loop app with
+      | Some (_ :: _ as extras) when verifies_drf_only app extras ->
+        try_with extras
+      | _ -> None
+    in
+    match from_abductive with
+    | Some minimal -> Drf { source = Source_abductive; assumes = minimal }
+    | None ->
+      let blanket = blanket_extras app in
+      if blanket = [] || not (verifies_drf_only app blanket) then Racy
+      else
+        match try_with blanket with
+        | Some minimal -> Drf { source = Source_blanket; assumes = minimal }
+        | None -> Racy
+
+let report_prose (v : verdict) : unit =
+  match v with
+  | Drf { source = Source_baseline; _ } ->
+    print_endline
+      "DRF under baseline (--assume-launch --assume-dims --assume-delin).";
+    print_endline "No extra --assume needed."
+  | Drf_vacuous ->
+    print_endline
+      "Baseline preconditions are unsatisfiable — kernel is vacuously DRF.";
+    print_endline
+      "Check that the kernel and any user --assume flags are mutually \
+       satisfiable."
+  | Drf { source; assumes } ->
+    let label = match source with
+      | Source_abductive -> "abductive refinement"
+      | Source_blanket -> "blanket fallback"
+      | Source_baseline -> assert false
+    in
+    print_endline ("DRF after " ^ label ^ ".");
+    print_endline ("Discovered: " ^ format_assume_flags assumes)
+  | Racy ->
+    print_endline
+      "Racy; either a real race or a modelling gap (or vacuous DRF rejected)."
+
+let report_json (app : App.t) (v : verdict) : unit =
+  let verdict_str, source_json, assumes_json = match v with
+    | Drf { source; assumes } ->
+      "drf",
+      `String (source_to_string source),
+      `List (List.map (fun b -> `String (Exp.b_to_string b)) assumes)
+    | Drf_vacuous -> "drf_vacuous", `Null, `List []
+    | Racy -> "racy", `Null, `List []
+  in
+  let status = match v with Racy -> "racy" | _ -> "drf" in
+  let kernels =
+    App.only_kernel app app.kernels
+    |> List.map (fun (k : Kernel.t) ->
+      `Assoc [
+        ("kernel_name", `String k.name);
+        ("status", `String status);
+      ])
+  in
+  `Assoc [
+    ("verdict", `String verdict_str);
+    ("source", source_json);
+    ("assumes", assumes_json);
+    ("kernels", `List kernels);
+    ("phase_times", Phase_timer.to_json ());
+    ("argv",
+     `List (Sys.argv |> Array.to_list |> List.map (fun x -> `String x)));
+    ("executable_name", `String Sys.executable_name);
+    ("z3_version", `String Z3.Version.to_string);
+  ]
+  |> Yojson.Basic.to_string
+  |> print_endline
+
 let main =
   let doc = "Search for assume-constraints that make a CUDA kernel DRF." in
   let info = Cmd.info "faial-genie" ~doc in
@@ -183,6 +280,9 @@ let main =
     Arg.(value & opt_all conv_bexp []
          & info [ "assume" ] ~docv:"BEXP"
              ~doc:"Pre-condition added to all kernels at the baseline.")
+  and+ output_json =
+    Arg.(value & flag
+         & info [ "json" ] ~doc:"Output result as a single JSON object.")
   in
   let archs = [ Architecture.Block ] in
   let app =
@@ -214,45 +314,8 @@ let main =
       ~cbor
       ~stop_at:None
   in
-  let baseline_reachable = access_set_of app in
-  let baseline = App.run app in
-  if all_safe baseline then begin
-    if not (Reachability.AccessSet.is_empty baseline_reachable) then begin
-      print_endline "DRF under baseline (--assume-launch --assume-dims --assume-delin).";
-      print_endline "No extra --assume needed.";
-      Ok ()
-    end else begin
-      print_endline "Baseline preconditions are unsatisfiable — kernel is vacuously DRF.";
-      print_endline "Check that the kernel and any user --assume flags are mutually satisfiable.";
-      Ok ()
-    end
-  end else begin
-    let try_finalize (extras : Exp.bexp list) (source : string) : bool =
-      let minimal = shrink baseline_reachable app extras in
-      let app' = { app with assumes = app.assumes @ minimal } in
-      if gate_holds baseline_reachable app' then begin
-        print_endline ("DRF after " ^ source ^ ".");
-        print_endline ("Discovered: " ^ format_assume_flags minimal);
-        true
-      end else false
-    in
-    let abductive_result =
-      match abductive_loop app with
-      | Some (_ :: _ as extras) when verifies_drf_only app extras
-                                     && try_finalize extras "abductive refinement" -> true
-      | _ -> false
-    in
-    if abductive_result then Ok ()
-    else begin
-      let blanket = blanket_extras app in
-      if blanket <> [] && verifies_drf_only app blanket
-         && try_finalize blanket "blanket fallback"
-      then Ok ()
-      else begin
-        print_endline "Racy; either a real race or a modelling gap (or vacuous DRF rejected).";
-        Ok ()
-      end
-    end
-  end
+  let v = compute_verdict app in
+  if output_json then report_json app v else report_prose v;
+  Ok ()
 
 let () = exit (Cmd.eval_result main)
