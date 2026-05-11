@@ -131,6 +131,45 @@ let verifies_drf_only (app : App.t) (extras : Exp.bexp list) : bool =
   let app' = { app with assumes = app.assumes @ extras } in
   all_safe (App.run app')
 
+(* Abductive loop. One [Abduction.session] per genie invocation,
+   pool built once over the union of all (filtered) kernel pools.
+   Each iteration:
+     - Run faial under current selection.
+     - If all kernels DRF, return.
+     - Else for each racy witness, add it to the session's sample.
+     - Solve the propositional MaxSAT (smallest selector set that
+       excludes every accumulated bad model). If UNSAT, vocabulary
+       exhausted — return None. *)
+let abductive_loop ?(iter_cap = 32) (app : App.t) : Exp.bexp list option =
+  let kernels = App.only_kernel app app.kernels in
+  if kernels = [] then None
+  else
+    let session = Abduction.create_for_kernels kernels in
+    let rec loop iter extras =
+      if iter >= iter_cap then Some extras
+      else
+        let app' = { app with assumes = app.assumes @ extras } in
+        let result = App.run app' in
+        if all_safe result then Some extras
+        else
+          let added =
+            List.fold_left (fun acc (a : Analysis.t) ->
+              List.fold_left (fun acc (s : Solve_drf.Solution.t) ->
+                match s.outcome with
+                | Solve_drf.Outcome.Racy w ->
+                  acc + Abduction.add_sample session w.globals.variables
+                | _ -> acc)
+                acc a.report)
+              0 result
+          in
+          if added = 0 then None
+          else
+            match Abduction.solve session with
+            | None -> None
+            | Some new_extras -> loop (iter + 1) new_extras
+    in
+    loop 0 []
+
 (* Blanket fallback for cases where the witness loop exits without
    clearing — that happens when Z3 picks witnesses whose values
    already satisfy the structurally-needed predicate (so witness-
@@ -267,19 +306,29 @@ let main =
       Ok ()
     end
   end else begin
-    let blanket = blanket_extras app in
-    if blanket = [] || not (verifies_drf_only app blanket) then begin
-      print_endline "Racy; either a real race or a modelling gap.";
-      Ok ()
-    end else begin
-      let minimal = shrink baseline_reachable app blanket in
+    let try_finalize (extras : Exp.bexp list) (source : string) : bool =
+      let minimal = shrink baseline_reachable app extras in
       let app' = { app with assumes = app.assumes @ minimal } in
       if gate_holds baseline_reachable app' then begin
-        print_endline "DRF after blanket+shrink refinement.";
+        print_endline ("DRF after " ^ source ^ ".");
         print_endline ("Discovered: " ^ format_assume_flags minimal);
-        Ok ()
-      end else begin
-        print_endline "Racy; preconditions found but reachability gate rejected (vacuous).";
+        true
+      end else false
+    in
+    let abductive_result =
+      match abductive_loop app with
+      | Some (_ :: _ as extras) when verifies_drf_only app extras
+                                     && try_finalize extras "abductive refinement" -> true
+      | _ -> false
+    in
+    if abductive_result then Ok ()
+    else begin
+      let blanket = blanket_extras app in
+      if blanket <> [] && verifies_drf_only app blanket
+         && try_finalize blanket "blanket fallback"
+      then Ok ()
+      else begin
+        print_endline "Racy; either a real race or a modelling gap (or vacuous DRF rejected).";
         Ok ()
       end
     end
