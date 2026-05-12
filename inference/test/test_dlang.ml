@@ -55,6 +55,50 @@ let test_integer_literal_parses_uint64_sentinel () : unit =
     (-4265267296055464877)
     (parse_int_literal "14181476777654086739")
 
+(* c-to-json's path_condition can carry a synthetic for-init-bound
+   conjunct: a [BinaryOperator] with opcode [>=]/[<=] whose LHS is a
+   bare [DeclRefExpr] (no [ImplicitCastExpr] wrap) and whose neither the
+   compare node nor the LHS [DeclRefExpr] carries a [range] — both
+   synthesised after parsing. The path-condition parser must accept
+   that shape. *)
+let test_synthetic_for_init_bound_parses () : unit =
+  let v_ref : Yojson.Basic.t =
+    `Assoc
+      [
+        ("kind", `String "DeclRefExpr");
+        ("type", `Assoc [ ("qualType", `String "int") ]);
+        ( "referencedDecl",
+          `Assoc
+            [
+              ("kind", `String "VarDecl");
+              ("name", `String "v");
+              ("type", `Assoc [ ("qualType", `String "int") ]);
+            ] );
+      ]
+  in
+  let zero : Yojson.Basic.t =
+    `Assoc
+      [
+        ("kind", `String "IntegerLiteral");
+        ("value", `String "0");
+        ("type", `Assoc [ ("qualType", `String "int") ]);
+      ]
+  in
+  let init_bound : Yojson.Basic.t =
+    `Assoc
+      [
+        ("kind", `String "BinaryOperator");
+        ("type", `Assoc [ ("qualType", `String "bool") ]);
+        ("opcode", `String ">=");
+        ("inner", `List [ v_ref; zero ]);
+      ]
+  in
+  match C_lang.parse_expr init_bound with
+  | Ok _ -> ()
+  | Error e ->
+      Alcotest.failf "parse_expr on synthetic init-bound failed: %s"
+        (Rjson.error_to_string e)
+
 let tests : unit Alcotest.test_case list =
   [
     ("last + skip_last", `Quick, test_last_and_skip_last);
@@ -64,6 +108,9 @@ let tests : unit Alcotest.test_case list =
     ( "IntegerLiteral: uint64 sentinel",
       `Quick,
       test_integer_literal_parses_uint64_sentinel );
+    ( "path_condition: synthetic for-init bound",
+      `Quick,
+      test_synthetic_for_init_bound_parses );
   ]
 
 let () = Alcotest.run "D_lang" [ ("dlang", tests) ]
