@@ -17,11 +17,13 @@ let eval_nrel : N_rel.t -> Int32.t -> Int32.t -> bool = function
   | Eq -> ( = )
   | Neq -> ( <> )
   | Le -> ( <= )
+  | ULe -> ( <= )
   | Ge -> ( >= )
   | UGe -> ( >= )
   | Lt -> ( < )
   | ULt -> ( < )
   | Gt -> ( > )
+  | UGt -> ( > )
 
 let default_env (x : Variable.t) : (Int32.t, string) Result.t =
   Error ("n_eval: variable " ^ Variable.name x)

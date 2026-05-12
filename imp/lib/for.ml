@@ -32,8 +32,8 @@ module Comparator = struct
 
   let parse : N_rel.t -> t option = function
     | Lt | ULt -> Some Lt
-    | Gt -> Some Gt
-    | Le -> Some Le
+    | Gt | UGt -> Some Gt
+    | Le | ULe -> Some Le
     | Ge | UGe -> Some Ge
     | _ -> None
 end

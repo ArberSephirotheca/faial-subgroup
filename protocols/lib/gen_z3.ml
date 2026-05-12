@@ -62,9 +62,11 @@ module type NUMERIC_OPS = sig
   val mk_div : binop
   val mk_mod : binop
   val mk_le : binop
+  val mk_ule : binop
   val mk_ge : binop
   val mk_uge : binop
   val mk_gt : binop
+  val mk_ugt : binop
   val mk_lt : binop
   val mk_ult : binop
   val mk_not : unop
@@ -90,9 +92,11 @@ module ArithmeticOps : NUMERIC_OPS = struct
   let mk_div = Arithmetic.mk_div
   let mk_mod = Arithmetic.Integer.mk_mod
   let mk_le = Arithmetic.mk_le
+  let mk_ule = Arithmetic.mk_le
   let mk_ge = Arithmetic.mk_ge
   let mk_uge = Arithmetic.mk_ge
   let mk_gt = Arithmetic.mk_gt
+  let mk_ugt = Arithmetic.mk_gt
   let mk_lt = Arithmetic.mk_lt
   let mk_ult = Arithmetic.mk_lt
   let mk_unary_minus = Arithmetic.mk_unary_minus
@@ -153,9 +157,11 @@ module BitVectorOps (W : WordSize) = struct
   let mk_div = BitVector.mk_sdiv
   let mk_mod = BitVector.mk_smod
   let mk_le = BitVector.mk_sle
+  let mk_ule = BitVector.mk_ule
   let mk_ge = BitVector.mk_sge
   let mk_uge = BitVector.mk_uge
   let mk_gt = BitVector.mk_sgt
+  let mk_ugt = BitVector.mk_ugt
   let mk_lt = BitVector.mk_slt
   let mk_ult = BitVector.mk_ult
   let mk_not = BitVector.mk_not
@@ -514,10 +520,12 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Eq -> Boolean.mk_eq
     | Neq -> fun ctx n1 n2 -> Boolean.mk_not ctx (Boolean.mk_eq ctx n1 n2)
     | Le -> N.mk_le
+    | ULe -> N.mk_ule
     | Ge -> N.mk_ge
     | Lt -> N.mk_lt
     | ULt -> N.mk_ult
     | Gt -> N.mk_gt
+    | UGt -> N.mk_ugt
     | UGe -> N.mk_uge
 
   let brel_to_expr :
@@ -723,9 +731,11 @@ module SignedBitVectorOps (W : WordSize) = struct
   let mk_div = BitVector.mk_sdiv
   let mk_mod = BitVector.mk_smod
   let mk_le = BitVector.mk_sle
+  let mk_ule = BitVector.mk_sle
   let mk_ge = BitVector.mk_sge
   let mk_uge = BitVector.mk_sge
   let mk_gt = BitVector.mk_sgt
+  let mk_ugt = BitVector.mk_sgt
   let mk_lt = BitVector.mk_slt
   let mk_ult = BitVector.mk_slt
   let mk_not = BitVector.mk_not

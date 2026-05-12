@@ -130,7 +130,9 @@ let n_rel_to_op : N_rel.t -> string = function
   | Lt -> "NLt"
   | ULt -> "NLt"
   | Le -> "NLe"
+  | ULe -> "NLe"
   | Gt -> "NGt"
+  | UGt -> "NGt"
   | Ge -> "NGe"
   | UGe -> "NGe"
 

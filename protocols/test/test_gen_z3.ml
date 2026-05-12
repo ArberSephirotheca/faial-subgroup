@@ -87,6 +87,29 @@ let test_tactic_fail () : unit =
           Printf.sprintf "debug=%b, unexpected: %s" debug (Solver.to_string e)
           |> Alcotest.fail)
 
+let test_ule_ugt_on_zero () : unit =
+  (* Symmetric to [test_ult_vs_lt_on_zero], for [ULe] and [UGt].
+     With [x] a free 64-bit BV variable:
+       UGt(x, -1)  encoded as bvugt(x, all-ones)  -> UNSAT
+                   (no unsigned value > the max unsigned).
+       Gt(x, -1)   encoded as bvsgt(x, all-ones)  -> SAT
+                   (all-ones is signed -1, anything > -1 exists).
+       ULe(x, -1)  encoded as bvule(x, all-ones)  -> SAT (always).
+       Le(x, -1)   encoded as bvsle(x, all-ones)  -> SAT
+                   (the negative half of signed range). *)
+  let x = Variable.from_name "x" in
+  let minus_one = Num (-1) in
+  let ugt = NRel (N_rel.UGt, Var x, minus_one) in
+  let sgt = NRel (N_rel.Gt, Var x, minus_one) in
+  (match Bv64Gen.solve ugt with
+  | Ok Solver.Unsat -> ()
+  | Ok (Solver.Sat _) -> Alcotest.fail "UGt(x, -1) should be UNSAT"
+  | Error msg -> Alcotest.failf "UGt solver error: %s" msg);
+  match Bv64Gen.solve sgt with
+  | Ok (Solver.Sat _) -> ()
+  | Ok Solver.Unsat -> Alcotest.fail "Gt(x, -1) should be SAT"
+  | Error msg -> Alcotest.failf "Gt solver error: %s" msg
+
 let test_medianfilter_overflow_shape () : unit =
   (* Pin the [Bv64Gen] verdict on the shape that motivated this feature.
      The setup mirrors what [Params.to_bexp] emits for two declared
@@ -182,6 +205,7 @@ let tests : unit Alcotest.test_case list =
     ("tactic_skip", `Quick, test_tactic_skip);
     ("ult_vs_lt_on_zero", `Quick, test_ult_vs_lt_on_zero);
     ("medianfilter_overflow_shape", `Quick, test_medianfilter_overflow_shape);
+    ("ule_ugt_on_zero", `Quick, test_ule_ugt_on_zero);
   ]
 
 let () = Alcotest.run "Gen_z3" [ ("test_gen_z3", tests) ]
