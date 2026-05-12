@@ -481,7 +481,7 @@ let print_optimize (pre : bexp) (formula : nexp) : unit =
   in
   let formula =
     formula
-    |> Exp.n_bin_split N_binary.Plus
+    |> Exp.n_bin_split (N_binary.Plus Signedness.Signed)
     |> List.map Exp.n_to_string |> String.concat "\n    + "
   in
   prerr_endline

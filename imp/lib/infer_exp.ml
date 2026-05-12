@@ -54,9 +54,9 @@ and to_b_string : b -> string = function
   | Pred (o, e) -> o ^ "(" ^ to_string e ^ ")"
 
 let n_bin (o : N_binary.t) (e1 : t) (e2 : t) : n = Binary (o, e1, e2)
-let plus : t -> t -> n = n_bin Plus
-let lt (e1 : t) (e2 : t) : b = NRel (Lt, e1, e2)
-let gt (e1 : t) (e2 : t) : b = NRel (Gt, e1, e2)
+let plus : t -> t -> n = n_bin (Plus Signedness.Signed)
+let lt (e1 : t) (e2 : t) : b = NRel (Lt Signedness.Signed, e1, e2)
+let gt (e1 : t) (e2 : t) : b = NRel (Gt Signedness.Signed, e1, e2)
 let min (e1 : t) (e2 : t) : n = NIf (BExp (lt e1 e2), e1, e2)
 let max (e1 : t) (e2 : t) : n = NIf (BExp (gt e1 e2), e1, e2)
 let or_ (e1 : t) (e2 : t) : b = BRel (BOr, e1, e2)

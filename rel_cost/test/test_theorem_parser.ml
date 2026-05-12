@@ -58,7 +58,7 @@ let benchmark_tests =
             Goal.Prop
               (NRel
                  ( N_rel.Eq,
-                   NCall ("ua", Binary (N_binary.Mult, Num 2, var "tidx")),
+                   NCall ("ua", Binary (N_binary.Mult Signedness.Signed, Num 2, var "tidx")),
                    Num 2 ));
           ];
       };
@@ -82,14 +82,14 @@ let benchmark_tests =
           Some
             (BRel
                ( B_rel.BAnd,
-                 NRel (N_rel.Ge, var "x", Num 1),
-                 NRel (N_rel.Le, var "x", Num 10) ));
+                 NRel (N_rel.Ge Signedness.Signed, var "x", Num 1),
+                 NRel (N_rel.Le Signedness.Signed, var "x", Num 10) ));
         goals =
           [
             Goal.Prop
               (NRel
                  ( N_rel.Eq,
-                   NCall ("ua", Binary (N_binary.Mult, var "x", var "tidx")),
+                   NCall ("ua", Binary (N_binary.Mult Signedness.Signed, var "x", var "tidx")),
                    var "x" ));
           ];
       };
@@ -113,14 +113,14 @@ let benchmark_tests =
           Some
             (BRel
                ( B_rel.BAnd,
-                 NRel (N_rel.Ge, var "x", Num 1),
-                 NRel (N_rel.Le, var "x", Num 32) ));
+                 NRel (N_rel.Ge Signedness.Signed, var "x", Num 1),
+                 NRel (N_rel.Le Signedness.Signed, var "x", Num 32) ));
         goals =
           [
             Goal.Prop
               (NRel
                  ( N_rel.Eq,
-                   NCall ("ua", Binary (N_binary.Mult, var "x", var "tidx")),
+                   NCall ("ua", Binary (N_binary.Mult Signedness.Signed, var "x", var "tidx")),
                    var "x" ));
           ];
       };
@@ -143,14 +143,14 @@ let field_order_tests =
         locals = [ Variable.from_name "x"; Variable.from_name "y" ];
         globals = [];
         threads_per_warp = Some 16;
-        active_threads = Some (NRel (N_rel.Gt, var "x", Num 0));
+        active_threads = Some (NRel (N_rel.Gt Signedness.Signed, var "x", Num 0));
         block_dim = Some (Dim3.make ~x:16 ~y:2 ~z:1 ());
         goals =
           [
             Goal.Prop
               (NRel
                  ( N_rel.Eq,
-                   NCall ("ua", Binary (N_binary.Plus, var "x", var "y")),
+                   NCall ("ua", Binary (N_binary.Plus Signedness.Signed, var "x", var "y")),
                    Num 2 ));
           ];
       };
@@ -211,7 +211,7 @@ let relational_operator_tests =
         globals = [];
         active_threads = Some (Bool true);
         assumptions = Some (Bool true);
-        goals = [ Goal.Prop (NRel (N_rel.Lt, NCall ("ua", var "x"), Num 10)) ];
+        goals = [ Goal.Prop (NRel (N_rel.Lt Signedness.Signed, NCall ("ua", var "x"), Num 10)) ];
       };
     test_theorem_parse "greater equal relation"
       {|
@@ -233,8 +233,8 @@ let relational_operator_tests =
           [
             Goal.Prop
               (NRel
-                 ( N_rel.Ge,
-                   NCall ("ua", Binary (N_binary.Plus, var "x", Num 1)),
+                 ( N_rel.Ge Signedness.Signed,
+                   NCall ("ua", Binary (N_binary.Plus Signedness.Signed, var "x", Num 1)),
                    var "x" ));
           ];
       };
@@ -265,9 +265,9 @@ let complex_expression_tests =
           Some
             (BRel
                ( B_rel.BAnd,
-                 NRel (N_rel.Gt, var "stride", Num 0),
-                 NRel (N_rel.Lt, var "x", Num 100) ));
-        assumptions = Some (NRel (N_rel.Ge, var "y", Num 0));
+                 NRel (N_rel.Gt Signedness.Signed, var "stride", Num 0),
+                 NRel (N_rel.Lt Signedness.Signed, var "x", Num 100) ));
+        assumptions = Some (NRel (N_rel.Ge Signedness.Signed, var "y", Num 0));
         goals =
           [
             Goal.Prop
@@ -276,13 +276,13 @@ let complex_expression_tests =
                    NCall
                      ( "ua",
                        Binary
-                         ( N_binary.Plus,
+                         ( N_binary.Plus Signedness.Signed,
                            Binary
-                             ( N_binary.Mult,
-                               Binary (N_binary.Plus, var "x", var "y"),
+                             ( N_binary.Mult Signedness.Signed,
+                               Binary (N_binary.Plus Signedness.Signed, var "x", var "y"),
                                var "stride" ),
-                           Binary (N_binary.Mod, var "tidx", Num 32) ) ),
-                   Binary (N_binary.Mult, var "x", var "stride") ));
+                           Binary (N_binary.Mod Signedness.Signed, var "tidx", Num 32) ) ),
+                   Binary (N_binary.Mult Signedness.Signed, var "x", var "stride") ));
           ];
       };
     test_theorem_parse "bitwise operations"
@@ -310,7 +310,7 @@ let complex_expression_tests =
           [
             Goal.Prop
               (NRel
-                 ( N_rel.Le,
+                 ( N_rel.Le Signedness.Signed,
                    NCall ("ua", Binary (N_binary.BitAnd, var "tidx", var "mask")),
                    var "mask" ));
           ];

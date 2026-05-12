@@ -18,12 +18,12 @@ module Increment = struct
   type t = Plus | LeftShift | Mult | Minus | RightShift | Div
 
   let parse : N_binary.t -> t option = function
-    | Minus -> Some Minus
-    | Div -> Some Div
-    | RightShift -> Some RightShift
-    | Plus -> Some Plus
+    | Minus _ -> Some Minus
+    | Div _ -> Some Div
+    | RightShift _ -> Some RightShift
+    | Plus _ -> Some Plus
     | LeftShift -> Some LeftShift
-    | Mult -> Some Mult
+    | Mult _ -> Some Mult
     | _ -> None
 end
 
@@ -31,10 +31,10 @@ module Comparator = struct
   type t = Lt | Le | Gt | Ge | RelMinus
 
   let parse : N_rel.t -> t option = function
-    | Lt -> Some Lt
-    | Gt -> Some Gt
-    | Le -> Some Le
-    | Ge -> Some Ge
+    | Lt _ -> Some Lt
+    | Gt _ -> Some Gt
+    | Le _ -> Some Le
+    | Ge _ -> Some Ge
     | _ -> None
 end
 
@@ -121,22 +121,22 @@ module Infer = struct
           | Some x -> Some x
           | None -> parse ~accum:(Exp.b_and e1 accum) e2)
       (* x - e R arg ~~~> x R arg + e *)
-      | NRel (o, Binary (Minus, Var var, e), arg) when Variable.equal var x ->
+      | NRel (o, Binary (Minus _, Var var, e), arg) when Variable.equal var x ->
           let* op = Comparator.parse o in
           Some ({ var; op; arg = Exp.n_plus e arg }, accum)
       (* e + x R arg ~~~> x R arg - e *)
-      | NRel (o, Binary (Plus, e, Var var), arg) when Variable.equal var x ->
+      | NRel (o, Binary (Plus _, e, Var var), arg) when Variable.equal var x ->
           let* op = Comparator.parse o in
           Some ({ var; op; arg = Exp.n_minus arg e }, accum)
       (* x + e R arg ~~~> x R arg - e *)
-      | NRel (o, Binary (Plus, Var var, e), arg) when Variable.equal var x ->
+      | NRel (o, Binary (Plus _, Var var, e), arg) when Variable.equal var x ->
           let* op = Comparator.parse o in
           Some ({ var; op; arg = Exp.n_minus arg e }, accum)
       (* Default upper bound: x R o ~~~> x R o *)
       | NRel (o, Var var, arg) when Variable.equal var x ->
           let* op = Comparator.parse o in
           Some ({ var; op; arg }, accum)
-      | CastBool (Binary (Minus, Var var, arg)) ->
+      | CastBool (Binary (Minus _, Var var, arg)) ->
           Some ({ var; op = RelMinus; arg }, accum)
       | _ -> None
     in
@@ -259,7 +259,7 @@ module Infer = struct
     match l.cond with
     (* (int i = 0; i < 4; i++) *)
     | { op = Lt; arg = ub; _ } ->
-        (init, Binary (Minus, ub, Num 1), Range.Increase)
+        (init, Binary (Minus Signedness.Signed, ub, Num 1), Range.Increase)
     (* (int i = 0; i <= 4; i++) *)
     | { op = Le; arg = ub; _ } -> (init, ub, Increase)
     (* (int i = 4; i - k; i++) *)
@@ -267,7 +267,8 @@ module Infer = struct
     (* (int i = 4; i >= 0; i--) *)
     | { op = Ge; arg = lb; _ } -> (lb, init, Decrease)
     (* (int i = 4; i > 0; i--) *)
-    | { op = Gt; arg = lb; _ } -> (Binary (Plus, Num 1, lb), init, Decrease)
+    | { op = Gt; arg = lb; _ } ->
+        (Binary (Plus Signedness.Signed, Num 1, lb), init, Decrease)
 
   (* Signed contribution of an additive increment. [Plus k] contributes
      +k, [Minus k] contributes -k. Returns None for non-additive ops. *)

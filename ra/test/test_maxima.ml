@@ -56,10 +56,10 @@ let b_tests : (Reals.boolean * bool) list =
     (Bool false, false);
     (NRel (Eq, Num 1, Num 2), 1 = 2);
     (NRel (Neq, Num 1, Num 2), 1 <> 2);
-    (NRel (Gt, Num 1, Num 2), 1 > 2);
-    (NRel (Ge, Num 1, Num 2), 1 >= 2);
-    (NRel (Lt, Num 1, Num 2), 1 < 2);
-    (NRel (Le, Num 1, Num 2), 1 <= 2);
+    (NRel (Gt Signedness.Signed, Num 1, Num 2), 1 > 2);
+    (NRel (Ge Signedness.Signed, Num 1, Num 2), 1 >= 2);
+    (NRel (Lt Signedness.Signed, Num 1, Num 2), 1 < 2);
+    (NRel (Le Signedness.Signed, Num 1, Num 2), 1 <= 2);
     (BRel (BOr, true_, false_), true || false);
     (BRel (BAnd, true_, false_), true && false);
     (BNot true_, not true);

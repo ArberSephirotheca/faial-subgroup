@@ -109,12 +109,12 @@ let sanitize_name (name : string) : string =
 (** {1 Operator translation} *)
 
 let n_binary_to_op : N_binary.t -> (string, error) Result.t = function
-  | Plus -> Ok "Add"
-  | Minus -> Ok "Sub"
-  | Mult -> Ok "Mult"
-  | Div -> Ok "Div"
-  | Mod -> Ok "Mod"
-  | (BitOr | BitXOr | BitAnd | LeftShift | RightShift) as o ->
+  | Plus _ -> Ok "Add"
+  | Minus _ -> Ok "Sub"
+  | Mult _ -> Ok "Mult"
+  | Div _ -> Ok "Div"
+  | Mod _ -> Ok "Mod"
+  | (BitOr | BitXOr | BitAnd | LeftShift | RightShift _) as o ->
       Error ("unsupported binary operator: " ^ N_binary.to_string o)
 
 (** ROp's [Eq], [Lt], [Gt] collide with [Datatypes.comparison]'s
@@ -125,10 +125,10 @@ let n_binary_to_op : N_binary.t -> (string, error) Result.t = function
 let n_rel_to_op : N_rel.t -> string = function
   | Eq -> "NEq"
   | Neq -> "NNeq"
-  | Lt -> "NLt"
-  | Le -> "NLe"
-  | Gt -> "NGt"
-  | Ge -> "NGe"
+  | Lt _ -> "NLt"
+  | Le _ -> "NLe"
+  | Gt _ -> "NGt"
+  | Ge _ -> "NGe"
 
 let b_rel_to_op : B_rel.t -> string = function
   | BAnd -> "And"

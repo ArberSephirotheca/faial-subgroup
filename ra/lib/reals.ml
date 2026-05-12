@@ -19,12 +19,12 @@ module BinOp = struct
     | BitXOr -> BitXOr
     | BitAnd -> BitAnd
     | LeftShift -> LeftShift
-    | RightShift -> RightShift
-    | Plus -> Plus
-    | Minus -> Minus
-    | Mult -> Mult
-    | Div -> Div
-    | Mod -> Mod
+    | RightShift _ -> RightShift
+    | Plus _ -> Plus
+    | Minus _ -> Minus
+    | Mult _ -> Mult
+    | Div _ -> Div
+    | Mod _ -> Mod
 
   let to_string : t -> string = function
     | BitOr -> "|"

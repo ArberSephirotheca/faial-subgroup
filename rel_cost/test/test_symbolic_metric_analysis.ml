@@ -62,7 +62,8 @@ let test_count_active_threads (name : string)
         expected actual )
 
 (* Utility function to check if an expression is even *)
-let is_even (e : nexp) : bexp = n_eq (Binary (Mod, e, Num 2)) (Num 0)
+let is_even (e : nexp) : bexp =
+  n_eq (Binary (Mod Signedness.Signed, e, Num 2)) (Num 0)
 
 (* Test-specific Alcotest testable types *)
 let proof_result_testable : ProofResult.t Alcotest.testable =

@@ -149,22 +149,42 @@ let n_zero = Num 0
 let n_lt (e1 : nexp) (e2 : nexp) : bexp =
   match (e1, e2) with
   | Num e1, Num e2 -> Bool (e1 < e2)
-  | _, _ -> NRel (Lt, e1, e2)
+  | _, _ -> NRel (Lt Signedness.Signed, e1, e2)
+
+let n_ult (e1 : nexp) (e2 : nexp) : bexp =
+  match (e1, e2) with
+  | Num e1, Num e2 -> Bool (e1 < e2)
+  | _, _ -> NRel (Lt Signedness.Unsigned, e1, e2)
 
 let n_gt (e1 : nexp) (e2 : nexp) : bexp =
   match (e1, e2) with
   | Num e1, Num e2 -> Bool (e1 > e2)
-  | _, _ -> NRel (Gt, e1, e2)
+  | _, _ -> NRel (Gt Signedness.Signed, e1, e2)
+
+let n_ugt (e1 : nexp) (e2 : nexp) : bexp =
+  match (e1, e2) with
+  | Num e1, Num e2 -> Bool (e1 > e2)
+  | _, _ -> NRel (Gt Signedness.Unsigned, e1, e2)
 
 let n_le (e1 : nexp) (e2 : nexp) : bexp =
   match (e1, e2) with
   | Num e1, Num e2 -> Bool (e1 <= e2)
-  | _, _ -> NRel (Le, e1, e2)
+  | _, _ -> NRel (Le Signedness.Signed, e1, e2)
+
+let n_ule (e1 : nexp) (e2 : nexp) : bexp =
+  match (e1, e2) with
+  | Num e1, Num e2 -> Bool (e1 <= e2)
+  | _, _ -> NRel (Le Signedness.Unsigned, e1, e2)
 
 let n_ge (e1 : nexp) (e2 : nexp) : bexp =
   match (e1, e2) with
   | Num e1, Num e2 -> Bool (e1 >= e2)
-  | _, _ -> NRel (Ge, e1, e2)
+  | _, _ -> NRel (Ge Signedness.Signed, e1, e2)
+
+let n_uge (e1 : nexp) (e2 : nexp) : bexp =
+  match (e1, e2) with
+  | Num e1, Num e2 -> Bool (e1 >= e2)
+  | _, _ -> NRel (Ge Signedness.Unsigned, e1, e2)
 
 let n_eq (e1 : nexp) (e2 : nexp) : bexp =
   match (e1, e2) with
@@ -180,12 +200,16 @@ let n_neq (e1 : nexp) (e2 : nexp) : bexp =
   | _, _ -> NRel (Neq, e1, e2)
 
 let n_rel : N_rel.t -> nexp -> nexp -> bexp = function
-  | N_rel.Lt -> n_lt
-  | Gt -> n_gt
+  | N_rel.Lt Signed -> n_lt
+  | Lt Unsigned -> n_ult
+  | Gt Signed -> n_gt
+  | Gt Unsigned -> n_ugt
   | Eq -> n_eq
   | Neq -> n_neq
-  | Le -> n_le
-  | Ge -> n_ge
+  | Le Signed -> n_le
+  | Le Unsigned -> n_ule
+  | Ge Signed -> n_ge
+  | Ge Unsigned -> n_uge
 
 let n_if b n1 n2 =
   match b with Bool b -> if b then n1 else n2 | _ -> NIf (b, n1, n2)
@@ -194,10 +218,11 @@ let n_plus n1 n2 =
   match (n1, n2) with
   | Num 0, n | n, Num 0 -> n
   | Num n1, Num n2 -> Num (n1 + n2)
-  | Num n1, Binary (Plus, Num n2, e) | Binary (Plus, Num n1, e), Num n2 ->
-      Binary (Plus, Num (n1 + n2), e)
-  | _, Num _ -> Binary (Plus, n2, n1)
-  | _, _ -> Binary (Plus, n1, n2)
+  | Num n1, Binary (Plus _, Num n2, e)
+  | Binary (Plus _, Num n1, e), Num n2 ->
+      Binary (Plus Signedness.Signed, Num (n1 + n2), e)
+  | _, Num _ -> Binary (Plus Signedness.Signed, n2, n1)
+  | _, _ -> Binary (Plus Signedness.Signed, n1, n2)
 
 let n_inc (n : nexp) : nexp = n_plus n (Num 1)
 
@@ -205,7 +230,7 @@ let n_minus n1 n2 =
   match (n1, n2) with
   | n, Num 0 -> n
   | Num n1, Num n2 -> Num (n1 - n2)
-  | _, _ -> Binary (Minus, n1, n2)
+  | _, _ -> Binary (Minus Signedness.Signed, n1, n2)
 
 let n_dec (n : nexp) : nexp = n_minus n (Num 1)
 
@@ -214,12 +239,12 @@ let n_mult n1 n2 =
   | Num 1, n | n, Num 1 -> n
   | Num 0, _ | _, Num 0 -> Num 0
   | Num n1, Num n2 -> Num (n1 * n2)
-  | Num n1, Binary (Mult, Num n2, e)
-  | Num n1, Binary (Mult, e, Num n2)
-  | Binary (Mult, Num n1, e), Num n2
-  | Binary (Mult, e, Num n1), Num n2 ->
-      Binary (Mult, Num (n1 * n2), e)
-  | _, _ -> Binary (Mult, n1, n2)
+  | Num n1, Binary (Mult _, Num n2, e)
+  | Num n1, Binary (Mult _, e, Num n2)
+  | Binary (Mult _, Num n1, e), Num n2
+  | Binary (Mult _, e, Num n1), Num n2 ->
+      Binary (Mult Signedness.Signed, Num (n1 * n2), e)
+  | _, _ -> Binary (Mult Signedness.Signed, n1, n2)
 
 let n_uminus (n : nexp) : nexp = Unary (N_unary.Negate, n)
 let sum : nexp list -> nexp = List.fold_left n_plus (Num 0)
@@ -232,36 +257,51 @@ let n_div n1 n2 =
      is undefined behavior at runtime, but the analyzer shouldn't fail
      when constant-folding a kernel that contains it (e.g. dead code
      under a guard the folder doesn't see through). *)
-  | _, Num 0 -> Binary (Div, n1, n2)
+  | _, Num 0 -> Binary (Div Signedness.Signed, n1, n2)
   | Num n1, Num n2 -> Num (n1 / n2)
-  | _, _ -> Binary (Div, n1, n2)
+  | _, _ -> Binary (Div Signedness.Signed, n1, n2)
+
+let n_udiv n1 n2 =
+  match (n1, n2) with
+  | _, Num 1 -> n1
+  | Num 0, _ -> Num 0
+  | _, Num 0 -> Binary (Div Signedness.Unsigned, n1, n2)
+  | Num n1, Num n2 -> Num (n1 / n2)
+  | _, _ -> Binary (Div Signedness.Unsigned, n1, n2)
 
 let n_mod n1 n2 =
   match (n1, n2) with
   | Num n1, Num n2 -> Num (Common.modulo n1 n2)
-  | _, _ -> Binary (Mod, n1, n2)
+  | _, _ -> Binary (Mod Signedness.Signed, n1, n2)
+
+let n_umod n1 n2 =
+  match (n1, n2) with
+  | Num n1, Num n2 -> Num (Common.modulo n1 n2)
+  | _, _ -> Binary (Mod Signedness.Unsigned, n1, n2)
 
 let n_left_shift (l : nexp) (r : nexp) : nexp =
   match (l, r) with
-  | a, Num n -> Binary (Mult, a, Num (Common.pow ~base:2 n))
+  | a, Num n -> Binary (Mult Signedness.Signed, a, Num (Common.pow ~base:2 n))
   | _, _ -> Binary (LeftShift, l, r)
 
 let n_right_shift (l : nexp) (r : nexp) : nexp =
   match (l, r) with
-  | a, Num n -> Binary (Div, a, Num (Common.pow ~base:2 n))
-  | _, _ -> Binary (RightShift, l, r)
+  | a, Num n -> Binary (Div Signedness.Signed, a, Num (Common.pow ~base:2 n))
+  | _, _ -> Binary (RightShift Signedness.Signed, l, r)
 
 let n_bin o n1 n2 =
   try
     match (o, n1, n2) with
     | _, Num n1, Num n2 -> Num (N_binary.eval o n1 n2)
-    | N_binary.Plus, _, _ -> n_plus n1 n2
-    | Minus, _, _ -> n_minus n1 n2
-    | Mult, _, _ -> n_mult n1 n2
-    | Div, _, _ -> n_div n1 n2
-    | Mod, _, _ -> n_mod n1 n2
+    | N_binary.Plus _, _, _ -> n_plus n1 n2
+    | Minus _, _, _ -> n_minus n1 n2
+    | Mult _, _, _ -> n_mult n1 n2
+    | Div Signed, _, _ -> n_div n1 n2
+    | Div Unsigned, _, _ -> n_udiv n1 n2
+    | Mod Signed, _, _ -> n_mod n1 n2
+    | Mod Unsigned, _, _ -> n_umod n1 n2
     | LeftShift, _, _ -> n_left_shift n1 n2
-    | RightShift, _, _ -> n_right_shift n1 n2
+    | RightShift _, _, _ -> n_right_shift n1 n2
     | _, _, _ -> Binary (o, n1, n2)
   with Division_by_zero -> Binary (o, n1, n2)
 
@@ -289,10 +329,14 @@ let rec b_not : bexp -> bexp = function
   | BRel (BOr, b1, b2) -> b_and (b_not b1) (b_not b2)
   | NRel (Eq, n1, n2) -> n_neq n1 n2
   | NRel (Neq, n1, n2) -> n_eq n1 n2
-  | NRel (Lt, n1, n2) -> n_ge n1 n2
-  | NRel (Gt, n1, n2) -> n_le n1 n2
-  | NRel (Le, n1, n2) -> n_gt n1 n2
-  | NRel (Ge, n1, n2) -> n_lt n1 n2
+  | NRel (Lt Signed, n1, n2) -> n_ge n1 n2
+  | NRel (Lt Unsigned, n1, n2) -> n_uge n1 n2
+  | NRel (Gt Signed, n1, n2) -> n_le n1 n2
+  | NRel (Gt Unsigned, n1, n2) -> n_ule n1 n2
+  | NRel (Le Signed, n1, n2) -> n_gt n1 n2
+  | NRel (Le Unsigned, n1, n2) -> n_ugt n1 n2
+  | NRel (Ge Signed, n1, n2) -> n_lt n1 n2
+  | NRel (Ge Unsigned, n1, n2) -> n_ult n1 n2
   | Bool b -> Bool (not b)
   | b -> BNot b
 
@@ -410,8 +454,10 @@ type side = Left | Right
 
 let rec n_par ?context (* ?side *) (n : nexp) : string =
   match context, n with
-  | Some N_binary.Plus, Binary ((N_binary.Plus | N_binary.Mult | N_binary.Div), _, _) 
-  | Some N_binary.Mult, Binary (N_binary.Mult, _, _) -> n_to_string n
+  | ( Some (N_binary.Plus _),
+      Binary ((N_binary.Plus _ | N_binary.Mult _ | N_binary.Div _), _, _) )
+  | Some (N_binary.Mult _), Binary (N_binary.Mult _, _, _) ->
+      n_to_string n
   | _, Num _ | _, Var _ | _, NCall _ | _, Other _ | _, CastInt _ -> n_to_string n
   | _, NIf _ | _, Unary _ | _, Binary _ -> "(" ^ n_to_string n ^ ")"
 

@@ -66,6 +66,36 @@ let unique_int_params (app : App.t) : Variable.t list =
   |> List.concat_map int_params
   |> List.sort_uniq Variable.compare
 
+(* CUDA built-in launch-config variables (threadIdx, blockIdx,
+   blockDim, gridDim) are unsigned int. Other variables are looked
+   up in the app's kernels' [Params]; absent or non-int → default
+   [Signed]. First match across kernels wins. *)
+let signedness_of_app (app : App.t) (v : Variable.t) : Signedness.t =
+  if Variable.Set.mem v launch_config_set then Signedness.Unsigned
+  else
+    let rec scan = function
+      | [] -> Signedness.Signed
+      | (k : Kernel.t) :: rest ->
+        let p = Params.union_left k.global_variables k.local_variables in
+        match Params.find_opt v p with
+        | Some (_, ty) when C_type.is_unsigned ty -> Signedness.Unsigned
+        | Some _ -> Signedness.Signed
+        | None -> scan rest
+    in
+    scan app.kernels
+
+(* Reduce a [bexp]'s free-variable set to a single signedness by
+   "any-unsigned wins" — matches C's usual arithmetic conversions
+   for the operator that would coerce these operands. *)
+let bexp_signedness (sign : Variable.t -> Signedness.t) (b : Exp.bexp)
+    : Signedness.t =
+  let fvs = Exp.b_free_names b Variable.Set.empty in
+  Variable.Set.fold (fun v acc ->
+    match acc, sign v with
+    | Signedness.Unsigned, _ | _, Signedness.Unsigned -> Signedness.Unsigned
+    | _, _ -> Signedness.Signed)
+    fvs Signedness.Signed
+
 let all_safe (rs : Analysis.t list) : bool =
   List.for_all Analysis.is_safe rs
 
@@ -230,19 +260,22 @@ let shrink ~(use_core : bool) (baseline : Reachability.AccessSet.t)
    In the bm3d-style synthesis miss [size == gridDim.x ∧ size == bdim*gdim],
    weakening the first clause to [size >= gridDim.x] breaks the
    conjunction's implied [bdim.x == 1] and lets the gate accept. *)
-let weaken_clause : Exp.bexp -> Exp.bexp list = function
-  | Exp.NRel (Eq, e1, e2) -> [ Exp.n_ge e1 e2; Exp.n_le e1 e2 ]
+let weaken_clause (sign : Variable.t -> Signedness.t)
+    : Exp.bexp -> Exp.bexp list = function
+  | Exp.NRel (Eq, e1, e2) as b ->
+    let s = bexp_signedness sign b in
+    [ Exp.NRel (Ge s, e1, e2); Exp.NRel (Le s, e1, e2) ]
   | _ -> []
 
 (* Walk [extras] left-to-right; for each clause, if some weaker variant
    keeps the predicate [check] true, swap it in. Single-pass and
    per-clause (no joint weakening) — keeps the search tractable. *)
-let weaken_for_gate
+let weaken_for_gate (sign : Variable.t -> Signedness.t)
     (check : Exp.bexp list -> bool) (extras : Exp.bexp list) : Exp.bexp list =
   let rec loop acc = function
     | [] -> acc
     | c :: rest ->
-      let weakers = weaken_clause c in
+      let weakers = weaken_clause sign c in
       let best =
         List.find_opt
           (fun w -> check (acc @ (w :: rest)))
@@ -271,6 +304,7 @@ let abductive_loop
   if kernels = [] then None
   else
     let session = Abduction.create_for_kernels kernels in
+    let sign = signedness_of_app app in
     let drf_and_gate extras =
       verifies_drf_only app extras
       && gate_check baseline_reachable
@@ -282,7 +316,7 @@ let abductive_loop
       let app' = { app with assumes = app.assumes @ minimal } in
       if gate_check baseline_reachable app' then Some minimal
       else
-        let weakened = weaken_for_gate drf_and_gate minimal in
+        let weakened = weaken_for_gate sign drf_and_gate minimal in
         let weakened_min = shrink' baseline_reachable app weakened in
         let app'' = { app with assumes = app.assumes @ weakened_min } in
         if gate_check baseline_reachable app'' then Some weakened_min
@@ -319,12 +353,20 @@ let blanket_extras (app : App.t) : Exp.bexp list =
     Variable.gdim_x; Variable.gdim_y; Variable.gdim_z;
   ] in
   let params = unique_int_params app in
+  let sign = signedness_of_app app in
   let signs =
-    params |> List.map (fun v -> Exp.n_gt (Exp.Var v) (Exp.Num 0))
+    (* [v > 0] in C uses [v]'s declared signedness against the [0]
+       literal. Per "any-unsigned wins", [sign v] dominates (the
+       numeric [0] would promote). *)
+    params |> List.map (fun v ->
+      Exp.NRel (Gt (sign v), Exp.Var v, Exp.Num 0))
   in
   let bounds =
+    (* [p >= dim] mixes a kernel-param [p] with a CUDA built-in dim.
+       Dim is unsigned, so the comparison is unsigned. *)
     params |> List.concat_map (fun p ->
-      List.map (fun d -> Exp.n_ge (Exp.Var p) (Exp.Var d)) dims)
+      List.map (fun d ->
+        Exp.NRel (Ge Unsigned, Exp.Var p, Exp.Var d)) dims)
   in
   signs @ bounds
 
@@ -359,8 +401,10 @@ let usage_constrained_kernel
   |> List.fold_left (fun (probe, k_acc) (idx, dim) ->
     let candidate =
       if Set.mem idx used
-      then Exp.n_ge (Var dim) (Num 2)
-      else Exp.n_eq (Var dim) (Num 1)
+      (* [dim] is a CUDA built-in (unsigned int), so the comparison
+         is unsigned. *)
+      then Exp.NRel (Ge Unsigned, Var dim, Num 2)
+      else Exp.NRel (Eq, Var dim, Num 1)
     in
     let probe' = Kernel.add_pre candidate probe in
     if Reachability.preconditions_satisfiable ?timeout probe'

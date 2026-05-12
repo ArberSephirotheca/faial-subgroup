@@ -53,18 +53,18 @@ nexp:
   | name=IDENT LPAREN arg=nexp RPAREN    { NCall (name, arg) }
 
   (* Arithmetic binary operators *)
-  | left=nexp PLUS right=nexp            { Binary (N_binary.Plus, left, right) }
-  | left=nexp MINUS right=nexp           { Binary (N_binary.Minus, left, right) }
-  | left=nexp MULT right=nexp            { Binary (N_binary.Mult, left, right) }
-  | left=nexp DIV right=nexp             { Binary (N_binary.Div, left, right) }
-  | left=nexp MOD right=nexp             { Binary (N_binary.Mod, left, right) }
+  | left=nexp PLUS right=nexp            { Binary (N_binary.Plus Signedness.Signed, left, right) }
+  | left=nexp MINUS right=nexp           { Binary (N_binary.Minus Signedness.Signed, left, right) }
+  | left=nexp MULT right=nexp            { Binary (N_binary.Mult Signedness.Signed, left, right) }
+  | left=nexp DIV right=nexp             { Binary (N_binary.Div Signedness.Signed, left, right) }
+  | left=nexp MOD right=nexp             { Binary (N_binary.Mod Signedness.Signed, left, right) }
 
   (* Bitwise binary operators *)
   | left=nexp BIT_AND right=nexp         { Binary (N_binary.BitAnd, left, right) }
   | left=nexp BIT_OR right=nexp          { Binary (N_binary.BitOr, left, right) }
   | left=nexp BIT_XOR right=nexp         { Binary (N_binary.BitXOr, left, right) }
   | left=nexp LEFT_SHIFT right=nexp      { Binary (N_binary.LeftShift, left, right) }
-  | left=nexp RIGHT_SHIFT right=nexp     { Binary (N_binary.RightShift, left, right) }
+  | left=nexp RIGHT_SHIFT right=nexp     { Binary (N_binary.RightShift Signedness.Signed, left, right) }
 
   (* Unary operators *)
   | MINUS expr=nexp %prec UMINUS         { Unary (N_unary.Negate, expr) }
@@ -86,10 +86,10 @@ bexp:
   (* Numeric comparisons *)
   | left=nexp EQ right=nexp              { NRel (N_rel.Eq, left, right) }
   | left=nexp NEQ right=nexp             { NRel (N_rel.Neq, left, right) }
-  | left=nexp LT right=nexp              { NRel (N_rel.Lt, left, right) }
-  | left=nexp LE right=nexp              { NRel (N_rel.Le, left, right) }
-  | left=nexp GT right=nexp              { NRel (N_rel.Gt, left, right) }
-  | left=nexp GE right=nexp              { NRel (N_rel.Ge, left, right) }
+  | left=nexp LT right=nexp              { NRel (N_rel.Lt Signedness.Signed, left, right) }
+  | left=nexp LE right=nexp              { NRel (N_rel.Le Signedness.Signed, left, right) }
+  | left=nexp GT right=nexp              { NRel (N_rel.Gt Signedness.Signed, left, right) }
+  | left=nexp GE right=nexp              { NRel (N_rel.Ge Signedness.Signed, left, right) }
 
   (* Boolean binary operators *)
   | left=bexp L_AND right=bexp           { BRel (B_rel.BAnd, left, right) }

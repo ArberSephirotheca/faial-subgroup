@@ -5,33 +5,33 @@ type t =
   | BitXOr
   | BitAnd
   | LeftShift
-  | RightShift
-  | Plus
-  | Minus
-  | Mult
-  | Div
-  | Mod
+  | RightShift of Signedness.t
+  | Plus of Signedness.t
+  | Minus of Signedness.t
+  | Mult of Signedness.t
+  | Div of Signedness.t
+  | Mod of Signedness.t
 
 let eval : t -> int -> int -> int = function
   | BitAnd -> ( land )
   | BitXOr -> ( lxor )
   | BitOr -> ( lor )
-  | Plus -> ( + )
-  | Minus -> ( - )
-  | Mult -> ( * )
-  | Div -> ( / )
-  | Mod -> Common.modulo
+  | Plus _ -> ( + )
+  | Minus _ -> ( - )
+  | Mult _ -> ( * )
+  | Div _ -> ( / )
+  | Mod _ -> Common.modulo
   | LeftShift -> ( lsl )
-  | RightShift -> ( lsr )
+  | RightShift _ -> ( lsr )
 
 let to_string : t -> string = function
-  | Plus -> "+"
-  | Minus -> "-"
-  | Mult -> "*"
-  | Div -> "/"
-  | Mod -> "%"
+  | Plus s -> "+" ^ Signedness.suffix s
+  | Minus s -> "-" ^ Signedness.suffix s
+  | Mult s -> "*" ^ Signedness.suffix s
+  | Div s -> "/" ^ Signedness.suffix s
+  | Mod s -> "%" ^ Signedness.suffix s
   | LeftShift -> "<<"
-  | RightShift -> ">>"
+  | RightShift s -> ">>" ^ Signedness.suffix s
   | BitXOr -> "^"
   | BitOr -> "|"
   | BitAnd -> "&"

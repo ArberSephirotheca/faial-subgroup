@@ -54,7 +54,7 @@ let inline_expansion_tests =
        let y_param = var "y" in
        let z_var = var "z" in
        let func_body =
-         decl_set z_var (Binary (Plus, Var x_param, Var y_param)) Skip
+         decl_set z_var (Binary (Plus Signedness.Signed, Var x_param, Var y_param)) Skip
        in
        let func_kernel =
          kernel ~return:(Some (Var z_var)) "f"
@@ -75,7 +75,7 @@ let inline_expansion_tests =
          Access
            {
              array = a_array;
-             index = [ Binary (Plus, Var x_var, Var y_var) ];
+             index = [ Binary (Plus Signedness.Signed, Var x_var, Var y_var) ];
              mode = Write None;
            }
        in
@@ -105,12 +105,12 @@ let inline_expansion_tests =
               (decl_set x1_var (Num 1)
                  (decl_set y1_var (Num 2)
                     (decl_set z_var
-                       (Binary (Plus, Var x1_var, Var y1_var))
+                       (Binary (Plus Signedness.Signed, Var x1_var, Var y1_var))
                        (decl_set g_var (Var z_var)
                           (Access
                              {
                                array = a_array;
-                               index = [ Binary (Plus, Var x_var, Var y_var) ];
+                               index = [ Binary (Plus Signedness.Signed, Var x_var, Var y_var) ];
                                mode = Write None;
                              }))))))
        in

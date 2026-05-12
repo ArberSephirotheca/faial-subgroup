@@ -12,12 +12,12 @@ type t = {
 let const_tid (tid : Variable.t) : Exp.nexp -> Exp.nexp option =
   let rec const_tid : Exp.nexp -> Exp.nexp option = function
     | Var x when Variable.(equal tid x) -> Some (Num 1)
-    | Binary (Mult, e1, e2) -> (
+    | Binary ((Mult _ as op), e1, e2) -> (
         match const_tid e1 with
-        | Some e1 -> Some (Binary (Mult, e1, e2))
+        | Some e1 -> Some (Binary (op, e1, e2))
         | None -> (
             match const_tid e2 with
-            | Some e2 -> Some (Binary (Mult, e1, e2))
+            | Some e2 -> Some (Binary (op, e1, e2))
             | None -> None))
     | _ -> None
   in
@@ -37,8 +37,8 @@ module UA = struct
    fun o (e1, x1) (e2, x2) ->
     let both : Exp.nexp = Binary (o, e1, e2) in
     match (o, x1, x2) with
-    | (Plus | Minus), Uniform, (AnyAccurate | Inc) -> (e2, Inc)
-    | (Plus | Minus), (AnyAccurate | Inc), Uniform -> (e1, Inc)
+    | (Plus _ | Minus _), Uniform, (AnyAccurate | Inc) -> (e2, Inc)
+    | (Plus _ | Minus _), (AnyAccurate | Inc), Uniform -> (e1, Inc)
     | _, _, _ -> (both, max x1 x2)
 
   let map (f : Exp.nexp -> Exp.nexp) ((e, x) : Exp.nexp * t) : Exp.nexp * t =
@@ -62,24 +62,25 @@ module UA = struct
           in
           (Var x, r)
       | Unary (o, e) -> map (fun e -> Unary (o, e)) (from_nexp e)
-      | Binary (Mult, Num n1, Num n2) -> (Num (n1 * n2), Constant)
-      | Binary (Mult, Binary (Mult, e, Num n1), Num n2)
-      | Binary (Mult, Binary (Mult, Num n1, e), Num n2)
-      | Binary (Mult, Num n1, Binary (Mult, e, Num n2))
-      | Binary (Mult, Num n1, Binary (Mult, Num n2, e)) ->
+      | Binary (Mult _, Num n1, Num n2) -> (Num (n1 * n2), Constant)
+      | Binary (Mult _, Binary (Mult _, e, Num n1), Num n2)
+      | Binary (Mult _, Binary (Mult _, Num n1, e), Num n2)
+      | Binary (Mult _, Num n1, Binary (Mult _, e, Num n2))
+      | Binary (Mult _, Num n1, Binary (Mult _, Num n2, e)) ->
           from_nexp Exp.(n_mult (Num (n1 * n2)) e)
-      | Binary (Mult, Num n, Binary (Mult, e1, e2)) ->
+      | Binary (Mult _, Num n, Binary (Mult _, e1, e2)) ->
           from_nexp Exp.(n_mult (n_mult (Num n) e1) e2)
-      | Binary (Mult, Num n, Binary (Plus, e1, e2))
-      | Binary (Mult, Binary (Plus, e1, e2), Num n) ->
-          from_nexp Exp.(n_plus (n_mult (Num n) e1) (n_mult (Num n) e2))
-      | Binary (Mult, e1, e2) ->
+      | Binary (Mult _, Num n, Binary ((Plus _ as op), e1, e2))
+      | Binary (Mult _, Binary ((Plus _ as op), e1, e2), Num n) ->
+          from_nexp
+            (Binary (op, Exp.n_mult (Num n) e1, Exp.n_mult (Num n) e2))
+      | Binary ((Mult _ as op), e1, e2) ->
           let e1, ty1 = from_nexp e1 in
           let e2, ty2 = from_nexp e2 in
           (* Any divisor of 32 can be elided when it's being multiplies by
          a uniform/constant/inc *)
           if is_aligned e1 ty2 || is_aligned e2 ty1 then (Num word, Constant)
-          else bin Mult (e1, ty1) (e2, ty2)
+          else bin op (e1, ty1) (e2, ty2)
       | Binary (o, e1, e2) -> bin o (from_nexp e1) (from_nexp e2)
       | NCall (f, e) -> map (fun e -> NCall (f, e)) (from_nexp e)
       | Other e -> map (fun e -> Other e) (from_nexp e)
@@ -123,8 +124,8 @@ module BC = struct
    fun o (e1, x1) (e2, x2) ->
     let both : Exp.nexp = Binary (o, e1, e2) in
     match (o, x1, x2) with
-    | (Plus | Minus), Any, Uniform -> (e1, Any)
-    | (Plus | Minus), Uniform, Any -> (e2, Any)
+    | (Plus _ | Minus _), Any, Uniform -> (e1, Any)
+    | (Plus _ | Minus _), Uniform, Any -> (e2, Any)
     | _, Uniform, Uniform -> (both, Uniform)
     | _, _, _ -> (both, Any)
 

@@ -56,15 +56,22 @@ module type NUMERIC_OPS = sig
   val mk_bit_xor : binop
   val mk_left_shift : binop
   val mk_right_shift : binop
+  val mk_uright_shift : binop
   val mk_plus : binop
   val mk_minus : binop
   val mk_mult : binop
   val mk_div : binop
+  val mk_udiv : binop
   val mk_mod : binop
+  val mk_umod : binop
   val mk_le : binop
+  val mk_ule : binop
   val mk_ge : binop
+  val mk_uge : binop
   val mk_gt : binop
+  val mk_ugt : binop
   val mk_lt : binop
+  val mk_ult : binop
   val mk_not : unop
   val mk_unary_minus : unop
   val parse_num : string -> string
@@ -82,15 +89,22 @@ module ArithmeticOps : NUMERIC_OPS = struct
   let mk_bit_xor = missing "^"
   let mk_left_shift = missing "<<"
   let mk_right_shift = missing ">>"
+  let mk_uright_shift = missing ">>u"
   let mk_plus ctx n1 n2 = Arithmetic.mk_add ctx [ n1; n2 ]
   let mk_minus ctx n1 n2 = Arithmetic.mk_sub ctx [ n1; n2 ]
   let mk_mult ctx n1 n2 = Arithmetic.mk_mul ctx [ n1; n2 ]
   let mk_div = Arithmetic.mk_div
+  let mk_udiv = Arithmetic.mk_div
   let mk_mod = Arithmetic.Integer.mk_mod
+  let mk_umod = Arithmetic.Integer.mk_mod
   let mk_le = Arithmetic.mk_le
+  let mk_ule = Arithmetic.mk_le
   let mk_ge = Arithmetic.mk_ge
+  let mk_uge = Arithmetic.mk_ge
   let mk_gt = Arithmetic.mk_gt
+  let mk_ugt = Arithmetic.mk_gt
   let mk_lt = Arithmetic.mk_lt
+  let mk_ult = Arithmetic.mk_lt
   let mk_unary_minus = Arithmetic.mk_unary_minus
   let mk_not = missing1 "~"
   let parse_num (x : string) = x
@@ -143,15 +157,24 @@ module BitVectorOps (W : WordSize) = struct
   let mk_bit_xor = BitVector.mk_xor
   let mk_left_shift = BitVector.mk_shl
   let mk_right_shift = BitVector.mk_ashr
+  let mk_uright_shift = BitVector.mk_lshr
   let mk_minus = BitVector.mk_sub
   let mk_plus = BitVector.mk_add
   let mk_mult = BitVector.mk_mul
   let mk_div = BitVector.mk_sdiv
-  let mk_mod = BitVector.mk_smod
+  let mk_udiv = BitVector.mk_udiv
+  (* C99: signed `%` is remainder with sign of dividend (bvsrem),
+     not mathematical mod (bvsmod, sign of divisor). *)
+  let mk_mod = BitVector.mk_srem
+  let mk_umod = BitVector.mk_urem
   let mk_le = BitVector.mk_sle
+  let mk_ule = BitVector.mk_ule
   let mk_ge = BitVector.mk_sge
+  let mk_uge = BitVector.mk_uge
   let mk_gt = BitVector.mk_sgt
+  let mk_ugt = BitVector.mk_ugt
   let mk_lt = BitVector.mk_slt
+  let mk_ult = BitVector.mk_ult
   let mk_not = BitVector.mk_not
   let mk_unary_minus = BitVector.mk_neg
 
@@ -494,21 +517,28 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | BitOr -> N.mk_bit_or
     | BitXOr -> N.mk_bit_xor
     | LeftShift -> N.mk_left_shift
-    | RightShift -> N.mk_right_shift
-    | Plus -> N.mk_plus
-    | Minus -> N.mk_minus
-    | Mult -> N.mk_mult
-    | Div -> N.mk_div
-    | Mod -> N.mk_mod
+    | RightShift Signed -> N.mk_right_shift
+    | RightShift Unsigned -> N.mk_uright_shift
+    | Plus _ -> N.mk_plus
+    | Minus _ -> N.mk_minus
+    | Mult _ -> N.mk_mult
+    | Div Signed -> N.mk_div
+    | Div Unsigned -> N.mk_udiv
+    | Mod Signed -> N.mk_mod
+    | Mod Unsigned -> N.mk_umod
 
   let nrel_to_expr :
       N_rel.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr = function
     | Eq -> Boolean.mk_eq
     | Neq -> fun ctx n1 n2 -> Boolean.mk_not ctx (Boolean.mk_eq ctx n1 n2)
-    | Le -> N.mk_le
-    | Ge -> N.mk_ge
-    | Lt -> N.mk_lt
-    | Gt -> N.mk_gt
+    | Le Signed -> N.mk_le
+    | Le Unsigned -> N.mk_ule
+    | Ge Signed -> N.mk_ge
+    | Ge Unsigned -> N.mk_uge
+    | Lt Signed -> N.mk_lt
+    | Lt Unsigned -> N.mk_ult
+    | Gt Signed -> N.mk_gt
+    | Gt Unsigned -> N.mk_ugt
 
   let brel_to_expr :
       B_rel.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr = function
@@ -707,15 +737,22 @@ module SignedBitVectorOps (W : WordSize) = struct
   let mk_bit_xor = BitVector.mk_xor
   let mk_left_shift = BitVector.mk_shl
   let mk_right_shift = BitVector.mk_ashr
+  let mk_uright_shift = BitVector.mk_ashr
   let mk_minus = BitVector.mk_sub
   let mk_plus = BitVector.mk_add
   let mk_mult = BitVector.mk_mul
   let mk_div = BitVector.mk_sdiv
+  let mk_udiv = BitVector.mk_sdiv
   let mk_mod = BitVector.mk_smod
+  let mk_umod = BitVector.mk_smod
   let mk_le = BitVector.mk_sle
+  let mk_ule = BitVector.mk_sle
   let mk_ge = BitVector.mk_sge
+  let mk_uge = BitVector.mk_sge
   let mk_gt = BitVector.mk_sgt
+  let mk_ugt = BitVector.mk_sgt
   let mk_lt = BitVector.mk_slt
+  let mk_ult = BitVector.mk_slt
   let mk_not = BitVector.mk_not
   let mk_unary_minus = BitVector.mk_neg
 

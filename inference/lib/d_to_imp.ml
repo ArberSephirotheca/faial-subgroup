@@ -58,8 +58,8 @@ module TypeAlias = struct
 end
 
 module Make (L : Logger) = struct
-  let parse_bin (op : string) (l : Imp.Infer_exp.t) (r : Infer_exp.t) :
-      Infer_exp.t =
+  let parse_bin ?(unsigned = false) (op : string) (l : Imp.Infer_exp.t)
+      (r : Infer_exp.t) : Infer_exp.t =
     match op with
     (* bool -> bool -> bool *)
     | "||" -> BExp (BRel (BOr, l, r))
@@ -67,17 +67,18 @@ module Make (L : Logger) = struct
     (* int -> int -> bool *)
     | "==" -> BExp (NRel (Eq, l, r))
     | "!=" -> BExp (NRel (Neq, l, r))
-    | "<=" -> BExp (NRel (Le, l, r))
-    | "<" -> BExp (NRel (Lt, l, r))
-    | ">=" -> BExp (NRel (Ge, l, r))
-    | ">" -> BExp (NRel (Gt, l, r))
+    | "<=" -> BExp (NRel (Le (if unsigned then Unsigned else Signed), l, r))
+    | "<" -> BExp (NRel (Lt (if unsigned then Unsigned else Signed), l, r))
+    | ">=" -> BExp (NRel (Ge (if unsigned then Unsigned else Signed), l, r))
+    | ">" -> BExp (NRel (Gt (if unsigned then Unsigned else Signed), l, r))
     (* int -> int -> int *)
-    | "+" -> NExp (Binary (Plus, l, r))
-    | "-" -> NExp (Binary (Minus, l, r))
-    | "*" -> NExp (Binary (Mult, l, r))
-    | "/" -> NExp (Binary (Div, l, r))
-    | "%" -> NExp (Binary (Mod, l, r))
-    | ">>" -> NExp (Binary (RightShift, l, r))
+    | "+" -> NExp (Binary (Plus (if unsigned then Unsigned else Signed), l, r))
+    | "-" -> NExp (Binary (Minus (if unsigned then Unsigned else Signed), l, r))
+    | "*" -> NExp (Binary (Mult (if unsigned then Unsigned else Signed), l, r))
+    | "/" -> NExp (Binary (Div (if unsigned then Unsigned else Signed), l, r))
+    | "%" -> NExp (Binary (Mod (if unsigned then Unsigned else Signed), l, r))
+    | ">>" ->
+        NExp (Binary (RightShift (if unsigned then Unsigned else Signed), l, r))
     | "<<" -> NExp (Binary (LeftShift, l, r))
     | "^" -> NExp (Binary (BitXOr, l, r))
     | "|" -> NExp (Binary (BitOr, l, r))
@@ -128,11 +129,13 @@ module Make (L : Logger) = struct
         let n1 = infer_expr n1 in
         let n2 = infer_expr n2 in
         (*  (n1 + n2 - 1)/n2 *)
-        let n2_minus_1 : Infer_exp.n = Binary (Minus, n2, NExp (Num 1)) in
-        let n1_plus_n2_minus_1 : Infer_exp.n =
-          Binary (Plus, n1, NExp n2_minus_1)
+        let n2_minus_1 : Infer_exp.n =
+          Binary (Minus Signedness.Signed, n2, NExp (Num 1))
         in
-        NExp (Binary (Div, NExp n1_plus_n2_minus_1, n2))
+        let n1_plus_n2_minus_1 : Infer_exp.n =
+          Binary (Plus Signedness.Signed, n1, NExp n2_minus_1)
+        in
+        NExp (Binary (Div Signedness.Signed, NExp n1_plus_n2_minus_1, n2))
     | CallExpr
         { func = Ident { name = f; kind = Function; _ }; args = [ n ]; _ }
       when Variable.name f = "__other_int" ->
@@ -158,16 +161,20 @@ module Make (L : Logger) = struct
       when Variable.name n = "min" ->
         let n1 = infer_expr n1 in
         let n2 = infer_expr n2 in
-        NExp (NIf (BExp (NRel (Lt, n1, n2)), n1, n2))
+        NExp (NIf (BExp (NRel (Lt Signedness.Signed, n1, n2)), n1, n2))
     | CallExpr
         { func = Ident { name = n; kind = Function; _ }; args = [ n1; n2 ]; _ }
       when Variable.name n = "max" ->
         let n1 = infer_expr n1 in
         let n2 = infer_expr n2 in
-        NExp (NIf (BExp (NRel (Gt, n1, n2)), n1, n2))
+        NExp (NIf (BExp (NRel (Gt Signedness.Signed, n1, n2)), n1, n2))
     | BinaryOperator { lhs = l; opcode = "&"; rhs = IntegerLiteral 1; _ } ->
         let n = infer_expr l in
-        BExp (NRel (Eq, NExp (Binary (Mod, n, NExp (Num 2))), NExp (Num 0)))
+        BExp
+          (NRel
+             ( Eq,
+               NExp (Binary (Mod Signedness.Signed, n, NExp (Num 2))),
+               NExp (Num 0) ))
     | BinaryOperator
         {
           opcode = "==";
@@ -192,9 +199,18 @@ module Make (L : Logger) = struct
              (BExp (Infer_exp.n_eq n (NExp (Num 0)))))
     | BinaryOperator { opcode = ","; lhs = _; rhs = e; _ } -> infer_expr e
     | BinaryOperator { opcode = o; lhs = n1; rhs = n2; _ } ->
+        let is_unsigned_operand (e : D_lang.Expr.t) : bool =
+          e
+          |> D_lang.Expr.to_type
+          |> J_type.to_c_type_res
+          |> Result.to_option
+          |> Option.map C_type.is_unsigned
+          |> Option.value ~default:false
+        in
+        let unsigned = is_unsigned_operand n1 || is_unsigned_operand n2 in
         let n1 = infer_expr n1 in
         let n2 = infer_expr n2 in
-        parse_bin o n1 n2
+        parse_bin ~unsigned o n1 n2
     | CXXBoolLiteralExpr b -> BExp (Bool b)
     | UnaryOperator u when u.opcode = "!" ->
         let b = infer_expr u.child in
@@ -529,7 +545,10 @@ module Make (L : Logger) = struct
                child = Ident { name = var; _ };
                ty;
              }) ->
-          let op : N_binary.t = if opcode = "++" then Plus else Minus in
+          let op : N_binary.t =
+            if opcode = "++" then Plus Signedness.Signed
+            else Minus Signedness.Signed
+          in
           let data : Infer_exp.t =
             NExp (Binary (op, NExp (Var var), NExp (Num 1)))
           in
