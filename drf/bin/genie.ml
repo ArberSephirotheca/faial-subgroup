@@ -96,7 +96,45 @@ let gate_holds_simple (_baseline : Reachability.AccessSet.t)
          ~params:app.params
     |> Reachability.preconditions_satisfiable ?timeout:app.timeout)
 
-let gate_holds = gate_holds_simple
+(* Cached gate. Per kernel we keep one Z3 context, one solver with
+   the base encoding ([kernel.pre + runtime] under
+   [prepare_kernel ~assumes:[]]) permanently added, and the
+   substitution that translates [Kernel.inline_globals]'s effect on
+   bexps. Per gate call the round's assumes are substituted through
+   the same map, then pushed onto the solver, checked, and popped —
+   keeping Z3's learned clauses alive across CEGAR rounds. *)
+module Gate_cache = struct
+  type t = (string, Reachability.Slot.t) Hashtbl.t
+
+  let create () : t = Hashtbl.create 8
+
+  let get_or_init (cache : t) ~(timeout : int option)
+      ~(assume_dims : bool) ~(params : (string * int) list)
+      (k : Kernel.t) : Reachability.Slot.t =
+    match Hashtbl.find_opt cache k.name with
+    | Some s -> s
+    | None ->
+      let s =
+        Reachability.make_slot ~timeout ~assume_dims ~params k
+      in
+      Hashtbl.add cache k.name s;
+      s
+end
+
+let gate_holds_cached (cache : Gate_cache.t)
+    (_baseline : Reachability.AccessSet.t) (app : App.t) : bool =
+  app.kernels |> App.only_kernel app
+  |> List.for_all (fun k ->
+    let slot =
+      Gate_cache.get_or_init cache
+        ~timeout:app.timeout
+        ~assume_dims:app.assume_dims
+        ~params:app.params
+        k
+    in
+    Reachability.preconditions_satisfiable_delta slot app.assumes)
+
+let[@warning "-32"] gate_holds = gate_holds_simple
 
 let run_assuming (assumptions : Exp.bexp list) (app : App.t) : Analysis.t list =
   { app with assumes = app.assumes @ assumptions }
@@ -226,6 +264,7 @@ let weaken_for_gate
 let abductive_loop
     ?(iter_cap = 32)
     ~(use_core_shrink : bool)
+    ~(gate_check : Reachability.AccessSet.t -> App.t -> bool)
     (app : App.t)
     (baseline_reachable : Reachability.AccessSet.t) : Exp.bexp list option =
   let kernels = App.only_kernel app app.kernels in
@@ -234,19 +273,19 @@ let abductive_loop
     let session = Abduction.create_for_kernels kernels in
     let drf_and_gate extras =
       verifies_drf_only app extras
-      && gate_holds baseline_reachable
+      && gate_check baseline_reachable
            { app with assumes = app.assumes @ extras }
     in
     let shrink' = shrink ~use_core:use_core_shrink in
     let try_finalize extras =
       let minimal = shrink' baseline_reachable app extras in
       let app' = { app with assumes = app.assumes @ minimal } in
-      if gate_holds baseline_reachable app' then Some minimal
+      if gate_check baseline_reachable app' then Some minimal
       else
         let weakened = weaken_for_gate drf_and_gate minimal in
         let weakened_min = shrink' baseline_reachable app weakened in
         let app'' = { app with assumes = app.assumes @ weakened_min } in
-        if gate_holds baseline_reachable app'' then Some weakened_min
+        if gate_check baseline_reachable app'' then Some weakened_min
         else None
     in
     let rec loop iter extras =
@@ -333,15 +372,25 @@ let usage_constrained_kernel
 (* Z3 raises [Z3.Error "max. memory exceeded"] when a query exhausts
    its memory cap (default ~6 GB). Treat it as an inconclusive result —
    we couldn't prove DRF, so report [Racy] and let the caller decide. *)
-let compute_verdict ~(use_core_shrink : bool) (app : App.t) : verdict =
+let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
+    (app : App.t) : verdict =
   try
+    let gate_check =
+      if cached_gate then
+        let cache = Gate_cache.create () in
+        gate_holds_cached cache
+      else
+        gate_holds_simple
+    in
     let baseline_reachable = access_set_of app in
     let baseline = App.run app in
     if all_safe baseline then
       if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
       else Drf { source = Source_baseline; assumes = [] }
     else
-      match abductive_loop ~use_core_shrink app baseline_reachable with
+      match
+        abductive_loop ~use_core_shrink ~gate_check app baseline_reachable
+      with
       | Some minimal -> Drf { source = Source_abductive; assumes = minimal }
       | None ->
         let blanket = blanket_extras app in
@@ -351,7 +400,7 @@ let compute_verdict ~(use_core_shrink : bool) (app : App.t) : verdict =
             shrink ~use_core:use_core_shrink baseline_reachable app blanket
           in
           let app' = { app with assumes = app.assumes @ minimal } in
-          if gate_holds baseline_reachable app'
+          if gate_check baseline_reachable app'
           then Drf { source = Source_blanket; assumes = minimal }
           else Racy
   with Z3.Error _ -> Racy
@@ -479,6 +528,13 @@ let main =
                    precondition in one Z3 call, instead of the default \
                    linear drop-clause loop. Falls back to the linear \
                    path on any racy / unknown subproof.")
+  and+ cached_gate =
+    Arg.(value & flag
+         & info [ "gate-cache" ]
+             ~doc:"Reuse a single Z3 context and solver per kernel \
+                   across abductive rounds (push/pop on the assertion \
+                   stack), preserving learned clauses. Disable to fall \
+                   back to a fresh context per gate call.")
   in
   let archs = [ Architecture.Block ] in
   let app =
@@ -518,7 +574,7 @@ let main =
     in
     { app with kernels }
   in
-  let v = compute_verdict ~use_core_shrink app in
+  let v = compute_verdict ~use_core_shrink ~cached_gate app in
   if output_json then report_json app v else report_prose v;
   Ok ()
 
