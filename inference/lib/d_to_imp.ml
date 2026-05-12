@@ -75,7 +75,7 @@ module Make (L : Logger) = struct
     | "+" -> NExp (Binary ((if unsigned then UPlus else Plus), l, r))
     | "-" -> NExp (Binary (Minus, l, r))
     | "*" -> NExp (Binary ((if unsigned then UMult else Mult), l, r))
-    | "/" -> NExp (Binary (Div, l, r))
+    | "/" -> NExp (Binary (Div (if unsigned then Unsigned else Signed), l, r))
     | "%" -> NExp (Binary (Mod, l, r))
     | ">>" -> NExp (Binary ((if unsigned then URightShift else RightShift), l, r))
     | "<<" -> NExp (Binary (LeftShift, l, r))
@@ -132,7 +132,7 @@ module Make (L : Logger) = struct
         let n1_plus_n2_minus_1 : Infer_exp.n =
           Binary (Plus, n1, NExp n2_minus_1)
         in
-        NExp (Binary (Div, NExp n1_plus_n2_minus_1, n2))
+        NExp (Binary (Div Signedness.Signed, NExp n1_plus_n2_minus_1, n2))
     | CallExpr
         { func = Ident { name = f; kind = Function; _ }; args = [ n ]; _ }
       when Variable.name f = "__other_int" ->

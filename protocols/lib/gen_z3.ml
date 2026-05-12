@@ -61,6 +61,7 @@ module type NUMERIC_OPS = sig
   val mk_minus : binop
   val mk_mult : binop
   val mk_div : binop
+  val mk_udiv : binop
   val mk_mod : binop
   val mk_le : binop
   val mk_ule : binop
@@ -92,6 +93,7 @@ module ArithmeticOps : NUMERIC_OPS = struct
   let mk_minus ctx n1 n2 = Arithmetic.mk_sub ctx [ n1; n2 ]
   let mk_mult ctx n1 n2 = Arithmetic.mk_mul ctx [ n1; n2 ]
   let mk_div = Arithmetic.mk_div
+  let mk_udiv = Arithmetic.mk_div
   let mk_mod = Arithmetic.Integer.mk_mod
   let mk_le = Arithmetic.mk_le
   let mk_ule = Arithmetic.mk_le
@@ -158,6 +160,7 @@ module BitVectorOps (W : WordSize) = struct
   let mk_plus = BitVector.mk_add
   let mk_mult = BitVector.mk_mul
   let mk_div = BitVector.mk_sdiv
+  let mk_udiv = BitVector.mk_udiv
   let mk_mod = BitVector.mk_smod
   let mk_le = BitVector.mk_sle
   let mk_ule = BitVector.mk_ule
@@ -516,7 +519,8 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Minus -> N.mk_minus
     | Mult -> N.mk_mult
     | UMult -> N.mk_mult
-    | Div -> N.mk_div
+    | Div Signed -> N.mk_div
+    | Div Unsigned -> N.mk_udiv
     | Mod -> N.mk_mod
 
   let nrel_to_expr :
@@ -734,6 +738,7 @@ module SignedBitVectorOps (W : WordSize) = struct
   let mk_plus = BitVector.mk_add
   let mk_mult = BitVector.mk_mul
   let mk_div = BitVector.mk_sdiv
+  let mk_udiv = BitVector.mk_sdiv
   let mk_mod = BitVector.mk_smod
   let mk_le = BitVector.mk_sle
   let mk_ule = BitVector.mk_sle

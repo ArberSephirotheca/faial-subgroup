@@ -256,9 +256,17 @@ let n_div n1 n2 =
      is undefined behavior at runtime, but the analyzer shouldn't fail
      when constant-folding a kernel that contains it (e.g. dead code
      under a guard the folder doesn't see through). *)
-  | _, Num 0 -> Binary (Div, n1, n2)
+  | _, Num 0 -> Binary (Div Signedness.Signed, n1, n2)
   | Num n1, Num n2 -> Num (n1 / n2)
-  | _, _ -> Binary (Div, n1, n2)
+  | _, _ -> Binary (Div Signedness.Signed, n1, n2)
+
+let n_udiv n1 n2 =
+  match (n1, n2) with
+  | _, Num 1 -> n1
+  | Num 0, _ -> Num 0
+  | _, Num 0 -> Binary (Div Signedness.Unsigned, n1, n2)
+  | Num n1, Num n2 -> Num (n1 / n2)
+  | _, _ -> Binary (Div Signedness.Unsigned, n1, n2)
 
 let n_mod n1 n2 =
   match (n1, n2) with
@@ -272,7 +280,7 @@ let n_left_shift (l : nexp) (r : nexp) : nexp =
 
 let n_right_shift (l : nexp) (r : nexp) : nexp =
   match (l, r) with
-  | a, Num n -> Binary (Div, a, Num (Common.pow ~base:2 n))
+  | a, Num n -> Binary (Div Signedness.Signed, a, Num (Common.pow ~base:2 n))
   | _, _ -> Binary (RightShift, l, r)
 
 let n_bin o n1 n2 =
@@ -282,7 +290,8 @@ let n_bin o n1 n2 =
     | N_binary.Plus, _, _ -> n_plus n1 n2
     | Minus, _, _ -> n_minus n1 n2
     | Mult, _, _ -> n_mult n1 n2
-    | Div, _, _ -> n_div n1 n2
+    | Div Signed, _, _ -> n_div n1 n2
+    | Div Unsigned, _, _ -> n_udiv n1 n2
     | Mod, _, _ -> n_mod n1 n2
     | LeftShift, _, _ -> n_left_shift n1 n2
     | RightShift, _, _ -> n_right_shift n1 n2
@@ -438,7 +447,7 @@ type side = Left | Right
 
 let rec n_par ?context (* ?side *) (n : nexp) : string =
   match context, n with
-  | Some N_binary.Plus, Binary ((N_binary.Plus | N_binary.Mult | N_binary.Div), _, _) 
+  | Some N_binary.Plus, Binary ((N_binary.Plus | N_binary.Mult | N_binary.Div _), _, _)
   | Some N_binary.Mult, Binary (N_binary.Mult, _, _) -> n_to_string n
   | _, Num _ | _, Var _ | _, NCall _ | _, Other _ | _, CastInt _ -> n_to_string n
   | _, NIf _ | _, Unary _ | _, Binary _ -> "(" ^ n_to_string n ^ ")"

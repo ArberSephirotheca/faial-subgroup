@@ -386,7 +386,7 @@ module Expressions = struct
         | Add -> NExp (Binary (Plus, left, right))
         | Subtract -> NExp (Binary (Minus, left, right))
         | Multiply -> NExp (Binary (Mult, left, right))
-        | Divide -> NExp (Binary (Div, left, right))
+        | Divide -> NExp (Binary (Div Signedness.Signed, left, right))
         | Modulo -> NExp (Binary (Mod, left, right))
         | Equal -> BExp (NRel (Eq, left, right))
         | NotEqual -> BExp (NRel (Neq, left, right))

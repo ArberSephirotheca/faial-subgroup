@@ -19,7 +19,7 @@ module Increment = struct
 
   let parse : N_binary.t -> t option = function
     | Minus -> Some Minus
-    | Div -> Some Div
+    | Div _ -> Some Div
     | RightShift -> Some RightShift
     | Plus -> Some Plus
     | LeftShift -> Some LeftShift

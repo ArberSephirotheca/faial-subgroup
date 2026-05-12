@@ -297,7 +297,8 @@ let last_mult ~lower_bound ~upper_bound (step : int) : nexp =
     Binary
       ( Mult,
         lower_bound,
-        highest_power ~base:step (Binary (Div, upper_bound, lower_bound)) )
+        highest_power ~base:step
+          (Binary (Div Signedness.Signed, upper_bound, lower_bound)) )
   else failwith ("last_mult: invalid base: " ^ string_of_int step)
 
 (*
@@ -360,7 +361,7 @@ let while_inc (r : t) : nexp =
     | Increase, Step.Plus e -> (N_binary.Plus, x, e)
     | Decrease, Step.Plus e -> (Minus, x, e)
     | Increase, Step.Mult e -> (Mult, x, e)
-    | Decrease, Step.Mult e -> (Div, x, e)
+    | Decrease, Step.Mult e -> (Div Signedness.Signed, x, e)
   in
   Binary (o, e1, e2)
 

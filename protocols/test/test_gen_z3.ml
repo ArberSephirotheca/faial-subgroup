@@ -143,6 +143,40 @@ let test_urshift_vs_rshift_on_high_bit () : unit =
       Alcotest.fail "URightShift on all-ones yields 2^63-1; should be SAT"
   | Error msg -> Alcotest.failf "unsigned shift solver error: %s" msg
 
+let test_udiv_vs_sdiv_on_minus_one () : unit =
+  (* Pin the encoder distinction for division.
+     With [x = -1] (all-ones at 64-bit BV), the claim
+       x = -1 /\ (x / 2) > 0
+     is UNSAT under signed [Div Signed] (bvsdiv truncates toward
+     zero: -1 / 2 = 0, not > 0) and SAT under unsigned
+     [Div Unsigned] (bvudiv: (2^64 - 1) / 2 = 2^63 - 1, which is the
+     max signed positive value). *)
+  let x = Variable.from_name "x" in
+  let one = Num 1 in
+  let zero = Num 0 in
+  let minus_one = Num (-1) in
+  let two = Num 2 in
+  let _ = one in
+  let eq_minus_one = NRel (Eq, Var x, minus_one) in
+  let div_signed = Binary (N_binary.Div Signedness.Signed, Var x, two) in
+  let div_unsigned = Binary (N_binary.Div Signedness.Unsigned, Var x, two) in
+  let claim_signed =
+    BRel (BAnd, eq_minus_one, NRel (Gt, div_signed, zero))
+  in
+  let claim_unsigned =
+    BRel (BAnd, eq_minus_one, NRel (Gt, div_unsigned, zero))
+  in
+  (match Bv64Gen.solve claim_signed with
+  | Ok Solver.Unsat -> ()
+  | Ok (Solver.Sat _) ->
+      Alcotest.fail "signed bvsdiv(-1, 2) = 0; should be UNSAT"
+  | Error msg -> Alcotest.failf "signed div solver error: %s" msg);
+  match Bv64Gen.solve claim_unsigned with
+  | Ok (Solver.Sat _) -> ()
+  | Ok Solver.Unsat ->
+      Alcotest.fail "unsigned bvudiv(all-ones, 2) = 2^63-1; should be SAT"
+  | Error msg -> Alcotest.failf "unsigned div solver error: %s" msg
+
 let test_medianfilter_overflow_shape () : unit =
   (* Pin the [Bv64Gen] verdict on the shape that motivated this feature.
      The setup mirrors what [Params.to_bexp] emits for two declared
@@ -240,6 +274,7 @@ let tests : unit Alcotest.test_case list =
     ("medianfilter_overflow_shape", `Quick, test_medianfilter_overflow_shape);
     ("ule_ugt_on_zero", `Quick, test_ule_ugt_on_zero);
     ("urshift_vs_rshift_on_high_bit", `Quick, test_urshift_vs_rshift_on_high_bit);
+    ("udiv_vs_sdiv_on_minus_one", `Quick, test_udiv_vs_sdiv_on_minus_one);
   ]
 
 let () = Alcotest.run "Gen_z3" [ ("test_gen_z3", tests) ]

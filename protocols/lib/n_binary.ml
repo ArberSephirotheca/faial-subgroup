@@ -12,7 +12,7 @@ type t =
   | Minus
   | Mult
   | UMult
-  | Div
+  | Div of Signedness.t
   | Mod
 
 let eval : t -> int -> int -> int = function
@@ -24,7 +24,7 @@ let eval : t -> int -> int -> int = function
   | Minus -> ( - )
   | Mult -> ( * )
   | UMult -> ( * )
-  | Div -> ( / )
+  | Div _ -> ( / )
   | Mod -> Common.modulo
   | LeftShift -> ( lsl )
   | RightShift -> ( lsr )
@@ -36,7 +36,7 @@ let to_string : t -> string = function
   | Minus -> "-"
   | Mult -> "*"
   | UMult -> "*u"
-  | Div -> "/"
+  | Div s -> "/" ^ Signedness.suffix s
   | Mod -> "%"
   | LeftShift -> "<<"
   | RightShift -> ">>"
