@@ -56,6 +56,7 @@ module type NUMERIC_OPS = sig
   val mk_bit_xor : binop
   val mk_left_shift : binop
   val mk_right_shift : binop
+  val mk_uright_shift : binop
   val mk_plus : binop
   val mk_minus : binop
   val mk_mult : binop
@@ -86,6 +87,7 @@ module ArithmeticOps : NUMERIC_OPS = struct
   let mk_bit_xor = missing "^"
   let mk_left_shift = missing "<<"
   let mk_right_shift = missing ">>"
+  let mk_uright_shift = missing ">>u"
   let mk_plus ctx n1 n2 = Arithmetic.mk_add ctx [ n1; n2 ]
   let mk_minus ctx n1 n2 = Arithmetic.mk_sub ctx [ n1; n2 ]
   let mk_mult ctx n1 n2 = Arithmetic.mk_mul ctx [ n1; n2 ]
@@ -151,6 +153,7 @@ module BitVectorOps (W : WordSize) = struct
   let mk_bit_xor = BitVector.mk_xor
   let mk_left_shift = BitVector.mk_shl
   let mk_right_shift = BitVector.mk_ashr
+  let mk_uright_shift = BitVector.mk_lshr
   let mk_minus = BitVector.mk_sub
   let mk_plus = BitVector.mk_add
   let mk_mult = BitVector.mk_mul
@@ -507,6 +510,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | BitXOr -> N.mk_bit_xor
     | LeftShift -> N.mk_left_shift
     | RightShift -> N.mk_right_shift
+    | URightShift -> N.mk_uright_shift
     | Plus -> N.mk_plus
     | UPlus -> N.mk_plus
     | Minus -> N.mk_minus
@@ -725,6 +729,7 @@ module SignedBitVectorOps (W : WordSize) = struct
   let mk_bit_xor = BitVector.mk_xor
   let mk_left_shift = BitVector.mk_shl
   let mk_right_shift = BitVector.mk_ashr
+  let mk_uright_shift = BitVector.mk_ashr
   let mk_minus = BitVector.mk_sub
   let mk_plus = BitVector.mk_add
   let mk_mult = BitVector.mk_mul

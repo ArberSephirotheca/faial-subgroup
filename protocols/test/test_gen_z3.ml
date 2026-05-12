@@ -110,6 +110,39 @@ let test_ule_ugt_on_zero () : unit =
   | Ok Solver.Unsat -> Alcotest.fail "Gt(x, -1) should be SAT"
   | Error msg -> Alcotest.failf "Gt solver error: %s" msg
 
+let test_urshift_vs_rshift_on_high_bit () : unit =
+  (* Pin the encoder distinction for right shift.
+     With [x] free at 64-bit BV, the claim
+       x = -1 /\ (x >> 1) > 0
+     is SAT under unsigned [URightShift] (logical shift fills zero;
+     all-ones >>>u 1 = 2^63 - 1, which is positive in any reading)
+     and UNSAT under signed [RightShift] (arithmetic shift fills the
+     sign bit; all-ones >> 1 stays all-ones, which is signed -1, not
+     > 0). *)
+  let x = Variable.from_name "x" in
+  let one = Num 1 in
+  let zero = Num 0 in
+  let minus_one = Num (-1) in
+  let eq_minus_one = NRel (Eq, Var x, minus_one) in
+  let shifted_signed = Binary (N_binary.RightShift, Var x, one) in
+  let shifted_unsigned = Binary (N_binary.URightShift, Var x, one) in
+  let claim_signed =
+    BRel (BAnd, eq_minus_one, NRel (Gt, shifted_signed, zero))
+  in
+  let claim_unsigned =
+    BRel (BAnd, eq_minus_one, NRel (Gt, shifted_unsigned, zero))
+  in
+  (match Bv64Gen.solve claim_signed with
+  | Ok Solver.Unsat -> ()
+  | Ok (Solver.Sat _) ->
+      Alcotest.fail "RightShift on all-ones stays negative; should be UNSAT"
+  | Error msg -> Alcotest.failf "signed shift solver error: %s" msg);
+  match Bv64Gen.solve claim_unsigned with
+  | Ok (Solver.Sat _) -> ()
+  | Ok Solver.Unsat ->
+      Alcotest.fail "URightShift on all-ones yields 2^63-1; should be SAT"
+  | Error msg -> Alcotest.failf "unsigned shift solver error: %s" msg
+
 let test_medianfilter_overflow_shape () : unit =
   (* Pin the [Bv64Gen] verdict on the shape that motivated this feature.
      The setup mirrors what [Params.to_bexp] emits for two declared
@@ -206,6 +239,7 @@ let tests : unit Alcotest.test_case list =
     ("ult_vs_lt_on_zero", `Quick, test_ult_vs_lt_on_zero);
     ("medianfilter_overflow_shape", `Quick, test_medianfilter_overflow_shape);
     ("ule_ugt_on_zero", `Quick, test_ule_ugt_on_zero);
+    ("urshift_vs_rshift_on_high_bit", `Quick, test_urshift_vs_rshift_on_high_bit);
   ]
 
 let () = Alcotest.run "Gen_z3" [ ("test_gen_z3", tests) ]

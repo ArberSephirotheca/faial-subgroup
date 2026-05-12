@@ -77,7 +77,7 @@ module Make (L : Logger) = struct
     | "*" -> NExp (Binary ((if unsigned then UMult else Mult), l, r))
     | "/" -> NExp (Binary (Div, l, r))
     | "%" -> NExp (Binary (Mod, l, r))
-    | ">>" -> NExp (Binary (RightShift, l, r))
+    | ">>" -> NExp (Binary ((if unsigned then URightShift else RightShift), l, r))
     | "<<" -> NExp (Binary (LeftShift, l, r))
     | "^" -> NExp (Binary (BitXOr, l, r))
     | "|" -> NExp (Binary (BitOr, l, r))

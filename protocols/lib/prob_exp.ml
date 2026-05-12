@@ -12,6 +12,7 @@ let eval_nbin : N_binary.t -> Int32.t -> Int32.t -> Int32.t = function
   | Mod -> Int32.rem
   | LeftShift -> fun x y -> Int32.shift_left x (Int32.to_int y)
   | RightShift -> fun x y -> Int32.shift_right x (Int32.to_int y)
+  | URightShift -> fun x y -> Int32.shift_right_logical x (Int32.to_int y)
 
 let eval_nrel : N_rel.t -> Int32.t -> Int32.t -> bool = function
   | Eq -> ( = )

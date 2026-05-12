@@ -6,6 +6,7 @@ type t =
   | BitAnd
   | LeftShift
   | RightShift
+  | URightShift
   | Plus
   | UPlus
   | Minus
@@ -27,6 +28,7 @@ let eval : t -> int -> int -> int = function
   | Mod -> Common.modulo
   | LeftShift -> ( lsl )
   | RightShift -> ( lsr )
+  | URightShift -> ( lsr )
 
 let to_string : t -> string = function
   | Plus -> "+"
@@ -38,6 +40,7 @@ let to_string : t -> string = function
   | Mod -> "%"
   | LeftShift -> "<<"
   | RightShift -> ">>"
+  | URightShift -> ">>u"
   | BitXOr -> "^"
   | BitOr -> "|"
   | BitAnd -> "&"

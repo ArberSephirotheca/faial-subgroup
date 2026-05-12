@@ -20,6 +20,7 @@ module BinOp = struct
     | BitAnd -> BitAnd
     | LeftShift -> LeftShift
     | RightShift -> RightShift
+    | URightShift -> RightShift
     | Plus -> Plus
     | UPlus -> Plus
     | Minus -> Minus
