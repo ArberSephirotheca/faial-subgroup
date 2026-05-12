@@ -23,7 +23,7 @@ module BinOp = struct
     | URightShift -> RightShift
     | Plus -> Plus
     | UPlus -> Plus
-    | Minus -> Minus
+    | Minus _ -> Minus
     | Mult -> Mult
     | UMult -> Mult
     | Div _ -> Div

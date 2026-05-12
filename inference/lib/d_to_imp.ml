@@ -73,7 +73,7 @@ module Make (L : Logger) = struct
     | ">" -> BExp (NRel ((if unsigned then UGt else Gt), l, r))
     (* int -> int -> int *)
     | "+" -> NExp (Binary ((if unsigned then UPlus else Plus), l, r))
-    | "-" -> NExp (Binary (Minus, l, r))
+    | "-" -> NExp (Binary (Minus (if unsigned then Unsigned else Signed), l, r))
     | "*" -> NExp (Binary ((if unsigned then UMult else Mult), l, r))
     | "/" -> NExp (Binary (Div (if unsigned then Unsigned else Signed), l, r))
     | "%" -> NExp (Binary (Mod (if unsigned then Unsigned else Signed), l, r))
@@ -128,7 +128,9 @@ module Make (L : Logger) = struct
         let n1 = infer_expr n1 in
         let n2 = infer_expr n2 in
         (*  (n1 + n2 - 1)/n2 *)
-        let n2_minus_1 : Infer_exp.n = Binary (Minus, n2, NExp (Num 1)) in
+        let n2_minus_1 : Infer_exp.n =
+          Binary (Minus Signedness.Signed, n2, NExp (Num 1))
+        in
         let n1_plus_n2_minus_1 : Infer_exp.n =
           Binary (Plus, n1, NExp n2_minus_1)
         in
@@ -542,7 +544,9 @@ module Make (L : Logger) = struct
                child = Ident { name = var; _ };
                ty;
              }) ->
-          let op : N_binary.t = if opcode = "++" then Plus else Minus in
+          let op : N_binary.t =
+            if opcode = "++" then Plus else Minus Signedness.Signed
+          in
           let data : Infer_exp.t =
             NExp (Binary (op, NExp (Var var), NExp (Num 1)))
           in

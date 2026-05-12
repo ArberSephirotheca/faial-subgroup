@@ -72,7 +72,7 @@ let test_bc () : unit =
     ~expected:(Binary (Plus, Num 10, Num 20))
     ~given:(Binary (Plus, Num 10, Num 20));
   bc_any ~expected:tidx ~given:(Binary (Plus, tidx, Num 20));
-  bc_any ~expected:tidx ~given:(Binary (Minus, tidx, Num 20));
+  bc_any ~expected:tidx ~given:(Binary (Minus Signedness.Signed, tidx, Num 20));
   bc_any ~expected:tidx ~given:(Binary (Plus, tidx, Num 20));
   bc_any
     ~expected:(Binary (Mult, tidx, Num 20))

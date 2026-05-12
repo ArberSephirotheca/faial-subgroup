@@ -229,7 +229,7 @@ let n_minus n1 n2 =
   match (n1, n2) with
   | n, Num 0 -> n
   | Num n1, Num n2 -> Num (n1 - n2)
-  | _, _ -> Binary (Minus, n1, n2)
+  | _, _ -> Binary (Minus Signedness.Signed, n1, n2)
 
 let n_dec (n : nexp) : nexp = n_minus n (Num 1)
 
@@ -293,7 +293,7 @@ let n_bin o n1 n2 =
     match (o, n1, n2) with
     | _, Num n1, Num n2 -> Num (N_binary.eval o n1 n2)
     | N_binary.Plus, _, _ -> n_plus n1 n2
-    | Minus, _, _ -> n_minus n1 n2
+    | Minus _, _, _ -> n_minus n1 n2
     | Mult, _, _ -> n_mult n1 n2
     | Div Signed, _, _ -> n_div n1 n2
     | Div Unsigned, _, _ -> n_udiv n1 n2

@@ -113,7 +113,7 @@ let nexp_arithmetic_tests =
     test_nexp_parse "addition" "x + y"
       (Binary (N_binary.Plus, var "x", var "y"));
     test_nexp_parse "subtraction" "x - y"
-      (Binary (N_binary.Minus, var "x", var "y"));
+      (Binary (N_binary.Minus Signedness.Signed, var "x", var "y"));
     test_nexp_parse "multiplication" "x * y"
       (Binary (N_binary.Mult, var "x", var "y"));
     test_nexp_parse "division" "x / y"

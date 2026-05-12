@@ -384,7 +384,7 @@ module Expressions = struct
         let open B_rel in
         match op with
         | Add -> NExp (Binary (Plus, left, right))
-        | Subtract -> NExp (Binary (Minus, left, right))
+        | Subtract -> NExp (Binary (Minus Signedness.Signed, left, right))
         | Multiply -> NExp (Binary (Mult, left, right))
         | Divide -> NExp (Binary (Div Signedness.Signed, left, right))
         | Modulo -> NExp (Binary (Mod Signedness.Signed, left, right))

@@ -104,7 +104,7 @@ let count_self_assigns (x : Variable.t) (s : Stmt.t) : int =
   let is_self_inc : Stmt.t -> bool = function
     | Assign { var; data = Binary (Plus, Var y, _); _ }
     | Assign { var; data = Binary (Plus, _, Var y); _ }
-    | Assign { var; data = Binary (Minus, Var y, _); _ } ->
+    | Assign { var; data = Binary (Minus _, Var y, _); _ } ->
         Variable.equal var x && Variable.equal y x
     | _ -> false
   in
@@ -145,7 +145,7 @@ let test_body_decrement_produces_for () =
             (Exp.n_to_string e));
       (* upper_bound = (Var c_start) - 1 — init was decl_set k (c_start - 1) *)
       match r.upper_bound with
-      | Binary (Minus, Var v, Num 1) when Variable.name v = "c_start" -> ()
+      | Binary (Minus _, Var v, Num 1) when Variable.name v = "c_start" -> ()
       | e ->
           Alcotest.failf "expected upper_bound = c_start - 1, got %s"
             (Exp.n_to_string e)

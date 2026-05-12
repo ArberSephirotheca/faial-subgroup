@@ -5,7 +5,7 @@ let eval_nbin : N_binary.t -> Int32.t -> Int32.t -> Int32.t = function
   | BitOr -> Int32.logor
   | Plus -> Int32.add
   | UPlus -> Int32.add
-  | Minus -> Int32.sub
+  | Minus _ -> Int32.sub
   | Mult -> Int32.mul
   | UMult -> Int32.mul
   | Div _ -> Int32.div

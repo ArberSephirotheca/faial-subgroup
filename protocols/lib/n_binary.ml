@@ -9,7 +9,7 @@ type t =
   | URightShift
   | Plus
   | UPlus
-  | Minus
+  | Minus of Signedness.t
   | Mult
   | UMult
   | Div of Signedness.t
@@ -21,7 +21,7 @@ let eval : t -> int -> int -> int = function
   | BitOr -> ( lor )
   | Plus -> ( + )
   | UPlus -> ( + )
-  | Minus -> ( - )
+  | Minus _ -> ( - )
   | Mult -> ( * )
   | UMult -> ( * )
   | Div _ -> ( / )
@@ -33,7 +33,7 @@ let eval : t -> int -> int -> int = function
 let to_string : t -> string = function
   | Plus -> "+"
   | UPlus -> "+u"
-  | Minus -> "-"
+  | Minus s -> "-" ^ Signedness.suffix s
   | Mult -> "*"
   | UMult -> "*u"
   | Div s -> "/" ^ Signedness.suffix s

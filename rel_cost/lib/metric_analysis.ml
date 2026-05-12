@@ -37,8 +37,8 @@ module UA = struct
    fun o (e1, x1) (e2, x2) ->
     let both : Exp.nexp = Binary (o, e1, e2) in
     match (o, x1, x2) with
-    | (Plus | UPlus | Minus), Uniform, (AnyAccurate | Inc) -> (e2, Inc)
-    | (Plus | UPlus | Minus), (AnyAccurate | Inc), Uniform -> (e1, Inc)
+    | (Plus | UPlus | Minus _), Uniform, (AnyAccurate | Inc) -> (e2, Inc)
+    | (Plus | UPlus | Minus _), (AnyAccurate | Inc), Uniform -> (e1, Inc)
     | _, _, _ -> (both, max x1 x2)
 
   let map (f : Exp.nexp -> Exp.nexp) ((e, x) : Exp.nexp * t) : Exp.nexp * t =
@@ -125,8 +125,8 @@ module BC = struct
    fun o (e1, x1) (e2, x2) ->
     let both : Exp.nexp = Binary (o, e1, e2) in
     match (o, x1, x2) with
-    | (Plus | Minus), Any, Uniform -> (e1, Any)
-    | (Plus | Minus), Uniform, Any -> (e2, Any)
+    | (Plus | UPlus | Minus _), Any, Uniform -> (e1, Any)
+    | (Plus | UPlus | Minus _), Uniform, Any -> (e2, Any)
     | _, Uniform, Uniform -> (both, Uniform)
     | _, _, _ -> (both, Any)
 

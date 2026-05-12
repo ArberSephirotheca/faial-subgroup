@@ -286,7 +286,7 @@ end = struct
     | Exp.Num n -> of_int n
     | Exp.Binary (N_binary.Plus, a, b) -> from_nexp ~globals a + from_nexp ~globals b
     | Exp.Binary (N_binary.Mult, a, b) -> from_nexp ~globals a * from_nexp ~globals b
-    | Exp.Binary (N_binary.Minus, a, b) -> from_nexp ~globals a - from_nexp ~globals b
+    | Exp.Binary (N_binary.Minus _, a, b) -> from_nexp ~globals a - from_nexp ~globals b
     | v -> of_atom (Atom.from_nexp ~globals v)
 
   let to_nexp (e: t): Exp.nexp =

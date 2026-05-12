@@ -521,7 +521,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | URightShift -> N.mk_uright_shift
     | Plus -> N.mk_plus
     | UPlus -> N.mk_plus
-    | Minus -> N.mk_minus
+    | Minus _ -> N.mk_minus
     | Mult -> N.mk_mult
     | UMult -> N.mk_mult
     | Div Signed -> N.mk_div
