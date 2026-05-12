@@ -177,6 +177,40 @@ let test_udiv_vs_sdiv_on_minus_one () : unit =
       Alcotest.fail "unsigned bvudiv(all-ones, 2) = 2^63-1; should be SAT"
   | Error msg -> Alcotest.failf "unsigned div solver error: %s" msg
 
+let test_umod_vs_smod_on_minus_one () : unit =
+  (* Pin the encoder distinction for modulo, plus the signed-`%`
+     fix from bvsmod to bvsrem (C99 semantics).
+     With [x = -1] (all-ones at 64-bit BV), the claim
+       x = -1 /\ (x % 3) == 0
+     is UNSAT under signed [Mod Signed] (bvsrem(-1, 3) = -1) and SAT
+     under unsigned [Mod Unsigned] (bvurem(2^64 - 1, 3) = 0, since
+     2^64 - 1 is divisible by 3). *)
+  let x = Variable.from_name "x" in
+  let zero = Num 0 in
+  let minus_one = Num (-1) in
+  let three = Num 3 in
+  let eq_minus_one = NRel (Eq, Var x, minus_one) in
+  let mod_signed = Binary (N_binary.Mod Signedness.Signed, Var x, three) in
+  let mod_unsigned =
+    Binary (N_binary.Mod Signedness.Unsigned, Var x, three)
+  in
+  let claim_signed =
+    BRel (BAnd, eq_minus_one, NRel (Eq, mod_signed, zero))
+  in
+  let claim_unsigned =
+    BRel (BAnd, eq_minus_one, NRel (Eq, mod_unsigned, zero))
+  in
+  (match Bv64Gen.solve claim_signed with
+  | Ok Solver.Unsat -> ()
+  | Ok (Solver.Sat _) ->
+      Alcotest.fail "signed bvsrem(-1, 3) = -1; should be UNSAT for == 0"
+  | Error msg -> Alcotest.failf "signed mod solver error: %s" msg);
+  match Bv64Gen.solve claim_unsigned with
+  | Ok (Solver.Sat _) -> ()
+  | Ok Solver.Unsat ->
+      Alcotest.fail "unsigned bvurem(2^64-1, 3) = 0; should be SAT"
+  | Error msg -> Alcotest.failf "unsigned mod solver error: %s" msg
+
 let test_medianfilter_overflow_shape () : unit =
   (* Pin the [Bv64Gen] verdict on the shape that motivated this feature.
      The setup mirrors what [Params.to_bexp] emits for two declared
@@ -275,6 +309,7 @@ let tests : unit Alcotest.test_case list =
     ("ule_ugt_on_zero", `Quick, test_ule_ugt_on_zero);
     ("urshift_vs_rshift_on_high_bit", `Quick, test_urshift_vs_rshift_on_high_bit);
     ("udiv_vs_sdiv_on_minus_one", `Quick, test_udiv_vs_sdiv_on_minus_one);
+    ("umod_vs_smod_on_minus_one", `Quick, test_umod_vs_smod_on_minus_one);
   ]
 
 let () = Alcotest.run "Gen_z3" [ ("test_gen_z3", tests) ]

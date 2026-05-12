@@ -63,6 +63,7 @@ module type NUMERIC_OPS = sig
   val mk_div : binop
   val mk_udiv : binop
   val mk_mod : binop
+  val mk_umod : binop
   val mk_le : binop
   val mk_ule : binop
   val mk_ge : binop
@@ -95,6 +96,7 @@ module ArithmeticOps : NUMERIC_OPS = struct
   let mk_div = Arithmetic.mk_div
   let mk_udiv = Arithmetic.mk_div
   let mk_mod = Arithmetic.Integer.mk_mod
+  let mk_umod = Arithmetic.Integer.mk_mod
   let mk_le = Arithmetic.mk_le
   let mk_ule = Arithmetic.mk_le
   let mk_ge = Arithmetic.mk_ge
@@ -161,7 +163,10 @@ module BitVectorOps (W : WordSize) = struct
   let mk_mult = BitVector.mk_mul
   let mk_div = BitVector.mk_sdiv
   let mk_udiv = BitVector.mk_udiv
-  let mk_mod = BitVector.mk_smod
+  (* C99: signed `%` is remainder with sign of dividend (bvsrem),
+     not mathematical mod (bvsmod, sign of divisor). *)
+  let mk_mod = BitVector.mk_srem
+  let mk_umod = BitVector.mk_urem
   let mk_le = BitVector.mk_sle
   let mk_ule = BitVector.mk_ule
   let mk_ge = BitVector.mk_sge
@@ -521,7 +526,8 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | UMult -> N.mk_mult
     | Div Signed -> N.mk_div
     | Div Unsigned -> N.mk_udiv
-    | Mod -> N.mk_mod
+    | Mod Signed -> N.mk_mod
+    | Mod Unsigned -> N.mk_umod
 
   let nrel_to_expr :
       N_rel.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr = function
@@ -740,6 +746,7 @@ module SignedBitVectorOps (W : WordSize) = struct
   let mk_div = BitVector.mk_sdiv
   let mk_udiv = BitVector.mk_sdiv
   let mk_mod = BitVector.mk_smod
+  let mk_umod = BitVector.mk_smod
   let mk_le = BitVector.mk_sle
   let mk_ule = BitVector.mk_sle
   let mk_ge = BitVector.mk_sge

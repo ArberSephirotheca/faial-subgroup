@@ -27,7 +27,7 @@ module BinOp = struct
     | Mult -> Mult
     | UMult -> Mult
     | Div _ -> Div
-    | Mod -> Mod
+    | Mod _ -> Mod
 
   let to_string : t -> string = function
     | BitOr -> "|"

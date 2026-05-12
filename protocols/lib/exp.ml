@@ -271,7 +271,12 @@ let n_udiv n1 n2 =
 let n_mod n1 n2 =
   match (n1, n2) with
   | Num n1, Num n2 -> Num (Common.modulo n1 n2)
-  | _, _ -> Binary (Mod, n1, n2)
+  | _, _ -> Binary (Mod Signedness.Signed, n1, n2)
+
+let n_umod n1 n2 =
+  match (n1, n2) with
+  | Num n1, Num n2 -> Num (Common.modulo n1 n2)
+  | _, _ -> Binary (Mod Signedness.Unsigned, n1, n2)
 
 let n_left_shift (l : nexp) (r : nexp) : nexp =
   match (l, r) with
@@ -292,7 +297,8 @@ let n_bin o n1 n2 =
     | Mult, _, _ -> n_mult n1 n2
     | Div Signed, _, _ -> n_div n1 n2
     | Div Unsigned, _, _ -> n_udiv n1 n2
-    | Mod, _, _ -> n_mod n1 n2
+    | Mod Signed, _, _ -> n_mod n1 n2
+    | Mod Unsigned, _, _ -> n_umod n1 n2
     | LeftShift, _, _ -> n_left_shift n1 n2
     | RightShift, _, _ -> n_right_shift n1 n2
     | _, _, _ -> Binary (o, n1, n2)

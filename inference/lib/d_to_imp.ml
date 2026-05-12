@@ -76,7 +76,7 @@ module Make (L : Logger) = struct
     | "-" -> NExp (Binary (Minus, l, r))
     | "*" -> NExp (Binary ((if unsigned then UMult else Mult), l, r))
     | "/" -> NExp (Binary (Div (if unsigned then Unsigned else Signed), l, r))
-    | "%" -> NExp (Binary (Mod, l, r))
+    | "%" -> NExp (Binary (Mod (if unsigned then Unsigned else Signed), l, r))
     | ">>" -> NExp (Binary ((if unsigned then URightShift else RightShift), l, r))
     | "<<" -> NExp (Binary (LeftShift, l, r))
     | "^" -> NExp (Binary (BitXOr, l, r))
@@ -167,7 +167,11 @@ module Make (L : Logger) = struct
         NExp (NIf (BExp (NRel (Gt, n1, n2)), n1, n2))
     | BinaryOperator { lhs = l; opcode = "&"; rhs = IntegerLiteral 1; _ } ->
         let n = infer_expr l in
-        BExp (NRel (Eq, NExp (Binary (Mod, n, NExp (Num 2))), NExp (Num 0)))
+        BExp
+          (NRel
+             ( Eq,
+               NExp (Binary (Mod Signedness.Signed, n, NExp (Num 2))),
+               NExp (Num 0) ))
     | BinaryOperator
         {
           opcode = "==";

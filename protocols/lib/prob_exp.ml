@@ -9,7 +9,7 @@ let eval_nbin : N_binary.t -> Int32.t -> Int32.t -> Int32.t = function
   | Mult -> Int32.mul
   | UMult -> Int32.mul
   | Div _ -> Int32.div
-  | Mod -> Int32.rem
+  | Mod _ -> Int32.rem
   | LeftShift -> fun x y -> Int32.shift_left x (Int32.to_int y)
   | RightShift -> fun x y -> Int32.shift_right x (Int32.to_int y)
   | URightShift -> fun x y -> Int32.shift_right_logical x (Int32.to_int y)

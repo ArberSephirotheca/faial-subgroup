@@ -115,7 +115,7 @@ let n_binary_to_op : N_binary.t -> (string, error) Result.t = function
   | Mult -> Ok "Mult"
   | UMult -> Ok "Mult"
   | Div _ -> Ok "Div"
-  | Mod -> Ok "Mod"
+  | Mod _ -> Ok "Mod"
   | (BitOr | BitXOr | BitAnd | LeftShift | RightShift | URightShift) as o ->
       Error ("unsupported binary operator: " ^ N_binary.to_string o)
 

@@ -57,7 +57,7 @@ nexp:
   | left=nexp MINUS right=nexp           { Binary (N_binary.Minus, left, right) }
   | left=nexp MULT right=nexp            { Binary (N_binary.Mult, left, right) }
   | left=nexp DIV right=nexp             { Binary (N_binary.Div Signedness.Signed, left, right) }
-  | left=nexp MOD right=nexp             { Binary (N_binary.Mod, left, right) }
+  | left=nexp MOD right=nexp             { Binary (N_binary.Mod Signedness.Signed, left, right) }
 
   (* Bitwise binary operators *)
   | left=nexp BIT_AND right=nexp         { Binary (N_binary.BitAnd, left, right) }

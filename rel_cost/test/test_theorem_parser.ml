@@ -281,7 +281,7 @@ let complex_expression_tests =
                              ( N_binary.Mult,
                                Binary (N_binary.Plus, var "x", var "y"),
                                var "stride" ),
-                           Binary (N_binary.Mod, var "tidx", Num 32) ) ),
+                           Binary (N_binary.Mod Signedness.Signed, var "tidx", Num 32) ) ),
                    Binary (N_binary.Mult, var "x", var "stride") ));
           ];
       };

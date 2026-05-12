@@ -118,7 +118,8 @@ let nexp_arithmetic_tests =
       (Binary (N_binary.Mult, var "x", var "y"));
     test_nexp_parse "division" "x / y"
       (Binary (N_binary.Div Signedness.Signed, var "x", var "y"));
-    test_nexp_parse "modulo" "x % y" (Binary (N_binary.Mod, var "x", var "y"));
+    test_nexp_parse "modulo" "x % y"
+      (Binary (N_binary.Mod Signedness.Signed, var "x", var "y"));
   ]
 
 let nexp_bitwise_tests =
