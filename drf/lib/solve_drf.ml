@@ -350,12 +350,22 @@ let solve ?(timeout = None) ?(logic = None) (p : Symbexp.Proof.t) :
   Solver.check s []
 
 module Outcome = struct
-  type t = Drf | Racy of Witness.t | Unknown
+  type t =
+    | Drf
+    | Drf_with_core of string list
+    | Racy of Witness.t
+    | Unknown
 
-  let is_safe : t -> bool = function Drf -> true | _ -> false
+  let is_safe : t -> bool = function
+    | Drf | Drf_with_core _ -> true
+    | _ -> false
 
   let to_json : t -> json = function
     | Drf -> `String "drf"
+    | Drf_with_core c ->
+      `Assoc
+        [ ("drf", `Bool true);
+          ("core", `List (List.map (fun s -> `String s) c)) ]
     | Unknown -> `String "unknown"
     | Racy w -> Witness.to_json w
 end
@@ -376,6 +386,7 @@ module Solution = struct
     *)
   let solve ?(timeout = None) ?(_show_proofs = false) ?(logic = None)
       ?(solve_tactic : Gen_z3.Tactic.t option = None)
+      ?(extras : (string * bexp) list = [])
       (ps : Symbexp.Proof.t Streamutil.stream) : t Streamutil.stream =
     let b_to_expr = ref IntGen.b_to_expr in
     let parse_num = ref IntGen.parse_num in
@@ -396,27 +407,52 @@ module Solution = struct
     (* Logic is bit-vector based *)
     Streamutil.map
       (fun p ->
+        let want_core = extras <> [] in
         let options =
           [ ("model", "true"); ("proof", "false") ]
+          @ (if want_core then [ ("unsat_core", "true") ] else [])
           @
           match timeout with
           | Some timeout -> [ ("timeout", string_of_int timeout) ]
           | None -> []
         in
+        (* When [want_core] is true the tactic-built solver is bypassed.
+           Tactic solvers nominally accept unsat_core (the OCaml
+           binding's probe confirms cores come back), but in the full
+           genie pipeline they end up either spinning the abductive
+           loop or running per-query slower than [mk_simple_solver].
+           Until we have a reproducer, prefer the simple solver for
+           the core path. *)
         let mk_solver_for ctx =
-          match solve_tactic with
-          | Some t -> Solver.mk_solver_t ctx (Gen_z3.Tactic.to_z3 ctx t)
-          | None ->
+          if want_core then
             (match !logic with
              | None -> Solver.mk_simple_solver ctx
              | Some logic -> Solver.mk_solver_s ctx logic)
+          else
+            match solve_tactic with
+            | Some t -> Solver.mk_solver_t ctx (Gen_z3.Tactic.to_z3 ctx t)
+            | None ->
+              (match !logic with
+               | None -> Solver.mk_simple_solver ctx
+               | Some logic -> Solver.mk_solver_s ctx logic)
         in
+        let trackers : (string * Z3.Expr.expr) list ref = ref [] in
         let l, s =
           (* Create a solver and try to solve, might fail with Not_Implemented *)
           let solve () =
             let ctx = Z3.mk_context options in
             let s = mk_solver_for ctx in
             add !b_to_expr s ctx p;
+            trackers :=
+              List.map
+                (fun (name, b) ->
+                  let track =
+                    Z3.Boolean.mk_const_s ctx ("extra_" ^ name)
+                  in
+                  let expr = !b_to_expr ctx (Predicates.b_inline b) in
+                  Solver.assert_and_track s expr track;
+                  (name, track))
+                extras;
             s
           in
           try (!logic, solve ())
@@ -442,6 +478,20 @@ module Solution = struct
             Phase_timer.measure "z3-check" ~detail:stats_detail (fun () ->
               Solver.check s [])
           with
+          | UNSATISFIABLE when want_core ->
+            let core = Solver.get_unsat_core s in
+            let core_names =
+              List.filter_map
+                (fun ce ->
+                  let str = Z3.Expr.to_string ce in
+                  if String.starts_with ~prefix:"extra_" str then
+                    Some (String.sub str 6 (String.length str - 6))
+                  else None)
+                core
+              |> List.sort_uniq String.compare
+            in
+            let _ = !trackers in
+            Drf_with_core core_names
           | UNSATISFIABLE -> Drf
           | SATISFIABLE -> (
               match Solver.get_model s with

@@ -107,7 +107,7 @@ let verifies_drf_only (app : App.t) (assumptions : Exp.bexp list) : bool =
   |> run_assuming assumptions
   |> all_safe
 
-let shrink (_baseline : Reachability.AccessSet.t) (app : App.t)
+let shrink_linear (_baseline : Reachability.AccessSet.t) (app : App.t)
     (extras : Exp.bexp list) : Exp.bexp list =
   let rec loop kept remaining =
     match remaining with
@@ -118,6 +118,73 @@ let shrink (_baseline : Reachability.AccessSet.t) (app : App.t)
       else loop (kept @ [c]) rest
   in
   loop [] extras
+
+(* UNSAT-core shrink: run the DRF pipeline once with [extras] added as
+   tracked Z3 assumptions (named [extra_<id>]) instead of conjoining
+   them into [kernel.pre]. Each per-proof outcome is either DRF (with
+   the subset of extras the Z3 unsat-core mentions) or Racy /
+   Unknown. The minimal set is the UNION of cores across all proofs.
+
+   Replaces the O(N) drop-clause loop in [shrink_linear] with one
+   pipeline run; the speedup is roughly the number of extras (~18
+   for is-cuda).
+
+   Falls back to [None] if any proof returns Racy / Unknown, or if
+   the union is empty under non-empty [extras] (defensive: would
+   imply the formula was already UNSAT without any extra). The
+   caller should use [shrink_linear] as the fallback. *)
+let shrink_via_core (_baseline : Reachability.AccessSet.t) (app : App.t)
+    (extras : Exp.bexp list) : Exp.bexp list option =
+  if extras = [] then Some []
+  else
+    let extras_a = Array.of_list extras in
+    let tagged =
+      List.mapi (fun i b -> (string_of_int i, b)) extras
+    in
+    let analyses = App.run { app with core_extras = tagged } in
+    if not (all_safe analyses) then None
+    else
+      let needed_ids =
+        analyses
+        |> List.concat_map (fun (a : Analysis.t) ->
+            a.report
+            |> List.concat_map (fun (s : Solve_drf.Solution.t) ->
+                match s.outcome with
+                | Solve_drf.Outcome.Drf_with_core c -> c
+                | _ -> []))
+        |> List.sort_uniq String.compare
+      in
+      (* Empty-core guard. With non-empty [extras], a union that
+         collapses to [] means one of:
+         - the baseline pre is already UNSAT-strong enough (compute_verdict
+           would normally catch this earlier — but a stale [extras] set
+           could land here),
+         - tracker elimination by a tactic stage (we currently bypass the
+           tactic for the core path, so this shouldn't happen — but if a
+           future change reactivates the tactic, this catches the silent
+           empty-core case the specialist flagged),
+         - some other Z3 quirk.
+         In all three, the linear shrink is the safe fallback. *)
+      if needed_ids = [] then None
+      else
+        let ( let* ) = Option.bind in
+        let kept =
+          needed_ids
+          |> List.filter_map (fun id ->
+              let* i = int_of_string_opt id in
+              if i >= 0 && i < Array.length extras_a
+              then Some extras_a.(i) else None)
+        in
+        Some kept
+
+let shrink ~(use_core : bool) (baseline : Reachability.AccessSet.t)
+    (app : App.t) (extras : Exp.bexp list) : Exp.bexp list =
+  if use_core then
+    match shrink_via_core baseline app extras with
+    | Some kept -> kept
+    | None -> shrink_linear baseline app extras
+  else
+    shrink_linear baseline app extras
 
 (* Per-clause weakening lattice. Replacing an equality with one of its
    one-sided variants admits strictly more models; if the kernel still
@@ -158,6 +225,7 @@ let weaken_for_gate
        (CEGIS) and re-solve. *)
 let abductive_loop
     ?(iter_cap = 32)
+    ~(use_core_shrink : bool)
     (app : App.t)
     (baseline_reachable : Reachability.AccessSet.t) : Exp.bexp list option =
   let kernels = App.only_kernel app app.kernels in
@@ -169,13 +237,14 @@ let abductive_loop
       && gate_holds baseline_reachable
            { app with assumes = app.assumes @ extras }
     in
+    let shrink' = shrink ~use_core:use_core_shrink in
     let try_finalize extras =
-      let minimal = shrink baseline_reachable app extras in
+      let minimal = shrink' baseline_reachable app extras in
       let app' = { app with assumes = app.assumes @ minimal } in
       if gate_holds baseline_reachable app' then Some minimal
       else
         let weakened = weaken_for_gate drf_and_gate minimal in
-        let weakened_min = shrink baseline_reachable app weakened in
+        let weakened_min = shrink' baseline_reachable app weakened in
         let app'' = { app with assumes = app.assumes @ weakened_min } in
         if gate_holds baseline_reachable app'' then Some weakened_min
         else None
@@ -264,7 +333,7 @@ let usage_constrained_kernel
 (* Z3 raises [Z3.Error "max. memory exceeded"] when a query exhausts
    its memory cap (default ~6 GB). Treat it as an inconclusive result —
    we couldn't prove DRF, so report [Racy] and let the caller decide. *)
-let compute_verdict (app : App.t) : verdict =
+let compute_verdict ~(use_core_shrink : bool) (app : App.t) : verdict =
   try
     let baseline_reachable = access_set_of app in
     let baseline = App.run app in
@@ -272,13 +341,15 @@ let compute_verdict (app : App.t) : verdict =
       if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
       else Drf { source = Source_baseline; assumes = [] }
     else
-      match abductive_loop app baseline_reachable with
+      match abductive_loop ~use_core_shrink app baseline_reachable with
       | Some minimal -> Drf { source = Source_abductive; assumes = minimal }
       | None ->
         let blanket = blanket_extras app in
         if blanket = [] || not (verifies_drf_only app blanket) then Racy
         else
-          let minimal = shrink baseline_reachable app blanket in
+          let minimal =
+            shrink ~use_core:use_core_shrink baseline_reachable app blanket
+          in
           let app' = { app with assumes = app.assumes @ minimal } in
           if gate_holds baseline_reachable app'
           then Drf { source = Source_blanket; assumes = minimal }
@@ -401,6 +472,13 @@ let main =
   and+ output_json =
     Arg.(value & flag
          & info [ "json" ] ~doc:"Output result as a single JSON object.")
+  and+ use_core_shrink =
+    Arg.(value & flag
+         & info [ "shrink-core" ]
+             ~doc:"Use UNSAT-core extraction to shrink the abductive \
+                   precondition in one Z3 call, instead of the default \
+                   linear drop-clause loop. Falls back to the linear \
+                   path on any racy / unknown subproof.")
   in
   let archs = [ Architecture.Block ] in
   let app =
@@ -440,7 +518,7 @@ let main =
     in
     { app with kernels }
   in
-  let v = compute_verdict app in
+  let v = compute_verdict ~use_core_shrink app in
   if output_json then report_json app v else report_prose v;
   Ok ()
 

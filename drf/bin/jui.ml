@@ -15,7 +15,7 @@ let render (output : Analysis.t list) : unit =
           |> List.filter_map (fun s ->
               let open Solution in
               match s.outcome with
-              | Drf -> None
+              | Drf | Drf_with_core _ -> None
               | Unknown -> Some (Either.Left s.proof)
               | Racy w -> Some (Either.Right (s.proof, w)))
           |> Common.either_split

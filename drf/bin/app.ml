@@ -64,6 +64,13 @@ type t = {
   show_symbexp : bool;
   logic : string option;
   solve_tactic : Gen_z3.Tactic.t option;
+  (* Candidate clauses for UNSAT-core shrinking. Each [(id, b)] is
+     added to the per-proof Z3 solver via [assert_and_track] using a
+     fresh boolean constant named [extra_<id>]; if the proof's race
+     formula is UNSAT, the returned outcome carries the subset of
+     [id]s the core mentions. Empty by default; populated by genie's
+     [shrink_via_core] path. *)
+  core_extras : (string * Exp.bexp) list;
   le_index : int list;
   ge_index : int list;
   eq_index : int list;
@@ -120,6 +127,7 @@ let to_string (app : t) : string =
    show_symbexp;
    logic;
    solve_tactic = _;
+   core_extras = _;
    le_index = _;
    ge_index = _;
    eq_index = _;
@@ -199,6 +207,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     show_symbexp;
     logic;
     solve_tactic;
+    core_extras = [];
     kernels;
     ge_index;
     le_index;
@@ -369,6 +378,7 @@ let run (a : t) : Analysis.t list =
            ~show:a.show_symbexp Symbexp.print_kernels
       |> Solve_drf.Solution.solve ~timeout:a.timeout ~_show_proofs:a.show_proofs
            ~logic:a.logic ~solve_tactic:a.solve_tactic
+           ~extras:a.core_extras
       |> Phase_timer.boundary "solve"
       |> Streamutil.to_list
     in
