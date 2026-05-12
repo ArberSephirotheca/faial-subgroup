@@ -434,7 +434,14 @@ module Solution = struct
       ) else ()); *)
         let r =
           let open Outcome in
-          match Solver.check s [] with
+          let stats_detail () =
+            Printf.sprintf "  proof=%d\n%s"
+              p.id (Solver.get_statistics s |> Z3.Statistics.to_string)
+          in
+          match
+            Phase_timer.measure "z3-check" ~detail:stats_detail (fun () ->
+              Solver.check s [])
+          with
           | UNSATISFIABLE -> Drf
           | SATISFIABLE -> (
               match Solver.get_model s with

@@ -164,7 +164,10 @@ let preconditions_satisfiable ?(timeout = 0) (k : Kernel.t) : bool =
     Params.to_bexp (Params.union_left k.global_variables k.local_variables)
   in
   let goal = Exp.b_and k.pre runtime |> Predicates.b_inline in
-  match Gen_z3.Bv64Gen.solve ~timeout goal with
+  match
+    Phase_timer.measure "gate/solve" (fun () ->
+      Gen_z3.Bv64Gen.solve ~timeout goal)
+  with
   | Ok (Gen_z3.Solver.Sat _) -> true
   | Ok Gen_z3.Solver.Unsat -> false
   | Error _ -> true (* on Unknown, accept rather than reject *)

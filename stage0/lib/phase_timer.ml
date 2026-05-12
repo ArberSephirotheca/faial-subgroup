@@ -18,6 +18,14 @@
 let table : (string, float) Hashtbl.t = Hashtbl.create 16
 let order : string list ref = ref []
 
+(* When [FAIAL_PHASE_LOG] is set (and not "0"/empty), every completed
+   [measure] writes one line to stderr immediately. Survives an
+   external timeout that kills the process before [to_json] runs. *)
+let log_enabled : bool =
+  match Sys.getenv_opt "FAIAL_PHASE_LOG" with
+  | None | Some "" | Some "0" -> false
+  | _ -> true
+
 let add (name : string) (dt : float) : unit =
   match Hashtbl.find_opt table name with
   | None ->
@@ -27,11 +35,25 @@ let add (name : string) (dt : float) : unit =
 
 (* Time [f ()] against [name]. [Fun.protect] ensures the elapsed time
    is still recorded if [f] raises (notably [Stop_at_stage], which
-   unwinds the per-kernel pipeline in [App.run]). *)
-let measure (name : string) (f : unit -> 'a) : 'a =
+   unwinds the per-kernel pipeline in [App.run]).
+
+   [?detail] is a lazy thunk evaluated only when [FAIAL_PHASE_LOG] is
+   on; its return value is appended to stderr after the [phase] line.
+   Use it to attach call-site diagnostics (e.g. Z3 statistics) without
+   paying their formatting cost when logging is off. *)
+let measure ?(detail : (unit -> string) option) (name : string) (f : unit -> 'a) : 'a =
   let t0 = Unix.gettimeofday () in
   Fun.protect
-    ~finally:(fun () -> add name (Unix.gettimeofday () -. t0))
+    ~finally:(fun () ->
+      let dt = Unix.gettimeofday () -. t0 in
+      add name dt;
+      if log_enabled then begin
+        Printf.eprintf "[phase] %s %.3fs\n" name dt;
+        (match detail with
+         | None -> ()
+         | Some d -> Printf.eprintf "%s\n" (d ()));
+        flush stderr
+      end)
     f
 
 (* Force [s] into a list, time the materialisation against [name], and

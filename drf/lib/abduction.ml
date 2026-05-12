@@ -1,3 +1,4 @@
+open Stage0
 open Protocols
 open Exp
 
@@ -114,19 +115,20 @@ type t = {
 }
 
 let create_from_pool (pool : bexp list) : t =
-  let ctx = Z3.mk_context [] in
-  let opt = Z3.Optimize.mk_opt ctx in
-  let group = Z3.Symbol.mk_string ctx "minimize" in
-  let candidates =
-    List.mapi (fun i b ->
-      let sel = Z3.Boolean.mk_const_s ctx ("b_" ^ string_of_int i) in
-      let _ : Z3.Optimize.handle =
-        Z3.Optimize.add_soft opt (Z3.Boolean.mk_not ctx sel) "1" group
-      in
-      (b, sel))
-      pool
-  in
-  { ctx; opt; candidates }
+  Phase_timer.measure "abduction/create" (fun () ->
+    let ctx = Z3.mk_context [] in
+    let opt = Z3.Optimize.mk_opt ctx in
+    let group = Z3.Symbol.mk_string ctx "minimize" in
+    let candidates =
+      List.mapi (fun i b ->
+        let sel = Z3.Boolean.mk_const_s ctx ("b_" ^ string_of_int i) in
+        let _ : Z3.Optimize.handle =
+          Z3.Optimize.add_soft opt (Z3.Boolean.mk_not ctx sel) "1" group
+        in
+        (b, sel))
+        pool
+    in
+    { ctx; opt; candidates })
 
 let create (k : Kernel.t) : t = create_from_pool (build_pool k)
 
@@ -154,7 +156,8 @@ let add_sample (s : t) (vars : (string * string) list) : int =
   match bad with
   | [] -> 0
   | _ ->
-    Z3.Optimize.add s.opt [ Z3.Boolean.mk_or s.ctx bad ];
+    Phase_timer.measure "abduction/add" (fun () ->
+      Z3.Optimize.add s.opt [ Z3.Boolean.mk_or s.ctx bad ]);
     List.length bad
 
 (* CEGIS rejection: ban a specific selector combination from future
@@ -171,7 +174,8 @@ let reject_combination (s : t) (chosen : bexp list) : int =
   match neg_selectors with
   | [] -> 0
   | _ ->
-    Z3.Optimize.add s.opt [ Z3.Boolean.mk_or s.ctx neg_selectors ];
+    Phase_timer.measure "abduction/add" (fun () ->
+      Z3.Optimize.add s.opt [ Z3.Boolean.mk_or s.ctx neg_selectors ]);
     List.length neg_selectors
 
 let add_all (analyses : Analysis.t list) (session : t) : int =
@@ -185,7 +189,7 @@ let add_all (analyses : Analysis.t list) (session : t) : int =
     0 analyses
 
 let solve (s : t) : bexp list option =
-  match Z3.Optimize.check s.opt with
+  match Phase_timer.measure "abduction/check" (fun () -> Z3.Optimize.check s.opt) with
   | Z3.Solver.SATISFIABLE ->
     Z3.Optimize.get_model s.opt
     |> Option.map (fun m ->
