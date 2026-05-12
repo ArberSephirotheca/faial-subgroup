@@ -17,4 +17,5 @@ val add : ?bound:Exp.bexp option -> Variable.t -> C_type.t -> t -> t
 val from_list : (Variable.t * C_type.t) list -> t
 val to_list : t -> (Variable.t * C_type.t) list
 val mem : Variable.t -> t -> bool
+val find_opt : Variable.t -> t -> (Exp.bexp * C_type.t) option
 val to_bexp : t -> Exp.bexp

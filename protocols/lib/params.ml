@@ -31,6 +31,7 @@ let from_set (ty : C_type.t) (s : Variable.Set.t) : t =
   |> Variable.Map.of_seq
 
 let mem = Variable.Map.mem
+let find_opt = Variable.Map.find_opt
 
 let from_list (l : (Variable.t * C_type.t) list) : t =
   l |> List.map (fun (x, ty) -> (x, default_bound x ty)) |> Variable.Map.of_list

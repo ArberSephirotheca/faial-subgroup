@@ -53,6 +53,18 @@ let int_params (k : Kernel.t) : Variable.t list =
     then Some v else None)
   |> List.sort_uniq Variable.compare
 
+(* Signedness for any [Variable.t] reachable from [k]. CUDA built-in
+   launch-config variables (threadIdx, blockIdx, blockDim, gridDim)
+   are unsigned int. Other variables are looked up in [k]'s declared
+   types via [Params]; absent or non-int → default [Signed]. *)
+let signedness_of (k : Kernel.t) (v : Variable.t) : Signedness.t =
+  if Variable.Set.mem v launch_config_set then Signedness.Unsigned
+  else
+    let p = Params.union_left k.global_variables k.local_variables in
+    match Params.find_opt v p with
+    | Some (_, ty) when C_type.is_unsigned ty -> Signedness.Unsigned
+    | _ -> Signedness.Signed
+
 (* Pool combinators. Each step is [bexp list -> bexp list] and prepends
    to the accumulator; order is irrelevant downstream. *)
 
@@ -72,6 +84,14 @@ let push_prod (xs : 'a list) (ys : 'b list)
   List.fold_left (fun acc x ->
     List.fold_left (fun acc y -> f x y :: acc) acc ys) acc xs
 
+(* "Any-unsigned wins" combinator. Mirrors C's usual arithmetic
+   conversions: a binary op whose operands differ in signedness is
+   performed unsigned. *)
+let mix_sign (s1 : Signedness.t) (s2 : Signedness.t) : Signedness.t =
+  match s1, s2 with
+  | Unsigned, _ | _, Unsigned -> Unsigned
+  | Signed, Signed -> Signed
+
 let build_pool (k : Kernel.t) : bexp list =
   let params = int_params k in
   let all_dims =
@@ -80,17 +100,25 @@ let build_pool (k : Kernel.t) : bexp list =
   in
   let lt a b = Variable.compare a b < 0 in
   let ne a b = Variable.compare a b <> 0 in
+  let sign = signedness_of k in
+  (* All [all_dims] are CUDA built-ins (unsigned int). Any binary op
+     that mixes a kernel param [p] with a dim is unsigned-dominated. *)
   let per_param acc p =
-    let v = Var p in
+    let v : nexp = Var p in
+    let sp = sign p in
+    let s_pd = mix_sign sp Unsigned in
     acc
-    |> push       (n_gt v (Num 0))
-    |> push_each  all_dims  (fun d -> n_ge v (Var d))
-    |> push_each  all_dims  (fun d -> n_eq (n_mod v (Var d)) (Num 0))
-    |> push_each  all_dims  (fun d -> n_eq v (Var d))
-    |> push_pairs ~when_:lt all_dims (fun a b -> n_ge v (n_mult (Var a) (Var b)))
-    |> push_pairs ~when_:lt all_dims (fun a b -> n_eq v (n_mult (Var a) (Var b)))
-    |> push_prod  all_dims [ 2; 4 ]
-                  (fun d c -> n_ge v (n_mult (Num c) (Var d)))
+    |> push       (NRel (Gt sp, v, Num 0))
+    |> push_each  all_dims (fun d -> NRel (Ge s_pd, v, Var d))
+    |> push_each  all_dims (fun d ->
+         NRel (Eq, Binary (Mod Unsigned, v, Var d), Num 0))
+    |> push_each  all_dims (fun d -> NRel (Eq, v, Var d))
+    |> push_pairs ~when_:lt all_dims (fun a b ->
+         NRel (Ge s_pd, v, Binary (Mult Unsigned, Var a, Var b)))
+    |> push_pairs ~when_:lt all_dims (fun a b ->
+         NRel (Eq, v, Binary (Mult Unsigned, Var a, Var b)))
+    |> push_prod  all_dims [ 2; 4 ] (fun d c ->
+         NRel (Ge s_pd, v, Binary (Mult Unsigned, Num c, Var d)))
   in
   (* Dim upper bounds. Launch dimensions are typically pinned to a
      specific value by the launch literal, but at synthesised
@@ -101,8 +129,10 @@ let build_pool (k : Kernel.t) : bexp list =
   let dim_upper_caps = [ 2; 4; 8; 16; 32; 64; 128; 256; 512; 1024 ] in
   []
   |> (fun acc -> List.fold_left per_param acc params)
-  |> push_pairs ~when_:ne params (fun a b -> n_ge (Var a) (Var b))
-  |> push_prod all_dims dim_upper_caps (fun d k -> n_le (Var d) (Num k))
+  |> push_pairs ~when_:ne params (fun a b ->
+       NRel (Ge (mix_sign (sign a) (sign b)), Var a, Var b))
+  |> push_prod all_dims dim_upper_caps (fun d k ->
+       NRel (Le Unsigned, Var d, Num k))
 
 let build_pool_union (ks : Kernel.t list) : bexp list =
   ks |> List.concat_map build_pool |> List.sort_uniq Exp.b_compare
