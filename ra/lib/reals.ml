@@ -19,13 +19,10 @@ module BinOp = struct
     | BitXOr -> BitXOr
     | BitAnd -> BitAnd
     | LeftShift -> LeftShift
-    | RightShift -> RightShift
-    | URightShift -> RightShift
-    | Plus -> Plus
-    | UPlus -> Plus
+    | RightShift _ -> RightShift
+    | Plus _ -> Plus
     | Minus _ -> Minus
-    | Mult -> Mult
-    | UMult -> Mult
+    | Mult _ -> Mult
     | Div _ -> Div
     | Mod _ -> Mod
 

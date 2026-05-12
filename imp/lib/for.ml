@@ -20,10 +20,10 @@ module Increment = struct
   let parse : N_binary.t -> t option = function
     | Minus _ -> Some Minus
     | Div _ -> Some Div
-    | RightShift -> Some RightShift
-    | Plus -> Some Plus
+    | RightShift _ -> Some RightShift
+    | Plus _ -> Some Plus
     | LeftShift -> Some LeftShift
-    | Mult -> Some Mult
+    | Mult _ -> Some Mult
     | _ -> None
 end
 
@@ -31,10 +31,10 @@ module Comparator = struct
   type t = Lt | Le | Gt | Ge | RelMinus
 
   let parse : N_rel.t -> t option = function
-    | Lt | ULt -> Some Lt
-    | Gt | UGt -> Some Gt
-    | Le | ULe -> Some Le
-    | Ge | UGe -> Some Ge
+    | Lt _ -> Some Lt
+    | Gt _ -> Some Gt
+    | Le _ -> Some Le
+    | Ge _ -> Some Ge
     | _ -> None
 end
 
@@ -125,11 +125,11 @@ module Infer = struct
           let* op = Comparator.parse o in
           Some ({ var; op; arg = Exp.n_plus e arg }, accum)
       (* e + x R arg ~~~> x R arg - e *)
-      | NRel (o, Binary (Plus, e, Var var), arg) when Variable.equal var x ->
+      | NRel (o, Binary (Plus _, e, Var var), arg) when Variable.equal var x ->
           let* op = Comparator.parse o in
           Some ({ var; op; arg = Exp.n_minus arg e }, accum)
       (* x + e R arg ~~~> x R arg - e *)
-      | NRel (o, Binary (Plus, Var var, e), arg) when Variable.equal var x ->
+      | NRel (o, Binary (Plus _, Var var, e), arg) when Variable.equal var x ->
           let* op = Comparator.parse o in
           Some ({ var; op; arg = Exp.n_minus arg e }, accum)
       (* Default upper bound: x R o ~~~> x R o *)
@@ -267,7 +267,8 @@ module Infer = struct
     (* (int i = 4; i >= 0; i--) *)
     | { op = Ge; arg = lb; _ } -> (lb, init, Decrease)
     (* (int i = 4; i > 0; i--) *)
-    | { op = Gt; arg = lb; _ } -> (Binary (Plus, Num 1, lb), init, Decrease)
+    | { op = Gt; arg = lb; _ } ->
+        (Binary (Plus Signedness.Signed, Num 1, lb), init, Decrease)
 
   (* Signed contribution of an additive increment. [Plus k] contributes
      +k, [Minus k] contributes -k. Returns None for non-additive ops. *)

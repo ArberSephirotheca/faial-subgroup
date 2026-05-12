@@ -176,7 +176,8 @@ let test_highest_power () : unit =
     [
       (8, Range.highest_power ~base:2 (Num 10), "highest_power base:2 10");
       ( 8,
-        Range.highest_power ~base:2 (Binary (Plus, Num 5, Num 5)),
+        Range.highest_power ~base:2
+          (Binary (N_binary.Plus Signedness.Signed, Num 5, Num 5)),
         "highest_power base:2 (5+5)" );
     ]
   in

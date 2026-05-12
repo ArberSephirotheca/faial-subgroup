@@ -16,14 +16,14 @@ let rec norm (b : bexp) : bexp list =
   | BNot (BRel (BOr, b1, b2)) -> norm (b_and (b_not b1) (b_not b2))
   | BNot (NRel (Eq, n1, n2)) -> norm (n_neq n1 n2)
   | BNot (NRel (Neq, n1, n2)) -> norm (n_eq n1 n2)
-  | BNot (NRel (Gt, n1, n2)) -> norm (n_le n1 n2)
-  | BNot (NRel (UGt, n1, n2)) -> norm (n_ule n1 n2)
-  | BNot (NRel (Lt, n1, n2)) -> norm (n_ge n1 n2)
-  | BNot (NRel (ULt, n1, n2)) -> norm (n_uge n1 n2)
-  | BNot (NRel (Le, n1, n2)) -> norm (n_gt n1 n2)
-  | BNot (NRel (ULe, n1, n2)) -> norm (n_ugt n1 n2)
-  | BNot (NRel (Ge, n1, n2)) -> norm (n_lt n1 n2)
-  | BNot (NRel (UGe, n1, n2)) -> norm (n_ult n1 n2)
+  | BNot (NRel (Gt Signed, n1, n2)) -> norm (n_le n1 n2)
+  | BNot (NRel (Gt Unsigned, n1, n2)) -> norm (n_ule n1 n2)
+  | BNot (NRel (Lt Signed, n1, n2)) -> norm (n_ge n1 n2)
+  | BNot (NRel (Lt Unsigned, n1, n2)) -> norm (n_uge n1 n2)
+  | BNot (NRel (Le Signed, n1, n2)) -> norm (n_gt n1 n2)
+  | BNot (NRel (Le Unsigned, n1, n2)) -> norm (n_ugt n1 n2)
+  | BNot (NRel (Ge Signed, n1, n2)) -> norm (n_lt n1 n2)
+  | BNot (NRel (Ge Unsigned, n1, n2)) -> norm (n_ult n1 n2)
   | BNot (BNot b) -> norm b
   | CastBool (CastInt b) -> norm b
   | CastBool _ -> [ b ]

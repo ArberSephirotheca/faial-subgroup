@@ -111,11 +111,11 @@ let nexp_variable_tests =
 let nexp_arithmetic_tests =
   [
     test_nexp_parse "addition" "x + y"
-      (Binary (N_binary.Plus, var "x", var "y"));
+      (Binary (N_binary.Plus Signedness.Signed, var "x", var "y"));
     test_nexp_parse "subtraction" "x - y"
       (Binary (N_binary.Minus Signedness.Signed, var "x", var "y"));
     test_nexp_parse "multiplication" "x * y"
-      (Binary (N_binary.Mult, var "x", var "y"));
+      (Binary (N_binary.Mult Signedness.Signed, var "x", var "y"));
     test_nexp_parse "division" "x / y"
       (Binary (N_binary.Div Signedness.Signed, var "x", var "y"));
     test_nexp_parse "modulo" "x % y"
@@ -133,7 +133,7 @@ let nexp_bitwise_tests =
     test_nexp_parse "left shift" "x << y"
       (Binary (N_binary.LeftShift, var "x", var "y"));
     test_nexp_parse "right shift" "x >> y"
-      (Binary (N_binary.RightShift, var "x", var "y"));
+      (Binary (N_binary.RightShift Signedness.Signed, var "x", var "y"));
     test_nexp_parse "bitwise not" "~x" (Unary (N_unary.BitNot, var "x"));
     test_nexp_parse "bitwise and" "mask & 255"
       (Binary (N_binary.BitAnd, var "mask", Num 255));
@@ -142,9 +142,9 @@ let nexp_bitwise_tests =
 let nexp_precedence_tests =
   [
     test_nexp_parse "multiplication before addition" "2 + 3 * 4"
-      (Binary (N_binary.Plus, Num 2, Binary (N_binary.Mult, Num 3, Num 4)));
+      (Binary (N_binary.Plus Signedness.Signed, Num 2, Binary (N_binary.Mult Signedness.Signed, Num 3, Num 4)));
     test_nexp_parse "parentheses override precedence" "(2 + 3) * 4"
-      (Binary (N_binary.Mult, Binary (N_binary.Plus, Num 2, Num 3), Num 4));
+      (Binary (N_binary.Mult Signedness.Signed, Binary (N_binary.Plus Signedness.Signed, Num 2, Num 3), Num 4));
     test_nexp_parse "bitwise operations precedence" "a & b | c"
       (Binary
          (N_binary.BitOr, Binary (N_binary.BitAnd, var "a", var "b"), var "c"));
@@ -155,7 +155,7 @@ let nexp_precedence_tests =
 let nexp_ternary_tests =
   [
     test_nexp_parse "simple ternary" "x > 0 ? y : z"
-      (NIf (NRel (N_rel.Gt, var "x", Num 0), var "y", var "z"));
+      (NIf (NRel (N_rel.Gt Signedness.Signed, var "x", Num 0), var "y", var "z"));
     test_nexp_parse "ternary with bool cast" "bool(a) ? y : z"
       (NIf (CastBool (var "a"), var "y", var "z"));
   ]
@@ -163,7 +163,7 @@ let nexp_ternary_tests =
 let nexp_cast_tests =
   [
     test_nexp_parse "int cast" "int(x > 0)"
-      (CastInt (NRel (N_rel.Gt, var "x", Num 0)));
+      (CastInt (NRel (N_rel.Gt Signedness.Signed, var "x", Num 0)));
     test_nexp_parse "int cast with bool literal" "int(true)"
       (CastInt (Bool true));
   ]
@@ -178,10 +178,10 @@ let bexp_comparison_tests =
   [
     test_bexp_parse "equality" "x == 42" (NRel (N_rel.Eq, var "x", Num 42));
     test_bexp_parse "inequality" "x != 42" (NRel (N_rel.Neq, var "x", Num 42));
-    test_bexp_parse "less than" "x < y" (NRel (N_rel.Lt, var "x", var "y"));
-    test_bexp_parse "less equal" "x <= y" (NRel (N_rel.Le, var "x", var "y"));
-    test_bexp_parse "greater than" "x > y" (NRel (N_rel.Gt, var "x", var "y"));
-    test_bexp_parse "greater equal" "x >= y" (NRel (N_rel.Ge, var "x", var "y"));
+    test_bexp_parse "less than" "x < y" (NRel (N_rel.Lt Signedness.Signed, var "x", var "y"));
+    test_bexp_parse "less equal" "x <= y" (NRel (N_rel.Le Signedness.Signed, var "x", var "y"));
+    test_bexp_parse "greater than" "x > y" (NRel (N_rel.Gt Signedness.Signed, var "x", var "y"));
+    test_bexp_parse "greater equal" "x >= y" (NRel (N_rel.Ge Signedness.Signed, var "x", var "y"));
   ]
 
 let bexp_logical_tests =
@@ -189,13 +189,13 @@ let bexp_logical_tests =
     test_bexp_parse "logical and" "x > 0 && y < 10"
       (BRel
          ( B_rel.BAnd,
-           NRel (N_rel.Gt, var "x", Num 0),
-           NRel (N_rel.Lt, var "y", Num 10) ));
+           NRel (N_rel.Gt Signedness.Signed, var "x", Num 0),
+           NRel (N_rel.Lt Signedness.Signed, var "y", Num 10) ));
     test_bexp_parse "logical or" "x < 0 || y > 10"
       (BRel
          ( B_rel.BOr,
-           NRel (N_rel.Lt, var "x", Num 0),
-           NRel (N_rel.Gt, var "y", Num 10) ));
+           NRel (N_rel.Lt Signedness.Signed, var "x", Num 0),
+           NRel (N_rel.Gt Signedness.Signed, var "y", Num 10) ));
     test_bexp_parse "logical not" "!true" (BNot (Bool true));
   ]
 

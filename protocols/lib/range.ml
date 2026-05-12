@@ -295,7 +295,7 @@ let highest_power ~base : nexp -> nexp = function
 let last_mult ~lower_bound ~upper_bound (step : int) : nexp =
   if step >= 2 then
     Binary
-      ( Mult,
+      ( Mult Signedness.Signed,
         lower_bound,
         highest_power ~base:step
           (Binary (Div Signedness.Signed, upper_bound, lower_bound)) )
@@ -358,9 +358,9 @@ let while_inc (r : t) : nexp =
   let x = Var r.var in
   let o, e1, e2 =
     match (r.dir, r.step) with
-    | Increase, Step.Plus e -> (N_binary.Plus, x, e)
+    | Increase, Step.Plus e -> (N_binary.Plus Signedness.Signed, x, e)
     | Decrease, Step.Plus e -> (Minus Signedness.Signed, x, e)
-    | Increase, Step.Mult e -> (Mult, x, e)
+    | Increase, Step.Mult e -> (Mult Signedness.Signed, x, e)
     | Decrease, Step.Mult e -> (Div Signedness.Signed, x, e)
   in
   Binary (o, e1, e2)

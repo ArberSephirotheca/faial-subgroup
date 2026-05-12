@@ -73,7 +73,7 @@ let test_disjoint_delta_same_pi () =
    This catches the kind of false negative we'd see if a Local
    guard was misrouted. *)
 let test_local_in_delta_disagrees () =
-  let g = NRel (N_rel.Lt, var "threadIdx.x", Num 4) in
+  let g = NRel (N_rel.Lt Signedness.Signed, var "threadIdx.x", Num 4) in
   let t1 = mk_task ~delta:g () in
   let t2 = mk_task ~delta:(b_not g) () in
   match Bd.discharge sigma_with_tidx_local [ t1; t2 ] with

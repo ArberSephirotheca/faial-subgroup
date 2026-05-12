@@ -190,13 +190,27 @@ end = struct
     let rec factor_to_nexp ((factor, exp): Atom.t * int): Exp.nexp = match exp with
       | 0 -> failwith "exponent shouldn't be 0"
       | 1 -> Atom.to_nexp factor
-      | n -> Binary (N_binary.Mult, factor_to_nexp (factor, n-1), Atom.to_nexp factor)
+      | n ->
+        Binary
+          ( N_binary.Mult Signedness.Signed,
+            factor_to_nexp (factor, n-1),
+            Atom.to_nexp factor )
 
     let to_nexp ((coeff, factors): t): Exp.nexp = match coeff, TermInner.to_list factors with
       | 0, _ -> failwith "coefficient shouldn't be 0"
       | _, [] -> Num coeff
-      | 1, x :: xs -> xs |> List.fold_left (fun r x -> Exp.Binary (N_binary.Mult, r, factor_to_nexp x)) (factor_to_nexp x)
-      | n, xs -> xs |> List.fold_left (fun r x -> Exp.Binary (N_binary.Mult, r, factor_to_nexp x)) (Exp.Num n)
+      | 1, x :: xs ->
+        xs
+        |> List.fold_left
+             (fun r x ->
+               Exp.Binary (N_binary.Mult Signedness.Signed, r, factor_to_nexp x))
+             (factor_to_nexp x)
+      | n, xs ->
+        xs
+        |> List.fold_left
+             (fun r x ->
+               Exp.Binary (N_binary.Mult Signedness.Signed, r, factor_to_nexp x))
+             (Exp.Num n)
 
 
     let try_div ((c1, f1) : t) ((c2, f2) : t) : t option = 
@@ -284,8 +298,8 @@ end = struct
   let rec from_nexp ~(globals) (e: Exp.nexp): t =
     match e with
     | Exp.Num n -> of_int n
-    | Exp.Binary (N_binary.Plus, a, b) -> from_nexp ~globals a + from_nexp ~globals b
-    | Exp.Binary (N_binary.Mult, a, b) -> from_nexp ~globals a * from_nexp ~globals b
+    | Exp.Binary (N_binary.Plus _, a, b) -> from_nexp ~globals a + from_nexp ~globals b
+    | Exp.Binary (N_binary.Mult _, a, b) -> from_nexp ~globals a * from_nexp ~globals b
     | Exp.Binary (N_binary.Minus _, a, b) -> from_nexp ~globals a - from_nexp ~globals b
     | v -> of_atom (Atom.from_nexp ~globals v)
 
@@ -293,7 +307,7 @@ end = struct
     match to_list e with
     | [] -> Num 0
     | x :: xs -> xs |> List.fold_left (fun r x ->
-        Exp.Binary(N_binary.Plus, r, Term.to_nexp x)
+        Exp.Binary(N_binary.Plus Signedness.Signed, r, Term.to_nexp x)
       ) (Term.to_nexp x)
 end
 

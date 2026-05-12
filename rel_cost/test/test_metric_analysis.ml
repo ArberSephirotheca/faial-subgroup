@@ -69,17 +69,17 @@ let test_bc () : unit =
   bc_any ~expected:tidx ~given:tidx;
   bc_uniform ~expected:(Num 10) ~given:(Num 10);
   bc_uniform
-    ~expected:(Binary (Plus, Num 10, Num 20))
-    ~given:(Binary (Plus, Num 10, Num 20));
-  bc_any ~expected:tidx ~given:(Binary (Plus, tidx, Num 20));
+    ~expected:(Binary (Plus Signedness.Signed, Num 10, Num 20))
+    ~given:(Binary (Plus Signedness.Signed, Num 10, Num 20));
+  bc_any ~expected:tidx ~given:(Binary (Plus Signedness.Signed, tidx, Num 20));
   bc_any ~expected:tidx ~given:(Binary (Minus Signedness.Signed, tidx, Num 20));
-  bc_any ~expected:tidx ~given:(Binary (Plus, tidx, Num 20));
+  bc_any ~expected:tidx ~given:(Binary (Plus Signedness.Signed, tidx, Num 20));
   bc_any
-    ~expected:(Binary (Mult, tidx, Num 20))
-    ~given:(Binary (Mult, tidx, Num 20));
+    ~expected:(Binary (Mult Signedness.Signed, tidx, Num 20))
+    ~given:(Binary (Mult Signedness.Signed, tidx, Num 20));
   bc_any
-    ~expected:(Binary (Mult, tidx, Num 20))
-    ~given:(Binary (Mult, Binary (Plus, tidx, Num 5), Num 20))
+    ~expected:(Binary (Mult Signedness.Signed, tidx, Num 20))
+    ~given:(Binary (Mult Signedness.Signed, Binary (Plus Signedness.Signed, tidx, Num 5), Num 20))
 
 let test_ua () : unit =
   let open Exp in
@@ -91,14 +91,14 @@ let test_ua () : unit =
   ua_uniform ~expected:tidy ~given:tidy;
   ua_const ~expected:(Num 10) ~given:(Num 10);
   ua_const
-    ~given:(Binary (Plus, Num 10, Num 20))
-    ~expected:(Binary (Plus, Num 10, Num 20));
+    ~given:(Binary (Plus Signedness.Signed, Num 10, Num 20))
+    ~expected:(Binary (Plus Signedness.Signed, Num 10, Num 20));
   ua_any
-    ~given:(Binary (Plus, tidx, Num 20))
-    ~expected:(Binary (Plus, tidx, Num 20));
-  ua_inc ~given:(Binary (Plus, tidx, tidy)) ~expected:tidx;
-  ua_inc ~given:(Binary (Plus, tidx, x)) ~expected:tidx;
-  ua_uniform ~given:(Binary (Plus, x, y)) ~expected:(Binary (Plus, x, y));
+    ~given:(Binary (Plus Signedness.Signed, tidx, Num 20))
+    ~expected:(Binary (Plus Signedness.Signed, tidx, Num 20));
+  ua_inc ~given:(Binary (Plus Signedness.Signed, tidx, tidy)) ~expected:tidx;
+  ua_inc ~given:(Binary (Plus Signedness.Signed, tidx, x)) ~expected:tidx;
+  ua_uniform ~given:(Binary (Plus Signedness.Signed, x, y)) ~expected:(Binary (Plus Signedness.Signed, x, y));
   ua_uniform
     ~given:(n_mult (n_plus (Num 1) x) y)
     ~expected:(n_mult (n_plus (Num 1) x) y)

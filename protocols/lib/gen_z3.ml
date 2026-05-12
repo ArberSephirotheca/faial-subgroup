@@ -517,13 +517,11 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | BitOr -> N.mk_bit_or
     | BitXOr -> N.mk_bit_xor
     | LeftShift -> N.mk_left_shift
-    | RightShift -> N.mk_right_shift
-    | URightShift -> N.mk_uright_shift
-    | Plus -> N.mk_plus
-    | UPlus -> N.mk_plus
+    | RightShift Signed -> N.mk_right_shift
+    | RightShift Unsigned -> N.mk_uright_shift
+    | Plus _ -> N.mk_plus
     | Minus _ -> N.mk_minus
-    | Mult -> N.mk_mult
-    | UMult -> N.mk_mult
+    | Mult _ -> N.mk_mult
     | Div Signed -> N.mk_div
     | Div Unsigned -> N.mk_udiv
     | Mod Signed -> N.mk_mod
@@ -533,14 +531,14 @@ module CodeGen (N : NUMERIC_OPS) = struct
       N_rel.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr = function
     | Eq -> Boolean.mk_eq
     | Neq -> fun ctx n1 n2 -> Boolean.mk_not ctx (Boolean.mk_eq ctx n1 n2)
-    | Le -> N.mk_le
-    | ULe -> N.mk_ule
-    | Ge -> N.mk_ge
-    | Lt -> N.mk_lt
-    | ULt -> N.mk_ult
-    | Gt -> N.mk_gt
-    | UGt -> N.mk_ugt
-    | UGe -> N.mk_uge
+    | Le Signed -> N.mk_le
+    | Le Unsigned -> N.mk_ule
+    | Ge Signed -> N.mk_ge
+    | Ge Unsigned -> N.mk_uge
+    | Lt Signed -> N.mk_lt
+    | Lt Unsigned -> N.mk_ult
+    | Gt Signed -> N.mk_gt
+    | Gt Unsigned -> N.mk_ugt
 
   let brel_to_expr :
       B_rel.t -> Z3.context -> Expr.expr -> Expr.expr -> Expr.expr = function

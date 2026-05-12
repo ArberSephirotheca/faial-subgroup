@@ -3,28 +3,23 @@ let eval_nbin : N_binary.t -> Int32.t -> Int32.t -> Int32.t = function
   | BitAnd -> Int32.logand
   | BitXOr -> Int32.logxor
   | BitOr -> Int32.logor
-  | Plus -> Int32.add
-  | UPlus -> Int32.add
+  | Plus _ -> Int32.add
   | Minus _ -> Int32.sub
-  | Mult -> Int32.mul
-  | UMult -> Int32.mul
+  | Mult _ -> Int32.mul
   | Div _ -> Int32.div
   | Mod _ -> Int32.rem
   | LeftShift -> fun x y -> Int32.shift_left x (Int32.to_int y)
-  | RightShift -> fun x y -> Int32.shift_right x (Int32.to_int y)
-  | URightShift -> fun x y -> Int32.shift_right_logical x (Int32.to_int y)
+  | RightShift Signed -> fun x y -> Int32.shift_right x (Int32.to_int y)
+  | RightShift Unsigned ->
+      fun x y -> Int32.shift_right_logical x (Int32.to_int y)
 
 let eval_nrel : N_rel.t -> Int32.t -> Int32.t -> bool = function
   | Eq -> ( = )
   | Neq -> ( <> )
-  | Le -> ( <= )
-  | ULe -> ( <= )
-  | Ge -> ( >= )
-  | UGe -> ( >= )
-  | Lt -> ( < )
-  | ULt -> ( < )
-  | Gt -> ( > )
-  | UGt -> ( > )
+  | Le _ -> ( <= )
+  | Ge _ -> ( >= )
+  | Lt _ -> ( < )
+  | Gt _ -> ( > )
 
 let default_env (x : Variable.t) : (Int32.t, string) Result.t =
   Error ("n_eval: variable " ^ Variable.name x)

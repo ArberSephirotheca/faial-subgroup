@@ -19,7 +19,7 @@ let test_optimize_expr_minimize () : unit =
 let test_optimize_expr_with_variable () : unit =
   (* Test maximizing a variable x with constraint x <= 5 *)
   let x = Variable.from_name "x" in
-  let pre = NRel (N_rel.Le, Var x, Num 5) in
+  let pre = NRel (N_rel.Le Signedness.Signed, Var x, Num 5) in
   let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize (Var x) in
   Alcotest.check
     Alcotest.(result (option int) string)
@@ -28,8 +28,8 @@ let test_optimize_expr_with_variable () : unit =
 let test_optimize_expr_arithmetic () : unit =
   (* Test maximizing x + 3 where x <= 2 *)
   let x = Variable.from_name "x" in
-  let pre = NRel (N_rel.Le, Var x, Num 2) in
-  let expr = Binary (N_binary.Plus, Var x, Num 3) in
+  let pre = NRel (N_rel.Le Signedness.Signed, Var x, Num 2) in
+  let expr = Binary (N_binary.Plus Signedness.Signed, Var x, Num 3) in
   let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize expr in
   Alcotest.check
     Alcotest.(result (option int) string)
@@ -38,7 +38,7 @@ let test_optimize_expr_arithmetic () : unit =
 let test_optimize_expr_minimize_with_constraint () : unit =
   (* Test minimizing x where x >= 10 *)
   let x = Variable.from_name "x" in
-  let pre = NRel (N_rel.Ge, Var x, Num 10) in
+  let pre = NRel (N_rel.Ge Signedness.Signed, Var x, Num 10) in
   let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Minimize (Var x) in
   Alcotest.check
     Alcotest.(result (option int) string)
@@ -49,7 +49,7 @@ let test_optimize_expr_unsat () : unit =
   let x = Variable.from_name "x" in
   let pre =
     BRel
-      (B_rel.BAnd, NRel (N_rel.Gt, Var x, Num 5), NRel (N_rel.Lt, Var x, Num 5))
+      (B_rel.BAnd, NRel (N_rel.Gt Signedness.Signed, Var x, Num 5), NRel (N_rel.Lt Signedness.Signed, Var x, Num 5))
   in
   let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize (Var x) in
   Alcotest.check
@@ -59,8 +59,8 @@ let test_optimize_expr_unsat () : unit =
 let test_optimize_expr_multiplication () : unit =
   (* Test maximizing x * 2 where x <= 3 *)
   let x = Variable.from_name "x" in
-  let pre = NRel (N_rel.Le, Var x, Num 3) in
-  let expr = Binary (N_binary.Mult, Var x, Num 2) in
+  let pre = NRel (N_rel.Le Signedness.Signed, Var x, Num 3) in
+  let expr = Binary (N_binary.Mult Signedness.Signed, Var x, Num 2) in
   let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize expr in
   Alcotest.check
     Alcotest.(result (option int) string)
@@ -99,8 +99,8 @@ let test_ule_ugt_on_zero () : unit =
                    (the negative half of signed range). *)
   let x = Variable.from_name "x" in
   let minus_one = Num (-1) in
-  let ugt = NRel (N_rel.UGt, Var x, minus_one) in
-  let sgt = NRel (N_rel.Gt, Var x, minus_one) in
+  let ugt = NRel (N_rel.Gt Signedness.Unsigned, Var x, minus_one) in
+  let sgt = NRel (N_rel.Gt Signedness.Signed, Var x, minus_one) in
   (match Bv64Gen.solve ugt with
   | Ok Solver.Unsat -> ()
   | Ok (Solver.Sat _) -> Alcotest.fail "UGt(x, -1) should be UNSAT"
@@ -124,13 +124,15 @@ let test_urshift_vs_rshift_on_high_bit () : unit =
   let zero = Num 0 in
   let minus_one = Num (-1) in
   let eq_minus_one = NRel (Eq, Var x, minus_one) in
-  let shifted_signed = Binary (N_binary.RightShift, Var x, one) in
-  let shifted_unsigned = Binary (N_binary.URightShift, Var x, one) in
+  let shifted_signed = Binary (N_binary.RightShift Signedness.Signed, Var x, one) in
+  let shifted_unsigned =
+    Binary (N_binary.RightShift Signedness.Unsigned, Var x, one)
+  in
   let claim_signed =
-    BRel (BAnd, eq_minus_one, NRel (Gt, shifted_signed, zero))
+    BRel (BAnd, eq_minus_one, NRel (N_rel.Gt Signedness.Signed, shifted_signed, zero))
   in
   let claim_unsigned =
-    BRel (BAnd, eq_minus_one, NRel (Gt, shifted_unsigned, zero))
+    BRel (BAnd, eq_minus_one, NRel (N_rel.Gt Signedness.Signed, shifted_unsigned, zero))
   in
   (match Bv64Gen.solve claim_signed with
   | Ok Solver.Unsat -> ()
@@ -161,10 +163,10 @@ let test_udiv_vs_sdiv_on_minus_one () : unit =
   let div_signed = Binary (N_binary.Div Signedness.Signed, Var x, two) in
   let div_unsigned = Binary (N_binary.Div Signedness.Unsigned, Var x, two) in
   let claim_signed =
-    BRel (BAnd, eq_minus_one, NRel (Gt, div_signed, zero))
+    BRel (BAnd, eq_minus_one, NRel (N_rel.Gt Signedness.Signed, div_signed, zero))
   in
   let claim_unsigned =
-    BRel (BAnd, eq_minus_one, NRel (Gt, div_unsigned, zero))
+    BRel (BAnd, eq_minus_one, NRel (N_rel.Gt Signedness.Signed, div_unsigned, zero))
   in
   (match Bv64Gen.solve claim_signed with
   | Ok Solver.Unsat -> ()
@@ -229,22 +231,22 @@ let test_medianfilter_overflow_shape () : unit =
   let y = Variable.from_name "y" in
   let two = Num 2 in
   let uint_max = Num 4294967295 in
-  let xy_signed = Binary (N_binary.Mult, Var x, Var y) in
-  let xy_unsigned = Binary (N_binary.UMult, Var x, Var y) in
+  let xy_signed = Binary (N_binary.Mult Signedness.Signed, Var x, Var y) in
+  let xy_unsigned = Binary (N_binary.Mult Signedness.Unsigned, Var x, Var y) in
   (* 32-bit-unsigned-int range bound on x and y, expressed via UGe
      (no ULe constructor yet). *)
   let in_uint x =
     BRel
       ( B_rel.BAnd,
-        NRel (N_rel.UGe, Var x, two),
-        NRel (N_rel.UGe, uint_max, Var x) )
+        NRel (N_rel.Ge Signedness.Unsigned, Var x, two),
+        NRel (N_rel.Ge Signedness.Unsigned, uint_max, Var x) )
   in
   let pre_bounds = BRel (B_rel.BAnd, in_uint x, in_uint y) in
   let claim_signed =
-    BRel (BAnd, pre_bounds, NRel (N_rel.Ge, Var x, xy_signed))
+    BRel (BAnd, pre_bounds, NRel (N_rel.Ge Signedness.Signed, Var x, xy_signed))
   in
   let claim_unsigned =
-    BRel (BAnd, pre_bounds, NRel (N_rel.UGe, Var x, xy_unsigned))
+    BRel (BAnd, pre_bounds, NRel (N_rel.Ge Signedness.Unsigned, Var x, xy_unsigned))
   in
   (match Bv64Gen.solve claim_signed with
   | Ok (Solver.Sat _) -> ()
@@ -263,8 +265,8 @@ let test_ult_vs_lt_on_zero () : unit =
      This pins the encoder distinction at the only place ULt currently
      diverges from Lt in [Gen_z3]. *)
   let x = Variable.from_name "x" in
-  let ult_zero = NRel (N_rel.ULt, Var x, Num 0) in
-  let slt_zero = NRel (N_rel.Lt, Var x, Num 0) in
+  let ult_zero = NRel (N_rel.Lt Signedness.Unsigned, Var x, Num 0) in
+  let slt_zero = NRel (N_rel.Lt Signedness.Signed, Var x, Num 0) in
   (match Bv64Gen.solve ult_zero with
   | Ok Solver.Unsat -> ()
   | Ok (Solver.Sat _) -> Alcotest.fail "ULt(x, 0) should be UNSAT, got SAT"

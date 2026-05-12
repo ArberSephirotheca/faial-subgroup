@@ -102,8 +102,8 @@ let starts_with_self_shadow (x : Variable.t) (body : Stmt.t) : bool =
 (* Count occurrences of [Assign x = x ± k] anywhere in the statement. *)
 let count_self_assigns (x : Variable.t) (s : Stmt.t) : int =
   let is_self_inc : Stmt.t -> bool = function
-    | Assign { var; data = Binary (Plus, Var y, _); _ }
-    | Assign { var; data = Binary (Plus, _, Var y); _ }
+    | Assign { var; data = Binary (Plus Signedness.Signed, Var y, _); _ }
+    | Assign { var; data = Binary (Plus Signedness.Signed, _, Var y); _ }
     | Assign { var; data = Binary (Minus _, Var y, _); _ } ->
         Variable.equal var x && Variable.equal y x
     | _ -> false

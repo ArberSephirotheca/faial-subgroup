@@ -67,17 +67,18 @@ module Make (L : Logger) = struct
     (* int -> int -> bool *)
     | "==" -> BExp (NRel (Eq, l, r))
     | "!=" -> BExp (NRel (Neq, l, r))
-    | "<=" -> BExp (NRel ((if unsigned then ULe else Le), l, r))
-    | "<" -> BExp (NRel ((if unsigned then ULt else Lt), l, r))
-    | ">=" -> BExp (NRel ((if unsigned then UGe else Ge), l, r))
-    | ">" -> BExp (NRel ((if unsigned then UGt else Gt), l, r))
+    | "<=" -> BExp (NRel (Le (if unsigned then Unsigned else Signed), l, r))
+    | "<" -> BExp (NRel (Lt (if unsigned then Unsigned else Signed), l, r))
+    | ">=" -> BExp (NRel (Ge (if unsigned then Unsigned else Signed), l, r))
+    | ">" -> BExp (NRel (Gt (if unsigned then Unsigned else Signed), l, r))
     (* int -> int -> int *)
-    | "+" -> NExp (Binary ((if unsigned then UPlus else Plus), l, r))
+    | "+" -> NExp (Binary (Plus (if unsigned then Unsigned else Signed), l, r))
     | "-" -> NExp (Binary (Minus (if unsigned then Unsigned else Signed), l, r))
-    | "*" -> NExp (Binary ((if unsigned then UMult else Mult), l, r))
+    | "*" -> NExp (Binary (Mult (if unsigned then Unsigned else Signed), l, r))
     | "/" -> NExp (Binary (Div (if unsigned then Unsigned else Signed), l, r))
     | "%" -> NExp (Binary (Mod (if unsigned then Unsigned else Signed), l, r))
-    | ">>" -> NExp (Binary ((if unsigned then URightShift else RightShift), l, r))
+    | ">>" ->
+        NExp (Binary (RightShift (if unsigned then Unsigned else Signed), l, r))
     | "<<" -> NExp (Binary (LeftShift, l, r))
     | "^" -> NExp (Binary (BitXOr, l, r))
     | "|" -> NExp (Binary (BitOr, l, r))
@@ -132,7 +133,7 @@ module Make (L : Logger) = struct
           Binary (Minus Signedness.Signed, n2, NExp (Num 1))
         in
         let n1_plus_n2_minus_1 : Infer_exp.n =
-          Binary (Plus, n1, NExp n2_minus_1)
+          Binary (Plus Signedness.Signed, n1, NExp n2_minus_1)
         in
         NExp (Binary (Div Signedness.Signed, NExp n1_plus_n2_minus_1, n2))
     | CallExpr
@@ -160,13 +161,13 @@ module Make (L : Logger) = struct
       when Variable.name n = "min" ->
         let n1 = infer_expr n1 in
         let n2 = infer_expr n2 in
-        NExp (NIf (BExp (NRel (Lt, n1, n2)), n1, n2))
+        NExp (NIf (BExp (NRel (Lt Signedness.Signed, n1, n2)), n1, n2))
     | CallExpr
         { func = Ident { name = n; kind = Function; _ }; args = [ n1; n2 ]; _ }
       when Variable.name n = "max" ->
         let n1 = infer_expr n1 in
         let n2 = infer_expr n2 in
-        NExp (NIf (BExp (NRel (Gt, n1, n2)), n1, n2))
+        NExp (NIf (BExp (NRel (Gt Signedness.Signed, n1, n2)), n1, n2))
     | BinaryOperator { lhs = l; opcode = "&"; rhs = IntegerLiteral 1; _ } ->
         let n = infer_expr l in
         BExp
@@ -545,7 +546,8 @@ module Make (L : Logger) = struct
                ty;
              }) ->
           let op : N_binary.t =
-            if opcode = "++" then Plus else Minus Signedness.Signed
+            if opcode = "++" then Plus Signedness.Signed
+            else Minus Signedness.Signed
           in
           let data : Infer_exp.t =
             NExp (Binary (op, NExp (Var var), NExp (Num 1)))
