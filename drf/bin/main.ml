@@ -47,6 +47,21 @@ let conv_bexp =
   let print ppf (b : Exp.bexp) = Format.fprintf ppf "%s" (Exp.b_to_string b) in
   Arg.conv (parse, print)
 
+let conv_tactic =
+  let parse s =
+    match Parsers.TacticParser.of_string s with
+    | Ok t -> Ok t
+    | Error msg -> Error (`Msg msg)
+  in
+  let print ppf (t : Gen_z3.Tactic.t) =
+    Format.fprintf ppf "%s" (Gen_z3.Tactic.to_string t)
+  in
+  Arg.conv (parse, print)
+
+let default_solve_tactic : Gen_z3.Tactic.t =
+  Gen_z3.Tactic.and_then_ex
+    [ Tactic "simplify"; Tactic "solve-eqs"; Tactic "bv" ]
+
 let main =
   let doc = "Verify if CUDA file is free from data races." in
   let info = Cmd.info "faial-drf" ~doc in
@@ -102,6 +117,14 @@ let main =
       value
       & opt (some string) None
       & info [ "logic" ] ~doc:"Set the logic used by the Z3 solver.")
+  and+ solve_tactic =
+    let default_doc = Gen_z3.Tactic.to_string default_solve_tactic in
+    Arg.(
+      value
+      & opt (some conv_tactic) (Some default_solve_tactic)
+      & info [ "solve-tactic" ] ~docv:"TACTIC"
+        ~doc:("Z3 tactic expression for the race-query solver. \
+               Default: " ^ default_doc))
   and+ output_json =
     Arg.(value & flag & info [ "json" ] ~doc:"Output result as JSON.")
   and+ ignore_parsing_errors =
@@ -350,7 +373,7 @@ let main =
     let app =
       App.parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
         ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc
-        ~show_symbexp ~logic ~ge_index ~le_index ~eq_index ~only_array
+        ~show_symbexp ~logic ~solve_tactic ~ge_index ~le_index ~eq_index ~only_array
         ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~archs
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros

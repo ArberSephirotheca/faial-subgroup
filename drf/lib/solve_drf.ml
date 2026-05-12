@@ -375,6 +375,7 @@ module Solution = struct
     https://github.com/icra-team/icra/blob/ee3fd360ee75490277dd3fd05d92e1548db983e4/duet/pa/paSmt.ml
     *)
   let solve ?(timeout = None) ?(_show_proofs = false) ?(logic = None)
+      ?(solve_tactic : Gen_z3.Tactic.t option = None)
       (ps : Symbexp.Proof.t Streamutil.stream) : t Streamutil.stream =
     let b_to_expr = ref IntGen.b_to_expr in
     let parse_num = ref IntGen.parse_num in
@@ -402,15 +403,19 @@ module Solution = struct
           | Some timeout -> [ ("timeout", string_of_int timeout) ]
           | None -> []
         in
+        let mk_solver_for ctx =
+          match solve_tactic with
+          | Some t -> Solver.mk_solver_t ctx (Gen_z3.Tactic.to_z3 ctx t)
+          | None ->
+            (match !logic with
+             | None -> Solver.mk_simple_solver ctx
+             | Some logic -> Solver.mk_solver_s ctx logic)
+        in
         let l, s =
           (* Create a solver and try to solve, might fail with Not_Implemented *)
           let solve () =
             let ctx = Z3.mk_context options in
-            let s =
-              match !logic with
-              | None -> Solver.mk_simple_solver ctx
-              | Some logic -> Solver.mk_solver_s ctx logic
-            in
+            let s = mk_solver_for ctx in
             add !b_to_expr s ctx p;
             s
           in

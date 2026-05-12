@@ -63,6 +63,7 @@ type t = {
   show_flat_acc : bool;
   show_symbexp : bool;
   logic : string option;
+  solve_tactic : Gen_z3.Tactic.t option;
   le_index : int list;
   ge_index : int list;
   eq_index : int list;
@@ -118,6 +119,7 @@ let to_string (app : t) : string =
    show_flat_acc;
    show_symbexp;
    logic;
+   solve_tactic = _;
    le_index = _;
    ge_index = _;
    eq_index = _;
@@ -167,7 +169,7 @@ let to_string (app : t) : string =
 
 let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc ~show_symbexp
-    ~logic ~ge_index ~le_index ~eq_index ~only_array ~only_kernel
+    ~logic ~solve_tactic ~ge_index ~le_index ~eq_index ~only_array ~only_kernel
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize
@@ -196,6 +198,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     show_flat_acc;
     show_symbexp;
     logic;
+    solve_tactic;
     kernels;
     ge_index;
     le_index;
@@ -365,7 +368,7 @@ let run (a : t) : Analysis.t list =
       |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Symbexp
            ~show:a.show_symbexp Symbexp.print_kernels
       |> Solve_drf.Solution.solve ~timeout:a.timeout ~_show_proofs:a.show_proofs
-           ~logic:a.logic
+           ~logic:a.logic ~solve_tactic:a.solve_tactic
       |> Phase_timer.boundary "solve"
       |> Streamutil.to_list
     in
