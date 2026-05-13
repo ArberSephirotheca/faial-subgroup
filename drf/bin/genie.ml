@@ -2,6 +2,7 @@ open Stage0
 open Protocols
 open Protocols_parsing
 open Drf
+open Drf_genie
 open Cmdliner
 
 type verdict_source = Source_baseline | Source_abductive | Source_blanket

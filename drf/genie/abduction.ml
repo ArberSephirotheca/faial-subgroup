@@ -1,5 +1,6 @@
 open Stage0
 open Protocols
+open Drf
 open Exp
 
 let rec eval_n (lookup : string -> int option) : nexp -> int option = function

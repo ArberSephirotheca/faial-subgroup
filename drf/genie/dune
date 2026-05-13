@@ -1,0 +1,3 @@
+(library
+  (name drf_genie)
+  (libraries stage0 protocols drf z3))
