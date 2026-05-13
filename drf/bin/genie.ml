@@ -118,14 +118,16 @@ let[@warning "-32"] gate_holds_per_access
 
 let gate_holds_simple (_baseline : Reachability.AccessSet.t)
     (app : App.t) : bool =
-  app.kernels |> App.only_kernel app
-  |> List.for_all (fun k ->
-    k
-    |> Reachability.prepare_kernel
-         ~assumes:app.assumes
-         ~assume_dims:app.assume_dims
-         ~params:app.params
-    |> Reachability.preconditions_satisfiable ?timeout:app.timeout)
+  Phase_timer.measure "genie/gate" (fun () ->
+    Stats.incr "gate_checks";
+    app.kernels |> App.only_kernel app
+    |> List.for_all (fun k ->
+      k
+      |> Reachability.prepare_kernel
+           ~assumes:app.assumes
+           ~assume_dims:app.assume_dims
+           ~params:app.params
+      |> Reachability.preconditions_satisfiable ?timeout:app.timeout))
 
 (* Cached gate. Per kernel we keep one Z3 context, one solver with
    the base encoding ([kernel.pre + runtime] under
@@ -168,8 +170,10 @@ let gate_holds_cached (cache : Gate_cache.t)
 let[@warning "-32"] gate_holds = gate_holds_simple
 
 let run_assuming (assumptions : Exp.bexp list) (app : App.t) : Analysis.t list =
-  { app with assumes = app.assumes @ assumptions }
-  |> App.run
+  Phase_timer.measure "genie/race" (fun () ->
+    Stats.incr "race_queries";
+    { app with assumes = app.assumes @ assumptions }
+    |> App.run)
 
 let verifies_drf_only (app : App.t) (assumptions : Exp.bexp list) : bool =
   app
@@ -178,15 +182,16 @@ let verifies_drf_only (app : App.t) (assumptions : Exp.bexp list) : bool =
 
 let shrink_linear (_baseline : Reachability.AccessSet.t) (app : App.t)
     (extras : Exp.bexp list) : Exp.bexp list =
-  let rec loop kept remaining =
-    match remaining with
-    | [] -> kept
-    | c :: rest ->
-      if verifies_drf_only app (kept @ rest)
-      then loop kept rest
-      else loop (kept @ [c]) rest
-  in
-  loop [] extras
+  Phase_timer.measure "genie/shrink" (fun () ->
+    let rec loop kept remaining =
+      match remaining with
+      | [] -> kept
+      | c :: rest ->
+        if verifies_drf_only app (kept @ rest)
+        then loop kept rest
+        else loop (kept @ [c]) rest
+    in
+    loop [] extras)
 
 (* UNSAT-core shrink: run the DRF pipeline once with [extras] added as
    tracked Z3 assumptions (named [extra_<id>]) instead of conjoining
@@ -273,19 +278,20 @@ let weaken_clause (sign : Variable.t -> Signedness.t)
    per-clause (no joint weakening) — keeps the search tractable. *)
 let weaken_for_gate (sign : Variable.t -> Signedness.t)
     (check : Exp.bexp list -> bool) (extras : Exp.bexp list) : Exp.bexp list =
-  let rec loop acc = function
-    | [] -> acc
-    | c :: rest ->
-      let weakers = weaken_clause sign c in
-      let best =
-        List.find_opt
-          (fun w -> check (acc @ (w :: rest)))
-          weakers
-      in
-      let kept = match best with Some w -> w | None -> c in
-      loop (acc @ [ kept ]) rest
-  in
-  loop [] extras
+  Phase_timer.measure "genie/weaken" (fun () ->
+    let rec loop acc = function
+      | [] -> acc
+      | c :: rest ->
+        let weakers = weaken_clause sign c in
+        let best =
+          List.find_opt
+            (fun w -> check (acc @ (w :: rest)))
+            weakers
+        in
+        let kept = match best with Some w -> w | None -> c in
+        loop (acc @ [ kept ]) rest
+    in
+    loop [] extras)
 
 (* Abductive search with weakening and CEGIS-style gate-rejection
    feedback. On each iteration:
@@ -306,6 +312,10 @@ let abductive_loop
   else
     let session = Abduction.create_for_kernels kernels in
     let sign = signedness_of_app app in
+    Stats.set "pool_size" (List.length session.candidates);
+    let solve s = Phase_timer.measure "genie/maxsat" (fun () ->
+      Stats.incr "maxsat_solves"; Abduction.solve s)
+    in
     let drf_and_gate extras =
       verifies_drf_only app extras
       && gate_check baseline_reachable
@@ -342,6 +352,7 @@ let abductive_loop
         else None
     in
     let rec loop iter extras =
+      Stats.set "cti_rounds" iter;
       if iter >= iter_cap then None
       else
         let result = run_assuming extras app in
@@ -351,16 +362,18 @@ let abductive_loop
           | None ->
             (* Gate rejected even after weakening — ban this exact
                combination and re-solve. *)
+            Stats.incr "rejections";
             if Abduction.reject_combination session extras = 0 then None
             else
-              (match Abduction.solve session with
+              (match solve session with
                | None -> None
                | Some new_extras -> loop (iter + 1) new_extras)
         else
           let added = Abduction.add_all result session in
+          Stats.incr ~by:added "samples_added";
           if added = 0 then None
           else
-            match Abduction.solve session with
+            match solve session with
             | None -> None
             | Some new_extras -> loop (iter + 1) new_extras
     in
@@ -445,37 +458,45 @@ let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
       else
         gate_holds_simple
     in
-    let baseline_reachable = access_set_of app in
-    let baseline = App.run app in
+    let baseline_reachable =
+      Phase_timer.measure "genie/baseline-reach"
+        (fun () -> access_set_of app)
+    in
+    let baseline =
+      Phase_timer.measure "genie/baseline" (fun () ->
+        Stats.incr "race_queries"; App.run app)
+    in
     if all_safe baseline then
       if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
       else Drf { source = Source_baseline; assumes = [] }
     else
-      match
-        abductive_loop ~use_core_shrink ~gate_check app baseline_reachable
+      match Phase_timer.measure "genie/abductive" (fun () ->
+              abductive_loop ~use_core_shrink ~gate_check app baseline_reachable)
       with
       | Some minimal -> Drf { source = Source_abductive; assumes = minimal }
       | None ->
-        let blanket = blanket_extras app in
-        if blanket = [] || not (verifies_drf_only app blanket) then Racy
-        else
-          let minimal =
-            shrink ~use_core:use_core_shrink baseline_reachable app blanket
-          in
-          let app' = { app with assumes = app.assumes @ minimal } in
-          let blanket_non_trivial =
-            app'.kernels |> App.only_kernel app'
-            |> List.exists (fun k ->
-              k
-              |> Reachability.prepare_kernel
-                   ~assumes:app'.assumes
-                   ~assume_dims:app'.assume_dims
-                   ~params:app'.params
-              |> Reachability.any_access_reachable ?timeout:app'.timeout)
-          in
-          if gate_check baseline_reachable app' && blanket_non_trivial
-          then Drf { source = Source_blanket; assumes = minimal }
-          else Racy
+        Phase_timer.measure "genie/blanket" (fun () ->
+          Stats.set "blanket_attempted" 1;
+          let blanket = blanket_extras app in
+          if blanket = [] || not (verifies_drf_only app blanket) then Racy
+          else
+            let minimal =
+              shrink ~use_core:use_core_shrink baseline_reachable app blanket
+            in
+            let app' = { app with assumes = app.assumes @ minimal } in
+            let blanket_non_trivial =
+              app'.kernels |> App.only_kernel app'
+              |> List.exists (fun k ->
+                k
+                |> Reachability.prepare_kernel
+                     ~assumes:app'.assumes
+                     ~assume_dims:app'.assume_dims
+                     ~params:app'.params
+                |> Reachability.any_access_reachable ?timeout:app'.timeout)
+            in
+            if gate_check baseline_reachable app' && blanket_non_trivial
+            then Drf { source = Source_blanket; assumes = minimal }
+            else Racy)
   with Z3.Error _ -> Racy
 
 let report_prose (v : verdict) : unit =
@@ -526,6 +547,7 @@ let report_json (app : App.t) (v : verdict) : unit =
     ("assumes", assumes_json);
     ("kernels", `List kernels);
     ("phase_times", Phase_timer.to_json ());
+    ("genie_stats", Stats.to_json ());
     ("argv",
      `List (Sys.argv |> Array.to_list |> List.map (fun x -> `String x)));
     ("executable_name", `String Sys.executable_name);
