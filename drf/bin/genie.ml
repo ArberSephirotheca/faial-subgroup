@@ -608,7 +608,17 @@ let main =
                    across abductive rounds (push/pop on the assertion \
                    stack), preserving learned clauses. Disable to fall \
                    back to a fresh context per gate call.")
+  and+ seed =
+    Arg.(value & opt (some int) None
+         & info [ "seed" ] ~docv:"N"
+             ~doc:"Pin Z3's [smt.random_seed] and [sat.random_seed] to $(docv) \
+                   for reproducible solver behaviour across runs. When unset, \
+                   Z3 picks its own seed.")
   in
+  seed |> Option.iter (fun n ->
+    let s = string_of_int n in
+    Z3.set_global_param "smt.random_seed" s;
+    Z3.set_global_param "sat.random_seed" s);
   let archs = [ Architecture.Block ] in
   let app =
     App.parse
