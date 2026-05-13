@@ -93,11 +93,22 @@ let mix_sign (s1 : Signedness.t) (s2 : Signedness.t) : Signedness.t =
   | Unsigned, _ | _, Unsigned -> Unsigned
   | Signed, Signed -> Signed
 
-let build_pool (k : Kernel.t) : bexp list =
-  let params = int_params k in
+(* When [scope] is provided, parameters and dim variables not present
+   in the set are filtered out before pool construction. Currently
+   only used by the per-fragment scoping path (off by default in the
+   genie binary) — passing no [scope] yields the legacy whole-kernel
+   pool. *)
+let build_pool ?(scope : Variable.Set.t option) (k : Kernel.t) : bexp list =
+  let in_scope v =
+    match scope with
+    | None -> true
+    | Some s -> Variable.Set.mem v s
+  in
+  let params = int_params k |> List.filter in_scope in
   let all_dims =
     let open Variable in
     [ bdim_x; bdim_y; bdim_z; gdim_x; gdim_y; gdim_z ]
+    |> List.filter in_scope
   in
   let lt a b = Variable.compare a b < 0 in
   let ne a b = Variable.compare a b <> 0 in
@@ -138,10 +149,60 @@ let build_pool (k : Kernel.t) : bexp list =
 let build_pool_union (ks : Kernel.t list) : bexp list =
   ks |> List.concat_map build_pool |> List.sort_uniq Exp.b_compare
 
+(* Per-fragment vocabulary keyed by (kernel_name, proof_id). Used by
+   the experimental per-fragment scoping path; currently off in the
+   genie binary because it didn't show measurable benefit over the
+   whole-kernel pool. Kept here so the path stays reachable if we
+   want to revisit with a pinned Z3 random seed (see [genie.md]). *)
+module FragmentKey = struct
+  type t = string * int
+  let compare (a : t) (b : t) : int =
+    let c = String.compare (fst a) (fst b) in
+    if c <> 0 then c else Int.compare (snd a) (snd b)
+end
+
+module FragmentScopes = Map.Make (FragmentKey)
+module FragmentSet = Set.Make (FragmentKey)
+
+let fragment_scopes (analyses : Analysis.t list)
+    : Variable.Set.t FragmentScopes.t =
+  List.fold_left (fun acc (a : Analysis.t) ->
+    List.fold_left (fun acc (s : Solve_drf.Solution.t) ->
+      let key = (s.proof.kernel_name, s.proof.id) in
+      FragmentScopes.add key (Symbexp.Proof.free_names s.proof) acc)
+      acc a.report)
+    FragmentScopes.empty analyses
+
+let build_pool_tagged
+    (kernels : Kernel.t list)
+    (scopes : Variable.Set.t FragmentScopes.t)
+    : (bexp * FragmentSet.t) list =
+  let kernel_of_name kn =
+    List.find_opt (fun (k : Kernel.t) -> k.name = kn) kernels
+  in
+  let module BexpMap = Map.Make (struct
+      type t = bexp
+      let compare = Exp.b_compare
+    end)
+  in
+  FragmentScopes.fold (fun key scope acc ->
+    let kn, _ = key in
+    match kernel_of_name kn with
+    | None -> acc
+    | Some k ->
+      let pool = build_pool ~scope k in
+      List.fold_left (fun acc b ->
+        BexpMap.update b (function
+          | None -> Some (FragmentSet.singleton key)
+          | Some fs -> Some (FragmentSet.add key fs)) acc)
+        acc pool)
+    scopes BexpMap.empty
+  |> BexpMap.bindings
+
 type t = {
   ctx : Z3.context;
   opt : Z3.Optimize.optimize;
-  candidates : (bexp * Z3.Expr.expr) list;
+  candidates : (bexp * Z3.Expr.expr * FragmentSet.t) list;
 }
 
 let create_from_pool (pool : bexp list) : t =
@@ -155,7 +216,23 @@ let create_from_pool (pool : bexp list) : t =
         let _ : Z3.Optimize.handle =
           Z3.Optimize.add_soft opt (Z3.Boolean.mk_not ctx sel) "1" group
         in
-        (b, sel))
+        (b, sel, FragmentSet.empty))
+        pool
+    in
+    { ctx; opt; candidates })
+
+let create_from_tagged_pool (pool : (bexp * FragmentSet.t) list) : t =
+  Phase_timer.measure "abduction/create" (fun () ->
+    let ctx = Z3.mk_context [] in
+    let opt = Z3.Optimize.mk_opt ctx in
+    let group = Z3.Symbol.mk_string ctx "minimize" in
+    let candidates =
+      List.mapi (fun i (b, tag) ->
+        let sel = Z3.Boolean.mk_const_s ctx ("b_" ^ string_of_int i) in
+        let _ : Z3.Optimize.handle =
+          Z3.Optimize.add_soft opt (Z3.Boolean.mk_not ctx sel) "1" group
+        in
+        (b, sel, tag))
         pool
     in
     { ctx; opt; candidates })
@@ -164,6 +241,11 @@ let create (k : Kernel.t) : t = create_from_pool (build_pool k)
 
 let create_for_kernels (ks : Kernel.t list) : t =
   create_from_pool (build_pool_union ks)
+
+let create_for_kernels_scoped
+    (kernels : Kernel.t list)
+    (scopes : Variable.Set.t FragmentScopes.t) : t =
+  create_from_tagged_pool (build_pool_tagged kernels scopes)
 
 let witness_lookup (vars : (string * string) list) : string -> int option =
   let table = Hashtbl.create 32 in
@@ -174,13 +256,25 @@ let witness_lookup (vars : (string * string) list) : string -> int option =
     vars;
   fun name -> Hashtbl.find_opt table name
 
-let add_sample (s : t) (vars : (string * string) list) : int =
+(* When [fragment] is provided, only candidates whose tag set contains
+   that fragment (or whose tag is empty, i.e. scope-unaware) are
+   eligible to reject the witness. Without [fragment], every candidate
+   that the witness falsifies is eligible, matching the legacy
+   non-scoped behaviour. *)
+let add_sample ?(fragment : FragmentKey.t option = None) (s : t)
+    (vars : (string * string) list) : int =
   let lookup = witness_lookup vars in
+  let eligible tag =
+    match fragment with
+    | None -> true
+    | Some key -> FragmentSet.is_empty tag || FragmentSet.mem key tag
+  in
   let bad =
-    List.filter_map (fun (c, sel) ->
-      match eval_b lookup (Predicates.b_inline c) with
-      | Some false -> Some sel
-      | _ -> None)
+    List.filter_map (fun (c, sel, tag) ->
+      if not (eligible tag) then None
+      else match eval_b lookup (Predicates.b_inline c) with
+        | Some false -> Some sel
+        | _ -> None)
       s.candidates
   in
   match bad with
@@ -197,8 +291,8 @@ let add_sample (s : t) (vars : (string * string) list) : int =
 let reject_combination (s : t) (chosen : bexp list) : int =
   let neg_selectors =
     List.filter_map (fun c ->
-      List.find_opt (fun (cand, _) -> Exp.b_compare cand c = 0) s.candidates
-      |> Option.map (fun (_, sel) -> Z3.Boolean.mk_not s.ctx sel))
+      List.find_opt (fun (cand, _, _) -> Exp.b_compare cand c = 0) s.candidates
+      |> Option.map (fun (_, sel, _) -> Z3.Boolean.mk_not s.ctx sel))
       chosen
   in
   match neg_selectors with
@@ -223,7 +317,7 @@ let solve (s : t) : bexp list option =
   | Z3.Solver.SATISFIABLE ->
     Z3.Optimize.get_model s.opt
     |> Option.map (fun m ->
-      List.filter_map (fun (c, sel) ->
+      List.filter_map (fun (c, sel, _tag) ->
         match Z3.Model.eval m sel false with
         | Some v when Z3.Boolean.get_bool_value v = Z3enums.L_TRUE -> Some c
         | _ -> None)

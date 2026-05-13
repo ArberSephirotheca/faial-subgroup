@@ -311,15 +311,33 @@ let abductive_loop
            { app with assumes = app.assumes @ extras }
     in
     let shrink' = shrink ~use_core:use_core_shrink in
+    (* Non-triviality: at least one access must remain reachable under
+       the proposed clearance. A clearance that empties the access
+       set is vacuous DRF (e.g. forces an effective blockDim.x = 0 so
+       no thread runs an access). Implemented as one Z3 query per
+       kernel asking "any access reachable?", rather than O(accesses)
+       per-access queries. Only invoked at acceptance. *)
+    let non_trivial (app' : App.t) : bool =
+      app'.kernels |> App.only_kernel app'
+      |> List.exists (fun k ->
+        k
+        |> Reachability.prepare_kernel
+             ~assumes:app'.assumes
+             ~assume_dims:app'.assume_dims
+             ~params:app'.params
+        |> Reachability.any_access_reachable ?timeout:app'.timeout)
+    in
     let try_finalize extras =
       let minimal = shrink' baseline_reachable app extras in
       let app' = { app with assumes = app.assumes @ minimal } in
-      if gate_check baseline_reachable app' then Some minimal
+      if gate_check baseline_reachable app' && non_trivial app'
+      then Some minimal
       else
         let weakened = weaken_for_gate sign drf_and_gate minimal in
         let weakened_min = shrink' baseline_reachable app weakened in
         let app'' = { app with assumes = app.assumes @ weakened_min } in
-        if gate_check baseline_reachable app'' then Some weakened_min
+        if gate_check baseline_reachable app'' && non_trivial app''
+        then Some weakened_min
         else None
     in
     let rec loop iter extras =
@@ -444,7 +462,17 @@ let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
             shrink ~use_core:use_core_shrink baseline_reachable app blanket
           in
           let app' = { app with assumes = app.assumes @ minimal } in
-          if gate_check baseline_reachable app'
+          let blanket_non_trivial =
+            app'.kernels |> App.only_kernel app'
+            |> List.exists (fun k ->
+              k
+              |> Reachability.prepare_kernel
+                   ~assumes:app'.assumes
+                   ~assume_dims:app'.assume_dims
+                   ~params:app'.params
+              |> Reachability.any_access_reachable ?timeout:app'.timeout)
+          in
+          if gate_check baseline_reachable app' && blanket_non_trivial
           then Drf { source = Source_blanket; assumes = minimal }
           else Racy
   with Z3.Error _ -> Racy

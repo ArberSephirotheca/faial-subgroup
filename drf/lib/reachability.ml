@@ -211,6 +211,30 @@ let preconditions_satisfiable ?(timeout = 0) (k : Kernel.t) : bool =
   | Ok Gen_z3.Solver.Unsat -> false
   | Error _ -> true (* on Unknown, accept rather than reject *)
 
+(* "At least one access is reachable" check. Encodes
+   [pre ∧ runtime ∧ (∨_i path_cond_i)] as one Z3 query instead of
+   one per access. UNSAT means every access is unreachable under the
+   current preconditions — the clearance is vacuous DRF. SAT means
+   at least one access can fire. On Unknown we accept. *)
+let any_access_reachable ?(timeout = 0) (k : Kernel.t) : bool =
+  let runtime =
+    Params.to_bexp (Params.union_left k.global_variables k.local_variables)
+  in
+  let path_conds = walk k.code |> List.map snd in
+  if path_conds = [] then false
+  else
+    let goal =
+      Exp.b_and_ex [ k.pre; runtime; Exp.b_or_ex path_conds ]
+      |> Predicates.b_inline
+    in
+    match
+      Phase_timer.measure "non-trivial/solve" (fun () ->
+        Gen_z3.Bv64Gen.solve ~timeout goal)
+    with
+    | Ok (Gen_z3.Solver.Sat _) -> true
+    | Ok Gen_z3.Solver.Unsat -> false
+    | Error _ -> true
+
 (* Incremental gate. Each kernel keeps a persistent [(ctx, solver)]
    where the base encoding ([kernel.pre + runtime] under
    [prepare_kernel ~assumes:[]]) has been added once and stays in

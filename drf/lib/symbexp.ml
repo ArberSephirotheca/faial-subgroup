@@ -260,6 +260,16 @@ module Proof = struct
 
   let get ~access_id (p : t) : AccessSummary.t = List.nth p.accesses access_id
 
+  (* Union of free variables across this fragment's access summaries.
+     Each summary's [variables] covers the access expression, its path
+     condition (which after [Phasesplit] inlines the kernel-wide pre)
+     and the loop range conditions in scope. The result is the set of
+     kernel-level variables this fragment's race query depends on. *)
+  let free_names (p : t) : Variable.Set.t =
+    List.fold_left
+      (fun acc (a : AccessSummary.t) -> Variable.Set.union acc a.variables)
+      Variable.Set.empty p.accesses
+
   let make :
       kernel_name:string ->
       array_name:string ->
