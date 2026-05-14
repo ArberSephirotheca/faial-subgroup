@@ -40,18 +40,18 @@ let test_stats_set_overrides () =
   Alcotest.(check int) "set replaces" 7 (read_stats_count "x");
   Stats.reset ()
 
-let test_stats_order_preserves_first_insertion () =
+let test_stats_json_key_order_lexicographic () =
   Stats.reset ();
-  Stats.incr "first";
-  Stats.incr "second";
-  Stats.incr "third";
-  Stats.incr "first";  (* updating, not inserting *)
+  Stats.incr "zebra";
+  Stats.incr "apple";
+  Stats.incr "mango";
+  Stats.incr "apple";  (* updating, not inserting *)
   let keys = match Stats.to_json () with
     | `Assoc kvs -> List.map fst kvs
     | _ -> []
   in
-  Alcotest.(check (list string)) "insertion order"
-    [ "first"; "second"; "third" ] keys;
+  Alcotest.(check (list string)) "lexicographic order"
+    [ "apple"; "mango"; "zebra" ] keys;
   Stats.reset ()
 
 let read_phase_seconds (key : string) : float =
@@ -98,7 +98,7 @@ let test_phase_timer_records_exception () =
 let stats_tests = [
   ("incr / set / reset roundtrip", `Quick, test_stats_incr_and_reset);
   ("set overrides prior value",   `Quick, test_stats_set_overrides);
-  ("first-insertion order kept",  `Quick, test_stats_order_preserves_first_insertion);
+  ("json key order is lexicographic", `Quick, test_stats_json_key_order_lexicographic);
 ]
 
 let phase_timer_tests = [

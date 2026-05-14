@@ -74,6 +74,9 @@ module Environ = struct
 
   let parse (labels : (string * string) list) (parse_num : string -> string)
       (m : Model.model) : t =
+    (* [Model.get_const_decls] is not contractually ordered. Sort by
+       key so JSON serialisation (and any downstream consumer that
+       preserves list order) is stable across Z3 model emissions. *)
     let variables =
       Model.get_const_decls m
       |> List.map (fun d ->
@@ -84,6 +87,7 @@ module Environ = struct
             |> Option.map Expr.to_string |> Option.value ~default:"?"
           in
           (key, parse_num e))
+      |> List.sort (fun (a, _) (b, _) -> String.compare a b)
     in
     let labels = StringMap.of_list labels in
     { labels; variables }

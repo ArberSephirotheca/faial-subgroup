@@ -589,6 +589,12 @@ let usage_constrained_kernel
 let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
     ~(usage_pins : per_kernel_extras)
     (app : App.t) : verdict =
+  (* Stats and Phase_timer are module-level globals. Reset at entry so
+     a second [compute_verdict] in the same process (test harness,
+     batch wrapper, future LSP integration) doesn't see accumulated
+     counters from the prior call. *)
+  Stats.reset ();
+  Phase_timer.reset ();
   let drf source clauses =
     Drf { source; assumes = merge_extras usage_pins clauses }
   in

@@ -12,11 +12,11 @@
 
    Time accumulates across kernels and architectures because the same
    pipeline runs once per (kernel, arch); [add] sums into the entry
-   keyed by [name]. [report] returns entries in first-seen order so the
-   JSON listing matches the pipeline's natural sequence. *)
+   keyed by [name]. [report] returns entries in lexicographic key
+   order so byte-level JSON diffs across runs are stable regardless
+   of which phase fired first. *)
 
 let table : (string, float) Hashtbl.t = Hashtbl.create 16
-let order : string list ref = ref []
 
 (* When [FAIAL_PHASE_LOG] is set (and not "0"/empty), every completed
    [measure] writes one line to stderr immediately. Survives an
@@ -28,9 +28,7 @@ let log_enabled : bool =
 
 let add (name : string) (dt : float) : unit =
   match Hashtbl.find_opt table name with
-  | None ->
-      Hashtbl.add table name dt;
-      order := name :: !order
+  | None -> Hashtbl.add table name dt
   | Some t -> Hashtbl.replace table name (t +. dt)
 
 (* Time [f ()] against [name]. [Fun.protect] ensures the elapsed time
@@ -67,11 +65,11 @@ let boundary (name : string) (s : 'a Streamutil.stream) :
   Streamutil.from_list (measure name (fun () -> Streamutil.to_list s))
 
 let report () : (string * float) list =
-  !order |> List.rev |> List.map (fun n -> (n, Hashtbl.find table n))
+  Hashtbl.fold (fun n t acc -> (n, t) :: acc) table []
+  |> List.sort (fun (a, _) (b, _) -> String.compare a b)
 
 let to_json () : Yojson.Basic.t =
   `Assoc (report () |> List.map (fun (n, t) -> (n, `Float t)))
 
 let reset () : unit =
-  Hashtbl.clear table;
-  order := []
+  Hashtbl.clear table
