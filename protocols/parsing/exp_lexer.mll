@@ -16,7 +16,19 @@ rule read = parse
   | "false"               { BOOL(false) }
   | ['0'-'9']+ as i       { INT(int_of_string i) }
 
-  (* Arithmetic operators (C precedence) *)
+  (* Arithmetic operators (C precedence). The [u] suffix marks the
+     unsigned variant emitted by [N_binary.to_string] /
+     [N_rel.to_string]; greedy lexer matching picks the longer
+     [+u] / [<=u] / etc. forms before falling back to the signed
+     [+] / [<=]. An identifier starting with [u] immediately after
+     a bare signed operator with no separating space is the one
+     pathological case where this misparses; in practice the
+     emitted form has whitespace between tokens. *)
+  | "+u"                  { PLUS_U }
+  | "-u"                  { MINUS_U }
+  | "*u"                  { MULT_U }
+  | "/u"                  { DIV_U }
+  | "%u"                  { MOD_U }
   | "+"                   { PLUS }
   | "-"                   { MINUS }
   | "*"                   { MULT }
@@ -28,16 +40,25 @@ rule read = parse
   | "|"                   { BIT_OR }
   | "^"                   { BIT_XOR }
   | "<<"                  { LEFT_SHIFT }
+  | ">>u"                 { URIGHT_SHIFT }
   | ">>"                  { RIGHT_SHIFT }
   | "~"                   { BIT_NOT }
 
   (* Comparison operators *)
   | "=="                  { EQ }
   | "!="                  { NEQ }
+  | "<=u"                 { LE_U }
+  | ">=u"                 { GE_U }
+  | "<u"                  { LT_U }
+  | ">u"                  { GT_U }
   | "<="                  { LE }
   | ">="                  { GE }
   | "<"                   { LT }
   | ">"                   { GT }
+
+  (* Argument separator (used in n-ary predicate calls
+     [bvumul_noovfl(a, b)] and friends). *)
+  | ","                   { COMMA }
 
   (* Logical operators *)
   | "&&"                  { L_AND }

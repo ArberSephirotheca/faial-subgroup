@@ -488,11 +488,19 @@ let blanket_extras (app : App.t) : per_kernel_extras =
     in
     (Kernel.name k, signs @ bounds))
 
+(* Inline unary predicates ([nonneg], [pow2], [uintN]) before
+   emission so the user-visible [--assume KERNEL:BEXP] reproduces
+   the round-trip through the bexp parser. The parser disambiguates
+   predicate calls from [NCall] (function call in [nexp]) by requiring
+   2+ comma-separated arguments; 1-arg predicates would otherwise
+   collide with [NCall]. After [Predicates.b_inline] the only [Pred]
+   nodes that remain are the genuinely n-ary ones ([bvumul_noovfl]). *)
 let format_assume_flags (extras : per_kernel_extras) : string =
   extras
   |> List.concat_map (fun (kn, bs) ->
        List.map (fun b ->
-         Printf.sprintf "--assume \"%s:%s\"" kn (Exp.b_to_string b)) bs)
+         Printf.sprintf "--assume \"%s:%s\"" kn
+           (b |> Predicates.b_inline |> Exp.b_to_string)) bs)
   |> String.concat " "
 
 (* Use-derived dim bounds. For each axis (x, y, z) and level (thread,
