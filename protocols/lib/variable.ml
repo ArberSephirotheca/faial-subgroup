@@ -99,5 +99,15 @@ let bdim_set : Set.t = Set.of_list bdim_list
 let gdim_list : t list = [ gdim_x; gdim_y; gdim_z ]
 let gdim_set : Set.t = Set.of_list gdim_list
 
+(* CUDA-IR launch-configuration variables — [threadIdx], [blockIdx],
+   [blockDim], [gridDim] in all three axes. These are CUDA built-ins
+   typed as [unsigned int] (per the CUDA C programming guide). *)
+let launch_config_list : t list =
+  tid_list @ bid_list @ bdim_list @ gdim_list
+
+let launch_config_set : Set.t = Set.of_list launch_config_list
+
+let is_launch_config (v : t) : bool = Set.mem v launch_config_set
+
 let contains_tids (vs : Set.t) : bool =
   Set.mem tid_x vs || Set.mem tid_y vs || Set.mem tid_z vs

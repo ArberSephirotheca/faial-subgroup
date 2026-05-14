@@ -293,8 +293,18 @@ let main =
       value & opt_all conv_bexp []
       & info [ "assume" ] ~docv:"BEXP"
           ~doc:
-            "Add a boolean expression as a kernel pre-condition. May be \
-             repeated. Example: --assume \"blockDim.x == 32 && N > 0\"")
+            "Add a boolean expression as a kernel pre-condition, applied to \
+             every kernel in the file. May be repeated. Example: --assume \
+             \"blockDim.x == 32 && N > 0\"")
+  and+ assumes_for =
+    Arg.(
+      value & opt_all (pair ~sep:':' string conv_bexp) []
+      & info [ "assume-for" ] ~docv:"KERNEL:BEXP"
+          ~doc:
+            "Add a boolean expression as a pre-condition of a specific kernel, \
+             named by [KERNEL]. Same syntax as --assume, but scoped. May be \
+             repeated. Names not matching any kernel in the file are silently \
+             ignored. Example: --assume-for \"ckMedian:blockDim.x == 16\"")
   and+ assume_dims =
     Arg.(
       value & flag
@@ -378,7 +388,7 @@ let main =
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assume_delin
-        ~assumes ~assume_dims ~assume_launch ~cbor ~stop_at
+        ~assumes ~assumes_for ~assume_dims ~assume_launch ~cbor ~stop_at
     in
     let ui = if output_json then Jui.render else Tui.render in
     if list_kernels then

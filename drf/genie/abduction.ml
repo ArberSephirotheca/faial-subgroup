@@ -265,53 +265,76 @@ let build_pool_tagged
     scopes BexpMap.empty
   |> BexpMap.bindings
 
+(* A pool candidate. Each candidate is scoped to a specific kernel:
+   the same bexp synthesised from two kernels is two separate
+   candidates with two separate selectors, so the abductive search
+   tracks them independently. This matches the model where a
+   variable's signedness (and thus the predicates referencing it)
+   is per-kernel rather than program-global. *)
+type candidate = {
+  kernel_name : string;
+  bexp        : bexp;
+  selector    : Z3.Expr.expr;
+  tag         : FragmentSet.t;  (* dormant per-fragment scoping *)
+}
+
 type t = {
   ctx : Z3.context;
   opt : Z3.Optimize.optimize;
-  candidates : (bexp * Z3.Expr.expr * FragmentSet.t) list;
+  candidates : candidate list;
 }
 
-let create_from_pool (pool : bexp list) : t =
+let create_for_kernels (ks : Kernel.t list) : t =
   Phase_timer.measure "abduction/create" (fun () ->
     let ctx = Z3.mk_context [] in
     let opt = Z3.Optimize.mk_opt ctx in
     let group = Z3.Symbol.mk_string ctx "minimize" in
     let candidates =
-      List.mapi (fun i b ->
-        let sel = Z3.Boolean.mk_const_s ctx ("b_" ^ string_of_int i) in
-        let _ : Z3.Optimize.handle =
-          Z3.Optimize.add_soft opt (Z3.Boolean.mk_not ctx sel) "1" group
-        in
-        (b, sel, FragmentSet.empty))
-        pool
+      ks
+      |> List.mapi (fun ki k -> (ki, k))
+      |> List.concat_map (fun (ki, k) ->
+        let kn = Kernel.name k in
+        build_pool k
+        |> List.mapi (fun bi b ->
+          let sel =
+            Z3.Boolean.mk_const_s ctx
+              (Printf.sprintf "b_%d_%d" ki bi)
+          in
+          let _ : Z3.Optimize.handle =
+            Z3.Optimize.add_soft opt (Z3.Boolean.mk_not ctx sel) "1" group
+          in
+          { kernel_name = kn; bexp = b; selector = sel;
+            tag = FragmentSet.empty }))
     in
     { ctx; opt; candidates })
 
-let create_from_tagged_pool (pool : (bexp * FragmentSet.t) list) : t =
+let create_for_kernels_scoped
+    (kernels : Kernel.t list)
+    (scopes : Variable.Set.t FragmentScopes.t) : t =
   Phase_timer.measure "abduction/create" (fun () ->
     let ctx = Z3.mk_context [] in
     let opt = Z3.Optimize.mk_opt ctx in
     let group = Z3.Symbol.mk_string ctx "minimize" in
+    let tagged = build_pool_tagged kernels scopes in
+    (* Per-fragment scoping is dormant; the [kernel_name] is taken
+       from an arbitrary fragment in the tag (they all belong to
+       one kernel by construction since [build_pool_tagged] keys on
+       [(kernel_name, proof_id)]). *)
+    let kernel_of_tag (tag : FragmentSet.t) : string =
+      match FragmentSet.choose_opt tag with
+      | Some (kn, _) -> kn
+      | None -> ""
+    in
     let candidates =
       List.mapi (fun i (b, tag) ->
         let sel = Z3.Boolean.mk_const_s ctx ("b_" ^ string_of_int i) in
         let _ : Z3.Optimize.handle =
           Z3.Optimize.add_soft opt (Z3.Boolean.mk_not ctx sel) "1" group
         in
-        (b, sel, tag))
-        pool
+        { kernel_name = kernel_of_tag tag; bexp = b; selector = sel; tag })
+        tagged
     in
     { ctx; opt; candidates })
-
-let create (k : Kernel.t) : t = create_from_pool (build_pool k)
-
-let create_for_kernels (ks : Kernel.t list) : t =
-  create_from_pool (build_pool_union ks)
-
-let create_for_kernels_scoped
-    (kernels : Kernel.t list)
-    (scopes : Variable.Set.t FragmentScopes.t) : t =
-  create_from_tagged_pool (build_pool_tagged kernels scopes)
 
 let witness_lookup (vars : (string * string) list) : string -> int option =
   let table = Hashtbl.create 32 in
@@ -322,24 +345,19 @@ let witness_lookup (vars : (string * string) list) : string -> int option =
     vars;
   fun name -> Hashtbl.find_opt table name
 
-(* When [fragment] is provided, only candidates whose tag set contains
-   that fragment (or whose tag is empty, i.e. scope-unaware) are
-   eligible to reject the witness. Without [fragment], every candidate
-   that the witness falsifies is eligible, matching the legacy
-   non-scoped behaviour. *)
-let add_sample ?(fragment : FragmentKey.t option = None) (s : t)
+(* Add a witness from a specific kernel's racy proof. Only candidates
+   for the same kernel can reject this witness — a candidate from a
+   different kernel references different variables (even when the
+   names overlap, the per-kernel signedness/scope makes them distinct
+   under the model). *)
+let add_sample_for_kernel (s : t) (kn : string)
     (vars : (string * string) list) : int =
   let lookup = witness_lookup vars in
-  let eligible tag =
-    match fragment with
-    | None -> true
-    | Some key -> FragmentSet.is_empty tag || FragmentSet.mem key tag
-  in
   let bad =
-    List.filter_map (fun (c, sel, tag) ->
-      if not (eligible tag) then None
-      else match eval_b lookup (Predicates.b_inline c) with
-        | Some false -> Some sel
+    List.filter_map (fun c ->
+      if c.kernel_name <> kn then None
+      else match eval_b lookup (Predicates.b_inline c.bexp) with
+        | Some false -> Some c.selector
         | _ -> None)
       s.candidates
   in
@@ -350,16 +368,23 @@ let add_sample ?(fragment : FragmentKey.t option = None) (s : t)
       Z3.Optimize.add s.opt [ Z3.Boolean.mk_or s.ctx bad ]);
     List.length bad
 
-(* CEGIS rejection: ban a specific selector combination from future
-   solutions by asserting [¬(s_1 ∧ ... ∧ s_n)]. Returns the number of
-   selectors that were resolved; if no [chosen] bexp is found in the
-   pool the call is a no-op. *)
-let reject_combination (s : t) (chosen : bexp list) : int =
+(* CEGIS rejection: ban a specific per-kernel selector combination
+   from future solutions by asserting [¬(s_1 ∧ ... ∧ s_n)]. [chosen]
+   is a per-kernel-grouped list of selected bexps. Returns the number
+   of selectors that were resolved; if no chosen entry matches a
+   pool candidate the call is a no-op. *)
+let reject_combination (s : t)
+    (chosen : (string * bexp list) list) : int =
+  let flat =
+    List.concat_map (fun (kn, bs) -> List.map (fun b -> (kn, b)) bs) chosen
+  in
   let neg_selectors =
-    List.filter_map (fun c ->
-      List.find_opt (fun (cand, _, _) -> Exp.b_compare cand c = 0) s.candidates
-      |> Option.map (fun (_, sel, _) -> Z3.Boolean.mk_not s.ctx sel))
-      chosen
+    List.filter_map (fun (kn, b) ->
+      List.find_opt
+        (fun c -> c.kernel_name = kn && Exp.b_compare c.bexp b = 0)
+        s.candidates
+      |> Option.map (fun c -> Z3.Boolean.mk_not s.ctx c.selector))
+      flat
   in
   match neg_selectors with
   | [] -> 0
@@ -370,22 +395,39 @@ let reject_combination (s : t) (chosen : bexp list) : int =
 
 let add_all (analyses : Analysis.t list) (session : t) : int =
   List.fold_left (fun acc (a : Analysis.t) ->
+    let kn = Kernel.name a.kernel in
     List.fold_left (fun acc (s : Solve_drf.Solution.t) ->
       match s.outcome with
       | Solve_drf.Outcome.Racy w ->
-        acc + add_sample session w.globals.variables
+        acc + add_sample_for_kernel session kn w.globals.variables
       | _ -> acc)
       acc a.report)
     0 analyses
 
-let solve (s : t) : bexp list option =
-  match Phase_timer.measure "abduction/check" (fun () -> Z3.Optimize.check s.opt) with
+(* Group picked candidates by kernel name. *)
+let group_by_kernel (pairs : (string * bexp) list)
+    : (string * bexp list) list =
+  List.fold_left (fun acc (kn, b) ->
+    let existing =
+      List.find_opt (fun (n, _) -> n = kn) acc
+      |> Option.map snd |> Option.value ~default:[]
+    in
+    let others = List.filter (fun (n, _) -> n <> kn) acc in
+    (kn, existing @ [ b ]) :: others)
+    [] pairs
+  |> List.rev
+
+let solve (s : t) : (string * bexp list) list option =
+  match Phase_timer.measure "abduction/check"
+          (fun () -> Z3.Optimize.check s.opt) with
   | Z3.Solver.SATISFIABLE ->
     Z3.Optimize.get_model s.opt
     |> Option.map (fun m ->
-      List.filter_map (fun (c, sel, _tag) ->
-        match Z3.Model.eval m sel false with
-        | Some v when Z3.Boolean.get_bool_value v = Z3enums.L_TRUE -> Some c
+      List.filter_map (fun c ->
+        match Z3.Model.eval m c.selector false with
+        | Some v when Z3.Boolean.get_bool_value v = Z3enums.L_TRUE ->
+          Some (c.kernel_name, c.bexp)
         | _ -> None)
-        s.candidates)
+        s.candidates
+      |> group_by_kernel)
   | _ -> None

@@ -70,7 +70,14 @@ type t = {
      formula is UNSAT, the returned outcome carries the subset of
      [id]s the core mentions. Empty by default; populated by genie's
      [shrink_via_core] path. *)
-  core_extras : (int * Exp.bexp) list;
+  (* Per-kernel tracked-assertion clauses for UNSAT-core shrinking,
+     keyed by [Kernel.name]. Each kernel's list pairs an integer ID
+     with a [bexp] that gets added to that kernel's per-proof Z3
+     solver via [assert_and_track] using the symbol [extra_<id>]. The
+     ID space is per-kernel; the same integer in two different
+     kernels refers to different clauses. Empty by default; populated
+     by genie's [shrink_via_core] path. *)
+  core_extras : (string * (int * Exp.bexp) list) list;
   le_index : int list;
   ge_index : int list;
   eq_index : int list;
@@ -89,11 +96,42 @@ type t = {
   ignore_asserts : bool;
   log_delinearize : bool;
   assume_delin : bool;
-  assumes : Exp.bexp list;
+  (* Per-kernel pre-condition list, keyed by [Kernel.name]. Genie's
+     internal model treats assumptions as kernel-scoped: a variable
+     declared in two kernels is a different variable in each, so an
+     assumption mentioning it is meaningful only against a specific
+     kernel. The CLI's [--assume BEXP] is a UX shorthand that
+     populates every kernel; [--assume-for K:BEXP] targets a single
+     kernel by name. Look up via [assumes_of]. *)
+  assumes : (string * Exp.bexp list) list;
   assume_dims : bool;
   assume_launch : bool;
   stop_at : Stage.t option;
 }
+
+(* The list of user-supplied (and abductive-supplied) pre-condition
+   clauses for a specific kernel. Returns [[]] when no kernel of that
+   name has any assumes recorded. *)
+let assumes_of (k : Protocols.Kernel.t) (app : t) : Exp.bexp list =
+  List.assoc_opt (Protocols.Kernel.name k) app.assumes
+  |> Option.value ~default:[]
+
+(* Replace the per-kernel assumes for [k] with [bs] (or insert if the
+   kernel had no entry). All other kernels' assumes are unchanged. *)
+let set_assumes_for (k : Protocols.Kernel.t) (bs : Exp.bexp list)
+    (app : t) : t =
+  let name = Protocols.Kernel.name k in
+  let updated =
+    if List.mem_assoc name app.assumes
+    then List.map (fun (n, v) -> if n = name then (n, bs) else (n, v)) app.assumes
+    else (name, bs) :: app.assumes
+  in
+  { app with assumes = updated }
+
+(* Extend the per-kernel assumes for [k] with [extras] (concatenate). *)
+let add_assumes_for (k : Protocols.Kernel.t) (extras : Exp.bexp list)
+    (app : t) : t =
+  set_assumes_for k (assumes_of k app @ extras) app
 
 let to_string (app : t) : string =
   let opt_s (o : string option) : string = Option.value ~default:"null" o in
@@ -172,7 +210,10 @@ let to_string (app : t) : string =
       ^ "\nassume_launch = " ^ bool assume_launch
       ^ "\nstop_at = " ^ opt Stage.to_string stop_at
       ^ "\nassumes: "
-      ^ list_string (List.map Exp.b_to_string assumes)
+      ^ list_string (
+          assumes
+          |> List.concat_map (fun (k, bs) ->
+              List.map (fun b -> k ^ ":" ^ Exp.b_to_string b) bs))
       ^ "\n"
 
 let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
@@ -181,7 +222,8 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize
-    ~assume_delin ~assumes ~assume_dims ~assume_launch ~cbor ~stop_at : t =
+    ~assume_delin ~assumes ~assumes_for ~assume_dims ~assume_launch ~cbor
+    ~stop_at : t =
   let parsed =
     Phase_timer.measure "inference" (fun () ->
       Protocol_parser.Silent.to_proto
@@ -193,6 +235,21 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
   let kernels = parsed.kernels in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
   let grid_dim = if all_dims then None else Some parsed.options.grid_dim in
+  (* Fan [assumes] out to every kernel and merge in any per-kernel
+     [assumes_for] targeted by name. A [--assume-for K:BEXP] for a
+     kernel name absent from [kernels] is silently dropped — the
+     match-by-name lookup is the user's contract. *)
+  let assumes : (string * Exp.bexp list) list =
+    List.map (fun (k : Protocols.Kernel.t) ->
+      let kn = Protocols.Kernel.name k in
+      let targeted =
+        List.filter_map
+          (fun (n, b) -> if n = kn then Some b else None)
+          assumes_for
+      in
+      (kn, assumes @ targeted))
+      kernels
+  in
   {
     filename;
     timeout;
@@ -269,9 +326,14 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
       |> Protocols.Kernel.try_set_block_dim a.block_dim
       |> Protocols.Kernel.try_set_grid_dim a.grid_dim
       |> Protocols.Kernel.apply_arch arch
-      (* 1.1 inject user-provided assumptions into the kernel precondition *)
+      (* 1.1 inject user-provided assumptions into the kernel precondition.
+         Look up per-kernel; an absent entry means no extra assumes. *)
       |> (fun k ->
-        List.fold_left (fun k b -> Protocols.Kernel.add_pre b k) k a.assumes)
+        let assumes =
+          List.assoc_opt (Protocols.Kernel.name k) a.assumes
+          |> Option.value ~default:[]
+        in
+        List.fold_left (fun k b -> Protocols.Kernel.add_pre b k) k assumes)
       (* 1.2 optionally pin unreferenced launch dimensions to 1 *)
       |> (if a.assume_dims then Protocols.Kernel.add_dim_assumptions else Fun.id)
       (* 2. inline global assignments, including block_dim/grid_dim *)
@@ -376,9 +438,14 @@ let run (a : t) : Analysis.t list =
       |> Phase_timer.boundary "symbexp"
       |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Symbexp
            ~show:a.show_symbexp Symbexp.print_kernels
-      |> Solve_drf.Solution.solve ~timeout:a.timeout ~_show_proofs:a.show_proofs
-           ~logic:a.logic ~solve_tactic:a.solve_tactic
-           ~extras:a.core_extras
+      |> (fun ps ->
+          let kernel_extras =
+            List.assoc_opt (Protocols.Kernel.name kernel) a.core_extras
+            |> Option.value ~default:[]
+          in
+          Solve_drf.Solution.solve ~timeout:a.timeout
+            ~_show_proofs:a.show_proofs ~logic:a.logic
+            ~solve_tactic:a.solve_tactic ~extras:kernel_extras ps)
       |> Phase_timer.boundary "solve"
       |> Streamutil.to_list
     in
