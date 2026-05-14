@@ -187,6 +187,66 @@ let opt (k : t) : t =
 let vars_distinct (k : t) : t =
   { k with code = Code.vars_distinct k.code (parameter_set k) }
 
+(* When a kernel list has multiple kernels sharing a name (for example
+   synth kernels emitted by [Synthesise_launches] from the same source
+   line, or repeated template instantiations whose names collide after
+   inference), give every duplicate a fresh [_N] suffix so each kernel
+   has a unique identifier in user-facing output and per-kernel data
+   structures. The first occurrence keeps its original name; subsequent
+   duplicates skip suffixes that would collide with another kernel's
+   existing name. *)
+let uniquify_names (ks : t list) : t list =
+  let module SS = Stage0.Common.StringSet in
+  let initial =
+    List.fold_left (fun acc (k : t) -> SS.add k.name acc) SS.empty ks
+  in
+  let used = ref SS.empty in
+  List.map (fun (k : t) ->
+    if not (SS.mem k.name !used) then begin
+      used := SS.add k.name !used;
+      k
+    end else
+      let rec fresh n =
+        let candidate = Printf.sprintf "%s_%d" k.name n in
+        if SS.mem candidate !used || SS.mem candidate initial
+        then fresh (n + 1)
+        else candidate
+      in
+      let new_name = fresh 2 in
+      used := SS.add new_name !used;
+      { k with name = new_name })
+    ks
+
+(* One-line-per-param signature; useful for the [--list-kernels
+   --show-signature] CLI path. Signed types render bare (the C
+   default); unsigned types render with [unsigned] preceding the
+   type as in a C declaration. Typedefs like [size_t] or [uint32_t]
+   that already encode unsignedness in the typedef name are shown
+   as-is — [unsigned] is only prepended when the C type string does
+   not already contain the [unsigned] keyword. *)
+let signature_string (k : t) : string =
+  let format_param (v, ty) =
+    let s = C_type.to_string ty in
+    let has_unsigned_keyword =
+      Stage0.Common.contains ~substring:"unsigned" s
+    in
+    let display =
+      if C_type.is_unsigned ty && not has_unsigned_keyword
+      then "unsigned " ^ s
+      else s
+    in
+    Printf.sprintf "    %s %s" display (Variable.name v)
+  in
+  let section title params =
+    if params = [] then []
+    else
+      ("  " ^ title ^ ":") :: List.map format_param params
+  in
+  let globals = Params.to_list k.global_variables in
+  let locals = Params.to_list k.local_variables in
+  String.concat "\n"
+    (k.name :: section "globals" globals @ section "locals" locals)
+
 (*
   Makes all variables distinct and hoists declarations as
   thread-locals.

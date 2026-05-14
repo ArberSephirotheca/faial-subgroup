@@ -222,7 +222,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize
-    ~assume_delin ~assumes ~assumes_for ~assume_dims ~assume_launch ~cbor
+    ~assume_delin ~assumes ~assume_dims ~assume_launch ~cbor
     ~stop_at : t =
   let parsed =
     Phase_timer.measure "inference" (fun () ->
@@ -232,22 +232,42 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
         ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor
         filename)
   in
-  let kernels = parsed.kernels in
+  (* Uniquify duplicate kernel names so that the user-facing flag
+     [--assume "K:BEXP"], the [--list-kernels] output, the per-kernel
+     [assumes] map, and the genie verdict JSON all address each
+     kernel by a distinct identifier. *)
+  let kernels = parsed.kernels |> Protocols.Kernel.uniquify_names in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
   let grid_dim = if all_dims then None else Some parsed.options.grid_dim in
-  (* Fan [assumes] out to every kernel and merge in any per-kernel
-     [assumes_for] targeted by name. A [--assume-for K:BEXP] for a
-     kernel name absent from [kernels] is silently dropped — the
-     match-by-name lookup is the user's contract. *)
+  (* [assumes] entries are [(kernel_name option, bexp)]. A [None]
+     prefix means "apply to every kernel that can take this clause"
+     — i.e., every kernel whose declared params plus the
+     launch-config dims cover the clause's free variables. A [Some n]
+     prefix restricts to kernel [n]; absent names are silently
+     dropped. *)
+  let kernel_has_vars (k : Protocols.Kernel.t) (b : Exp.bexp) : bool =
+    let fvs = Exp.b_free_names b Variable.Set.empty in
+    let p =
+      Protocols.Params.union_left k.global_variables k.local_variables
+    in
+    Variable.Set.for_all (fun v ->
+      Variable.is_launch_config v || Protocols.Params.mem v p)
+      fvs
+  in
   let assumes : (string * Exp.bexp list) list =
     List.map (fun (k : Protocols.Kernel.t) ->
       let kn = Protocols.Kernel.name k in
-      let targeted =
-        List.filter_map
-          (fun (n, b) -> if n = kn then Some b else None)
-          assumes_for
+      let entries =
+        List.filter_map (fun (prefix, b) ->
+          match prefix with
+          | None ->
+            (* Global clause: include only if [k] can take it. *)
+            if kernel_has_vars k b then Some b else None
+          | Some n ->
+            if n = kn then Some b else None)
+          assumes
       in
-      (kn, assumes @ targeted))
+      (kn, entries))
       kernels
   in
   {

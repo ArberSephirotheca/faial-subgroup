@@ -17,13 +17,49 @@ type verdict =
   | Drf_vacuous
   | Racy
 
-let conv_bexp =
-  let parse s =
+(* [--assume "BEXP"] or [--assume "KERNEL:BEXP"]. The optional prefix
+   targets a single kernel by name; without it, the clause applies
+   to every kernel whose declared params plus the launch-config dims
+   cover the clause's free variables. The prefix must look like a C
+   identifier; [:] is reserved as the separator because the bexp
+   grammar uses no [:] tokens. *)
+let conv_assume =
+  let looks_like_ident s =
+    s <> ""
+    && String.for_all (fun c ->
+      (c >= 'a' && c <= 'z')
+      || (c >= 'A' && c <= 'Z')
+      || (c >= '0' && c <= '9')
+      || c = '_')
+      s
+  in
+  let parse_bexp s =
     match Parsers.BExpParser.of_string s with
     | Ok b -> Ok b
     | Error msg -> Error (`Msg msg)
   in
-  let print ppf (b : Exp.bexp) = Format.fprintf ppf "%s" (Exp.b_to_string b) in
+  let parse s =
+    match String.index_opt s ':' with
+    | None ->
+      (match parse_bexp s with
+       | Ok b -> Ok (None, b)
+       | Error e -> Error e)
+    | Some i ->
+      let prefix = String.sub s 0 i |> String.trim in
+      let rest = String.sub s (i + 1) (String.length s - i - 1) in
+      if looks_like_ident prefix then
+        match parse_bexp rest with
+        | Ok b -> Ok (Some prefix, b)
+        | Error e -> Error e
+      else
+        (match parse_bexp s with
+         | Ok b -> Ok (None, b)
+         | Error e -> Error e)
+  in
+  let print ppf = function
+    | (Some n, b) -> Format.fprintf ppf "%s:%s" n (Exp.b_to_string b)
+    | (None, b) -> Format.fprintf ppf "%s" (Exp.b_to_string b)
+  in
   Arg.conv (parse, print)
 
 let conv_tactic =
@@ -456,7 +492,7 @@ let format_assume_flags (extras : per_kernel_extras) : string =
   extras
   |> List.concat_map (fun (kn, bs) ->
        List.map (fun b ->
-         Printf.sprintf "--assume-for \"%s:%s\"" kn (Exp.b_to_string b)) bs)
+         Printf.sprintf "--assume \"%s:%s\"" kn (Exp.b_to_string b)) bs)
   |> String.concat " "
 
 (* Use-derived dim bounds. For each axis (x, y, z) and level (thread,
@@ -672,18 +708,31 @@ let main =
     Arg.(value & opt (some string) None
          & info [ "kernel" ] ~doc:"Only check a specific kernel.")
   and+ extra_assumes =
-    Arg.(value & opt_all conv_bexp []
-         & info [ "assume" ] ~docv:"BEXP"
-             ~doc:"Pre-condition added to all kernels at the baseline.")
-  and+ extra_assumes_for =
-    Arg.(value & opt_all (pair ~sep:':' string conv_bexp) []
-         & info [ "assume-for" ] ~docv:"KERNEL:BEXP"
-             ~doc:"Per-kernel pre-condition, scoped to a kernel by name. \
-                   May be repeated. Names not matching a kernel in the \
-                   file are silently ignored.")
+    Arg.(value & opt_all conv_assume []
+         & info [ "assume" ] ~docv:"[KERNEL:]BEXP"
+             ~doc:"Pre-condition. With no prefix, applied to every kernel \
+                   whose declared params plus the launch-config dims \
+                   cover the clause's free variables. With a [KERNEL:] \
+                   prefix the clause is scoped to a specific kernel by \
+                   name; names not matching any kernel are silently \
+                   ignored. May be repeated.")
   and+ output_json =
     Arg.(value & flag
          & info [ "json" ] ~doc:"Output result as a single JSON object.")
+  and+ list_kernels =
+    Arg.(value & flag
+         & info [ "list-kernels" ]
+             ~doc:"Print one kernel name per line on stdout, then exit. \
+                   No analysis is run. Duplicate names in the parsed \
+                   list are uniquified with a [_N] suffix so each \
+                   printed name addresses a distinct kernel under \
+                   [--assume KERNEL:...] and [--kernel].")
+  and+ show_signature =
+    Arg.(value & flag
+         & info [ "show-signature" ]
+             ~doc:"Modify [--list-kernels] output to also print each \
+                   kernel's parameters with declared C type and \
+                   ([signed] | [unsigned]) annotation.")
   and+ use_core_shrink =
     Arg.(value & flag
          & info [ "shrink-core" ]
@@ -735,7 +784,6 @@ let main =
       ~log_delinearize:false
       ~assume_delin:true
       ~assumes:extra_assumes
-      ~assumes_for:extra_assumes_for
       ~assume_dims:false
       ~assume_launch:true
       ~cbor:true
@@ -748,8 +796,16 @@ let main =
     in
     { app with kernels }
   in
-  let v = compute_verdict ~use_core_shrink ~cached_gate app in
-  if output_json then report_json app v else report_prose v;
-  Ok ()
+  if list_kernels then begin
+    app.kernels
+    |> List.iter (fun k ->
+      if show_signature
+      then print_endline (Protocols.Kernel.signature_string k)
+      else print_endline (Protocols.Kernel.name k));
+    Ok ()
+  end else
+    let v = compute_verdict ~use_core_shrink ~cached_gate app in
+    if output_json then report_json app v else report_prose v;
+    Ok ()
 
 let () = exit (Cmd.eval_result main)

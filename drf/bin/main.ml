@@ -38,13 +38,51 @@ let conv_int_list =
   in
   Arg.conv (parse, print)
 
-let conv_bexp =
-  let parse s =
+(* [--assume "BEXP"] or [--assume "KERNEL:BEXP"]. The optional prefix
+   targets a single kernel by name; without it, the clause applies to
+   every kernel whose declared params plus the launch-config dims
+   cover the clause's free variables. The prefix must look like a C
+   identifier (letters / digits / underscore); a [:] inside the BEXP
+   itself never matches because the bexp grammar uses no [:] tokens. *)
+let conv_assume =
+  let looks_like_ident s =
+    s <> ""
+    && String.for_all (fun c ->
+      (c >= 'a' && c <= 'z')
+      || (c >= 'A' && c <= 'Z')
+      || (c >= '0' && c <= '9')
+      || c = '_')
+      s
+  in
+  let parse_bexp s =
     match Parsers.BExpParser.of_string s with
     | Ok b -> Ok b
     | Error msg -> Error (`Msg msg)
   in
-  let print ppf (b : Exp.bexp) = Format.fprintf ppf "%s" (Exp.b_to_string b) in
+  let parse s =
+    match String.index_opt s ':' with
+    | None ->
+      (match parse_bexp s with
+       | Ok b -> Ok (None, b)
+       | Error e -> Error e)
+    | Some i ->
+      let prefix = String.sub s 0 i |> String.trim in
+      let rest = String.sub s (i + 1) (String.length s - i - 1) in
+      if looks_like_ident prefix then
+        match parse_bexp rest with
+        | Ok b -> Ok (Some prefix, b)
+        | Error e -> Error e
+      else
+        (match parse_bexp s with
+         | Ok b -> Ok (None, b)
+         | Error e -> Error e)
+  in
+  let print ppf = function
+    | (Some n, b) ->
+      Format.fprintf ppf "%s:%s" n (Exp.b_to_string b)
+    | (None, b) ->
+      Format.fprintf ppf "%s" (Exp.b_to_string b)
+  in
   Arg.conv (parse, print)
 
 let conv_tactic =
@@ -290,21 +328,18 @@ let main =
              kernel allocations.")
   and+ assumes =
     Arg.(
-      value & opt_all conv_bexp []
-      & info [ "assume" ] ~docv:"BEXP"
+      value & opt_all conv_assume []
+      & info [ "assume" ] ~docv:"[KERNEL:]BEXP"
           ~doc:
-            "Add a boolean expression as a kernel pre-condition, applied to \
-             every kernel in the file. May be repeated. Example: --assume \
-             \"blockDim.x == 32 && N > 0\"")
-  and+ assumes_for =
-    Arg.(
-      value & opt_all (pair ~sep:':' string conv_bexp) []
-      & info [ "assume-for" ] ~docv:"KERNEL:BEXP"
-          ~doc:
-            "Add a boolean expression as a pre-condition of a specific kernel, \
-             named by [KERNEL]. Same syntax as --assume, but scoped. May be \
-             repeated. Names not matching any kernel in the file are silently \
-             ignored. Example: --assume-for \"ckMedian:blockDim.x == 16\"")
+            "Add a boolean expression as a kernel pre-condition. With no \
+             prefix, the clause is applied to every kernel whose declared \
+             params (plus the launch-config dims) cover the clause's free \
+             variables. With a [KERNEL:] prefix the clause is scoped to a \
+             specific kernel by name; the prefix is treated as an \
+             identifier match only when [KERNEL] is a valid C identifier. \
+             Names not matching any kernel in the file are silently \
+             ignored. May be repeated. Examples: --assume \"blockDim.x == \
+             32 && N > 0\" or --assume \"ckMedian:blockDim.x == 16\"")
   and+ assume_dims =
     Arg.(
       value & flag
@@ -346,8 +381,21 @@ let main =
              parsed protocol-level kernel list, then exit. No analysis \
              is run. Synthesised pseudo-kernels emitted by \
              [--assume-launch] are included if that flag is also set. \
-             Intended for scripting (e.g. piping into xargs or \
-             [--kernel] filters).")
+             Duplicate names in the parsed list are uniquified with a \
+             [_N] suffix so each printed name is a distinct identifier \
+             suitable for [--kernel] / [--assume KERNEL:...] filters. \
+             Combine with [--show-signature] to also print each \
+             kernel's parameter list with C type and signedness.")
+  and+ show_signature =
+    Arg.(
+      value & flag
+      & info [ "show-signature" ]
+          ~doc:
+            "Modify [--list-kernels] output: under each kernel name, \
+             print its global and local parameters with declared C \
+             type and ([signed] | [unsigned]) annotation. Useful for \
+             writing [--assume KERNEL:...] flags against the right \
+             variable names.")
   and+ stop_at =
     let stages =
       App.Stage.cmdliner_choices
@@ -388,12 +436,15 @@ let main =
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assume_delin
-        ~assumes ~assumes_for ~assume_dims ~assume_launch ~cbor ~stop_at
+        ~assumes ~assume_dims ~assume_launch ~cbor ~stop_at
     in
     let ui = if output_json then Jui.render else Tui.render in
     if list_kernels then
       app.kernels
-      |> List.iter (fun k -> print_endline (Protocols.Kernel.name k))
+      |> List.iter (fun k ->
+        if show_signature
+        then print_endline (Protocols.Kernel.signature_string k)
+        else print_endline (Protocols.Kernel.name k))
     else if unreachable then App.check_unreachable app
     else if Option.is_some stop_at then
       (* Run the pipeline for its printing side effects (each
