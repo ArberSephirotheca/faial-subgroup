@@ -220,6 +220,26 @@ let extras_group (pairs : (string * Exp.bexp) list) : per_kernel_extras =
     [] pairs
   |> List.rev
 
+(* Concatenate two [per_kernel_extras] kernel-by-kernel, preserving
+   [first] before [second] for any kernel that appears in both. Used
+   to merge IR-derived dim pins (see [usage_constrained_kernel])
+   with abductive / blanket clauses so both flow into the same
+   [Discovered: --assume ...] output. *)
+let merge_extras (first : per_kernel_extras) (second : per_kernel_extras)
+    : per_kernel_extras =
+  let lookup l kn =
+    List.find_opt (fun (n, _) -> n = kn) l
+    |> Option.map snd
+    |> Option.value ~default:[]
+  in
+  let names_in_first = List.map fst first in
+  let names_only_in_second =
+    List.filter_map (fun (n, _) ->
+      if List.mem n names_in_first then None else Some n) second
+  in
+  List.map (fun kn -> (kn, lookup first kn @ lookup second kn))
+    (names_in_first @ names_only_in_second)
+
 let run_assuming (extras : per_kernel_extras) (app : App.t) : Analysis.t list =
   Phase_timer.measure "genie/race" (fun () ->
     Stats.incr "race_queries";
@@ -514,38 +534,55 @@ let format_assume_flags (extras : per_kernel_extras) : string =
    Each candidate is pre-flight SAT-checked against the kernel's
    prepared pre. Constraints that conflict with an existing pin
    (most commonly a launch literal — [bm3d]'s launch site pins
-   [blockDim.y == 1] via [--assume-launch]) are dropped. *)
+   [blockDim.y == 1] via [--assume-launch]) are dropped.
+
+   Returns the augmented kernel and the list of pins that were
+   actually added (a strict subset of the six candidates). The pins
+   are first-class assumptions and the caller threads them into the
+   verdict so they surface in [Discovered: --assume ...]. *)
 let usage_constrained_kernel
     ?(timeout : int option)
     ~(params : (string * int) list)
-    (k : Kernel.t) : Kernel.t =
+    (k : Kernel.t) : Kernel.t * Exp.bexp list =
   let used = Code.free_names k.code Variable.Set.empty in
   let probe0 =
     Reachability.prepare_kernel ~assumes:[] ~assume_dims:false ~params k
   in
   let open Variable in
-  [ tid_x, bdim_x; tid_y, bdim_y; tid_z, bdim_z;
-    bid_x, gdim_x; bid_y, gdim_y; bid_z, gdim_z ]
-  |> List.fold_left (fun (probe, k_acc) (idx, dim) ->
-    let candidate =
-      if Set.mem idx used
-      (* [dim] is a CUDA built-in (unsigned int), so the comparison
-         is unsigned. *)
-      then Exp.NRel (Ge Unsigned, Var dim, Num 2)
-      else Exp.NRel (Eq, Var dim, Num 1)
-    in
-    let probe' = Kernel.add_pre candidate probe in
-    if Reachability.preconditions_satisfiable ?timeout probe'
-    then (probe', Kernel.add_pre candidate k_acc)
-    else (probe, k_acc))
-    (probe0, k)
-  |> snd
+  let _, k_final, pins_rev =
+    [ tid_x, bdim_x; tid_y, bdim_y; tid_z, bdim_z;
+      bid_x, gdim_x; bid_y, gdim_y; bid_z, gdim_z ]
+    |> List.fold_left (fun (probe, k_acc, pins) (idx, dim) ->
+      let candidate =
+        if Set.mem idx used
+        (* [dim] is a CUDA built-in (unsigned int), so the comparison
+           is unsigned. *)
+        then Exp.NRel (Ge Unsigned, Var dim, Num 2)
+        else Exp.NRel (Eq, Var dim, Num 1)
+      in
+      let probe' = Kernel.add_pre candidate probe in
+      if Reachability.preconditions_satisfiable ?timeout probe'
+      then (probe', Kernel.add_pre candidate k_acc, candidate :: pins)
+      else (probe, k_acc, pins))
+      (probe0, k, [])
+  in
+  (k_final, List.rev pins_rev)
 
 (* Z3 raises [Z3.Error "max. memory exceeded"] when a query exhausts
    its memory cap (default ~6 GB). Treat it as an inconclusive result —
-   we couldn't prove DRF, so report [Racy] and let the caller decide. *)
+   we couldn't prove DRF, so report [Racy] and let the caller decide.
+
+   [usage_pins] are the dim pins folded into each kernel's pre by
+   [usage_constrained_kernel]. They are real assumptions used in
+   reaching the verdict, so they're merged with any abductive /
+   blanket clauses into the [Drf] payload's [assumes] for the
+   user-visible [Discovered: --assume ...] line. *)
 let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
+    ~(usage_pins : per_kernel_extras)
     (app : App.t) : verdict =
+  let drf source clauses =
+    Drf { source; assumes = merge_extras usage_pins clauses }
+  in
   try
     let gate_check =
       if cached_gate then
@@ -564,12 +601,12 @@ let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
     in
     if all_safe baseline then
       if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
-      else Drf { source = Source_baseline; assumes = [] }
+      else drf Source_baseline []
     else
       match Phase_timer.measure "genie/abductive" (fun () ->
               abductive_loop ~use_core_shrink ~gate_check app baseline_reachable)
       with
-      | Some minimal -> Drf { source = Source_abductive; assumes = minimal }
+      | Some minimal -> drf Source_abductive minimal
       | None ->
         Phase_timer.measure "genie/blanket" (fun () ->
           Stats.set "blanket_attempted" 1;
@@ -592,16 +629,12 @@ let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
                 |> Reachability.any_access_reachable ?timeout:app'.timeout)
             in
             if gate_check baseline_reachable app' && blanket_non_trivial
-            then Drf { source = Source_blanket; assumes = minimal }
+            then drf Source_blanket minimal
             else Racy)
   with Z3.Error _ -> Racy
 
 let report_prose (v : verdict) : unit =
   match v with
-  | Drf { source = Source_baseline; _ } ->
-    print_endline
-      "DRF under baseline (--assume-launch --assume-dims --assume-delin).";
-    print_endline "No extra --assume needed."
   | Drf_vacuous ->
     print_endline
       "Baseline preconditions are unsatisfiable — kernel is vacuously DRF.";
@@ -609,13 +642,15 @@ let report_prose (v : verdict) : unit =
       "Check that the kernel and any user --assume flags are mutually \
        satisfiable."
   | Drf { source; assumes } ->
-    let label = match source with
-      | Source_abductive -> "abductive refinement"
-      | Source_blanket -> "blanket fallback"
-      | Source_baseline -> assert false
+    let preamble = match source with
+      | Source_baseline -> "DRF under baseline."
+      | Source_abductive -> "DRF after abductive refinement."
+      | Source_blanket -> "DRF after blanket fallback."
     in
-    print_endline ("DRF after " ^ label ^ ".");
-    print_endline ("Discovered: " ^ format_assume_flags assumes)
+    print_endline preamble;
+    if is_extras_empty assumes
+    then print_endline "No --assume needed."
+    else print_endline ("Discovered: " ^ format_assume_flags assumes)
   | Racy ->
     print_endline
       "Racy; either a real race or a modelling gap (or vacuous DRF rejected)."
@@ -797,12 +832,17 @@ let main =
       ~cbor:true
       ~stop_at:None
   in
-  let app =
-    let kernels =
+  let app, usage_pins =
+    let kernels_with_pins =
       List.map (usage_constrained_kernel ?timeout ~params:app.params)
         app.kernels
     in
-    { app with kernels }
+    let kernels = List.map fst kernels_with_pins in
+    let pins =
+      List.map (fun (k, ps) -> (Protocols.Kernel.name k, ps))
+        kernels_with_pins
+    in
+    { app with kernels }, pins
   in
   if list_kernels then begin
     app.kernels
@@ -812,7 +852,7 @@ let main =
       else print_endline (Protocols.Kernel.name k));
     Ok ()
   end else
-    let v = compute_verdict ~use_core_shrink ~cached_gate app in
+    let v = compute_verdict ~use_core_shrink ~cached_gate ~usage_pins app in
     if output_json then report_json app v else report_prose v;
     Ok ()
 
