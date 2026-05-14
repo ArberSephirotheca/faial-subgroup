@@ -32,7 +32,24 @@ let all_predicates : t list =
     { pred_name = "pow" ^ string_of_int base;
       pred_body = unary (Range.pow ~base) }
   in
-  [ pow ~base:2; pow ~base:3; mk_uint 32; mk_uint 16; mk_uint 8 ]
+  (* Unsigned BV32 multiplication no-overflow check. The Bv64Gen and
+     SignedBitVectorOps encoders consume [Pred ("bvumul_noovfl", ...)]
+     directly via [mk_umul_no_overflow]; this body folds the case
+     where both arguments are integer literals, so [b_inline] and
+     [constfold] can collapse [bvumul_noovfl(c, d)] with both [c] and
+     [d] [Num] to a [Bool] decision before Z3 sees it. When one
+     argument is symbolic the body reconstructs the [Pred] with its
+     inlined arguments, leaving the BV encoder to handle the
+     no-overflow semantics. *)
+  let bvumul_noovfl : t =
+    let max_unsigned = 1 lsl 32 in
+    { pred_name = "bvumul_noovfl";
+      pred_body = (function
+        | [ Num k1; Num k2 ] -> Bool (k1 >= 0 && k2 >= 0 && k1 * k2 < max_unsigned)
+        | [ _; _ ] as args -> Pred ("bvumul_noovfl", args)
+        | _ -> failwith "bvumul_noovfl: expects exactly 2 arguments") }
+  in
+  [ pow ~base:2; pow ~base:3; mk_uint 32; mk_uint 16; mk_uint 8; bvumul_noovfl ]
 
 let make_pred_db (l : t list) : (string, t) Hashtbl.t =
   List.map (fun p -> (p.pred_name, p)) l |> Common.hashtbl_from_list
