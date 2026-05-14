@@ -135,22 +135,40 @@ let gate_holds_simple (_baseline : Reachability.AccessSet.t)
    substitution that translates [Kernel.inline_globals]'s effect on
    bexps. Per gate call the round's assumes are substituted through
    the same map, then pushed onto the solver, checked, and popped —
-   keeping Z3's learned clauses alive across CEGAR rounds. *)
+   keeping Z3's learned clauses alive across CEGAR rounds.
+
+   The cache key includes a structural fingerprint of [pre] and
+   [code] alongside the kernel name. Keying on name alone is
+   unsound: in practice [synthesise_launches] can emit several
+   [Kernel.t] values sharing a synth name
+   ([<orig>__launch_<file>_<line>]) but with different bodies, for
+   example when [aop-cuda]'s [prepare_svd_kernel__launch_main_938]
+   appears seven times with four distinct body sizes from CUB
+   template expansion. Under a name-only key those would collapse
+   into one slot and later gate calls would query the *first*
+   kernel's encoded pre+runtime instead of their own. The fingerprint
+   restores per-distinct-kernel slots; same-name same-structure
+   kernels still share, preserving the [--gate-cache] benefit. *)
 module Gate_cache = struct
-  type t = (string, Reachability.Slot.t) Hashtbl.t
+  type key = string * int * int
+  let key_of (k : Kernel.t) : key =
+    (k.name, Hashtbl.hash k.pre, Hashtbl.hash k.code)
+
+  type t = (key, Reachability.Slot.t) Hashtbl.t
 
   let create () : t = Hashtbl.create 8
 
   let get_or_init (cache : t) ~(timeout : int option)
       ~(assume_dims : bool) ~(params : (string * int) list)
       (k : Kernel.t) : Reachability.Slot.t =
-    match Hashtbl.find_opt cache k.name with
+    let key = key_of k in
+    match Hashtbl.find_opt cache key with
     | Some s -> s
     | None ->
       let s =
         Reachability.make_slot ~timeout ~assume_dims ~params k
       in
-      Hashtbl.add cache k.name s;
+      Hashtbl.add cache key s;
       s
 end
 
