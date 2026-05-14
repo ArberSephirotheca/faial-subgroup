@@ -65,7 +65,12 @@ let get_predicates (b : bexp) : t list =
   in
   get_names_b b StringSet.empty
   |> StringSet.elements
-  |> List.map (Hashtbl.find all_predicates_db)
+  (* Predicate names not registered in [all_predicates_db] (e.g.
+     [bvumul_noovfl], handled directly by the BV encoder) are skipped:
+     [get_predicates] is consumed by codegen passes that need the
+     inline body, so an absent body means "this predicate is opaque
+     to the codegen". *)
+  |> List.filter_map (Hashtbl.find_opt all_predicates_db)
 
 let rec n_inline : nexp -> nexp = function
   | (NCall _ | Var _ | Num _) as n -> n

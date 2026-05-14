@@ -75,6 +75,13 @@ module type NUMERIC_OPS = sig
   val mk_not : unop
   val mk_unary_minus : unop
   val parse_num : string -> string
+
+  (* True iff the unsigned product [x * y] does not overflow the
+     word size. For natural-number backends the product can't
+     overflow and the constraint is trivially [true]; for
+     fixed-width BV backends it dispatches to Z3's
+     [bvumul_noovfl] predicate. *)
+  val mk_umul_no_overflow : binop
 end
 
 module ArithmeticOps : NUMERIC_OPS = struct
@@ -108,6 +115,9 @@ module ArithmeticOps : NUMERIC_OPS = struct
   let mk_unary_minus = Arithmetic.mk_unary_minus
   let mk_not = missing1 "~"
   let parse_num (x : string) = x
+
+  (* Natural-number multiplication can't overflow. *)
+  let mk_umul_no_overflow ctx _ _ = Boolean.mk_true ctx
 end
 
 module type WordSize = sig
@@ -180,6 +190,11 @@ module BitVectorOps (W : WordSize) = struct
 
   let parse_num x =
     x |> bitvector_to_hex |> Option.map W.decode_hex |> Option.value ~default:x
+
+  (* Unsigned [bvumul_noovfl] from SMT-LIB. The [signed] flag is
+     [false] because the abductive pool emits this guard only on
+     unsigned operand pairs. *)
+  let mk_umul_no_overflow ctx x y = BitVector.mk_mul_no_overflow ctx x y false
 end
 
 (* Convert a declaration to a variable *)
@@ -572,6 +587,11 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | BRel (op, b1, b2) ->
         (brel_to_expr op) ctx (b_to_expr ctx b1) (b_to_expr ctx b2)
     | BNot (b : bexp) -> Boolean.mk_not ctx (b_to_expr ctx b)
+    (* [bvumul_noovfl] is intentionally not inlined by
+       [Predicates.b_inline] — its semantics live in the encoder and
+       differ between the natural-number and BV backends. *)
+    | Pred ("bvumul_noovfl", [ a; b ]) ->
+        N.mk_umul_no_overflow ctx (n_to_expr ctx a) (n_to_expr ctx b)
     | Pred _ as c ->
         preprocessing_error
           ("b_to_expr: invoke Predicates.inline to remove predicates: "
@@ -758,6 +778,10 @@ module SignedBitVectorOps (W : WordSize) = struct
 
   let parse_num x =
     x |> bitvector_to_hex |> Option.map W.decode_hex |> Option.value ~default:x
+
+  (* Signed-BV variant. The [signed] flag is true so we forbid the
+     analogous signed-multiplication overflow. *)
+  let mk_umul_no_overflow ctx x y = BitVector.mk_mul_no_overflow ctx x y true
 end
 
 module IntGen = CodeGen (ArithmeticOps)

@@ -35,6 +35,11 @@ and eval_b (lookup : string -> int option) : bexp -> bool option = function
      | Some va, Some vb -> Some (B_rel.eval op va vb)
      | _ -> None)
   | BNot b -> Option.map not (eval_b lookup b)
+  (* [bvumul_noovfl] is the BV no-overflow guard the pool attaches to
+     multiplicative shapes. Under natural-number reasoning it's
+     trivially true, which is what the abductive sample evaluator
+     uses; the BV gate gets the real constraint from the encoder. *)
+  | Pred ("bvumul_noovfl", _) -> Some true
   | Pred _ -> None
   | CastBool n -> Option.map (fun v -> v <> 0) (eval_n lookup n)
   | Distinct xs ->
@@ -114,6 +119,15 @@ let build_pool ?(scope : Variable.Set.t option) (k : Kernel.t) : bexp list =
   let lt a b = Variable.compare a b < 0 in
   let ne a b = Variable.compare a b <> 0 in
   let sign = signedness_of k in
+  (* No-overflow guard on an unsigned product. The BV gate would
+     otherwise accept models where [a * b] wraps in BV32 (e.g.
+     [4 * 2^30] becoming 0), letting classically-UNSAT preconditions
+     pass via wraparound. Under natural-number reasoning the guard
+     is trivially true (see [Bv64Gen.mk_umul_no_overflow] and the
+     [Pred ("bvumul_noovfl", _) -> Some true] arm in [eval_b]). *)
+  let no_ovfl (a : nexp) (b : nexp) : bexp =
+    Pred ("bvumul_noovfl", [ a; b ])
+  in
   (* All [all_dims] are CUDA built-ins (unsigned int). Any binary op
      that mixes a kernel param [p] with a dim is unsigned-dominated. *)
   let per_param acc p =
@@ -127,11 +141,17 @@ let build_pool ?(scope : Variable.Set.t option) (k : Kernel.t) : bexp list =
          NRel (Eq, Binary (Mod Unsigned, v, Var d), Num 0))
     |> push_each  all_dims (fun d -> NRel (Eq, v, Var d))
     |> push_pairs ~when_:lt all_dims (fun a b ->
-         NRel (Ge s_pd, v, Binary (Mult Unsigned, Var a, Var b)))
+         b_and
+           (NRel (Ge s_pd, v, Binary (Mult Unsigned, Var a, Var b)))
+           (no_ovfl (Var a) (Var b)))
     |> push_pairs ~when_:lt all_dims (fun a b ->
-         NRel (Eq, v, Binary (Mult Unsigned, Var a, Var b)))
+         b_and
+           (NRel (Eq, v, Binary (Mult Unsigned, Var a, Var b)))
+           (no_ovfl (Var a) (Var b)))
     |> push_prod  all_dims [ 2; 4 ] (fun d c ->
-         NRel (Ge s_pd, v, Binary (Mult Unsigned, Num c, Var d)))
+         b_and
+           (NRel (Ge s_pd, v, Binary (Mult Unsigned, Num c, Var d)))
+           (no_ovfl (Num c) (Var d)))
   in
   (* Dim upper bounds. Launch dimensions are typically pinned to a
      specific value by the launch literal, but at synthesised
