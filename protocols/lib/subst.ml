@@ -40,7 +40,7 @@ module Make (S : SUBST) = struct
   and b_subst (s : S.t) (b : bexp) : bexp =
     match b with
     | CastBool e -> CastBool (n_subst s e)
-    | Pred (n, v) -> Pred (n, n_subst s v)
+    | Pred (n, vs) -> Pred (n, List.map (n_subst s) vs)
     | Bool _ -> b
     | NRel (o, n1, n2) -> NRel (o, n_subst s n1, n_subst s n2)
     | BRel (o, b1, b2) -> BRel (o, b_subst s b1, b_subst s b2)

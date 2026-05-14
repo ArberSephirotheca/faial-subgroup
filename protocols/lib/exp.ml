@@ -17,7 +17,7 @@ and bexp =
   | NRel of N_rel.t * nexp * nexp
   | BRel of B_rel.t * bexp * bexp
   | BNot of bexp
-  | Pred of string * nexp
+  | Pred of string * nexp list
   | CastBool of nexp
   | Distinct of nexp list
 
@@ -72,9 +72,9 @@ and bexp =
         let@ () = b_compare l1 l2 in
         b_compare r1 r2
     | BNot e1, BNot e2 -> b_compare e1 e2
-    | Pred (p1, e1), Pred (p2, e2) ->
+    | Pred (p1, es1), Pred (p2, es2) ->
         let@ () = compare p1 p2 in
-        n_compare e1 e2
+        List.compare n_compare es1 es2
     | CastBool e1, CastBool e2 -> n_compare e1 e2
     | Distinct l1, Distinct l2 -> List.compare n_compare l1 l2
     | Bool _, _ -> -1
@@ -399,7 +399,8 @@ let rec n_fold f e a =
 
 and b_fold f e a =
   match e with
-  | CastBool n | Pred (_, n) -> n_fold f n a
+  | CastBool n -> n_fold f n a
+  | Pred (_, ns) -> List.fold_left (fun a n -> n_fold f n a) a ns
   | Bool _ -> a
   | NRel (_, n1, n2) -> n_fold f n1 a |> n_fold f n2
   | BRel (_, b1, b2) -> b_fold f b1 a |> b_fold f b2
@@ -423,7 +424,8 @@ let rec n_exists (f : Variable.t -> bool) : nexp -> bool = function
 
 and b_exists (f : Variable.t -> bool) : bexp -> bool = function
   | Bool _ -> false
-  | Pred (_, e) | CastBool e -> n_exists f e
+  | CastBool e -> n_exists f e
+  | Pred (_, es) -> List.exists (n_exists f) es
   | NRel (_, e1, e2) -> n_exists f e1 || n_exists f e2
   | BRel (_, e1, e2) -> b_exists f e1 || b_exists f e2
   | BNot e -> b_exists f e
@@ -446,7 +448,7 @@ let rec b_map (f : nexp -> nexp) : bexp -> bexp = function
   | NRel (o, n1, n2) -> NRel (o, f n1, f n2)
   | BRel (o, b1, b2) -> BRel (o, b_map f b1, b_map f b2)
   | BNot b -> BNot (b_map f b)
-  | Pred (s, e) -> Pred (s, f e)
+  | Pred (s, es) -> Pred (s, List.map f es)
   | CastBool e -> CastBool (f e)
   | Distinct l -> Distinct (List.map f l)
 
@@ -477,7 +479,7 @@ and b_to_string : bexp -> string = function
   | NRel (b, n1, n2) -> n_par n1 ^ " " ^ N_rel.to_string b ^ " " ^ n_par n2
   | BRel (b, b1, b2) -> b_par b1 ^ " " ^ B_rel.to_string b ^ " " ^ b_par b2
   | BNot b -> "!" ^ b_par b
-  | Pred (x, v) -> x ^ "(" ^ n_to_string v ^ ")"
+  | Pred (x, vs) -> x ^ "(" ^ String.concat ", " (List.map n_to_string vs) ^ ")"
   | Distinct exprs ->
       "distinct(" ^ String.concat ", " (List.map n_to_string exprs) ^ ")"
 

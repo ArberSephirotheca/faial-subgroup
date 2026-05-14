@@ -3,23 +3,34 @@ open Common
 open Exp
 
 type 'a codegen = { codegen_arg : string; codegen_body : 'a }
-type t = { pred_name : string; pred_body : nexp -> bexp }
+
+(* [pred_body] takes the full argument list. Every predicate currently
+   registered in [all_predicates] is unary, but [bvumul_noovfl] and any
+   future overflow-style guards take more than one [nexp]; representing
+   the body as [nexp list -> bexp] keeps the registry uniform. *)
+type t = { pred_name : string; pred_body : nexp list -> bexp }
 
 let pred_to_codegen (pred : t) : bexp codegen =
   {
     codegen_arg = "x";
-    codegen_body = pred.pred_body (Var (Variable.from_name "x"));
+    codegen_body = pred.pred_body [ Var (Variable.from_name "x") ];
   }
 
 let all_predicates : t list =
+  let unary (f : nexp -> bexp) : nexp list -> bexp = function
+    | [ x ] -> f x
+    | _ -> failwith "predicate expects a single argument"
+  in
   let mk_uint size : t =
     {
       pred_name = "uint" ^ string_of_int size;
-      pred_body = (fun x -> n_le x (Num (Common.pow ~base:2 size - 1)));
+      pred_body =
+        unary (fun x -> n_le x (Num (Common.pow ~base:2 size - 1)));
     }
   in
   let pow ~base : t =
-    { pred_name = "pow" ^ string_of_int base; pred_body = Range.pow ~base }
+    { pred_name = "pow" ^ string_of_int base;
+      pred_body = unary (Range.pow ~base) }
   in
   [ pow ~base:2; pow ~base:3; mk_uint 32; mk_uint 16; mk_uint 8 ]
 
@@ -28,9 +39,9 @@ let make_pred_db (l : t list) : (string, t) Hashtbl.t =
 
 let all_predicates_db : (string, t) Hashtbl.t = make_pred_db all_predicates
 
-let pred_call_opt (name : string) (n : nexp) : bexp option =
+let pred_call_opt (name : string) (ns : nexp list) : bexp option =
   match Hashtbl.find_opt all_predicates_db name with
-  | Some p -> Some (p.pred_body n)
+  | Some p -> Some (p.pred_body ns)
   | None -> None
 
 let get_predicates (b : bexp) : t list =
@@ -65,9 +76,15 @@ let rec n_inline : nexp -> nexp = function
   | NIf (b, n1, n2) -> NIf (b_inline b, n_inline n1, n_inline n2)
 
 and b_inline : bexp -> bexp = function
-  | Pred (x, n) ->
-      let p = Hashtbl.find all_predicates_db x in
-      p.pred_body (n_inline n)
+  | Pred (x, ns) as p_orig ->
+      let inlined = List.map n_inline ns in
+      (* Predicates registered with a body inline to their body. Names
+         not in the database (e.g. [bvumul_noovfl], which the BV encoder
+         consumes directly via [mk_mul_no_overflow]) pass through with
+         their arguments inlined. *)
+      (match Hashtbl.find_opt all_predicates_db x with
+       | Some p -> p.pred_body inlined
+       | None -> if inlined = ns then p_orig else Pred (x, inlined))
   | Bool _ as b -> b
   | CastBool e -> CastBool (n_inline e)
   | BNot b -> BNot (b_inline b)

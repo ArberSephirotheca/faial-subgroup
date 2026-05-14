@@ -131,7 +131,7 @@ and to_bexp (e : t) : Exp.bexp state =
           return (Exp.BNot b)
       | Pred (x, n) ->
           let* n = to_nexp n in
-          return (Exp.Pred (x, n)))
+          return (Exp.Pred (x, [ n ])))
   | NExp _ ->
       let* n = to_nexp e in
       return (Exp.cast_bool n)

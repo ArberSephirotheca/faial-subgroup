@@ -118,7 +118,7 @@ let project_access (locals : Variable.Set.t) (t : Task.t) (ca : CondAccess.t) :
   and inline_proj_b (t : Task.t) (b : bexp) : bexp =
     match b with
     | CastBool e -> CastBool (inline_proj_n t e)
-    | Pred (x, n) -> Pred (x, inline_proj_n t n)
+    | Pred (x, ns) -> Pred (x, List.map (inline_proj_n t) ns)
     | Bool _ -> b
     | BNot b -> BNot (inline_proj_b t b)
     | BRel (o, b1, b2) -> BRel (o, inline_proj_b t b1, inline_proj_b t b2)

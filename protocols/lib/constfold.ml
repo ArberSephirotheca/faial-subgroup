@@ -51,18 +51,15 @@ let rec n_opt (a : nexp) : nexp =
 
 and b_opt (e : bexp) : bexp =
   match e with
-  | Pred (x, e) -> (
-      match n_opt e with
-      | Num _ as n -> (
-          (* Try to evaluate the predicate *)
-          match Predicates.pred_call_opt x n with
-          | Some b ->
-              (* We found the predicate; call it and optimize the result *)
-              b_opt b
-          | None ->
-              (* Otherwise, leave the predicate unchanged *)
-              Pred (x, n))
-      | v -> Pred (x, v))
+  | Pred (x, es) ->
+      let folded = List.map n_opt es in
+      (* Try to evaluate the predicate when every argument folded to a
+         literal [Num]. Otherwise leave it with folded arguments. *)
+      if List.for_all (function Num _ -> true | _ -> false) folded then
+        (match Predicates.pred_call_opt x folded with
+         | Some b -> b_opt b
+         | None -> Pred (x, folded))
+      else Pred (x, folded)
   | CastBool e -> e |> n_opt |> cast_bool
   | Bool _ -> e
   | BRel (b, b1, b2) -> b_rel b (b_opt b1) (b_opt b2)

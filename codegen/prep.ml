@@ -38,7 +38,7 @@ and b_to_vars : bexp -> Variable.t list = function
   | NRel (_, e1, e2) -> n_to_vars e1 @ n_to_vars e2
   | BRel (_, b1, b2) -> b_to_vars b1 @ b_to_vars b2
   | BNot b -> b_to_vars b
-  | Pred (_, e) -> n_to_vars e
+  | Pred (_, es) -> List.concat_map n_to_vars es
   | Distinct exprs -> List.concat_map n_to_vars exprs
 
 and r_to_vars (r : Range.t) : Variable.t list =

@@ -34,7 +34,7 @@ module Proj = struct
   and proj_b (b : bexp) (ctx : t) : bexp =
     match b with
     | CastBool e -> CastBool (proj_n e ctx)
-    | Pred (x, n) -> Pred (x, proj_n n ctx)
+    | Pred (x, ns) -> Pred (x, List.map (fun n -> proj_n n ctx) ns)
     | Bool _ -> b
     | BNot b -> BNot (proj_b b ctx)
     | BRel (o, b1, b2) -> BRel (o, proj_b b1 ctx, proj_b b2 ctx)
@@ -750,9 +750,16 @@ and b_inline_cost : bexp -> bexp state = function
   | CastBool e ->
       let* e' = n_inline_cost e in
       return (CastBool e')
-  | Pred (x, n) ->
-      let* n' = n_inline_cost n in
-      return (Pred (x, n'))
+  | Pred (x, ns) ->
+      let rec map_s = function
+        | [] -> return []
+        | h :: t ->
+          let* h' = n_inline_cost h in
+          let* t' = map_s t in
+          return (h' :: t')
+      in
+      let* ns' = map_s ns in
+      return (Pred (x, ns'))
   | Bool _ as b -> return b
   | BNot b ->
       let* b' = b_inline_cost b in

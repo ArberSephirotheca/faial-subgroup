@@ -252,7 +252,7 @@ module Proj = struct
     match b with
     | Bool _ -> b
     | CastBool e -> CastBool (nexp locals t e)
-    | Pred (x, n) -> Pred (x, nexp locals t n)
+    | Pred (x, ns) -> Pred (x, List.map (nexp locals t) ns)
     | BNot b -> BNot (bexp locals t b)
     | BRel (o, b1, b2) -> BRel (o, bexp locals t b1, bexp locals t b2)
     | NRel (o, n1, n2) -> NRel (o, nexp locals t n1, nexp locals t n2)
