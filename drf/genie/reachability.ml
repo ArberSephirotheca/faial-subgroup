@@ -187,6 +187,15 @@ let check_kernel ?(timeout = 0) (k : Kernel.t) : entry list =
     in
     { id; access; status })
 
+(* Tri-state result of the [k.pre ∧ runtime] gate query. Callers
+   choose the Unknown policy explicitly: the CEGAR gate stays
+   permissive (Unknown → accept, the abductive search rejects bad
+   candidates downstream); the [usage_constrained_kernel] pin
+   pre-flight is conservative (Unknown → reject, since a pin
+   accepted on Unknown can silently make [k.pre] unsatisfiable when
+   the true verdict was Unsat). *)
+type pre_check = Pre_sat | Pre_unsat | Pre_unknown
+
 (* Simpler "gate" variant: a single SAT query per kernel asking
    whether [k.pre ∧ runtime] is satisfiable. UNSAT = the
    accumulated preconditions contradict each other (or the kernel
@@ -198,7 +207,7 @@ let check_kernel ?(timeout = 0) (k : Kernel.t) : entry list =
    accesses unreachable while others remain (the per-access gate
    below catches those). On the HeCBench dataset the two variants
    produce the same verdict on every observed clearance. *)
-let preconditions_satisfiable ?(timeout = 0) (k : Kernel.t) : bool =
+let preconditions_check ?(timeout = 0) (k : Kernel.t) : pre_check =
   let runtime =
     Params.to_bexp (Params.union_left k.global_variables k.local_variables)
   in
@@ -207,9 +216,14 @@ let preconditions_satisfiable ?(timeout = 0) (k : Kernel.t) : bool =
     Phase_timer.measure "gate/solve" (fun () ->
       Gen_z3.Bv64Gen.solve ~timeout goal)
   with
-  | Ok (Gen_z3.Solver.Sat _) -> true
-  | Ok Gen_z3.Solver.Unsat -> false
-  | Error _ -> true (* on Unknown, accept rather than reject *)
+  | Ok (Gen_z3.Solver.Sat _) -> Pre_sat
+  | Ok Gen_z3.Solver.Unsat -> Pre_unsat
+  | Error _ -> Pre_unknown
+
+let preconditions_satisfiable ?timeout (k : Kernel.t) : bool =
+  match preconditions_check ?timeout k with
+  | Pre_sat | Pre_unknown -> true
+  | Pre_unsat -> false
 
 (* "At least one access is reachable" check. Encodes
    [pre ∧ runtime ∧ (∨_i path_cond_i)] as one Z3 query instead of

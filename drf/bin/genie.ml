@@ -561,9 +561,18 @@ let usage_constrained_kernel
         else Exp.NRel (Eq, Var dim, Num 1)
       in
       let probe' = Kernel.add_pre candidate probe in
-      if Reachability.preconditions_satisfiable ?timeout probe'
-      then (probe', Kernel.add_pre candidate k_acc, candidate :: pins)
-      else (probe, k_acc, pins))
+      (* Reject-on-Unknown here. A pin accepted on Unknown can
+         silently make [k.pre] unsatisfiable when the truth was Unsat,
+         making later axis pre-flights and downstream gate queries
+         answer against a contradictory pre — and the answer would
+         vary with Z3 timing. The optimistic accept-on-Unknown
+         policy used by the CEGAR gate is intentional there but
+         wrong for this optimisation step. *)
+      match Reachability.preconditions_check ?timeout probe' with
+      | Reachability.Pre_sat ->
+        (probe', Kernel.add_pre candidate k_acc, candidate :: pins)
+      | Reachability.Pre_unsat | Reachability.Pre_unknown ->
+        (probe, k_acc, pins))
       (probe0, k, [])
   in
   (k_final, List.rev pins_rev)
