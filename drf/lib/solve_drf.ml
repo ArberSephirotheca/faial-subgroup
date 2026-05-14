@@ -352,7 +352,7 @@ let solve ?(timeout = None) ?(logic = None) (p : Symbexp.Proof.t) :
 module Outcome = struct
   type t =
     | Drf
-    | Drf_with_core of string list
+    | Drf_with_core of int list
     | Racy of Witness.t
     | Unknown
 
@@ -365,7 +365,7 @@ module Outcome = struct
     | Drf_with_core c ->
       `Assoc
         [ ("drf", `Bool true);
-          ("core", `List (List.map (fun s -> `String s) c)) ]
+          ("core", `List (List.map (fun i -> `Int i) c)) ]
     | Unknown -> `String "unknown"
     | Racy w -> Witness.to_json w
 end
@@ -420,7 +420,7 @@ module Solution = struct
     *)
   let solve ?(timeout = None) ?(_show_proofs = false) ?(logic = None)
       ?(solve_tactic : Gen_z3.Tactic.t option = None)
-      ?(extras : (string * bexp) list = [])
+      ?(extras : (int * bexp) list = [])
       (ps : Symbexp.Proof.t Streamutil.stream) : t Streamutil.stream =
     (* User-requested BV logic warning fires once, not once per proof. *)
     (match logic with
@@ -458,23 +458,26 @@ module Solution = struct
                | None -> Solver.mk_simple_solver ctx
                | Some logic -> Solver.mk_solver_s ctx logic)
         in
-        let trackers : (string * Z3.Expr.expr) list ref = ref [] in
+        let trackers : (int * Z3.Expr.expr) list ref = ref [] in
         let solve_with (enc : Encoder.t) : Solver.solver =
           (* Create a solver under [enc] and add the proof's goal plus
              any tracked [extras]. May raise [Not_implemented] when
-             [enc] is [intgen] and the goal needs BV-only operators. *)
+             [enc] is [intgen] and the goal needs BV-only operators.
+             The tracker is named [extra_<id>] only because Z3 requires
+             a [Symbol]; the [id] is what flows back through the
+             unsat-core. *)
           let ctx = Z3.mk_context options in
           let s = mk_solver_for enc ctx in
           add enc.b_to_expr s ctx p;
           trackers :=
             List.map
-              (fun (name, b) ->
+              (fun (id, b) ->
                 let track =
-                  Z3.Boolean.mk_const_s ctx ("extra_" ^ name)
+                  Z3.Boolean.mk_const_s ctx ("extra_" ^ string_of_int id)
                 in
                 let expr = enc.b_to_expr ctx (Predicates.b_inline b) in
                 Solver.assert_and_track s expr track;
-                (name, track))
+                (id, track))
               extras;
           s
         in
@@ -504,19 +507,24 @@ module Solution = struct
               Solver.check s [])
           with
           | UNSATISFIABLE when want_core ->
+            (* Parse [extra_<id>] tracker names back to the [id]
+               we handed in. The unsat-core enumeration order is
+               Z3-internal; sorting by integer makes the result
+               deterministic for a given Z3 run. *)
             let core = Solver.get_unsat_core s in
-            let core_names =
+            let core_ids =
               List.filter_map
                 (fun ce ->
                   let str = Z3.Expr.to_string ce in
                   if String.starts_with ~prefix:"extra_" str then
-                    Some (String.sub str 6 (String.length str - 6))
+                    int_of_string_opt
+                      (String.sub str 6 (String.length str - 6))
                   else None)
                 core
-              |> List.sort_uniq String.compare
+              |> List.sort_uniq Int.compare
             in
             let _ = !trackers in
-            Drf_with_core core_names
+            Drf_with_core core_ids
           | UNSATISFIABLE -> Drf
           | SATISFIABLE -> (
               match Solver.get_model s with

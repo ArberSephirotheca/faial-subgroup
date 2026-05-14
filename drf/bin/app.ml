@@ -70,7 +70,7 @@ type t = {
      formula is UNSAT, the returned outcome carries the subset of
      [id]s the core mentions. Empty by default; populated by genie's
      [shrink_via_core] path. *)
-  core_extras : (string * Exp.bexp) list;
+  core_extras : (int * Exp.bexp) list;
   le_index : int list;
   ge_index : int list;
   eq_index : int list;

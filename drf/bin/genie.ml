@@ -207,18 +207,17 @@ let shrink_linear (_baseline : Reachability.AccessSet.t) (app : App.t)
    the union is empty under non-empty [extras] (defensive: would
    imply the formula was already UNSAT without any extra). The
    caller should use [shrink_linear] as the fallback. *)
+module IntSet = Set.Make (Int)
+
 let shrink_via_core (_baseline : Reachability.AccessSet.t) (app : App.t)
     (extras : Exp.bexp list) : Exp.bexp list option =
   if extras = [] then Some []
   else
-    let extras_a = Array.of_list extras in
-    let tagged =
-      List.mapi (fun i b -> (string_of_int i, b)) extras
-    in
+    let tagged = List.mapi (fun i b -> (i, b)) extras in
     let analyses = App.run { app with core_extras = tagged } in
     if not (all_safe analyses) then None
     else
-      let needed_ids =
+      let needed =
         analyses
         |> List.concat_map (fun (a : Analysis.t) ->
             a.report
@@ -226,7 +225,7 @@ let shrink_via_core (_baseline : Reachability.AccessSet.t) (app : App.t)
                 match s.outcome with
                 | Solve_drf.Outcome.Drf_with_core c -> c
                 | _ -> []))
-        |> List.sort_uniq String.compare
+        |> IntSet.of_list
       in
       (* Empty-core guard. With non-empty [extras], a union that
          collapses to [] means one of:
@@ -239,15 +238,17 @@ let shrink_via_core (_baseline : Reachability.AccessSet.t) (app : App.t)
            empty-core case the specialist flagged),
          - some other Z3 quirk.
          In all three, the linear shrink is the safe fallback. *)
-      if needed_ids = [] then None
+      if IntSet.is_empty needed then None
       else
-        let ( let* ) = Option.bind in
+        (* Walk [tagged] in original order and keep those whose [id]
+           the union of unsat cores mentions. The output order is the
+           input order — independent of Z3's unsat-core enumeration —
+           so downstream Z3 encoding sees a deterministic assertion
+           sequence. *)
         let kept =
-          needed_ids
-          |> List.filter_map (fun id ->
-              let* i = int_of_string_opt id in
-              if i >= 0 && i < Array.length extras_a
-              then Some extras_a.(i) else None)
+          tagged
+          |> List.filter_map (fun (id, b) ->
+              if IntSet.mem id needed then Some b else None)
         in
         Some kept
 
