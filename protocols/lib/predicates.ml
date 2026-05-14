@@ -49,7 +49,24 @@ let all_predicates : t list =
         | [ _; _ ] as args -> Pred ("bvumul_noovfl", args)
         | _ -> failwith "bvumul_noovfl: expects exactly 2 arguments") }
   in
-  [ pow ~base:2; pow ~base:3; mk_uint 32; mk_uint 16; mk_uint 8; bvumul_noovfl ]
+  (* [nonneg v] is the natural-number assertion [v >= 0]. The body
+     inlines directly to a signed comparison so downstream
+     [constfold] / [eval_b] / the BV and Int encoders all reuse the
+     existing [NRel (Ge Signed, _, _)] machinery — no special
+     encoder case is required.
+
+     The abductive pool wraps mixed-signedness comparisons
+     ([signed_param >=u unsigned_expr], etc.) with this guard so the
+     BV gate can't pick a signed-negative model whose unsigned
+     reinterpretation makes the inequality trivially true. *)
+  let nonneg : t =
+    { pred_name = "nonneg";
+      pred_body = (function
+        | [ v ] -> NRel (Ge Signedness.Signed, v, Num 0)
+        | _ -> failwith "nonneg: expects exactly 1 argument") }
+  in
+  [ pow ~base:2; pow ~base:3; mk_uint 32; mk_uint 16; mk_uint 8;
+    bvumul_noovfl; nonneg ]
 
 let make_pred_db (l : t list) : (string, t) Hashtbl.t =
   List.map (fun p -> (p.pred_name, p)) l |> Common.hashtbl_from_list

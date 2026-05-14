@@ -128,30 +128,68 @@ let build_pool ?(scope : Variable.Set.t option) (k : Kernel.t) : bexp list =
   let no_ovfl (a : nexp) (b : nexp) : bexp =
     Pred ("bvumul_noovfl", [ a; b ])
   in
+  (* Conjoin [v >= 0] when [v] is a signed-typed kernel param. The
+     abductive pool emits predicates of the form [v >=u unsigned_rhs]
+     for mixed-signedness pairs (any-unsigned-wins per [mix_sign]);
+     without this guard the BV gate accepts models where [v] is
+     signed-negative and its unsigned reinterpretation
+     ([0xFFFFFFFE...]) is trivially [>=u] any small RHS. Operationally
+     vacuous because kernel-size parameters are non-negative at
+     runtime. Inlined to [NRel (Ge Signed, v, 0)] by [Predicates],
+     so the BV / Int encoders need no special case. *)
+  let nonneg_if_signed (v : nexp) (s : Signedness.t) : bexp list =
+    match s with
+    | Signed -> [ Pred ("nonneg", [ v ]) ]
+    | Unsigned -> []
+  in
+  let guard (extras : bexp list) (b : bexp) : bexp =
+    List.fold_left b_and b extras
+  in
   (* All [all_dims] are CUDA built-ins (unsigned int). Any binary op
      that mixes a kernel param [p] with a dim is unsigned-dominated. *)
   let per_param acc p =
     let v : nexp = Var p in
     let sp = sign p in
     let s_pd = mix_sign sp Unsigned in
+    let nn = nonneg_if_signed v sp in
     acc
     |> push       (NRel (Gt sp, v, Num 0))
-    |> push_each  all_dims (fun d -> NRel (Ge s_pd, v, Var d))
     |> push_each  all_dims (fun d ->
-         NRel (Eq, Binary (Mod Unsigned, v, Var d), Num 0))
-    |> push_each  all_dims (fun d -> NRel (Eq, v, Var d))
+         (* Single-dim bound under [>=u]: the signed-negative
+            reinterpretation makes [v] huge under unsigned compare,
+            so the guard is load-bearing. *)
+         guard nn (NRel (Ge s_pd, v, Var d)))
+    |> push_each  all_dims (fun d ->
+         (* Divisibility [v %u d == 0]: a signed-negative [v]'s
+            BV-unsigned modulo can equal 0 for some [d]. Guard. *)
+         guard nn (NRel (Eq, Binary (Mod Unsigned, v, Var d), Num 0)))
+    |> push_each  all_dims (fun d ->
+         (* Single-dim equality [v == d]: bit-equality. The signed-
+            negative [v] (high-bit pattern) can't match an unsigned
+            dim in [1, dim_upper_cap]; no guard needed. *)
+         NRel (Eq, v, Var d))
     |> push_pairs ~when_:lt all_dims (fun a b ->
-         b_and
-           (NRel (Ge s_pd, v, Binary (Mult Unsigned, Var a, Var b)))
-           (no_ovfl (Var a) (Var b)))
+         guard nn
+           (b_and
+              (NRel (Ge s_pd, v, Binary (Mult Unsigned, Var a, Var b)))
+              (no_ovfl (Var a) (Var b))))
     |> push_pairs ~when_:lt all_dims (fun a b ->
-         b_and
-           (NRel (Eq, v, Binary (Mult Unsigned, Var a, Var b)))
-           (no_ovfl (Var a) (Var b)))
+         (* EqProduct [v == dim_a * dim_b]: bit-equality on the
+            product. With [no_ovfl] but unbounded dims (dim upper
+            bounds are a separate pool entry, not co-selected here),
+            the product can reach values whose bit pattern matches a
+            signed-negative [v] (e.g. [d_a = 2^31, d_b = 1] gives
+            product [2^31] which equals signed [v = -2^31]). The
+            guard rules out that reinterpretation. *)
+         guard nn
+           (b_and
+              (NRel (Eq, v, Binary (Mult Unsigned, Var a, Var b)))
+              (no_ovfl (Var a) (Var b))))
     |> push_prod  all_dims [ 2; 4 ] (fun d c ->
-         b_and
-           (NRel (Ge s_pd, v, Binary (Mult Unsigned, Num c, Var d)))
-           (no_ovfl (Num c) (Var d)))
+         guard nn
+           (b_and
+              (NRel (Ge s_pd, v, Binary (Mult Unsigned, Num c, Var d)))
+              (no_ovfl (Num c) (Var d))))
   in
   (* Dim upper bounds. Launch dimensions are typically pinned to a
      specific value by the launch literal, but at synthesised
@@ -163,7 +201,14 @@ let build_pool ?(scope : Variable.Set.t option) (k : Kernel.t) : bexp list =
   []
   |> (fun acc -> List.fold_left per_param acc params)
   |> push_pairs ~when_:ne params (fun a b ->
-       NRel (Ge (mix_sign (sign a) (sign b)), Var a, Var b))
+       let cmp = NRel (Ge (mix_sign (sign a) (sign b)), Var a, Var b) in
+       (* Cross-param [a >= b] may mix signed and unsigned; guard each
+          signed operand against the negative-reinterpretation hole. *)
+       let extras =
+         nonneg_if_signed (Var a) (sign a)
+         @ nonneg_if_signed (Var b) (sign b)
+       in
+       List.fold_left b_and cmp extras)
   |> push_prod all_dims dim_upper_caps (fun d k ->
        NRel (Le Unsigned, Var d, Num k))
 
