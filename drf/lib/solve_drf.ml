@@ -379,6 +379,40 @@ module Solution = struct
 
   let is_safe (x : t) : bool = Outcome.is_safe x.outcome
 
+  (* The per-proof encoder choice. Pulled out of [solve] so that each
+     proof in the stream picks its encoder locally instead of through
+     module-scoped refs that an earlier proof might have mutated.
+
+     The arithmetic ([IntGen]) encoder is preferred because it admits
+     no wrap-around models. A proof whose [goal] uses operators
+     [IntGen] can't represent ([^], [&], [<<], etc.) raises
+     [Not_implemented] on encoding; the per-proof handler then
+     escalates that proof — and only that proof — to [Bv64Gen]. *)
+  module Encoder = struct
+    type t = {
+      b_to_expr : Z3.context -> Exp.bexp -> Z3.Expr.expr;
+      parse_num : string -> string;
+      logic     : string option;
+    }
+
+    let intgen ~(logic : string option) : t =
+      { b_to_expr = IntGen.b_to_expr;
+        parse_num = IntGen.parse_num;
+        logic }
+
+    let bv64 () : t =
+      { b_to_expr = Bv64Gen.b_to_expr;
+        parse_num = Bv64Gen.parse_num;
+        logic     = None }
+
+    (* Per-proof starting encoder. Respect a user-requested BV logic;
+       otherwise default to the arithmetic encoder. *)
+    let initial ~(logic : string option) : t =
+      match logic with
+      | Some l when String.ends_with ~suffix:"BV" l -> bv64 ()
+      | _ -> intgen ~logic
+  end
+
   (*
     Example of retrieving values from a model.
 
@@ -388,23 +422,11 @@ module Solution = struct
       ?(solve_tactic : Gen_z3.Tactic.t option = None)
       ?(extras : (string * bexp) list = [])
       (ps : Symbexp.Proof.t Streamutil.stream) : t Streamutil.stream =
-    let b_to_expr = ref IntGen.b_to_expr in
-    let parse_num = ref IntGen.parse_num in
-    logic
-    |> Option.iter (fun l ->
-        if String.ends_with ~suffix:"BV" l then (
-          prerr_endline ("WARNING: user set bit-vector logic " ^ l);
-          b_to_expr := Bv64Gen.b_to_expr;
-          parse_num := Bv64Gen.parse_num)
-        else ());
-    let logic = ref logic in
-    let set_bv () : unit =
-      prerr_endline "WARNING: using bit-vector logic.";
-      b_to_expr := Bv64Gen.b_to_expr;
-      parse_num := Bv64Gen.parse_num;
-      logic := None
-    in
-    (* Logic is bit-vector based *)
+    (* User-requested BV logic warning fires once, not once per proof. *)
+    (match logic with
+     | Some l when String.ends_with ~suffix:"BV" l ->
+       prerr_endline ("WARNING: user set bit-vector logic " ^ l)
+     | _ -> ());
     Streamutil.map
       (fun p ->
         let want_core = extras <> [] in
@@ -423,45 +445,48 @@ module Solution = struct
            loop or running per-query slower than [mk_simple_solver].
            Until we have a reproducer, prefer the simple solver for
            the core path. *)
-        let mk_solver_for ctx =
+        let mk_solver_for (enc : Encoder.t) ctx =
           if want_core then
-            (match !logic with
+            (match enc.logic with
              | None -> Solver.mk_simple_solver ctx
              | Some logic -> Solver.mk_solver_s ctx logic)
           else
             match solve_tactic with
             | Some t -> Solver.mk_solver_t ctx (Gen_z3.Tactic.to_z3 ctx t)
             | None ->
-              (match !logic with
+              (match enc.logic with
                | None -> Solver.mk_simple_solver ctx
                | Some logic -> Solver.mk_solver_s ctx logic)
         in
         let trackers : (string * Z3.Expr.expr) list ref = ref [] in
-        let l, s =
-          (* Create a solver and try to solve, might fail with Not_Implemented *)
-          let solve () =
-            let ctx = Z3.mk_context options in
-            let s = mk_solver_for ctx in
-            add !b_to_expr s ctx p;
-            trackers :=
-              List.map
-                (fun (name, b) ->
-                  let track =
-                    Z3.Boolean.mk_const_s ctx ("extra_" ^ name)
-                  in
-                  let expr = !b_to_expr ctx (Predicates.b_inline b) in
-                  Solver.assert_and_track s expr track;
-                  (name, track))
-                extras;
-            s
-          in
-          try (!logic, solve ())
+        let solve_with (enc : Encoder.t) : Solver.solver =
+          (* Create a solver under [enc] and add the proof's goal plus
+             any tracked [extras]. May raise [Not_implemented] when
+             [enc] is [intgen] and the goal needs BV-only operators. *)
+          let ctx = Z3.mk_context options in
+          let s = mk_solver_for enc ctx in
+          add enc.b_to_expr s ctx p;
+          trackers :=
+            List.map
+              (fun (name, b) ->
+                let track =
+                  Z3.Boolean.mk_const_s ctx ("extra_" ^ name)
+                in
+                let expr = enc.b_to_expr ctx (Predicates.b_inline b) in
+                Solver.assert_and_track s expr track;
+                (name, track))
+              extras;
+          s
+        in
+        let enc, s =
+          let initial = Encoder.initial ~logic in
+          try (initial, solve_with initial)
           with Not_implemented x ->
             prerr_endline
               ("WARNING: arithmetic solver cannot handle operator '" ^ x
-             ^ "', trying bit-vector arithmetic instead.");
-            set_bv ();
-            (Some "BV", solve ())
+             ^ "', falling back to bit-vector arithmetic for this proof.");
+            let bv = Encoder.bv64 () in
+            (bv, solve_with bv)
         in
         (*if show_proofs then (
         let title = "proof #" ^ string_of_int p.id in
@@ -496,11 +521,11 @@ module Solution = struct
           | SATISFIABLE -> (
               match Solver.get_model s with
               | Some m ->
-                  let w = Witness.parse !parse_num ~proof:p m in
+                  let w = Witness.parse enc.parse_num ~proof:p m in
                   if Witness.can_conflict w then Racy w else Drf
               | None -> failwith "INVALID")
           | UNKNOWN -> Unknown
         in
-        { proof = p; outcome = r; logic = l })
+        { proof = p; outcome = r; logic = enc.logic })
       ps
 end
