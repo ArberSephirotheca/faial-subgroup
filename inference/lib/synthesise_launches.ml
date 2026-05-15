@@ -106,7 +106,40 @@ let dedup_by_name (type a) ~(name_of : a -> Variable.t) (xs : a list) : a list =
   in
   List.fold_left step (Variable.Set.empty, []) xs |> snd |> List.rev
 
+(** Rewrites arg slots whose top-level expression equals a
+    [const_bindings] init back to [Ident <binding-name>], so a host
+    [const] that cu-to-json inlined here re-converges with its named
+    uses elsewhere in the launch instead of being abstracted. *)
+let rebind_args_to_const_names
+    (bindings : C_lang.ConstBinding.t list) (args : C_lang.Expr.t list) :
+    C_lang.Expr.t list * C_lang.ConstBinding.t list =
+  let table : (string, C_lang.ConstBinding.t) Hashtbl.t =
+    Hashtbl.create (List.length bindings)
+  in
+  List.iter
+    (fun (b : C_lang.ConstBinding.t) ->
+      Hashtbl.replace table (C_lang.Expr.to_string b.init) b)
+    bindings;
+  let used = ref [] in
+  let rewrite (a : C_lang.Expr.t) : C_lang.Expr.t =
+    match Hashtbl.find_opt table (C_lang.Expr.to_string a) with
+    | Some b ->
+        used := b :: !used;
+        C_lang.Expr.Ident
+          (Decl_expr.from_name ~ty:b.ty ~kind:Decl_expr.Kind.Var b.name)
+    | None -> a
+  in
+  let args = List.map rewrite args in
+  let used =
+    !used
+    |> dedup_by_name ~name_of:(fun (b : C_lang.ConstBinding.t) -> b.name)
+  in
+  (args, used)
+
 let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
+  let args, rebound_bindings =
+    rebind_args_to_const_names lp.const_bindings lp.args
+  in
   (* Shared resolver state across grid, block, and args so duplicate
      expressions across slots collapse to one uniform symbol. *)
   let ctx, (body_grid, body_block, body_call) =
@@ -114,7 +147,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     |> State.run (
       let* body_grid = dim_asserts "gridDim" lp.grid in
       let* body_block = dim_asserts "blockDim" lp.block in
-      let* body_call = call_stmt lp.kernel lp.args in
+      let* body_call = call_stmt lp.kernel args in
       return (body_grid, body_block, body_call)
     )
   in
@@ -135,9 +168,24 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     |> Decl_expr.Set.elements
     |> List.filter_map param_of_free_var
   in
+  (* Binding names introduced by the arg-slot rebind. Already in
+     [direct_params] when the same binding is also referenced
+     elsewhere (grid / block / path_condition); excluded from [bound]
+     because impure-init bindings emit no [DeclStmt]. The trailing
+     [dedup_by_name] reconciles the overlap. *)
+  let rebound_params =
+    rebound_bindings
+    |> List.filter_map (fun (b : C_lang.ConstBinding.t) ->
+           if Variable.Set.mem b.name bound then None
+           else
+             let d =
+               Decl_expr.from_name ~ty:b.ty ~kind:Decl_expr.Kind.Var b.name
+             in
+             param_of_free_var d)
+  in
   let fresh_params = Launch_arg.fresh_params ctx in
   let params =
-    direct_params @ fresh_params
+    direct_params @ rebound_params @ fresh_params
     |> dedup_by_name ~name_of:C_lang.Param.name
   in
   let name = synth_name lp in
