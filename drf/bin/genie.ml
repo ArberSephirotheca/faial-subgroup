@@ -695,7 +695,15 @@ let compute_verdict_new ~(use_core_shrink : bool)
   let drf source clauses =
     Drf { source; assumes = merge_extras usage_pins clauses }
   in
-  let gate_check = gate_holds_pairs in
+  (* Per-[compute_verdict] caches for the Tier 1 (single-thread reach
+     preservation) and Tier 2 (co-reach pair-subset) gates, keyed by
+     the normalised [app.assumes]. Created fresh here so each
+     [compute_verdict] call gets a clean cache; discarded on return.
+     The abductive loop re-evaluates the same Φ across
+     round-accept / shrink / weaken / re-shrink, so these are the
+     hits we expect to collect. *)
+  let tier1_cache : bool Tier_cache.t = Tier_cache.create () in
+  let tier2_cache : bool Tier_cache.t = Tier_cache.create () in
   (* Tier 1 baseline: per-kernel under-baseline reachable access set,
      keyed by [(kernel_name, fragment_id)]. The CEGAR pre-filter
      asserts [baseline_reachable ⊆ access_set_of(app + Φ)] per round:
@@ -711,7 +719,29 @@ let compute_verdict_new ~(use_core_shrink : bool)
     Phase_timer.measure "genie/baseline-coreach"
       (fun () -> coreach_pairs_of app)
   in
-  let pre_filter = gate_holds_per_access baseline_reachable in
+  (* Wrap each tier predicate with a Φ-keyed cache lookup. Hits skip
+     [Phase_timer.measure] / [Stats.incr "gate_checks"] so the
+     hit/miss counters drive the cost picture. *)
+  let cached_tier1 (app' : App.t) : bool =
+    match Tier_cache.find_opt tier1_cache app'.assumes with
+    | Some v -> Stats.incr "tier1_gate_hits"; v
+    | None ->
+      Stats.incr "tier1_gate_misses";
+      let v = gate_holds_per_access baseline_reachable app' in
+      Tier_cache.add tier1_cache app'.assumes v;
+      v
+  in
+  let cached_tier2 (_baseline : Co_reach.pair list) (app' : App.t) : bool =
+    match Tier_cache.find_opt tier2_cache app'.assumes with
+    | Some v -> Stats.incr "tier2_gate_hits"; v
+    | None ->
+      Stats.incr "tier2_gate_misses";
+      let v = gate_holds_pairs baseline_pairs app' in
+      Tier_cache.add tier2_cache app'.assumes v;
+      v
+  in
+  let gate_check = cached_tier2 in
+  let pre_filter = cached_tier1 in
   let baseline =
     Phase_timer.measure "genie/baseline" (fun () ->
       Stats.incr "race_queries"; App.run app)
