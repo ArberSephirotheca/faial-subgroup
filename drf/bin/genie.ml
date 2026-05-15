@@ -131,7 +131,8 @@ let coreach_pairs_of (app : App.t) : Co_reach.pair list =
   |> List.concat_map (fun (k : Kernel.t) ->
     List.concat_map (fun arch ->
       coreach_stream_of arch app k
-      |> Co_reach.candidates ~timeout:app.timeout ~logic:app.logic)
+      |> Co_reach.candidates ~tag:"baseline" ~timeout:app.timeout
+           ~logic:app.logic)
       app.archs)
 
 (* Per-round under-Φ pair set, restricted to baseline keys. Drops
@@ -146,7 +147,8 @@ let coreach_pairs_restricted_of (baseline_keys : Co_reach.KeySet.t)
   |> List.concat_map (fun (k : Kernel.t) ->
     List.concat_map (fun arch ->
       coreach_stream_of arch app k
-      |> Co_reach.candidates_restricted ~timeout:app.timeout baseline_keys)
+      |> Co_reach.candidates_restricted ~tag:"under-phi"
+           ~timeout:app.timeout baseline_keys)
       app.archs)
 
 (* Tier 1 pre-filter: per-access single-thread reach preservation.

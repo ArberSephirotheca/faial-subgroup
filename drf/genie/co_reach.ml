@@ -98,6 +98,33 @@ module KeySet = Set.Make (Key)
    binding raises [Z3.Error]; we propagate by treating the offending
    proof as a non-candidate (its co-reach status is opaque, so it
    adds no constraint to the gate). *)
+
+(* When [FAIAL_COREACH_DUMP] is set (and not "0"/empty), each
+   per-proof solve emits one line on stderr tagged with the call
+   site label ([baseline] or [under-phi]) so a side-by-side diff
+   identifies which pairs Φ drops. Mirrors the [FAIAL_PHASE_LOG]
+   convention in [Phase_timer]. *)
+let dump_enabled : bool =
+  match Sys.getenv_opt "FAIAL_COREACH_DUMP" with
+  | None | Some "" | Some "0" -> false
+  | _ -> true
+
+let status_to_string : Z3.Solver.status -> string = function
+  | Z3.Solver.SATISFIABLE -> "sat"
+  | Z3.Solver.UNSATISFIABLE -> "unsat"
+  | Z3.Solver.UNKNOWN -> "unknown"
+
+let dump_line ~(tag : string) (p : Symbexp.Proof.t)
+    (status : Z3.Solver.status) : unit =
+  if dump_enabled then begin
+    Printf.eprintf
+      "[coreach-dump] tag=%s kernel=%s array=%s id=%d result=%s goal=%s\n"
+      tag p.kernel_name p.array_name p.id
+      (status_to_string status)
+      (Exp.b_to_string (Predicates.b_inline p.goal));
+    flush stderr
+  end
+
 let solve_one ?(timeout : int option = None) (p : Symbexp.Proof.t)
     : Z3.Solver.status =
   let options =
@@ -114,7 +141,8 @@ let solve_one ?(timeout : int option = None) (p : Symbexp.Proof.t)
   Z3.Solver.add solver [ expr ];
   Z3.Solver.check solver []
 
-let candidates ?(timeout : int option = None) ?(logic : string option = None)
+let candidates ?(tag : string = "baseline") ?(timeout : int option = None)
+    ?(logic : string option = None)
     (stream : Symbexp.Proof.t Streamutil.stream) : pair list =
   let _ = logic in
   stream
@@ -126,6 +154,7 @@ let candidates ?(timeout : int option = None) ?(logic : string option = None)
           solve_one ~timeout p)
       with Z3.Error _ -> Z3.Solver.UNKNOWN
     in
+    dump_line ~tag p status;
     match status with
     | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN ->
       Some {
@@ -163,7 +192,8 @@ let preserves_subset ~(under_phi : pair list) ~(baseline : pair list) : bool =
    the baseline is fixed and pairs outside it are dead work. The
    per-round cost on a kernel with N baseline pairs is therefore
    one SAT call per baseline pair, not one per stream proof. *)
-let candidates_restricted ?(timeout : int option = None)
+let candidates_restricted ?(tag : string = "under-phi")
+    ?(timeout : int option = None)
     (baseline_keys : KeySet.t)
     (stream : Symbexp.Proof.t Streamutil.stream) : pair list =
   stream
@@ -178,6 +208,7 @@ let candidates_restricted ?(timeout : int option = None)
             solve_one ~timeout p)
         with Z3.Error _ -> Z3.Solver.UNKNOWN
       in
+      dump_line ~tag p status;
       match status with
       | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN ->
         Some {
