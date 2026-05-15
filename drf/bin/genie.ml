@@ -109,6 +109,31 @@ let access_set_of (app : App.t) : Reachability.AccessSet.t =
     |> Reachability.check_kernel ?timeout:app.timeout)
   |> Reachability.reachable_set
 
+(* Build the co-reach proof stream for one kernel under the
+   current [app] state. The stream encodes — for each per-location
+   flat-acc fragment — a two-thread existential without the
+   conflict / same-address constraints; SAT means the fragment's
+   two-thread reachability is still live under the precondition
+   stack [app] carries. *)
+let coreach_stream_of (arch : Architecture.t) (app : App.t)
+    (k : Kernel.t) : Symbexp.Proof.t Streamutil.stream =
+  k
+  |> App.translate arch app
+  |> Symbexp.translate_coreach arch
+
+(* Build [baseline] or [under-Φ] pair sets from an [app]. The
+   precondition stack that drives the SAT outcome of each fragment
+   is whatever [app] carries: [k.pre] plus [app.assumes] (which
+   already includes any user [--assume]s and any abductive Φ folded
+   in by [app_with_extras]). *)
+let coreach_pairs_of (app : App.t) : Co_reach.pair list =
+  app.kernels |> App.only_kernel app
+  |> List.concat_map (fun (k : Kernel.t) ->
+    List.concat_map (fun arch ->
+      coreach_stream_of arch app k
+      |> Co_reach.candidates ~timeout:app.timeout ~logic:app.logic)
+      app.archs)
+
 (* Stricter alternative kept for comparison; one Z3 query per access. *)
 let[@warning "-32"] gate_holds_per_access
     (baseline : Reachability.AccessSet.t) (app : App.t) : bool =
@@ -185,6 +210,29 @@ let gate_holds_cached (cache : Gate_cache.t)
 
 let[@warning "-32"] gate_holds = gate_holds_simple
 
+(* Tier 3 gate. The baseline pair set is fixed for the kernel(s) and
+   carried in [baseline]; per-round the gate rebuilds the under-Φ
+   pair set from the current [app] (whose [assumes] include the
+   candidate Φ) and checks the baseline is a subset of it (keyed by
+   [(kernel_name, array_name, id)]).
+
+   The under-Φ rebuild is per-round; no caching. The dominant cost
+   inside [Co_reach.candidates] is the per-proof solve, which already
+   uses [Solve_drf.solve] (the same machinery the DRF baseline uses).
+   Caching the under-Φ pair set would require a cache key over
+   [app.assumes]; bumping that per round defeats the cache. The
+   straight rebuild gives the design's "sharp drop in gate cost"
+   precisely because Φ trivialisations turn baseline-SAT proofs into
+   under-Φ UNSAT proofs cheaply (the BV solver short-circuits on the
+   contradiction); when Φ doesn't trivialise, the under-Φ solve is
+   the same cost as the baseline one — but only on pairs the
+   baseline picked, which is already a filter by SAT-ability. *)
+let gate_holds_pairs (baseline : Co_reach.pair list) (app : App.t) : bool =
+  Phase_timer.measure "genie/gate" (fun () ->
+    Stats.incr "gate_checks";
+    let under_phi = coreach_pairs_of app in
+    Co_reach.preserves_subset ~under_phi ~baseline)
+
 (* Per-kernel extras. Keyed by [Kernel.name]. Each kernel's clauses
    are conjoined onto that kernel's own pre — no cross-kernel
    flattening — matching App.t.assumes's shape. *)
@@ -252,8 +300,13 @@ let verifies_drf_only (app : App.t) (extras : per_kernel_extras) : bool =
 
 (* Drop-clause shrink, per-kernel. For each [(kn, b)] flattened pair,
    try removing it from [extras]; if the kernel set still clears DRF,
-   the pair is droppable. *)
-let shrink_linear (_baseline : Reachability.AccessSet.t) (app : App.t)
+   the pair is droppable.
+
+   The [_baseline] parameter is polymorphic and unused — shrinking
+   is purely a DRF check, independent of which baseline representation
+   the gate uses ([AccessSet.t] under [--legacy-gate], [Co_reach.pair
+   list] under the default Tier 3 gate). *)
+let shrink_linear (_baseline : 'a) (app : App.t)
     (extras : per_kernel_extras) : per_kernel_extras =
   Phase_timer.measure "genie/shrink" (fun () ->
     let flat = extras_flatten extras in
@@ -283,7 +336,7 @@ let shrink_linear (_baseline : Reachability.AccessSet.t) (app : App.t)
    caller should use [shrink_linear] as the fallback. *)
 module IntSet = Set.Make (Int)
 
-let shrink_via_core (_baseline : Reachability.AccessSet.t) (app : App.t)
+let shrink_via_core (_baseline : 'a) (app : App.t)
     (extras : per_kernel_extras) : per_kernel_extras option =
   if is_extras_empty extras then Some extras
   else
@@ -340,7 +393,7 @@ let shrink_via_core (_baseline : Reachability.AccessSet.t) (app : App.t)
         in
         Some kept
 
-let shrink ~(use_core : bool) (baseline : Reachability.AccessSet.t)
+let shrink ~(use_core : bool) (baseline : 'a)
     (app : App.t) (extras : per_kernel_extras) : per_kernel_extras =
   if use_core then
     match shrink_via_core baseline app extras with
@@ -412,9 +465,9 @@ let abductive_loop
     ?(iter_cap = 32)
     ?(scope_of : (string -> Variable.Set.t option) option)
     ~(use_core_shrink : bool)
-    ~(gate_check : Reachability.AccessSet.t -> App.t -> bool)
+    ~(gate_check : 'baseline -> App.t -> bool)
     (app : App.t)
-    (baseline_reachable : Reachability.AccessSet.t)
+    (baseline : 'baseline)
     : per_kernel_extras option =
   let kernels = App.only_kernel app app.kernels in
   if kernels = [] then None
@@ -426,7 +479,7 @@ let abductive_loop
     in
     let drf_and_gate (extras : per_kernel_extras) =
       verifies_drf_only app extras
-      && gate_check baseline_reachable (app_with_extras extras app)
+      && gate_check baseline (app_with_extras extras app)
     in
     let shrink' = shrink ~use_core:use_core_shrink in
     (* Non-triviality: at least one access must remain reachable under
@@ -446,15 +499,15 @@ let abductive_loop
         |> Reachability.any_access_reachable ?timeout:app'.timeout)
     in
     let try_finalize (extras : per_kernel_extras) : per_kernel_extras option =
-      let minimal = shrink' baseline_reachable app extras in
+      let minimal = shrink' baseline app extras in
       let app' = app_with_extras minimal app in
-      if gate_check baseline_reachable app' && non_trivial app'
+      if gate_check baseline app' && non_trivial app'
       then Some minimal
       else
         let weakened = weaken_for_gate app drf_and_gate minimal in
-        let weakened_min = shrink' baseline_reachable app weakened in
+        let weakened_min = shrink' baseline app weakened in
         let app'' = app_with_extras weakened_min app in
-        if gate_check baseline_reachable app'' && non_trivial app''
+        if gate_check baseline app'' && non_trivial app''
         then Some weakened_min
         else None
     in
@@ -587,8 +640,140 @@ let usage_constrained_kernel
    reaching the verdict, so they're merged with any abductive /
    blanket clauses into the [Drf] payload's [assumes] for the
    user-visible [Discovered: --assume ...] line. *)
-let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
+(* Tier 3 driver. The default [compute_verdict] path; the legacy
+   [AccessSet]-based gate is retained via [compute_verdict_legacy]
+   below and exposed through [--legacy-gate].
+
+   [baseline_pairs] is the Tier 2 pair set built from the co-reach
+   proof stream under the kernel's baseline pre (no Φ). Empty
+   [baseline_pairs] means no fragment had a SAT co-reach goal — no
+   two-thread universe exists under the baseline — and the kernel
+   is vacuously DRF. *)
+let compute_verdict_new ~(use_core_shrink : bool)
     ~(usage_pins : per_kernel_extras)
+    (app : App.t) : verdict =
+  let drf source clauses =
+    Drf { source; assumes = merge_extras usage_pins clauses }
+  in
+  let gate_check = gate_holds_pairs in
+  let baseline_pairs =
+    Phase_timer.measure "genie/baseline-reach"
+      (fun () -> coreach_pairs_of app)
+  in
+  let baseline =
+    Phase_timer.measure "genie/baseline" (fun () ->
+      Stats.incr "race_queries"; App.run app)
+  in
+  if all_safe baseline then
+    if baseline_pairs = [] then Drf_vacuous
+    else drf Source_baseline []
+  else
+    let scopes =
+      List.map (fun (k : Kernel.t) ->
+        (Kernel.name k, Access_partition.abductive_scope k))
+        (App.only_kernel app app.kernels)
+    in
+    let scope_of (kn : string) : Variable.Set.t option =
+      List.assoc_opt kn scopes
+    in
+    match Phase_timer.measure "genie/abductive" (fun () ->
+            abductive_loop ~scope_of ~use_core_shrink ~gate_check
+              app baseline_pairs)
+    with
+    | Some minimal -> drf Source_abductive minimal
+    | None ->
+      Phase_timer.measure "genie/blanket" (fun () ->
+        Stats.set "blanket_attempted" 1;
+        let blanket = blanket_extras app in
+        if is_extras_empty blanket || not (verifies_drf_only app blanket)
+        then Racy
+        else
+          let minimal =
+            shrink ~use_core:use_core_shrink baseline_pairs app blanket
+          in
+          let app' = app_with_extras minimal app in
+          let blanket_non_trivial =
+            app'.kernels |> App.only_kernel app'
+            |> List.exists (fun k ->
+              k
+              |> Reachability.prepare_kernel
+                   ~assumes:(App.assumes_of k app')
+                   ~assume_dims:app'.assume_dims
+                   ~params:app'.params
+              |> Reachability.any_access_reachable ?timeout:app'.timeout)
+          in
+          if gate_check baseline_pairs app' && blanket_non_trivial
+          then drf Source_blanket minimal
+          else Racy)
+
+(* Legacy [AccessSet]-based gate path. Retained behind [--legacy-gate]
+   for one release cycle so a kernel whose verdict regresses unexpectedly
+   under the Tier 3 gate can be re-run with the previous semantics. *)
+let compute_verdict_legacy ~(use_core_shrink : bool) ~(cached_gate : bool)
+    ~(usage_pins : per_kernel_extras)
+    (app : App.t) : verdict =
+  let drf source clauses =
+    Drf { source; assumes = merge_extras usage_pins clauses }
+  in
+  let gate_check =
+    if cached_gate then
+      let cache = Gate_cache.create () in
+      gate_holds_cached cache
+    else
+      gate_holds_simple
+  in
+  let baseline_reachable =
+    Phase_timer.measure "genie/baseline-reach"
+      (fun () -> access_set_of app)
+  in
+  let baseline =
+    Phase_timer.measure "genie/baseline" (fun () ->
+      Stats.incr "race_queries"; App.run app)
+  in
+  if all_safe baseline then
+    if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
+    else drf Source_baseline []
+  else
+    let scopes =
+      List.map (fun (k : Kernel.t) ->
+        (Kernel.name k, Access_partition.abductive_scope k))
+        (App.only_kernel app app.kernels)
+    in
+    let scope_of (kn : string) : Variable.Set.t option =
+      List.assoc_opt kn scopes
+    in
+    match Phase_timer.measure "genie/abductive" (fun () ->
+            abductive_loop ~scope_of ~use_core_shrink ~gate_check
+              app baseline_reachable)
+    with
+    | Some minimal -> drf Source_abductive minimal
+    | None ->
+      Phase_timer.measure "genie/blanket" (fun () ->
+        Stats.set "blanket_attempted" 1;
+        let blanket = blanket_extras app in
+        if is_extras_empty blanket || not (verifies_drf_only app blanket)
+        then Racy
+        else
+          let minimal =
+            shrink ~use_core:use_core_shrink baseline_reachable app blanket
+          in
+          let app' = app_with_extras minimal app in
+          let blanket_non_trivial =
+            app'.kernels |> App.only_kernel app'
+            |> List.exists (fun k ->
+              k
+              |> Reachability.prepare_kernel
+                   ~assumes:(App.assumes_of k app')
+                   ~assume_dims:app'.assume_dims
+                   ~params:app'.params
+              |> Reachability.any_access_reachable ?timeout:app'.timeout)
+          in
+          if gate_check baseline_reachable app' && blanket_non_trivial
+          then drf Source_blanket minimal
+          else Racy)
+
+let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
+    ~(legacy_gate : bool) ~(usage_pins : per_kernel_extras)
     (app : App.t) : verdict =
   (* Stats and Phase_timer are module-level globals. Reset at entry so
      a second [compute_verdict] in the same process (test harness,
@@ -596,73 +781,10 @@ let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
      counters from the prior call. *)
   Stats.reset ();
   Phase_timer.reset ();
-  let drf source clauses =
-    Drf { source; assumes = merge_extras usage_pins clauses }
-  in
   try
-    let gate_check =
-      if cached_gate then
-        let cache = Gate_cache.create () in
-        gate_holds_cached cache
-      else
-        gate_holds_simple
-    in
-    let baseline_reachable =
-      Phase_timer.measure "genie/baseline-reach"
-        (fun () -> access_set_of app)
-    in
-    let baseline =
-      Phase_timer.measure "genie/baseline" (fun () ->
-        Stats.incr "race_queries"; App.run app)
-    in
-    if all_safe baseline then
-      if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
-      else drf Source_baseline []
-    else
-      (* Per-kernel abductive scope. [Access_partition.abductive_scope]
-         returns the kernel parameters that can affect any DRF query
-         on this kernel — those mentioned in [k.pre], in any access's
-         path condition, or in any access's index. Pool candidates over
-         variables outside the scope are dropped: they can neither
-         change reachability nor address equality, so no DRF clearance
-         depends on them. *)
-      let scopes =
-        List.map (fun (k : Kernel.t) ->
-          (Kernel.name k, Access_partition.abductive_scope k))
-          (App.only_kernel app app.kernels)
-      in
-      let scope_of (kn : string) : Variable.Set.t option =
-        List.assoc_opt kn scopes
-      in
-      match Phase_timer.measure "genie/abductive" (fun () ->
-              abductive_loop ~scope_of ~use_core_shrink ~gate_check
-                app baseline_reachable)
-      with
-      | Some minimal -> drf Source_abductive minimal
-      | None ->
-        Phase_timer.measure "genie/blanket" (fun () ->
-          Stats.set "blanket_attempted" 1;
-          let blanket = blanket_extras app in
-          if is_extras_empty blanket || not (verifies_drf_only app blanket)
-          then Racy
-          else
-            let minimal =
-              shrink ~use_core:use_core_shrink baseline_reachable app blanket
-            in
-            let app' = app_with_extras minimal app in
-            let blanket_non_trivial =
-              app'.kernels |> App.only_kernel app'
-              |> List.exists (fun k ->
-                k
-                |> Reachability.prepare_kernel
-                     ~assumes:(App.assumes_of k app')
-                     ~assume_dims:app'.assume_dims
-                     ~params:app'.params
-                |> Reachability.any_access_reachable ?timeout:app'.timeout)
-            in
-            if gate_check baseline_reachable app' && blanket_non_trivial
-            then drf Source_blanket minimal
-            else Racy)
+    if legacy_gate
+    then compute_verdict_legacy ~use_core_shrink ~cached_gate ~usage_pins app
+    else compute_verdict_new ~use_core_shrink ~usage_pins app
   with Z3.Error _ -> Racy
 
 let report_prose (v : verdict) : unit =
@@ -821,7 +943,20 @@ let main =
              ~doc:"Reuse a single Z3 context and solver per kernel \
                    across abductive rounds (push/pop on the assertion \
                    stack), preserving learned clauses. Disable to fall \
-                   back to a fresh context per gate call.")
+                   back to a fresh context per gate call. Effective \
+                   only with [--legacy-gate]; the default Tier 3 gate \
+                   rebuilds the under-Φ pair set per round and does \
+                   not share a Z3 slot across rounds.")
+  and+ legacy_gate =
+    Arg.(value & flag
+         & info [ "legacy-gate" ]
+             ~doc:"Use the Phase 2 single-thread reachability gate \
+                   (per-kernel [AccessSet] subset check) instead of \
+                   the default Phase 3 pair-level gate. Retained as a \
+                   single-release escape hatch: if a kernel's verdict \
+                   regresses under the new gate, [--legacy-gate] \
+                   reproduces the previous semantics. Slated for \
+                   removal after one release cycle.")
   and+ seed =
     Arg.(value & opt (some int) None
          & info [ "seed" ] ~docv:"N"
@@ -884,7 +1019,9 @@ let main =
       else print_endline (Protocols.Kernel.name k));
     Ok ()
   end else
-    let v = compute_verdict ~use_core_shrink ~cached_gate ~usage_pins app in
+    let v =
+      compute_verdict ~use_core_shrink ~cached_gate ~legacy_gate ~usage_pins app
+    in
     if output_json then report_json app v else report_prose v;
     Ok ()
 
