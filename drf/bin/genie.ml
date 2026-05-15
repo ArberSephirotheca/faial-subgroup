@@ -149,10 +149,16 @@ let coreach_pairs_restricted_of (baseline_keys : Co_reach.KeySet.t)
       |> Co_reach.candidates_restricted ~timeout:app.timeout baseline_keys)
       app.archs)
 
-(* Stricter alternative kept for comparison; one Z3 query per access. *)
-let[@warning "-32"] gate_holds_per_access
+(* Tier 1 pre-filter: per-access single-thread reach preservation.
+   For each access [a], [Reachability.check_kernel] (Slot-grouped,
+   one Z3 push/check/pop per path-cond equivalence class) asks
+   whether [k.pre ∧ Φ ∧ path_cond(a)] is SAT; the resulting under-Φ
+   reachable set must cover the baseline-reachable set. *)
+let gate_holds_per_access
     (baseline : Reachability.AccessSet.t) (app : App.t) : bool =
-  Reachability.AccessSet.subset baseline (access_set_of app)
+  Phase_timer.measure "genie/gate" (fun () ->
+    Stats.incr "gate_checks";
+    Reachability.AccessSet.subset baseline (access_set_of app))
 
 let gate_holds_simple (_baseline : Reachability.AccessSet.t)
     (app : App.t) : bool =
@@ -476,10 +482,23 @@ let weaken_for_gate
      - If DRF: shrink, then check the gate. If gate accepts, return.
        If gate rejects, try clause-wise weakening; if that recovers,
        return the weakened set. Otherwise add [¬extras] to the session
-       (CEGIS) and re-solve. *)
+       (CEGIS) and re-solve.
+
+   Per-Φ acceptance is a three-tier short-circuit ordered by cost:
+   Tier 1 (single-thread reach preservation, [pre_filter]) →
+   Tier 2 (co-reach pair-subset gate, [gate_check]) →
+   DRF query. Each tier rejects strictly more Φs than the next,
+   so running cheaper tiers first does not change the accepted set —
+   it only short-circuits Φs the later tiers would also reject.
+
+   [pre_filter] defaults to the trivial accept; the legacy gate path
+   carries its single-thread reach check in [gate_check] itself, so
+   it leaves [pre_filter] unset. The default Tier 3 path supplies a
+   dedicated [pre_filter] derived from [Reachability.AccessSet]. *)
 let abductive_loop
     ?(iter_cap = 32)
     ?(scope_of : (string -> Variable.Set.t option) option)
+    ?(pre_filter : (App.t -> bool) = fun _ -> true)
     ~(use_core_shrink : bool)
     ~(gate_check : 'baseline -> App.t -> bool)
     (app : App.t)
@@ -494,8 +513,11 @@ let abductive_loop
       Stats.incr "maxsat_solves"; Abduction.solve s)
     in
     let drf_and_gate (extras : per_kernel_extras) =
-      verifies_drf_only app extras
-      && gate_check baseline (app_with_extras extras app)
+      let app' = app_with_extras extras app in
+      Cegar.check_three_tier
+        ~tier1:(fun () -> pre_filter app')
+        ~tier2:(fun () -> gate_check baseline app')
+        ~drf:(fun () -> verifies_drf_only app extras)
     in
     let shrink' = shrink ~use_core:use_core_shrink in
     (* Non-triviality: at least one access must remain reachable under
@@ -517,13 +539,13 @@ let abductive_loop
     let try_finalize (extras : per_kernel_extras) : per_kernel_extras option =
       let minimal = shrink' baseline app extras in
       let app' = app_with_extras minimal app in
-      if gate_check baseline app' && non_trivial app'
+      if pre_filter app' && gate_check baseline app' && non_trivial app'
       then Some minimal
       else
         let weakened = weaken_for_gate app drf_and_gate minimal in
         let weakened_min = shrink' baseline app weakened in
         let app'' = app_with_extras weakened_min app in
-        if gate_check baseline app'' && non_trivial app''
+        if pre_filter app'' && gate_check baseline app'' && non_trivial app''
         then Some weakened_min
         else None
     in
@@ -672,10 +694,22 @@ let compute_verdict_new ~(use_core_shrink : bool)
     Drf { source; assumes = merge_extras usage_pins clauses }
   in
   let gate_check = gate_holds_pairs in
-  let baseline_pairs =
+  (* Tier 1 baseline: per-kernel under-baseline reachable access set,
+     keyed by [(kernel_name, fragment_id)]. The CEGAR pre-filter
+     asserts [baseline_reachable ⊆ access_set_of(app + Φ)] per round:
+     a Φ that kills the path-condition of any baseline-reachable
+     access also kills that access's contribution to the co-reach
+     pair set, so Tier 1 rejection implies Tier 2 rejection — the
+     filter is sound. *)
+  let baseline_reachable =
     Phase_timer.measure "genie/baseline-reach"
+      (fun () -> access_set_of app)
+  in
+  let baseline_pairs =
+    Phase_timer.measure "genie/baseline-coreach"
       (fun () -> coreach_pairs_of app)
   in
+  let pre_filter = gate_holds_per_access baseline_reachable in
   let baseline =
     Phase_timer.measure "genie/baseline" (fun () ->
       Stats.incr "race_queries"; App.run app)
@@ -693,7 +727,7 @@ let compute_verdict_new ~(use_core_shrink : bool)
       List.assoc_opt kn scopes
     in
     match Phase_timer.measure "genie/abductive" (fun () ->
-            abductive_loop ~scope_of ~use_core_shrink ~gate_check
+            abductive_loop ~scope_of ~pre_filter ~use_core_shrink ~gate_check
               app baseline_pairs)
     with
     | Some minimal -> drf Source_abductive minimal
@@ -718,7 +752,8 @@ let compute_verdict_new ~(use_core_shrink : bool)
                    ~params:app'.params
               |> Reachability.any_access_reachable ?timeout:app'.timeout)
           in
-          if gate_check baseline_pairs app' && blanket_non_trivial
+          if pre_filter app' && gate_check baseline_pairs app'
+             && blanket_non_trivial
           then drf Source_blanket minimal
           else Racy)
 
