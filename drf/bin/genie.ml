@@ -134,6 +134,21 @@ let coreach_pairs_of (app : App.t) : Co_reach.pair list =
       |> Co_reach.candidates ~timeout:app.timeout ~logic:app.logic)
       app.archs)
 
+(* Per-round under-Φ pair set, restricted to baseline keys. Drops
+   the SAT work for any fragment whose key isn't in the baseline:
+   such fragments can't affect [preserves_subset]'s outcome, so
+   solving them is dead work. Halves the under-Φ cost on kernels
+   where baseline rejects most fragments (typical for kernels with
+   many phase splits but few race-candidate fragments). *)
+let coreach_pairs_restricted_of (baseline_keys : Co_reach.KeySet.t)
+    (app : App.t) : Co_reach.pair list =
+  app.kernels |> App.only_kernel app
+  |> List.concat_map (fun (k : Kernel.t) ->
+    List.concat_map (fun arch ->
+      coreach_stream_of arch app k
+      |> Co_reach.candidates_restricted ~timeout:app.timeout baseline_keys)
+      app.archs)
+
 (* Stricter alternative kept for comparison; one Z3 query per access. *)
 let[@warning "-32"] gate_holds_per_access
     (baseline : Reachability.AccessSet.t) (app : App.t) : bool =
@@ -230,7 +245,8 @@ let[@warning "-32"] gate_holds = gate_holds_simple
 let gate_holds_pairs (baseline : Co_reach.pair list) (app : App.t) : bool =
   Phase_timer.measure "genie/gate" (fun () ->
     Stats.incr "gate_checks";
-    let under_phi = coreach_pairs_of app in
+    let baseline_keys = Co_reach.keys_of baseline in
+    let under_phi = coreach_pairs_restricted_of baseline_keys app in
     Co_reach.preserves_subset ~under_phi ~baseline)
 
 (* Per-kernel extras. Keyed by [Kernel.name]. Each kernel's clauses

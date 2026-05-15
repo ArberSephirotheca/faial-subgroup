@@ -154,6 +154,45 @@ let preserves_subset ~(under_phi : pair list) ~(baseline : pair list) : bool =
   in
   List.for_all (fun p -> KeySet.mem (key_of p) under_set) baseline
 
+(* Targeted gate. Solve a proof stream under Φ but only emit pairs
+   whose key is in [baseline_keys]; proofs outside that set don't
+   need to be evaluated because they can't affect the subset check.
+
+   The full [candidates] is used to build the baseline pair set once
+   per kernel; this variant is for the per-CEGAR-round gate, where
+   the baseline is fixed and pairs outside it are dead work. The
+   per-round cost on a kernel with N baseline pairs is therefore
+   one SAT call per baseline pair, not one per stream proof. *)
+let candidates_restricted ?(timeout : int option = None)
+    (baseline_keys : KeySet.t)
+    (stream : Symbexp.Proof.t Streamutil.stream) : pair list =
+  stream
+  |> Streamutil.to_list
+  |> List.filter_map (fun (p : Symbexp.Proof.t) ->
+    let key = (p.kernel_name, p.array_name, p.id) in
+    if not (KeySet.mem key baseline_keys) then None
+    else
+      let status =
+        try
+          Phase_timer.measure "genie/co-reach-solve" (fun () ->
+            solve_one ~timeout p)
+        with Z3.Error _ -> Z3.Solver.UNKNOWN
+      in
+      match status with
+      | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN ->
+        Some {
+          kernel_name = p.kernel_name;
+          array_name = p.array_name;
+          id = p.id;
+          proof = p;
+        }
+      | Z3.Solver.UNSATISFIABLE -> None)
+
+(* Build [baseline_keys : KeySet.t] from a [baseline : pair list]. *)
+let keys_of (pairs : pair list) : KeySet.t =
+  List.fold_left (fun acc p -> KeySet.add (key_of p) acc)
+    KeySet.empty pairs
+
 (* Pretty-print a pair set as a sorted list of keys for debug /
    test output. *)
 let keys_to_string (pairs : pair list) : string =
