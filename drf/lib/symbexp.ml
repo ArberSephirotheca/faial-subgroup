@@ -352,6 +352,80 @@ module Proof = struct
         Gen.mode_spec arch;
       ]
 
+  (* Co-reachability variant of [from_code]: builds the two-thread
+     existential without the conflict ([mode_spec]) or same-address
+     ([assign_dim]) constraints. The result asserts
+     [pre ∧ runtime ∧ (∃T1.cond_i) ∧ (∃T2.cond_j) ∧ T1 ≠ T2]
+     — i.e. two distinct threads each reach some access in the
+     fragment, but they need not collide on the same word and need
+     not have a conflicting mode pair. SAT means the kernel's
+     two-thread reachability for this fragment is non-empty; UNSAT
+     means even the underlying co-existence has been trivialised
+     (e.g. [blockDim.x == 1] killed the second thread).
+
+     The [Race] variant — full conflict goal — is what the DRF
+     solver checks. The [Coreach] variant — this one — is what the
+     genie gate checks to detect trivialising clearances.
+
+     Built directly here (rather than as a post-hoc strip on the
+     race goal) because the conjunction's structure isn't easily
+     reversible: [b_and_ex] folds left-associative, so peeling the
+     last two conjuncts off the race form would require pattern-
+     matching on the optimised [bexp] shape. *)
+  let from_code_coreach (_arch : Architecture.t) (locals : Variable.Set.t)
+      (runtime : bexp) (code : Flatacc.Code.t) : bexp =
+    let assign_accesses (t : Task.t) : bexp =
+      code |> Flatacc.Code.to_list
+      |> List.map (Flatacc.CondAccess.add_cond runtime)
+      |> List.mapi (SymAccess.from_cond_access locals t)
+      |> List.map (SymAccess.to_bexp ~assign_index:false t)
+      |> b_or_ex
+    in
+    (* No explicit [thread_distinct] term: [Kernel.apply_arch] folds
+       the arch's [distinct] clause into [k.pre] upstream, which
+       [Phasesplit] then wraps as [Cond (pre, u)] over the kernel's
+       unsynced code. Each [Flatacc.CondAccess.cond] therefore already
+       includes [thread_distinct], and [SymAccess.from_cond_access]
+       projects it per task — so [assign_accesses Task1] and
+       [assign_accesses Task2] each carry a properly-projected
+       distinct constraint without an additional explicit term.
+       Adding one here would re-introduce raw [Other (Var tid.x)]
+       nodes that the [Bv64Gen] encoder cannot represent. *)
+    b_and_ex
+      [
+        assign_accesses Task1;
+        assign_accesses Task2;
+        n_le (Gen.access_id Task1) (Gen.access_id Task2);
+      ]
+
+  let from_flat_coreach (arch : Architecture.t) (proof_id : int)
+      (k : Flatacc.Kernel.t) : t =
+    let locals =
+      Variable.Set.union k.exact_local_variables k.approx_local_variables
+    in
+    let goal = from_code_coreach arch locals k.runtime k.code |> b_and k.pre in
+    let pre_fns = Exp.b_free_names k.pre Variable.Set.empty in
+    let accesses =
+      List.map
+        (fun (a : CondAccess.t) ->
+          let open AccessSummary in
+          let cond_fns = Exp.b_free_names a.cond Variable.Set.empty in
+          let data_fns = Access.free_names a.access Variable.Set.empty in
+          let ctrl_fns = Variable.Set.union pre_fns cond_fns in
+          let all_fns = Variable.Set.union data_fns ctrl_fns in
+          {
+            access = a.access;
+            variables = all_fns;
+            globals = Variable.Set.diff all_fns locals;
+            data_approx = Variable.Set.inter k.approx_local_variables data_fns;
+            control_approx =
+              Variable.Set.inter k.approx_local_variables ctrl_fns;
+          })
+        k.code
+    in
+    make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
+      ~accesses
+
   let from_flat ?(assign_index = true) (arch : Architecture.t) (proof_id : int)
       (k : Flatacc.Kernel.t) : t =
     let locals =
@@ -393,6 +467,10 @@ let add ~tid ~bid : Proof.t Streamutil.stream -> Proof.t Streamutil.stream =
 let translate (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
   Streamutil.mapi (Proof.from_flat arch) stream
+
+let translate_coreach (arch : Architecture.t)
+    (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
+  Streamutil.mapi (Proof.from_flat_coreach arch) stream
 
 let sanity_check (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =

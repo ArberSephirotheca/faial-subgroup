@@ -30,7 +30,15 @@
    The check operates on the parsed protocol; the caller is
    responsible for applying any user [--assume] flags and other
    precondition layering via [prepare_kernel] before calling
-   [check_kernel]. *)
+   [check_kernel].
+
+   Phase 3 note. The Tier 3 pair-level gate in [Co_reach] is the
+   default consumer of "is Φ a legitimate clearance?" The
+   [check_kernel] entry point and the [AccessSet] surface remain
+   for the [--legacy-gate] path, which preserves the Phase 2
+   single-thread shape for one release cycle. New gate callers
+   should use [Co_reach.candidates] / [Co_reach.preserves_subset]
+   rather than [check_kernel] + [AccessSet.subset]. *)
 
 open Stage0
 open Protocols

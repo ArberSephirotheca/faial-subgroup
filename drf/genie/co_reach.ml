@@ -1,0 +1,165 @@
+(* Tier 2/3 reachability: pair-level co-existence of two threads
+   under a kernel's preconditions, derived from the symbexp proof
+   stream.
+
+   A single [Symbexp.Proof.t] encodes one race-query fragment of one
+   kernel — a location/phase slice. The DRF solver evaluates its
+   [goal], which conjoins [pre ∧ assign_T1 ∧ assign_T2 ∧ same_addr ∧
+   mode_spec ∧ id_le]. A SAT goal is a race; UNSAT is DRF for that
+   fragment.
+
+   Co-reachability strips the conflict shape. [Symbexp.translate_coreach]
+   produces a parallel stream where each proof's [goal] is
+   [pre ∧ assign_T1 ∧ assign_T2 ∧ id_le ∧ thread_distinct] — two
+   distinct threads, each reaching some access in the fragment,
+   neither required to collide nor to use a conflicting mode. SAT
+   here means "the two-thread universe for this fragment is
+   non-empty under the precondition"; UNSAT means the precondition
+   killed the co-existence (e.g. [blockDim.x == 1] under a
+   tid-discriminating guard).
+
+   Tier 3 (the per-CEGAR-round gate) compares two pair sets:
+   - [baseline] — pairs that are co-reachable under the kernel's
+     pre alone, before any abductive Φ is added.
+   - [under_phi] — pairs that remain co-reachable after Φ is folded
+     into the kernel's pre.
+
+   The gate accepts when [baseline ⊆ under_phi] keyed by
+   [(kernel_name, array_name, id)]: every baseline race-candidate
+   fragment's two-thread reachability is preserved. If a baseline
+   pair drops out under Φ, Φ trivialised it (the abductive
+   "cleared" the race by making one of the two threads vanish, not
+   by removing the conflict) and the gate rejects.
+
+   The accept-on-Unknown stance matches the existing CEGAR gate:
+   when Z3 returns Unknown on the under-Φ co-reach query, we treat
+   the pair as preserved. Rejecting on Unknown would let an
+   incomplete-solver timeout falsely flag a legitimate clearance. *)
+
+open Stage0
+open Protocols
+open Drf
+
+(* Pair identity. One pair per [Symbexp.Proof.t] in the kernel's
+   stream — the proof's [(kernel_name, array_name, id)] is the
+   natural compound key.
+
+   [proof] carries the co-reach goal (built via
+   [Symbexp.translate_coreach]) so the gate can re-evaluate the
+   same fragment under different preconditions without recomputing
+   the symbexp encoding. *)
+type pair = {
+  kernel_name : string;
+  array_name : string;
+  id : int;
+  proof : Symbexp.Proof.t;
+}
+
+let key_of (p : pair) : string * string * int =
+  (p.kernel_name, p.array_name, p.id)
+
+module Key = struct
+  type t = string * string * int
+  let compare ((kn1, an1, i1) : t) ((kn2, an2, i2) : t) : int =
+    let c = String.compare kn1 kn2 in
+    if c <> 0 then c
+    else
+      let c = String.compare an1 an2 in
+      if c <> 0 then c
+      else Int.compare i1 i2
+end
+
+module KeySet = Set.Make (Key)
+
+(* Tier 2 candidate extraction. Consume a co-reach proof stream,
+   solve each proof for satisfiability, and keep the SAT/Unknown
+   ones as pairs.
+
+   UNSAT proofs are dropped — no co-reachability for that fragment
+   under the pre. Unknown is accepted (matches the CEGAR gate's
+   accept-on-Unknown stance): an Unknown gate result on a fragment
+   is folded into the pair set; if that fragment was in the
+   baseline, the under-Φ subset check still passes; if it wasn't,
+   the under-Φ set gains a conservative entry. Either way, the
+   gate stays permissive.
+
+   Encoder choice: the co-reach goal always contains [Other (Var
+   threadIdx.x)] / [Other (Var threadIdx.y)] / [Other (Var
+   threadIdx.z)] from the [thread_distinct] clause (added through
+   [k.pre] by [Kernel.apply_arch]). The natural-number encoder
+   [IntGen] does not handle [Other] and raises [Not_implemented]
+   on encoding; the BV encoder [Bv64Gen] does. Rather than mirror
+   [Solve_drf.Solution.solve]'s try-IntGen-then-fall-back-to-BV
+   dance, we go straight to BV — the co-reach goal will always
+   trigger the fallback, so the IntGen attempt is dead work.
+
+   The [Z3.Error] catch mirrors [compute_verdict]'s top-level
+   handler: when Z3 exhausts its memory cap (default ~6 GB) the
+   binding raises [Z3.Error]; we propagate by treating the offending
+   proof as a non-candidate (its co-reach status is opaque, so it
+   adds no constraint to the gate). *)
+let solve_one ?(timeout : int option = None) (p : Symbexp.Proof.t)
+    : Z3.Solver.status =
+  let options =
+    [ ("model", "false"); ("proof", "false") ]
+    @ (match timeout with
+       | Some t -> [ ("timeout", string_of_int t) ]
+       | None -> [])
+  in
+  let ctx = Z3.mk_context options in
+  let solver = Z3.Solver.mk_simple_solver ctx in
+  let expr =
+    Gen_z3.Bv64Gen.b_to_expr ctx (Predicates.b_inline p.goal)
+  in
+  Z3.Solver.add solver [ expr ];
+  Z3.Solver.check solver []
+
+let candidates ?(timeout : int option = None) ?(logic : string option = None)
+    (stream : Symbexp.Proof.t Streamutil.stream) : pair list =
+  let _ = logic in
+  stream
+  |> Streamutil.to_list
+  |> List.filter_map (fun (p : Symbexp.Proof.t) ->
+    let status =
+      try
+        Phase_timer.measure "genie/co-reach-solve" (fun () ->
+          solve_one ~timeout p)
+      with Z3.Error _ -> Z3.Solver.UNKNOWN
+    in
+    match status with
+    | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN ->
+      Some {
+        kernel_name = p.kernel_name;
+        array_name = p.array_name;
+        id = p.id;
+        proof = p;
+      }
+    | Z3.Solver.UNSATISFIABLE -> None)
+
+(* Tier 3 gate. Returns [true] when every [baseline] pair is still
+   co-reachable under Φ — i.e. its key is in [under_phi]. Returns
+   [false] when at least one baseline pair drops out under Φ,
+   signalling that Φ trivialised the kernel's two-thread universe
+   for some fragment.
+
+   Keyed on [(kernel_name, array_name, id)]: the proof carries the
+   full bexp but the gate only needs identity, since both [baseline]
+   and [under_phi] were computed under the same arch and same flat-
+   acc plumbing — same proof identities, different precondition
+   sets. *)
+let preserves_subset ~(under_phi : pair list) ~(baseline : pair list) : bool =
+  let under_set =
+    List.fold_left (fun acc p -> KeySet.add (key_of p) acc)
+      KeySet.empty under_phi
+  in
+  List.for_all (fun p -> KeySet.mem (key_of p) under_set) baseline
+
+(* Pretty-print a pair set as a sorted list of keys for debug /
+   test output. *)
+let keys_to_string (pairs : pair list) : string =
+  pairs
+  |> List.map (fun p ->
+    let (kn, an, id) = key_of p in
+    Printf.sprintf "%s:%s#%d" kn an id)
+  |> List.sort String.compare
+  |> String.concat ", "
