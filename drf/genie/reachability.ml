@@ -377,6 +377,58 @@ let any_access_reachable ?(timeout = 0) (k : Kernel.t) : bool =
     | Ok Gen_z3.Solver.Unsat -> false
     | Error _ -> true
 
+(* Incremental variant of [any_access_reachable]. The base goal
+   [pre ∧ runtime ∧ (∨_i path_cond_i)] is added once to a persistent
+   solver; each per-candidate query pushes the candidate bexp, calls
+   [check], pops. Amortises the encoding cost over the candidate
+   pool, which matters when the pool runs into thousands.
+   [None] means the kernel has no accesses, so [any_access_reachable]
+   is trivially false regardless of delta — callers should treat
+   "no slot" as "no candidate trivialises further". *)
+module Any_access_slot = struct
+  type t = {
+    ctx : Z3.context;
+    solver : Z3.Solver.solver;
+  }
+end
+
+let make_any_access_slot ?(timeout = 0) (k : Kernel.t)
+    : Any_access_slot.t option =
+  let runtime =
+    Params.to_bexp (Params.union_left k.global_variables k.local_variables)
+  in
+  let path_conds = walk k.code |> List.map snd in
+  if path_conds = [] then None
+  else
+    let args =
+      if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
+    in
+    let ctx = Z3.mk_context args in
+    let solver = Z3.Solver.mk_solver ctx None in
+    let base_goal =
+      Exp.b_and_ex [ k.pre; runtime; Exp.b_or_ex path_conds ]
+      |> Predicates.b_inline
+    in
+    Z3.Solver.add solver [ Gen_z3.Bv64Gen.b_to_expr ctx base_goal ];
+    Some Any_access_slot.{ ctx; solver }
+
+let any_access_reachable_delta
+    (slot : Any_access_slot.t) (delta : bexp) : bool =
+  let { Any_access_slot.ctx; solver } = slot in
+  Z3.Solver.push solver;
+  Z3.Solver.add solver
+    [ Gen_z3.Bv64Gen.b_to_expr ctx (Predicates.b_inline delta) ];
+  let result =
+    Phase_timer.measure "non-trivial/solve" (fun () ->
+      !z3_call_hook ();
+      Z3.Solver.check solver [])
+  in
+  Z3.Solver.pop solver 1;
+  match result with
+  | Z3.Solver.SATISFIABLE -> true
+  | Z3.Solver.UNSATISFIABLE -> false
+  | Z3.Solver.UNKNOWN -> true
+
 (* Incremental gate. Each kernel keeps a persistent [(ctx, solver)]
    where the base encoding ([kernel.pre + runtime] under
    [prepare_kernel ~assumes:[]]) has been added once and stays in

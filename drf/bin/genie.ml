@@ -558,6 +558,7 @@ let weaken_for_gate
 let abductive_loop
     ?(iter_cap = 32)
     ?(scope_of : (string -> Variable.Set.t option) option)
+    ?(prune_candidate : (string -> Exp.bexp -> bool) option)
     ?(pre_filter : (App.t -> bool) = fun _ -> true)
     ~(use_core_shrink : bool)
     ~(gate_check : 'baseline -> App.t -> bool)
@@ -567,7 +568,9 @@ let abductive_loop
   let kernels = App.only_kernel app app.kernels in
   if kernels = [] then None
   else
-    let session = Abduction.create_for_kernels ?scope_of kernels in
+    let session =
+      Abduction.create_for_kernels ?scope_of ?prune_candidate kernels
+    in
     Stats.set "pool_size" (List.length session.candidates);
     let solve s = Phase_timer.measure "genie/maxsat" (fun () ->
       Stats.incr "maxsat_solves"; Abduction.solve s)
@@ -819,9 +822,39 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
     let scope_of (kn : string) : Variable.Set.t option =
       List.assoc_opt kn scopes
     in
+    (* Drop pool candidates that on their own make [kn]'s access set
+       empty. Including such a clause in any Φ would yield vacuous DRF
+       (the [non_trivial] check at acceptance would reject it), so
+       letting MaxSAT propose them only wastes CEGAR rounds on Φs the
+       gate / non-triviality check will reject anyway.
+
+       Each kernel gets one prepared slot (encoded once) and per-
+       candidate queries push/check/pop on it. Direct
+       [Reachability.any_access_reachable] would re-encode the kernel
+       per candidate; for pools in the thousands that dominates wall
+       time. *)
+    let slots =
+      Phase_timer.measure "genie/prune-prep" (fun () ->
+        List.map (fun (k : Kernel.t) ->
+          let prepared =
+            Reachability.prepare_kernel
+              ~assumes:(App.assumes_of k app)
+              ~assume_dims:app.assume_dims
+              ~params:app.params
+              k
+          in
+          (Kernel.name k,
+           Reachability.make_any_access_slot ?timeout:app.timeout prepared))
+          (App.only_kernel app app.kernels))
+    in
+    let prune_candidate (kn : string) (b : Exp.bexp) : bool =
+      match List.assoc_opt kn slots with
+      | None | Some None -> true
+      | Some (Some slot) -> Reachability.any_access_reachable_delta slot b
+    in
     match Phase_timer.measure "genie/abductive" (fun () ->
-            abductive_loop ~iter_cap ~scope_of ~pre_filter ~use_core_shrink
-              ~gate_check app baseline_pairs)
+            abductive_loop ~iter_cap ~scope_of ~prune_candidate ~pre_filter
+              ~use_core_shrink ~gate_check app baseline_pairs)
     with
     | Some minimal -> drf Source_abductive minimal
     | None ->

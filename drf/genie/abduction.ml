@@ -293,11 +293,15 @@ type t = {
    path condition. *)
 let create_for_kernels
     ?(scope_of : (string -> Variable.Set.t option) option)
+    ?(prune_candidate : (string -> bexp -> bool) option)
     (ks : Kernel.t list) : t =
   Phase_timer.measure "abduction/create" (fun () ->
     let ctx = Z3.mk_context [] in
     let opt = Z3.Optimize.mk_opt ctx in
     let group = Z3.Symbol.mk_string ctx "minimize" in
+    let keep_candidate (kn : string) (b : bexp) : bool =
+      match prune_candidate with None -> true | Some f -> f kn b
+    in
     let candidates =
       ks
       |> List.mapi (fun ki k -> (ki, k))
@@ -308,6 +312,7 @@ let create_for_kernels
           | Some f -> f kn
         in
         build_pool ?scope k
+        |> List.filter (keep_candidate kn)
         |> List.mapi (fun bi b ->
           let sel =
             Z3.Boolean.mk_const_s ctx
