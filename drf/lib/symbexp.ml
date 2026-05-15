@@ -426,6 +426,58 @@ module Proof = struct
     make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
       ~accesses
 
+  (* Single-thread variant of [from_code_coreach]: builds the
+     one-thread existential. The result asserts
+     [pre ∧ runtime ∧ (∃T1.cond_i)] — one thread reaches some access
+     in the fragment. SAT means the fragment has at least one
+     reachable access under the precondition; UNSAT means the
+     precondition killed every access's reachability.
+
+     This is the Tier 1 pre-filter shape for the pair-level gate.
+     SAT of the two-thread co-reach goal implies SAT of this T1-only
+     goal (T1's conjunct is a subset of the co-reach conjunction),
+     so a baseline pair preserved by Φ at Tier 2 is also preserved
+     here; equivalently, UNSAT here implies UNSAT at Tier 2 — i.e.
+     the pre-filter is sound. *)
+  let from_code_t1 (_arch : Architecture.t) (locals : Variable.Set.t)
+      (runtime : bexp) (code : Flatacc.Code.t) : bexp =
+    let assign_accesses (t : Task.t) : bexp =
+      code |> Flatacc.Code.to_list
+      |> List.map (Flatacc.CondAccess.add_cond runtime)
+      |> List.mapi (SymAccess.from_cond_access locals t)
+      |> List.map (SymAccess.to_bexp ~assign_index:false t)
+      |> b_or_ex
+    in
+    assign_accesses Task1
+
+  let from_flat_t1 (arch : Architecture.t) (proof_id : int)
+      (k : Flatacc.Kernel.t) : t =
+    let locals =
+      Variable.Set.union k.exact_local_variables k.approx_local_variables
+    in
+    let goal = from_code_t1 arch locals k.runtime k.code |> b_and k.pre in
+    let pre_fns = Exp.b_free_names k.pre Variable.Set.empty in
+    let accesses =
+      List.map
+        (fun (a : CondAccess.t) ->
+          let open AccessSummary in
+          let cond_fns = Exp.b_free_names a.cond Variable.Set.empty in
+          let data_fns = Access.free_names a.access Variable.Set.empty in
+          let ctrl_fns = Variable.Set.union pre_fns cond_fns in
+          let all_fns = Variable.Set.union data_fns ctrl_fns in
+          {
+            access = a.access;
+            variables = all_fns;
+            globals = Variable.Set.diff all_fns locals;
+            data_approx = Variable.Set.inter k.approx_local_variables data_fns;
+            control_approx =
+              Variable.Set.inter k.approx_local_variables ctrl_fns;
+          })
+        k.code
+    in
+    make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
+      ~accesses
+
   let from_flat ?(assign_index = true) (arch : Architecture.t) (proof_id : int)
       (k : Flatacc.Kernel.t) : t =
     let locals =
@@ -471,6 +523,10 @@ let translate (arch : Architecture.t)
 let translate_coreach (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
   Streamutil.mapi (Proof.from_flat_coreach arch) stream
+
+let translate_t1 (arch : Architecture.t)
+    (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
+  Streamutil.mapi (Proof.from_flat_t1 arch) stream
 
 let sanity_check (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =

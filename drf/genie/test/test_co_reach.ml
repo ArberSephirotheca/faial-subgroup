@@ -532,6 +532,124 @@ let test_apply_arch_adds_thread_distinct_to_pre () =
     "after apply_arch, pre contains Other _ (thread_distinct present)"
     true (bexp_has_other k_arch.pre)
 
+(* T1-only proof stream, mirrors [coreach_proofs] but goes through
+   [Symbexp.translate_t1] for the single-thread variant. *)
+let t1_proofs (k : Kernel.t) : Symbexp.Proof.t list =
+  k
+  |> Kernel.apply_arch arch
+  |> Wellformed.translate
+  |> Streamutil.map Wellformed.Kernel.trim_binders
+  |> Aligned.translate
+  |> Phasesplit.translate
+  |> Locsplit.translate
+  |> Flatacc.translate arch
+  |> Symbexp.translate_t1 arch
+  |> Streamutil.to_list
+
+let array_b : Variable.t = Variable.from_name "B"
+let access_w_arr (arr : Variable.t) (idx : Exp.nexp) : Code.t =
+  Code.Access (Access.write arr [ idx ] None)
+
+(* Regression test: the pad-cuda pattern. A kernel with two arrays:
+   one access guarded by [tid.x == 0 ∧ N > 0] (single-thread-only,
+   never a co-reach pair) and one always-true (race-candidate
+   fragment). The old Tier 1 (baseline = single-thread reach set
+   over every access) rejected any Φ that dropped the
+   single-thread-only access; the new Tier 1 (baseline restricted
+   to pair-relevant fragments) accepts such a Φ.
+
+   Φ here is [N == 0]: it kills the [tid.x == 0 ∧ N > 0] guard's
+   reachability while leaving the always-true access intact. The
+   test exercises:
+
+   1. Baseline pair set contains only the always-true fragment
+      (single-thread A access has no co-reach pair).
+
+   2. Old per-access baseline AccessSet contains both A and B
+      under-baseline (legacy Tier 1 would reject Φ).
+
+   3. New pair-keyed Tier 1 accepts Φ: the only baseline key (B's
+      fragment) remains T1-SAT under Φ.
+
+   Pins the "Tier 1 reject ⇒ Tier 2 reject" pre-filter contract:
+   under the new shape, no Φ that Tier 2 accepts gets rejected by
+   Tier 1. *)
+let test_t1_baseline_restricted_to_pair_relevant () =
+  let n = "N" in
+  let guard_single =
+    Exp.b_and_ex
+      [ eq (var "threadIdx.x") (Exp.Num 0);
+        eq (var "threadIdx.y") (Exp.Num 0);
+        eq (var "threadIdx.z") (Exp.Num 0);
+        Exp.NRel (Gt Signedness.Signed, var n, Exp.Num 0); ]
+  in
+  let body =
+    Code.seq
+      (Code.if_ guard_single (access_w (Exp.Num 0)) Code.Skip)
+      (access_w_arr array_b (var "threadIdx.x"))
+  in
+  let k_baseline =
+    mk_kernel ~globals:[ (n, C_type.int) ]
+      [ ("A", shared_int); ("B", shared_int) ]
+      body
+  in
+  (* Baseline pairs: should include the B fragment only — the A
+     fragment is single-thread-only (tid.x == 0 admits one thread,
+     thread_distinct forces UNSAT for the co-reach pair). *)
+  let baseline_pairs = pairs_of (coreach_proofs k_baseline) in
+  let baseline_array_names =
+    baseline_pairs
+    |> List.map (fun (p : Co_reach.pair) -> p.array_name)
+    |> List.sort_uniq String.compare
+  in
+  Alcotest.(check (list string))
+    "baseline pairs only on B (A is single-thread-only)"
+    [ "B" ] baseline_array_names;
+  (* Apply Φ: [N == 0]. This kills the A access's reachability
+     (tid.x == 0 ∧ N > 0 ∧ N == 0 is UNSAT) but the B access stays
+     reachable (no parameter dependence). *)
+  let phi = eq (var n) (Exp.Num 0) in
+  let k_phi =
+    { k_baseline with pre = Exp.b_and k_baseline.pre phi }
+  in
+  (* The new Tier 1 baseline ([baseline_keys]) only carries the
+     B fragment's key. *)
+  let baseline_keys = Co_reach.keys_of baseline_pairs in
+  let under_phi_t1_proofs = t1_proofs k_phi in
+  let under_phi_t1_keys =
+    Co_reach.t1_keys_restricted ~tag:"test"
+      baseline_keys
+      (Streamutil.from_list under_phi_t1_proofs)
+  in
+  Alcotest.(check bool)
+    "new Tier 1 (pair-restricted): Φ accepted — B fragment T1-SAT"
+    true (Co_reach.KeySet.subset baseline_keys under_phi_t1_keys);
+  (* Sanity: the legacy Tier 1 shape (per-access reach over the
+     full kernel) would have rejected this Φ. We pin this by
+     checking that under Φ the *full* T1 stream (not restricted)
+     loses the A access — i.e. some baseline-T1 SAT key has
+     dropped at the under-Φ T1 stream when not restricted. *)
+  let baseline_t1_proofs = t1_proofs k_baseline in
+  let baseline_t1_all_sat_keys =
+    Co_reach.t1_keys_restricted ~tag:"test"
+      (Co_reach.keys_of (List.map (fun (p : Symbexp.Proof.t) ->
+        Co_reach.{ kernel_name = p.kernel_name; array_name = p.array_name;
+                    id = p.id; proof = p }) baseline_t1_proofs))
+      (Streamutil.from_list baseline_t1_proofs)
+  in
+  let under_phi_t1_all_sat_keys =
+    Co_reach.t1_keys_restricted ~tag:"test"
+      (Co_reach.keys_of (List.map (fun (p : Symbexp.Proof.t) ->
+        Co_reach.{ kernel_name = p.kernel_name; array_name = p.array_name;
+                    id = p.id; proof = p }) under_phi_t1_proofs))
+      (Streamutil.from_list under_phi_t1_proofs)
+  in
+  Alcotest.(check bool)
+    "legacy-shaped Tier 1 (per-access reach) would reject: \
+     some baseline-T1 key drops under Φ"
+    false
+    (Co_reach.KeySet.subset baseline_t1_all_sat_keys under_phi_t1_all_sat_keys)
+
 let tests = [
   ("A. co-reach narrower than single-thread",
     `Quick, test_co_reach_narrower_than_single_thread);
@@ -553,6 +671,8 @@ let tests = [
     `Quick, test_translate_coreach_round_trip_sat);
   ("(7) apply_arch folds thread_distinct into k.pre",
     `Quick, test_apply_arch_adds_thread_distinct_to_pre);
+  ("(8) pad-cuda regression: Tier 1 baseline restricted to pair-relevant",
+    `Quick, test_t1_baseline_restricted_to_pair_relevant);
 ]
 
 let () =

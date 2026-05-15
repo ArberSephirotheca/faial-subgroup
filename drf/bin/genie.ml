@@ -121,6 +121,18 @@ let coreach_stream_of (arch : Architecture.t) (app : App.t)
   |> App.translate arch app
   |> Symbexp.translate_coreach arch
 
+(* Build the single-thread (T1-only) proof stream for one kernel
+   under the current [app] state. Each fragment's goal asserts
+   [pre ∧ runtime ∧ (∃T1 reaches some access)] — the Tier 1
+   pre-filter's shape. Fragment identities ([kernel_name, array_name,
+   id]) line up with [coreach_stream_of] since both run the same
+   [Streamutil.mapi] over the same flat-acc stream. *)
+let t1_stream_of (arch : Architecture.t) (app : App.t)
+    (k : Kernel.t) : Symbexp.Proof.t Streamutil.stream =
+  k
+  |> App.translate arch app
+  |> Symbexp.translate_t1 arch
+
 (* Build [baseline] or [under-Φ] pair sets from an [app]. The
    precondition stack that drives the SAT outcome of each fragment
    is whatever [app] carries: [k.pre] plus [app.assumes] (which
@@ -151,16 +163,62 @@ let coreach_pairs_restricted_of (baseline_keys : Co_reach.KeySet.t)
            ~timeout:app.timeout baseline_keys)
       app.archs)
 
-(* Tier 1 pre-filter: per-access single-thread reach preservation.
-   For each access [a], [Reachability.check_kernel] (Slot-grouped,
-   one Z3 push/check/pop per path-cond equivalence class) asks
-   whether [k.pre ∧ Φ ∧ path_cond(a)] is SAT; the resulting under-Φ
-   reachable set must cover the baseline-reachable set. *)
-let gate_holds_per_access
+(* Per-round under-Φ T1 (single-thread) SAT keys, restricted to
+   baseline keys. The Tier 1 baseline is [baseline_keys] (the set
+   of pair-relevant fragments), and the under-Φ accept condition
+   is "every baseline key remains T1-SAT". *)
+let t1_keys_restricted_of (baseline_keys : Co_reach.KeySet.t)
+    (app : App.t) : Co_reach.KeySet.t =
+  app.kernels |> App.only_kernel app
+  |> List.fold_left (fun acc (k : Kernel.t) ->
+    List.fold_left (fun acc arch ->
+      t1_stream_of arch app k
+      |> Co_reach.t1_keys_restricted ~tag:"tier1"
+           ~timeout:app.timeout baseline_keys
+      |> Co_reach.KeySet.union acc)
+      acc app.archs)
+    Co_reach.KeySet.empty
+
+(* Tier 1 pre-filter (legacy, per-access shape). For each access
+   [a], [Reachability.check_kernel] (Slot-grouped, one Z3
+   push/check/pop per path-cond equivalence class) asks whether
+   [k.pre ∧ Φ ∧ path_cond(a)] is SAT; the resulting under-Φ
+   reachable set must cover the baseline-reachable set.
+
+   Retained for reference. The default Tier 3 driver uses
+   [gate_holds_t1_pairs] instead because the access-set baseline is
+   too strict — a single-thread access (e.g. guarded by
+   [threadIdx.x == 0]) is baseline-reachable but never participates
+   in a co-reach pair, so a Φ that drops it would be rejected here
+   yet accepted by Tier 2, breaking the "Tier 1 reject ⇒ Tier 2
+   reject" pre-filter contract. *)
+let[@warning "-32"] gate_holds_per_access
     (baseline : Reachability.AccessSet.t) (app : App.t) : bool =
   Phase_timer.measure "genie/gate" (fun () ->
     Stats.incr "gate_checks";
     Reachability.AccessSet.subset baseline (access_set_of app))
+
+(* Tier 1 pre-filter (pair-aware). Restricts the single-thread
+   reachability question to fragments that participate in some
+   baseline co-reach pair, so a Φ that drops a baseline-reachable
+   access only matters when that access actually feeds a Tier 2
+   pair. The earlier per-access shape would reject Φ for any
+   baseline-reachable access dropping out — including single-thread
+   accesses guarded by [threadIdx.x == 0] that never form a co-reach
+   pair, breaking the "Tier 1 reject ⇒ Tier 2 reject" pre-filter
+   contract.
+
+   For each baseline pair key, ask "is the fragment's T1-only goal
+   still SAT under Φ?" — i.e. [pre ∧ Φ ∧ (∃T1 reaches some access)].
+   Reject Φ if any baseline key drops out of the T1-SAT set.
+   Cheaper per call than Tier 2: the T1 goal drops the second-thread
+   conjunct and the [id_le] canonicalisation. *)
+let gate_holds_t1_pairs (baseline_keys : Co_reach.KeySet.t)
+    (app : App.t) : bool =
+  Phase_timer.measure "genie/gate" (fun () ->
+    Stats.incr "gate_checks";
+    let under_phi = t1_keys_restricted_of baseline_keys app in
+    Co_reach.KeySet.subset baseline_keys under_phi)
 
 let gate_holds_simple (_baseline : Reachability.AccessSet.t)
     (app : App.t) : bool =
@@ -704,21 +762,24 @@ let compute_verdict_new ~(use_core_shrink : bool)
      hits we expect to collect. *)
   let tier1_cache : bool Tier_cache.t = Tier_cache.create () in
   let tier2_cache : bool Tier_cache.t = Tier_cache.create () in
-  (* Tier 1 baseline: per-kernel under-baseline reachable access set,
-     keyed by [(kernel_name, fragment_id)]. The CEGAR pre-filter
-     asserts [baseline_reachable ⊆ access_set_of(app + Φ)] per round:
-     a Φ that kills the path-condition of any baseline-reachable
-     access also kills that access's contribution to the co-reach
-     pair set, so Tier 1 rejection implies Tier 2 rejection — the
-     filter is sound. *)
-  let baseline_reachable =
-    Phase_timer.measure "genie/baseline-reach"
-      (fun () -> access_set_of app)
-  in
   let baseline_pairs =
     Phase_timer.measure "genie/baseline-coreach"
       (fun () -> coreach_pairs_of app)
   in
+  (* Tier 1 baseline: the pair-relevant fragment keys. Restricting
+     the Tier 1 baseline to fragments that feed some Tier 2 pair
+     preserves the "Tier 1 reject ⇒ Tier 2 reject" pre-filter
+     contract: a baseline pair preserved at Tier 2 has both T1 and
+     T2 conjuncts SAT under Φ, so its T1-only conjunct is also SAT;
+     equivalently, any baseline key whose T1 goal becomes UNSAT
+     under Φ would also drop at Tier 2.
+
+     The earlier baseline ([Reachability.AccessSet] over all kernel
+     accesses) was too strict — a single-thread access guarded by
+     e.g. [threadIdx.x == 0] is reachable but doesn't form a Tier 2
+     pair, so a Φ that drops it would be rejected at Tier 1 yet
+     accepted at Tier 2. *)
+  let baseline_keys = Co_reach.keys_of baseline_pairs in
   (* Wrap each tier predicate with a Φ-keyed cache lookup. Hits skip
      [Phase_timer.measure] / [Stats.incr "gate_checks"] so the
      hit/miss counters drive the cost picture. *)
@@ -727,7 +788,7 @@ let compute_verdict_new ~(use_core_shrink : bool)
     | Some v -> Stats.incr "tier1_gate_hits"; v
     | None ->
       Stats.incr "tier1_gate_misses";
-      let v = gate_holds_per_access baseline_reachable app' in
+      let v = gate_holds_t1_pairs baseline_keys app' in
       Tier_cache.add tier1_cache app'.assumes v;
       v
   in

@@ -224,6 +224,44 @@ let keys_of (pairs : pair list) : KeySet.t =
   List.fold_left (fun acc p -> KeySet.add (key_of p) acc)
     KeySet.empty pairs
 
+(* Tier 1 pre-filter (pair-aware). Given a stream of T1-only proofs
+   ([Symbexp.translate_t1]) and the baseline pair-key set, solve the
+   T1 goal for each proof whose key is in [baseline_keys] and collect
+   the SAT/Unknown keys. The caller compares this to [baseline_keys]
+   itself.
+
+   Sound as a Tier 2 pre-filter: a baseline pair preserved at Tier 2
+   has both T1 and T2 conjuncts SAT under Φ, so its T1-only conjunct
+   is also SAT — i.e. T1-UNSAT implies Tier 2 also drops the pair.
+   The pre-filter therefore never rejects a Φ that Tier 2 would
+   accept, and rejecting at Tier 1 is a witness that Tier 2 would
+   reject too.
+
+   Cheaper than [candidates_restricted]: the T1 goal drops the
+   second-thread conjunct and the [id_le] canonicalisation, so each
+   per-proof solve is over a smaller bexp. *)
+let t1_keys_restricted ?(tag : string = "tier1")
+    ?(timeout : int option = None)
+    (baseline_keys : KeySet.t)
+    (stream : Symbexp.Proof.t Streamutil.stream) : KeySet.t =
+  stream
+  |> Streamutil.to_list
+  |> List.fold_left (fun acc (p : Symbexp.Proof.t) ->
+    let key = (p.kernel_name, p.array_name, p.id) in
+    if not (KeySet.mem key baseline_keys) then acc
+    else
+      let status =
+        try
+          Phase_timer.measure "genie/t1-solve" (fun () ->
+            solve_one ~timeout p)
+        with Z3.Error _ -> Z3.Solver.UNKNOWN
+      in
+      dump_line ~tag p status;
+      match status with
+      | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN -> KeySet.add key acc
+      | Z3.Solver.UNSATISFIABLE -> acc)
+    KeySet.empty
+
 (* Pretty-print a pair set as a sorted list of keys for debug /
    test output. *)
 let keys_to_string (pairs : pair list) : string =
