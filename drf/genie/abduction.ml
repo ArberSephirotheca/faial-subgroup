@@ -100,10 +100,11 @@ let mix_sign (s1 : Signedness.t) (s2 : Signedness.t) : Signedness.t =
   | Signed, Signed -> Signed
 
 (* When [scope] is provided, parameters and dim variables not present
-   in the set are filtered out before pool construction. Currently
-   only used by the per-fragment scoping path (off by default in the
-   genie binary) — passing no [scope] yields the legacy whole-kernel
-   pool. *)
+   in the set are filtered out before pool construction; passing no
+   [scope] yields the unrestricted whole-kernel pool. Used by the
+   genie binary through [create_for_kernels ~scope_of] to limit the
+   pool to each kernel's [Access_partition] parameter universe, and
+   by the dormant per-fragment scoping path [build_pool_tagged]. *)
 let build_pool ?(scope : Variable.Set.t option) (k : Kernel.t) : bexp list =
   let in_scope v =
     match scope with
@@ -284,7 +285,15 @@ type t = {
   candidates : candidate list;
 }
 
-let create_for_kernels (ks : Kernel.t list) : t =
+(* [scope_of], when supplied, returns the [?scope] argument
+   [build_pool] should use for the given kernel. [None] preserves
+   the unscoped pool. The caller derives per-kernel scopes from each
+   kernel's [Access_partition] parameter universe so the abductive
+   pool only ranges over variables that appear in some access's
+   path condition. *)
+let create_for_kernels
+    ?(scope_of : (string -> Variable.Set.t option) option)
+    (ks : Kernel.t list) : t =
   Phase_timer.measure "abduction/create" (fun () ->
     let ctx = Z3.mk_context [] in
     let opt = Z3.Optimize.mk_opt ctx in
@@ -294,7 +303,11 @@ let create_for_kernels (ks : Kernel.t list) : t =
       |> List.mapi (fun ki k -> (ki, k))
       |> List.concat_map (fun (ki, k) ->
         let kn = Kernel.name k in
-        build_pool k
+        let scope = match scope_of with
+          | None -> None
+          | Some f -> f kn
+        in
+        build_pool ?scope k
         |> List.mapi (fun bi b ->
           let sel =
             Z3.Boolean.mk_const_s ctx

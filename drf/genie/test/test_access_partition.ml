@@ -193,6 +193,31 @@ let test_f_parameter_universe () =
     Variable.Set.empty
     (Access_partition.parameter_universe entries_pf)
 
+(* Parameter present only in the access index, not the path condition.
+   The DRF solver reasons about address equality across two threads
+   under the kernel's pre, so an abductive clause like [P == dim] is
+   load-bearing when the index expression involves [P] even though
+   the path condition does not — classifier must surface [P]. *)
+let test_param_in_index_only () =
+  let p = Variable.from_name "P" in
+  let body =
+    Code.if_ (lt (var "threadIdx.x") (var "blockDim.x"))
+      (Code.Access
+         (Access.read array_a
+            [ Exp.n_plus (Exp.Var (Variable.from_name "threadIdx.x"))
+                (Exp.Var p) ]))
+      Code.Skip
+  in
+  let k = mk_kernel ~globals:[ ("P", C_type.int) ] body in
+  match Access_partition.partition k with
+  | [ e ] ->
+    Alcotest.(check bool) "classified parameter-touching"
+      false (is_param_free e);
+    Alcotest.(check bool) "params contains P"
+      true (Variable.Set.mem p (params_of e))
+  | es ->
+    Alcotest.failf "expected 1 entry, got %d" (List.length es)
+
 let tests = [
   ("A. pure built-ins -> parameter-free",   `Quick, test_a_pure_builtins);
   ("B. single param N",                     `Quick, test_b_single_param);
@@ -200,6 +225,7 @@ let tests = [
   ("D. nested guards combine params",       `Quick, test_d_nested_guards);
   ("E. loop bound param contributes",       `Quick, test_e_loop_param_bound);
   ("F. parameter universe + edges",         `Quick, test_f_parameter_universe);
+  ("param appears in index only",           `Quick, test_param_in_index_only);
 ]
 
 let () =

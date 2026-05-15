@@ -410,6 +410,7 @@ let weaken_for_gate
        (CEGIS) and re-solve. *)
 let abductive_loop
     ?(iter_cap = 32)
+    ?(scope_of : (string -> Variable.Set.t option) option)
     ~(use_core_shrink : bool)
     ~(gate_check : Reachability.AccessSet.t -> App.t -> bool)
     (app : App.t)
@@ -418,7 +419,7 @@ let abductive_loop
   let kernels = App.only_kernel app app.kernels in
   if kernels = [] then None
   else
-    let session = Abduction.create_for_kernels kernels in
+    let session = Abduction.create_for_kernels ?scope_of kernels in
     Stats.set "pool_size" (List.length session.candidates);
     let solve s = Phase_timer.measure "genie/maxsat" (fun () ->
       Stats.incr "maxsat_solves"; Abduction.solve s)
@@ -618,8 +619,24 @@ let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
       if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
       else drf Source_baseline []
     else
+      (* Per-kernel abductive scope. [Access_partition.abductive_scope]
+         returns the kernel parameters that can affect any DRF query
+         on this kernel — those mentioned in [k.pre], in any access's
+         path condition, or in any access's index. Pool candidates over
+         variables outside the scope are dropped: they can neither
+         change reachability nor address equality, so no DRF clearance
+         depends on them. *)
+      let scopes =
+        List.map (fun (k : Kernel.t) ->
+          (Kernel.name k, Access_partition.abductive_scope k))
+          (App.only_kernel app app.kernels)
+      in
+      let scope_of (kn : string) : Variable.Set.t option =
+        List.assoc_opt kn scopes
+      in
       match Phase_timer.measure "genie/abductive" (fun () ->
-              abductive_loop ~use_core_shrink ~gate_check app baseline_reachable)
+              abductive_loop ~scope_of ~use_core_shrink ~gate_check
+                app baseline_reachable)
       with
       | Some minimal -> drf Source_abductive minimal
       | None ->
