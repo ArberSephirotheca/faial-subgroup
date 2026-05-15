@@ -747,9 +747,10 @@ module Kernel = struct
          (KernelAttr.to_string k.attribute
          ^ " " ^ k.name ^ " " ^ tps ^ "("
          ^ list_to_s Param.to_string k.params
-         ^ ")"));
+         ^ ") {"));
+      Block (Stmt.to_s k.code);
+      Line "}";
     ]
-    @ Stmt.to_s k.code
 end
 
 module Def = struct

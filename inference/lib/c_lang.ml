@@ -2789,9 +2789,10 @@ module Kernel = struct
         (KernelAttr.to_string k.attribute
         ^ " " ^ k.name ^ targs ^ " " ^ tps ^ "("
         ^ list_to_s Param.to_string k.params
-        ^ ")");
+        ^ ") {");
+      Block (Stmt.to_s k.code);
+      Line "}";
     ]
-    @ Stmt.to_s k.code
 
   let wrap_error (msg : string) (j : Yojson.Basic.t) :
       'a j_result -> 'a j_result = function
@@ -3010,7 +3011,7 @@ module LaunchParam = struct
     in
     let host =
       match lp.host_function with
-      | Some h -> " in " ^ Variable.name h.name
+      | Some h -> " from " ^ Variable.name h.name
       | None -> ""
     in
     let pc =
@@ -3022,12 +3023,23 @@ module LaunchParam = struct
       if lp.const_bindings = [] then ""
       else " where " ^ list_to_s ConstBinding.to_string lp.const_bindings
     in
+    let cfg =
+      [
+        "gridDim=" ^ Expr.to_string lp.grid;
+        "blockDim=" ^ Expr.to_string lp.block;
+      ]
+      @ (let s = Expr.to_string lp.shared_mem in
+         if s = "0" then [] else [ "sharedMem=" ^ s ])
+      @ (let s = Expr.to_string lp.stream in
+         if s = "0" then [] else [ "stream=" ^ s ])
+    in
     [
       Indent.Line
-        ("<<<launch>>> "
-        ^ Variable.name lp.kernel.name
-        ^ targs ^ host ^ "(" ^ list_to_s Expr.to_string lp.args ^ ")"
-        ^ pc ^ cb);
+        (Variable.name lp.kernel.name
+        ^ targs
+        ^ "<<<" ^ String.concat ", " cfg ^ ">>>"
+        ^ "(" ^ list_to_s Expr.to_string lp.args ^ ")"
+        ^ host ^ pc ^ cb);
     ]
 
   (* Free variables referenced anywhere in the launch's expression

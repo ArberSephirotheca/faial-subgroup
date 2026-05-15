@@ -39,11 +39,14 @@ let is_stdlib (loc : Location.t) : bool =
     | None -> false
     | Some d -> Fpath.is_prefix d (Fpath.v f)
 
-let analyze (verbose : bool) (j : Yojson.Basic.t) :
+let analyze (verbose : bool) (assume_launch : bool) (j : Yojson.Basic.t) :
     C_lang.Program.t * D_lang.Program.t * Imp.Kernel.t list =
   match C_lang.Program.parse j with
   | Ok k1 ->
-      let k2 = D_lang.rewrite_program k1 in
+      let synth =
+        if assume_launch then Synthesise_launches.rewrite_program else Fun.id
+      in
+      let k2 = k1 |> D_lang.rewrite_program |> synth in
       let k3 =
         if verbose then D_to_imp.Default.parse_program k2
         else D_to_imp.Silent.parse_program k2
@@ -111,22 +114,26 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
   print_endline (Yojson.Basic.pretty_to_string (`List l))
 
 let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
-    (only_global : bool) (show_stdlib : bool) (includes : string list)
-    (macros : string list) : unit =
+    (only_global : bool) (show_stdlib : bool) (assume_launch : bool)
+    (includes : string list) (macros : string list) : unit =
   let j =
-    Cu_to_json.cu_to_json ~ignore_fail:true ~includes ~macros fname
+    Cu_to_json.cu_to_json ~ignore_fail:true ~launch_params:true ~includes
+      ~macros fname
   in
-  let k1, k2, k3 = analyze verbose j in
+  let k1, k2, k3 = analyze verbose assume_launch j in
   let keep_loc (loc : Location.t) : bool = show_stdlib || not (is_stdlib loc) in
-  (* Names of every C_lang kernel that survives the stdlib filter,
-     used to drive the same cut on D_lang and Imp stages (neither
-     carries a [location] on its [Kernel.t]). *)
-  let kept_kernel_names : StringSet.t =
+  (* Conservative drop list for the D_lang and Imp stages, which carry
+     no [location] on their [Kernel.t]: the names of every C_lang
+     kernel that the stdlib filter would reject. Anything not on this
+     list — user kernels, but also synth kernels emitted by
+     [Synthesise_launches] under [--assume-launch] — is kept. *)
+  let stdlib_kernel_names : StringSet.t =
     k1
     |> List.fold_left
          (fun acc d ->
            match d with
-           | C_lang.Def.Kernel k when keep_loc (C_lang.Kernel.location k) ->
+           | C_lang.Def.Kernel k when not (keep_loc (C_lang.Kernel.location k))
+             ->
                StringSet.add k.name acc
            | _ -> acc)
          StringSet.empty
@@ -142,7 +149,7 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
     match d with
     | Kernel k ->
         ((not only_global) || Kernel.is_global k)
-        && StringSet.mem k.name kept_kernel_names
+        && not (StringSet.mem k.name stdlib_kernel_names)
     | Declaration d ->
         (not only_global) && keep_loc (Variable.location (Decl.var d))
     | Typedef d -> (not only_global) && keep_loc (Typedef.location d)
@@ -155,7 +162,7 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
     k3
     |> List.filter (fun k ->
         ((not only_global) || Imp.Kernel.is_global k)
-        && StringSet.mem k.Imp.Kernel.name kept_kernel_names)
+        && not (StringSet.mem k.Imp.Kernel.name stdlib_kernel_names))
   in
   if silent then ()
   else (
@@ -199,6 +206,24 @@ let show_stdlib =
   in
   Arg.(value & flag & info [ "show-stdlib" ] ~doc)
 
+let assume_launch =
+  let on_doc =
+    "Synthesise a pseudo-kernel from each <<<...>>> launch site so the \
+     launch arguments and grid/block configuration are inlined into the \
+     kernel body (default)."
+  in
+  let off_doc =
+    "Skip launch-site synthesis. Kernel parameters remain free variables \
+     in the Imp stage even when the launch hands them literal values."
+  in
+  Arg.(
+    value
+    & vflag true
+        [
+          (true, info [ "assume-launch" ] ~doc:on_doc);
+          (false, info [ "no-assume-launch" ] ~doc:off_doc);
+        ])
+
 let includes =
   let doc =
     "Add the specified directory to the search path for include files."
@@ -214,7 +239,7 @@ let macros =
 let main_t =
   Term.(
     const main $ get_fname $ silent $ json $ verbose $ only_global
-    $ show_stdlib $ includes $ macros)
+    $ show_stdlib $ assume_launch $ includes $ macros)
 
 let info =
   let doc = "Print the C-AST" in
