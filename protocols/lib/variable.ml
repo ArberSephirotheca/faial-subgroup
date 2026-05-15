@@ -109,5 +109,18 @@ let launch_config_set : Set.t = Set.of_list launch_config_list
 
 let is_launch_config (v : t) : bool = Set.mem v launch_config_set
 
+(* Thread-divergent indices — the three [threadIdx.*] and three
+   [blockIdx.*] axes. These are the only launch-config built-ins
+   whose value differs across threads in a given launch; the dim
+   built-ins ([blockDim.*], [gridDim.*]) are uniform per launch and
+   are therefore thread-invariant. A predicate that constrains a
+   thread-index variable shrinks the active thread set; a predicate
+   that constrains a dim built-in or a kernel parameter does not. *)
+let thread_index_list : t list = tid_list @ bid_list
+
+let thread_index_set : Set.t = Set.of_list thread_index_list
+
+let is_thread_index (v : t) : bool = Set.mem v thread_index_set
+
 let contains_tids (vs : Set.t) : bool =
   Set.mem tid_x vs || Set.mem tid_y vs || Set.mem tid_z vs

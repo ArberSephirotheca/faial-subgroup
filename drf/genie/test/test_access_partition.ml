@@ -218,6 +218,26 @@ let test_param_in_index_only () =
   | es ->
     Alcotest.failf "expected 1 entry, got %d" (List.length es)
 
+(* Pins [Variable.is_thread_index] on the canonical six thread-
+   divergent built-ins and on three negative cases (a dim built-in,
+   a grid-dim built-in, and a freshly-named kernel parameter). The
+   predicate is the semantic core of the thread-invariance filter
+   applied to [Access_partition.abductive_scope]: pin its contract
+   here so a future rename or mis-spelling fails loudly. *)
+let test_is_thread_index () =
+  let check name expected v =
+    Alcotest.(check bool) name expected (Variable.is_thread_index v)
+  in
+  check "tid_x"  true  Variable.tid_x;
+  check "tid_y"  true  Variable.tid_y;
+  check "tid_z"  true  Variable.tid_z;
+  check "bid_x"  true  Variable.bid_x;
+  check "bid_y"  true  Variable.bid_y;
+  check "bid_z"  true  Variable.bid_z;
+  check "bdim_x" false Variable.bdim_x;
+  check "gdim_z" false Variable.gdim_z;
+  check "N"      false (Variable.from_name "N")
+
 let tests = [
   ("A. pure built-ins -> parameter-free",   `Quick, test_a_pure_builtins);
   ("B. single param N",                     `Quick, test_b_single_param);
@@ -226,6 +246,8 @@ let tests = [
   ("E. loop bound param contributes",       `Quick, test_e_loop_param_bound);
   ("F. parameter universe + edges",         `Quick, test_f_parameter_universe);
   ("param appears in index only",           `Quick, test_param_in_index_only);
+  ("Variable.is_thread_index pins six tids/bids",
+    `Quick, test_is_thread_index);
 ]
 
 let () =
