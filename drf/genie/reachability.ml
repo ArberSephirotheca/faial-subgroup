@@ -13,9 +13,19 @@
    reachability is a single-thread question). [runtime] is the
    kernel's parameter typing.
 
-   SAT (with model) = the access is reachable.
-   UNSAT            = the precondition admits no thread state that
-                      reaches this access.
+   SAT     = the access is reachable.
+   UNSAT   = the precondition admits no thread state that reaches
+             this access.
+   UNKNOWN = the solver gave up; we accept (treat as reachable) to
+             match the CEGAR gate's accept-on-Unknown stance.
+
+   [check_kernel] amortises queries two ways. First, accesses whose
+   path condition and index touch no kernel parameter are classified
+   parameter-free and accepted up-front without any Z3 call —
+   [--assume] cannot influence their reachability. Second, the
+   remaining parameter-touching accesses are grouped by syntactic
+   path-condition equivalence, and one persistent [(context,
+   solver)] is reused across the per-class queries via [push]/[pop].
 
    The check operates on the parsed protocol; the caller is
    responsible for applying any user [--assume] flags and other
@@ -57,24 +67,14 @@ module AccessSet = Set.Make (AccessId)
 
 module Status = struct
   type t =
-    | Reachable of Z3.Model.model
+    | Reachable
     | Unreachable
     | Unknown of string
 
   let to_string : t -> string = function
-    | Reachable _ -> "reachable"
+    | Reachable -> "reachable"
     | Unreachable -> "unreachable"
     | Unknown msg -> "unknown(" ^ msg ^ ")"
-end
-
-module Witness = struct
-  type t = {
-    id : AccessId.t;
-    access : Access.t;
-    model : Z3.Model.model;
-  }
-
-  let location (w : t) : Location.t = w.id.location
 end
 
 type entry = {
@@ -82,6 +82,12 @@ type entry = {
   access : Access.t;
   status : Status.t;
 }
+
+(* Test hook fired once per Z3 satisfiability query [check_kernel]
+   issues. The default is a no-op; tests swap in a counting closure
+   to assert the equivalence-class dedup actually collapses queries
+   (one Z3 call per path-condition class, not one per access). *)
+let z3_call_hook : (unit -> unit) ref = ref (fun () -> ())
 
 (* Apply the same precondition layering App.translate's "map" phase
    does, minus the [apply_arch] distinct clause. Result: a protocol
@@ -163,29 +169,143 @@ let walk (code : Code.t) : (Access.t * bexp) list =
   in
   aux (Bool true) [] code |> List.rev
 
-let check_kernel ?(timeout = 0) (k : Kernel.t) : entry list =
+(* Group [walk]'s output by path-condition syntactic equivalence.
+   Accesses sharing a [path_cond] (under [Exp.b_compare]) form one
+   class; reachability is identical across the class so a single Z3
+   query covers every member.
+
+   The accumulator preserves walk order: each access keeps its
+   original [access_index], and within a class the indices appear in
+   the order [walk] emitted them. *)
+let group_by_path_cond
+    (entries : (int * Access.t * bexp) list)
+    : (bexp * (int * Access.t) list) list =
+  let cmp_pc (a, _) (b, _) = Exp.b_compare a b in
+  entries
+  |> List.map (fun (i, acc, pc) -> (pc, (i, acc)))
+  |> List.stable_sort cmp_pc
+  |> List.fold_left (fun acc (pc, ia) ->
+    match acc with
+    | (pc', members) :: rest when Exp.b_compare pc' pc = 0 ->
+      (pc', ia :: members) :: rest
+    | _ -> (pc, [ ia ]) :: acc)
+    []
+  |> List.rev_map (fun (pc, members) -> (pc, List.rev members))
+
+(* Build a Z3 [(context, solver)] over [k.pre ∧ runtime] for the
+   per-kernel slot. [k] is expected to be already prepared (the
+   caller has applied [prepare_kernel]); we encode the kernel-wide
+   precondition once and reuse it across the per-class delta
+   queries via [push]/[pop]. *)
+let make_check_slot ~(timeout : int) (k : Kernel.t)
+    : Z3.context * Z3.Solver.solver =
   let runtime =
     Params.to_bexp (Params.union_left k.global_variables k.local_variables)
   in
-  walk k.code
-  |> List.mapi (fun i (access, path_cond) ->
-    let goal = b_and_ex [ k.pre; runtime; path_cond ] in
-    let goal = Predicates.b_inline goal in
-    let status : Status.t =
-      match Gen_z3.Bv64Gen.solve ~timeout goal with
-      | Ok (Gen_z3.Solver.Sat m) -> Reachable m
-      | Ok Gen_z3.Solver.Unsat -> Unreachable
-      | Error msg -> Unknown msg
+  let base_goal = Exp.b_and k.pre runtime |> Predicates.b_inline in
+  let args =
+    if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
+  in
+  let ctx = Z3.mk_context args in
+  let solver = Z3.Solver.mk_solver ctx None in
+  Z3.Solver.add solver [ Gen_z3.Bv64Gen.b_to_expr ctx base_goal ];
+  (ctx, solver)
+
+let check_kernel ?(timeout = 0) (k : Kernel.t) : entry list =
+  let walked = walk k.code |> List.mapi (fun i (a, pc) -> (i, a, pc)) in
+  let mk_id (i : int) (access : Access.t) : AccessId.t =
+    {
+      kernel_name = k.name;
+      array_name = Variable.name (Access.array access);
+      access_index = i;
+      location = Access.location access;
+    }
+  in
+  (* Partition accesses by parameter-touching: parameter-free entries
+     have reachability that no [--assume] can change, so we accept
+     them up-front (matching the CEGAR gate's accept-on-Unknown
+     stance) and don't ask Z3 about them. Only parameter-touching
+     entries reach the equivalence-class query loop.
+
+     The classification mirrors [Access_partition.classify] (path
+     condition plus access index, intersected with the kernel's
+     parameter set minus [launch_config_set]). Inlined here rather
+     than calling into [Access_partition] because that module
+     already depends on [Reachability.walk]; pulling the symbol back
+     would create a cycle. *)
+  let kernel_params =
+    Variable.Set.union
+      (Params.to_set k.global_variables)
+      (Params.to_set k.local_variables)
+    |> (fun s -> Variable.Set.diff s Variable.launch_config_set)
+  in
+  let is_parameter_touching (access : Access.t) (path_cond : bexp) : bool =
+    let fvs =
+      Exp.b_free_names path_cond Variable.Set.empty
+      |> Access.free_names access
     in
-    let id : AccessId.t =
-      {
-        kernel_name = k.name;
-        array_name = Variable.name (Access.array access);
-        access_index = i;
-        location = Access.location access;
-      }
-    in
-    { id; access; status })
+    not (Variable.Set.is_empty (Variable.Set.inter fvs kernel_params))
+  in
+  let parameter_free, parameter_touching =
+    List.partition_map (fun (i, access, pc) ->
+      if is_parameter_touching access pc
+      then Right (i, access, pc)
+      else Left (i, access))
+      walked
+  in
+  let pf_entries =
+    List.map (fun (i, access) ->
+      { id = mk_id i access; access; status = Status.Reachable })
+      parameter_free
+  in
+  let pt_entries =
+    if parameter_touching = [] then []
+    else
+      let ctx, solver = make_check_slot ~timeout k in
+      (* Best-effort solver disposal at the end of the per-kernel
+         scope. The OCaml Z3 binding reclaims the context via GC; the
+         explicit [reset] discards the accumulated assertions and
+         per-class learned clauses so we don't keep them rooted past
+         the kernel's lifetime. *)
+      Fun.protect
+        ~finally:(fun () -> Z3.Solver.reset solver)
+        (fun () ->
+          let classes = group_by_path_cond parameter_touching in
+          List.concat_map (fun (path_cond, members) ->
+            !z3_call_hook ();
+            let delta = Predicates.b_inline path_cond in
+            Z3.Solver.push solver;
+            Z3.Solver.add solver [ Gen_z3.Bv64Gen.b_to_expr ctx delta ];
+            let result =
+              Phase_timer.measure "gate/solve" (fun () ->
+                Z3.Solver.check solver [])
+            in
+            Z3.Solver.pop solver 1;
+            let status : Status.t =
+              match result with
+              | Z3.Solver.SATISFIABLE -> Reachable
+              | Z3.Solver.UNSATISFIABLE -> Unreachable
+              | Z3.Solver.UNKNOWN ->
+                Unknown (Z3.Solver.get_reason_unknown solver)
+            in
+            (* [Unknown] is propagated raw and folded into
+               [reachable_set] below: the CEGAR gate downstream is
+               the load-bearing consumer of that set, and it treats
+               "could still race" as the conservative default.
+               Rejecting on Unknown here would shrink [reachable_set]
+               on a timeout / incomplete-solver result and could
+               falsely clear an abductive candidate that drops a race
+               access we couldn't prove reachable. *)
+            List.map (fun (i, access) ->
+              { id = mk_id i access; access; status })
+              members)
+            classes)
+  in
+  (* Reassemble in original walk order so [access_index] indexing is
+     preserved and JSON output is stable across builds. *)
+  pf_entries @ pt_entries
+  |> List.sort (fun a b ->
+    Int.compare a.id.access_index b.id.access_index)
 
 (* Tri-state result of the [k.pre ∧ runtime] gate query. Callers
    choose the Unknown policy explicitly: the CEGAR gate stays
@@ -320,12 +440,7 @@ let preconditions_satisfiable_delta
 let reachable_set (entries : entry list) : AccessSet.t =
   entries
   |> List.filter_map (fun e ->
-    match e.status with Reachable _ -> Some e.id | _ -> None)
-  |> AccessSet.of_list
-
-let witnesses (entries : entry list) : Witness.t list =
-  entries
-  |> List.filter_map (fun e ->
     match e.status with
-    | Reachable m -> Some Witness.{ id = e.id; access = e.access; model = m }
-    | _ -> None)
+    | Reachable | Unknown _ -> Some e.id
+    | Unreachable -> None)
+  |> AccessSet.of_list
