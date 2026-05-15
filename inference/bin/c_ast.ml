@@ -1,7 +1,43 @@
 open Stage0
+open Protocols
 open Inference
 open Queries
 module Decl = C_lang.Decl
+module StringSet = Set.Make (String)
+
+(* Locate the c-to-json stdlib directory by PATH-searching for the
+   [cu-to-json] binary without resolving its symlink. The install
+   layout puts cu-to-json at [$PREFIX/bin/cu-to-json] and its bundled
+   headers at [$PREFIX/share/c-to-json/include]; [dirname dirname] of
+   the PATH hit yields $PREFIX. We deliberately avoid
+   [Sys.executable_name]: on Linux the OCaml runtime initialises it
+   from [/proc/self/exe], which resolves through any symlink in
+   [$PREFIX/bin] and would leak the dune build prefix when c-ast is
+   reached through one. *)
+let stdlib_dir : Fpath.t option =
+  let path = try Sys.getenv "PATH" with Not_found -> "" in
+  String.split_on_char ':' path
+  |> List.find_map (fun d ->
+      if d = "" then None
+      else
+        let cand = Fpath.append (Fpath.v d) (Fpath.v "cu-to-json") in
+        if Files.exists cand then Some cand else None)
+  |> Option.map (fun p ->
+      let bin_dir = Fpath.parent p in
+      let prefix = Fpath.parent bin_dir in
+      Fpath.append prefix (Files.from_string "share/c-to-json/include"))
+
+(* A Def is part of the c-to-json stdlib when its source filename
+   sits under [stdlib_dir], or when it has no source location at all
+   (clang's compiler builtins like [__int128_t] emit decls with an
+   empty filename). *)
+let is_stdlib (loc : Location.t) : bool =
+  let f = Location.filename loc in
+  if f = "" then true
+  else
+    match stdlib_dir with
+    | None -> false
+    | Some d -> Fpath.is_prefix d (Fpath.v f)
 
 let analyze (verbose : bool) (j : Yojson.Basic.t) :
     C_lang.Program.t * D_lang.Program.t * Imp.Kernel.t list =
@@ -75,28 +111,51 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
   print_endline (Yojson.Basic.pretty_to_string (`List l))
 
 let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
-    (only_global : bool) (includes : string list) (macros : string list) : unit =
+    (only_global : bool) (show_stdlib : bool) (includes : string list)
+    (macros : string list) : unit =
   let j =
     Cu_to_json.cu_to_json ~ignore_fail:true ~includes ~macros fname
   in
   let k1, k2, k3 = analyze verbose j in
-
-  let k1_filtered =
-    C_lang.Program.filter
-      (function
-        | Kernel k -> (not only_global) || C_lang.Kernel.is_global k
-        | _ -> not only_global)
-      k1
+  let keep_loc (loc : Location.t) : bool = show_stdlib || not (is_stdlib loc) in
+  (* Names of every C_lang kernel that survives the stdlib filter,
+     used to drive the same cut on D_lang and Imp stages (neither
+     carries a [location] on its [Kernel.t]). *)
+  let kept_kernel_names : StringSet.t =
+    k1
+    |> List.fold_left
+         (fun acc d ->
+           match d with
+           | C_lang.Def.Kernel k when keep_loc (C_lang.Kernel.location k) ->
+               StringSet.add k.name acc
+           | _ -> acc)
+         StringSet.empty
   in
-  let k2_filtered =
-    D_lang.Program.filter
-      (function
-        | Kernel k -> (not only_global) || D_lang.Kernel.is_global k
-        | _ -> not only_global)
-      k2
+  let c_lang_keep (d : C_lang.Def.t) : bool =
+    let open C_lang in
+    (match d with Def.Kernel k -> (not only_global) || Kernel.is_global k
+     | _ -> not only_global)
+    && keep_loc (C_lang.Def.location d)
   in
+  let d_lang_keep (d : D_lang.Def.t) : bool =
+    let open D_lang in
+    match d with
+    | Kernel k ->
+        ((not only_global) || Kernel.is_global k)
+        && StringSet.mem k.name kept_kernel_names
+    | Declaration d ->
+        (not only_global) && keep_loc (Variable.location (Decl.var d))
+    | Typedef d -> (not only_global) && keep_loc (Typedef.location d)
+    | Enum e -> (not only_global) && keep_loc (Imp.Enum.location e)
+    | LaunchParam lp -> (not only_global) && keep_loc lp.loc
+  in
+  let k1_filtered = C_lang.Program.filter c_lang_keep k1 in
+  let k2_filtered = D_lang.Program.filter d_lang_keep k2 in
   let k3_filtered =
-    if only_global then List.filter Imp.Kernel.is_global k3 else k3
+    k3
+    |> List.filter (fun k ->
+        ((not only_global) || Imp.Kernel.is_global k)
+        && StringSet.mem k.Imp.Kernel.name kept_kernel_names)
   in
   if silent then ()
   else (
@@ -132,6 +191,14 @@ let only_global =
   let doc = "Only print __global__ kernels" in
   Arg.(value & flag & info [ "only-global" ] ~doc)
 
+let show_stdlib =
+  let doc =
+    "Include the c-to-json stdlib (cuda.h, stdio.h, iostream, \
+     compiler-builtin typedefs, etc.). By default these are hidden so \
+     only user-authored declarations remain."
+  in
+  Arg.(value & flag & info [ "show-stdlib" ] ~doc)
+
 let includes =
   let doc =
     "Add the specified directory to the search path for include files."
@@ -146,8 +213,8 @@ let macros =
 
 let main_t =
   Term.(
-    const main $ get_fname $ silent $ json $ verbose $ only_global $ includes
-    $ macros)
+    const main $ get_fname $ silent $ json $ verbose $ only_global
+    $ show_stdlib $ includes $ macros)
 
 let info =
   let doc = "Print the C-AST" in

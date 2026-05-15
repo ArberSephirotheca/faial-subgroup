@@ -1864,6 +1864,7 @@ module Decl : sig
   val matches : (C_type.t -> bool) -> t -> bool
   val var : t -> Variable.t
   val ty : t -> J_type.t
+  val location : t -> Location.t
   val to_s : t -> Indent.t list
   val parse : Yojson.Basic.t -> t option j_result
 end = struct
@@ -1881,6 +1882,7 @@ end = struct
   let attrs (x : t) : string list = x.attrs
   let var (x : t) : Variable.t = x.var
   let ty (x : t) : J_type.t = x.ty
+  let location (x : t) : Location.t = Variable.location x.var
   let matches pred (x : t) = J_type.matches pred x.ty
   let is_shared (x : t) : bool = List.mem c_attr_shared x.attrs
 
@@ -2725,10 +2727,11 @@ module Kernel = struct
     template_args : TemplateArgument.t list;
     specialization_kind : Specialization_kind.t option;
     primary_template_name : string option;
+    location : Location.t;
   }
 
   let make ~ty ~name ~code ~type_params ~params ~attribute
-      ~template_args ~specialization_kind ~primary_template_name =
+      ~template_args ~specialization_kind ~primary_template_name ~location =
     {
       name;
       ty;
@@ -2739,6 +2742,7 @@ module Kernel = struct
       template_args;
       specialization_kind;
       primary_template_name;
+      location;
     }
 
   let name (x : t) : string = x.name
@@ -2746,6 +2750,7 @@ module Kernel = struct
   let type_params (x : t) : Ty_param.t list = x.type_params
   let attribute (x : t) : KernelAttr.t = x.attribute
   let template_args (x : t) : TemplateArgument.t list = x.template_args
+  let location (x : t) : Location.t = x.location
 
   let specialization_kind (x : t) : Specialization_kind.t option =
     x.specialization_kind
@@ -2836,9 +2841,14 @@ module Kernel = struct
            with_field "name" cast_string po)
          o
      in
+     let location =
+       with_field "range" parse_location o
+       |> Result.value ~default:Location.empty
+     in
      Ok
        (make ~ty ~name ~code:body ~params:ps ~type_params ~attribute:m
-          ~template_args ~specialization_kind ~primary_template_name))
+          ~template_args ~specialization_kind ~primary_template_name
+          ~location))
     |> wrap_error "Kernel" j
 end
 
@@ -2990,6 +3000,8 @@ module LaunchParam = struct
        })
     |> Rjson.add_reason "LaunchParam" j
 
+  let location (lp : t) : Location.t = lp.loc
+
   let to_s (lp : t) : Indent.t list =
     let targs =
       if lp.template_args <> [] then
@@ -3094,6 +3106,13 @@ module Def = struct
     | Typedef d -> Typedef.to_s d
     | Enum e -> Imp.Enum.to_s e
     | LaunchParam lp -> LaunchParam.to_s lp
+
+  let location : t -> Location.t = function
+    | Declaration d -> Decl.location d
+    | Kernel k -> Kernel.location k
+    | Typedef d -> Typedef.location d
+    | Enum e -> Imp.Enum.location e
+    | LaunchParam lp -> LaunchParam.location lp
 
   (* Function that checks if a variable is of type array and is being used *)
   let has_array_type (j : Yojson.Basic.t) : bool =
@@ -3319,6 +3338,10 @@ module Def = struct
     | "TypedefDecl" | "TypeAliasDecl" -> (
         let* name = with_field "name" cast_string o in
         let* ty = get_field "type" o |> Result.map J_type.from_json in
+        let location =
+          with_field "range" parse_location o
+          |> Result.value ~default:Location.empty
+        in
         (* Prefer the desugared form so aliases like
            [using barrier_t = cuda::barrier<...>] resolve all the way. *)
         let ty = J_type.from_c_type (J_type.to_desugared_c_type ty) in
@@ -3327,7 +3350,7 @@ module Def = struct
             if
               C_type.is_struct ty || C_type.is_array ty || C_type.is_function ty
             then Ok []
-            else Ok [ Typedef { name; ty } ]
+            else Ok [ Typedef { name; ty; location } ]
         | Error _ -> Ok [])
     | "EnumDecl" ->
         let* e = parse_enum j in
