@@ -747,7 +747,7 @@ let usage_constrained_kernel
    [baseline_pairs] means no fragment had a SAT co-reach goal — no
    two-thread universe exists under the baseline — and the kernel
    is vacuously DRF. *)
-let compute_verdict_new ~(use_core_shrink : bool)
+let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
     ~(usage_pins : per_kernel_extras)
     (app : App.t) : verdict =
   let drf source clauses =
@@ -820,8 +820,8 @@ let compute_verdict_new ~(use_core_shrink : bool)
       List.assoc_opt kn scopes
     in
     match Phase_timer.measure "genie/abductive" (fun () ->
-            abductive_loop ~scope_of ~pre_filter ~use_core_shrink ~gate_check
-              app baseline_pairs)
+            abductive_loop ~iter_cap ~scope_of ~pre_filter ~use_core_shrink
+              ~gate_check app baseline_pairs)
     with
     | Some minimal -> drf Source_abductive minimal
     | None ->
@@ -853,8 +853,8 @@ let compute_verdict_new ~(use_core_shrink : bool)
 (* Legacy [AccessSet]-based gate path. Retained behind [--legacy-gate]
    for one release cycle so a kernel whose verdict regresses unexpectedly
    under the Tier 3 gate can be re-run with the previous semantics. *)
-let compute_verdict_legacy ~(use_core_shrink : bool) ~(cached_gate : bool)
-    ~(usage_pins : per_kernel_extras)
+let compute_verdict_legacy ~(use_core_shrink : bool) ~(iter_cap : int)
+    ~(cached_gate : bool) ~(usage_pins : per_kernel_extras)
     (app : App.t) : verdict =
   let drf source clauses =
     Drf { source; assumes = merge_extras usage_pins clauses }
@@ -887,7 +887,7 @@ let compute_verdict_legacy ~(use_core_shrink : bool) ~(cached_gate : bool)
       List.assoc_opt kn scopes
     in
     match Phase_timer.measure "genie/abductive" (fun () ->
-            abductive_loop ~scope_of ~use_core_shrink ~gate_check
+            abductive_loop ~iter_cap ~scope_of ~use_core_shrink ~gate_check
               app baseline_reachable)
     with
     | Some minimal -> drf Source_abductive minimal
@@ -916,8 +916,9 @@ let compute_verdict_legacy ~(use_core_shrink : bool) ~(cached_gate : bool)
           then drf Source_blanket minimal
           else Racy)
 
-let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
-    ~(legacy_gate : bool) ~(usage_pins : per_kernel_extras)
+let compute_verdict ~(use_core_shrink : bool) ~(iter_cap : int)
+    ~(cached_gate : bool) ~(legacy_gate : bool)
+    ~(usage_pins : per_kernel_extras)
     (app : App.t) : verdict =
   (* Stats and Phase_timer are module-level globals. Reset at entry so
      a second [compute_verdict] in the same process (test harness,
@@ -927,8 +928,9 @@ let compute_verdict ~(use_core_shrink : bool) ~(cached_gate : bool)
   Phase_timer.reset ();
   try
     if legacy_gate
-    then compute_verdict_legacy ~use_core_shrink ~cached_gate ~usage_pins app
-    else compute_verdict_new ~use_core_shrink ~usage_pins app
+    then compute_verdict_legacy ~use_core_shrink ~iter_cap ~cached_gate
+           ~usage_pins app
+    else compute_verdict_new ~use_core_shrink ~iter_cap ~usage_pins app
   with Z3.Error _ -> Racy
 
 let report_prose (v : verdict) : unit =
@@ -1107,6 +1109,13 @@ let main =
              ~doc:"Pin Z3's [smt.random_seed] and [sat.random_seed] to $(docv) \
                    for reproducible solver behaviour across runs. When unset, \
                    Z3 picks its own seed.")
+  and+ iter_cap =
+    Arg.(value & opt int 32
+         & info [ "iter-cap" ] ~docv:"N"
+             ~doc:"Cap the number of CEGAR rounds in the abductive loop. \
+                   Default is 32. Raise to give the MaxSAT search more \
+                   budget on kernels whose abductive Φ candidates keep \
+                   getting rejected by the gate.")
   in
   seed |> Option.iter (fun n ->
     let s = string_of_int n in
@@ -1164,7 +1173,8 @@ let main =
     Ok ()
   end else
     let v =
-      compute_verdict ~use_core_shrink ~cached_gate ~legacy_gate ~usage_pins app
+      compute_verdict ~use_core_shrink ~iter_cap ~cached_gate ~legacy_gate
+        ~usage_pins app
     in
     if output_json then report_json app v else report_prose v;
     Ok ()
