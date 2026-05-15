@@ -3,12 +3,15 @@ open Inference
 open Queries
 module Decl = C_lang.Decl
 
-let analyze (j : Yojson.Basic.t) :
+let analyze (verbose : bool) (j : Yojson.Basic.t) :
     C_lang.Program.t * D_lang.Program.t * Imp.Kernel.t list =
   match C_lang.Program.parse j with
   | Ok k1 ->
       let k2 = D_lang.rewrite_program k1 in
-      let k3 = D_to_imp.Default.parse_program k2 in
+      let k3 =
+        if verbose then D_to_imp.Default.parse_program k2
+        else D_to_imp.Silent.parse_program k2
+      in
       (k1, k2, k3)
   | Error e ->
       Rjson.print_error e;
@@ -71,12 +74,12 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
   in
   print_endline (Yojson.Basic.pretty_to_string (`List l))
 
-let main (fname : string) (silent : bool) (skip_json : bool)
+let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
     (only_global : bool) (includes : string list) (macros : string list) : unit =
   let j =
     Cu_to_json.cu_to_json ~ignore_fail:true ~includes ~macros fname
   in
-  let k1, k2, k3 = analyze j in
+  let k1, k2, k3 = analyze verbose j in
 
   let k1_filtered =
     C_lang.Program.filter
@@ -105,7 +108,7 @@ let main (fname : string) (silent : bool) (skip_json : bool)
     print_endline "==================== STAGE 3: IMP\n";
     List.iter Imp.Kernel.print k3_filtered;
     print_endline "==================== STAGE 4: stats\n");
-  if not skip_json then print_json_summary k1 k2 k3
+  if json then print_json_summary k1 k2 k3
 
 open Cmdliner
 
@@ -117,9 +120,13 @@ let silent =
   let doc = "Silence output" in
   Arg.(value & flag & info [ "silent" ] ~doc)
 
-let skip_json =
-  let doc = "Skip JSON serialization output" in
-  Arg.(value & flag & info [ "skip-json" ] ~doc)
+let json =
+  let doc = "Emit the JSON serialization summary" in
+  Arg.(value & flag & info [ "json" ] ~doc)
+
+let verbose =
+  let doc = "Print warnings emitted by the inference pipeline" in
+  Arg.(value & flag & info [ "verbose"; "v" ] ~doc)
 
 let only_global =
   let doc = "Only print __global__ kernels" in
@@ -139,7 +146,7 @@ let macros =
 
 let main_t =
   Term.(
-    const main $ get_fname $ silent $ skip_json $ only_global $ includes
+    const main $ get_fname $ silent $ json $ verbose $ only_global $ includes
     $ macros)
 
 let info =
