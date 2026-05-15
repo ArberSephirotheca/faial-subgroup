@@ -221,9 +221,9 @@ let test_param_in_index_only () =
 (* Pins [Variable.is_thread_index] on the canonical six thread-
    divergent built-ins and on three negative cases (a dim built-in,
    a grid-dim built-in, and a freshly-named kernel parameter). The
-   predicate is the semantic core of the thread-invariance filter
-   applied to [Access_partition.abductive_scope]: pin its contract
-   here so a future rename or mis-spelling fails loudly. *)
+   predicate is load-bearing for [Access_partition.abductive_scope]
+   in [test_abductive_scope_excludes_thread_indices] below; pin its
+   contract here so a future rename or mis-spelling fails loudly. *)
 let test_is_thread_index () =
   let check name expected v =
     Alcotest.(check bool) name expected (Variable.is_thread_index v)
@@ -238,6 +238,91 @@ let test_is_thread_index () =
   check "gdim_z" false Variable.gdim_z;
   check "N"      false (Variable.from_name "N")
 
+(* This test pins thread-invariance as the filter criterion for
+   [Access_partition.abductive_scope], defending against a future IR
+   change that adds thread indices to kernel parameter sets. The
+   filter must be semantic ("is this variable uniform across
+   threads?") rather than structural ("is this variable a kernel
+   binder?"), because Φ from abductive synthesis is conjoined into
+   [k.pre] and so constrains every thread uniformly — a Φ that
+   mentions [threadIdx.x] would shrink the active thread set, which
+   is a trivialising clearance.
+
+   The kernel here simulates the post-IR-closure state by adding
+   [threadIdx.x] to [local_variables] directly. [k.pre] references
+   both [threadIdx.x] and a regular parameter [N]; the explicit
+   thread-index exclusion in [abductive_universe] keeps [tid_x] out
+   of [abductive_scope] regardless of where it is bound. *)
+let test_abductive_scope_excludes_thread_indices () =
+  let n = Variable.from_name "N" in
+  let body =
+    Code.if_ (lt (var "threadIdx.x") (var "N"))
+      (access (Exp.Num 0)) Code.Skip
+  in
+  let k0 = mk_kernel ~globals:[ ("N", C_type.int) ] body in
+  (* Splice [tid_x] into [local_variables] and reference both
+     [tid_x] and [N] in [pre]. *)
+  let local_variables =
+    Params.add Variable.tid_x C_type.int k0.local_variables
+  in
+  let pre =
+    Exp.b_and
+      (lt (var "threadIdx.x") (Exp.Num 1024))
+      (gt (var "N") (Exp.Num 0))
+  in
+  let k = { k0 with local_variables; pre } in
+  let scope = Access_partition.abductive_scope k in
+  Alcotest.(check bool) "N in scope"
+    true (Variable.Set.mem n scope);
+  Alcotest.(check bool) "tid_x not in scope"
+    false (Variable.Set.mem Variable.tid_x scope);
+  (* Sanity: dim built-ins remain in scope as before. *)
+  List.iter
+    (fun (label, v) ->
+      Alcotest.(check bool) (label ^ " in scope")
+        true (Variable.Set.mem v scope))
+    [
+      ("bdim_x", Variable.bdim_x);
+      ("bdim_y", Variable.bdim_y);
+      ("bdim_z", Variable.bdim_z);
+      ("gdim_x", Variable.gdim_x);
+      ("gdim_y", Variable.gdim_y);
+      ("gdim_z", Variable.gdim_z);
+    ]
+
+(* Companion to the test above: pin the explicit thread-invariance
+   contract on the helper that encodes it. [abductive_universe] is
+   the set of variables whose pre-occurrences are kept by
+   [abductive_scope]'s intersection with [b_free_names k.pre]; its
+   exclusion of [Variable.thread_index_set] is what makes the filter
+   robust to future IR changes that move [threadIdx.*]/[blockIdx.*]
+   into [k.global_variables]/[k.local_variables]. *)
+let test_abductive_universe_excludes_thread_indices () =
+  (* Pre-stage the kernel parameters with [tid_x] *and* [bid_y]
+     bound as locals, plus a regular param [N] and a dim built-in
+     [bdim_x]. The expected universe is the dim built-ins union [N]
+     — tids/bids are excluded by the explicit set diff. *)
+  let body = access (Exp.Num 0) in
+  let k0 = mk_kernel ~globals:[ ("N", C_type.int) ] body in
+  let local_variables =
+    k0.local_variables
+    |> Params.add Variable.tid_x C_type.int
+    |> Params.add Variable.bid_y C_type.int
+    |> Params.add Variable.bdim_x C_type.int
+  in
+  let k = { k0 with local_variables } in
+  let universe = Access_partition.abductive_universe k in
+  Alcotest.(check bool) "N in universe"
+    true (Variable.Set.mem (Variable.from_name "N") universe);
+  Alcotest.(check bool) "tid_x not in universe"
+    false (Variable.Set.mem Variable.tid_x universe);
+  Alcotest.(check bool) "bid_y not in universe"
+    false (Variable.Set.mem Variable.bid_y universe);
+  Alcotest.(check bool) "bdim_x in universe"
+    true (Variable.Set.mem Variable.bdim_x universe);
+  Alcotest.(check bool) "gdim_z in universe"
+    true (Variable.Set.mem Variable.gdim_z universe)
+
 let tests = [
   ("A. pure built-ins -> parameter-free",   `Quick, test_a_pure_builtins);
   ("B. single param N",                     `Quick, test_b_single_param);
@@ -248,6 +333,10 @@ let tests = [
   ("param appears in index only",           `Quick, test_param_in_index_only);
   ("Variable.is_thread_index pins six tids/bids",
     `Quick, test_is_thread_index);
+  ("abductive_scope excludes thread indices",
+    `Quick, test_abductive_scope_excludes_thread_indices);
+  ("abductive_universe excludes thread indices",
+    `Quick, test_abductive_universe_excludes_thread_indices);
 ]
 
 let () =

@@ -80,13 +80,30 @@ let parameter_universe (entries : entry list) : Variable.Set.t =
    included because [build_pool] uses them as RHS in shapes like
    [param >= dim] and [dim <= K]; filtering them by scope would
    discard load-bearing dim-cap candidates that don't reference any
-   kernel parameter at all. *)
+   kernel parameter at all.
+
+   The filter applied to [k.pre]'s free names is thread-invariance:
+   Φ from abductive synthesis is conjoined into [k.pre] and so
+   constrains every thread uniformly, which means its variables must
+   not be thread-divergent. Thread indices ([threadIdx.*],
+   [blockIdx.*]) are the only thread-divergent launch-config
+   built-ins; dim built-ins and kernel parameters are uniform per
+   launch. Stating this as an explicit exclusion of
+   [Variable.thread_index_set] (rather than relying on tids being
+   absent from [globals]/[locals]) keeps the filter correct under a
+   future IR where every free variable, including thread indices, is
+   bound in the kernel's parameter sets. *)
+let abductive_universe (k : Kernel.t) : Variable.Set.t =
+  Variable.Set.union (kernel_param_set k) Variable.launch_config_set
+  |> (fun s -> Variable.Set.diff s Variable.thread_index_set)
+
 let abductive_scope (k : Kernel.t) : Variable.Set.t =
-  let params = kernel_param_set k in
   let entries = partition k in
   let from_code = parameter_universe entries in
   let from_pre =
-    Variable.Set.inter (b_free_names k.pre Variable.Set.empty) params
+    Variable.Set.inter
+      (b_free_names k.pre Variable.Set.empty)
+      (abductive_universe k)
   in
   let open Variable in
   Set.union from_code from_pre
