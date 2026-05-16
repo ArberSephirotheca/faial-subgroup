@@ -120,13 +120,20 @@ let tests =
     ("drf-loop5.cu", [], 0);
     (* (int j = 1; j + k < n; j++) *)
     ("drf-loop6.cu", [], 0);
-    (* Body-tail affine induction: [int base = tid; for (...) {
+    (* Body-top affine induction: [int base = tid; for (...) {
      access(base); base += stride; }]. Each thread writes its own
-     column. The body-tail [base += stride] is harvested by
-     [For.parse_body_end_other_incs] into [other_incs] and stripped
-     from the body, so [extract_incs] expands [base] into the
-     closed-form [iters * stride + base_init]. *)
+     column. The body-top [base += stride] is harvested into
+     [other_incs] and [extract_incs] prepends a closed-form
+     [Decl base = iters * stride + base_init] shadow at the top
+     of the loop body; the original [Assign] stays in place and
+     mutates the shadow within each iteration. *)
     ("drf-loop-body-induct.cu", [], 0);
+    (* Same pattern as above, but the [base += stride] sits in
+     the middle of the body — followed by an unrelated per-thread
+     write. The harvest fires regardless of position, since the
+     shadow gives every iteration the right value via the
+     substitution encoder. *)
+    ("drf-loop-body-induct-mid.cu", [], 0);
     (* (int j = 0; j <= n; j++) *)
     ("racy-loop1.cu", [ "-p"; "n=0"; "--index=[0]" ], 1);
     (* (int j = n; j >= 0; j--) *)
