@@ -282,8 +282,11 @@ module Code = struct
       match i with
       | Skip | Sync _ | Access _ | Assert _ -> (Params.empty, i)
       | If (b, p, q) ->
-          let assigns_1, p = fix_assigns Params.empty p in
-          let assigns_2, q = fix_assigns Params.empty q in
+          (* Inherit the enclosing [defined] set so that an [Assign]
+             inside a branch to an outer-scope variable isn't wrongly
+             reported as outstanding. Mirrors the [For] case fix. *)
+          let assigns_1, p = fix_assigns defined p in
+          let assigns_2, q = fix_assigns defined q in
           (Params.union_left assigns_1 assigns_2, If (b, p, q))
       | Assign a ->
           let assigns, body = fix_assigns defined a.body in
