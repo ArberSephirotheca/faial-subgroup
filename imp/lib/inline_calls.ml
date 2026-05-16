@@ -46,16 +46,29 @@ module Inline = struct
       (* TODO: | Some (var, ty), None -> *)
       | _, _ -> s
     in
+    (* Alpha-rename callee internal binders that clash with the
+       caller's variable set BEFORE substituting parameters.
+       Running [vars_distinct] after parameter substitution would
+       let its capture-blind [subst] rewrite caller-side free
+       variables baked into the body by [loc_subst]/[decl_set]
+       (e.g. an [arr + i] argument carrying caller's [i] into
+       accesses).
+
+       Parameter [Decl]s introduced by substitution must also avoid
+       shadowing caller-scope names: when a parameter name [x]
+       collides with [vars], rename it to a fresh [x'] and substitute
+       [x ↦ x'] in the body in the same step. The substitution is
+       scope-aware (handled by [Scoped.Code.subst]'s [M.add] on inner
+       rebinders), so only free [x] references in the body — the
+       parameter references themselves — are rewritten. *)
+    let rename_param (vars : Variable.Set.t) (x : Variable.t)
+        (s : Scoped.Code.t) : Variable.t * Scoped.Code.t =
+      if Variable.Set.mem x vars then
+        let x' = Variable.fresh vars x in
+        (x', Scoped.Code.subst (x, Var x') s)
+      else (x, s)
+    in
     k.code
-    (* Alpha-rename binders that clash with the caller's variable set
-       BEFORE substituting parameters. [vars_distinct] uses a
-       capture-blind [subst] when renaming a [Decl]'s var: every
-       occurrence of the old name in the body is rewritten, regardless
-       of whether it refers to the binder or to a free variable. If
-       parameter substitution ran first, caller-side free variables
-       baked into the body by [loc_subst]/[decl_set] (e.g. an [arr +
-       i] argument carrying caller's [i] into accesses) would then be
-       renamed to the freshened binder name, capturing them. *)
     |> Scoped.Code.vars_distinct ~vars
     (* prepend the assignments of arguments to parameters *)
     |> List.fold_right
@@ -63,8 +76,12 @@ module Inline = struct
            let open Scoped.Code in
            let open Arg in
            match a with
-           | Scalar e -> decl_set ~ty x e s
-           | Unsupported -> decl_unset ~ty x s
+           | Scalar e ->
+               let x, s = rename_param vars x s in
+               decl_set ~ty x e s
+           | Unsupported ->
+               let x, s = rename_param vars x s in
+               decl_unset ~ty x s
            | Array u ->
                Scoped.Code.loc_subst
                  { target = x; source = u.array; offset = u.offset }
