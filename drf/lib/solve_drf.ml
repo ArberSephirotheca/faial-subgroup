@@ -495,11 +495,12 @@ module Solution = struct
             let bv = Encoder.bv64 () in
             (bv, solve_with bv)
         in
-        (*if show_proofs then (
-        let title = "proof #" ^ string_of_int p.id in
-        let body = Solver.to_string s ^ "(check-sat)\n(get-model)\n" in
-        Tui.print_frame ~title ~body
-      ) else ()); *)
+        (if _show_proofs then
+          let title = "proof #" ^ string_of_int p.id in
+          let body = Solver.to_string s ^ "(check-sat)\n(get-model)\n" in
+          prerr_endline ("=== " ^ title ^ " ===");
+          prerr_endline body
+        );
         let r =
           let open Outcome in
           let stats_detail () =
