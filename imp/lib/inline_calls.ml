@@ -47,6 +47,16 @@ module Inline = struct
       | _, _ -> s
     in
     k.code
+    (* Alpha-rename binders that clash with the caller's variable set
+       BEFORE substituting parameters. [vars_distinct] uses a
+       capture-blind [subst] when renaming a [Decl]'s var: every
+       occurrence of the old name in the body is rewritten, regardless
+       of whether it refers to the binder or to a free variable. If
+       parameter substitution ran first, caller-side free variables
+       baked into the body by [loc_subst]/[decl_set] (e.g. an [arr +
+       i] argument carrying caller's [i] into accesses) would then be
+       renamed to the freshened binder name, capturing them. *)
+    |> Scoped.Code.vars_distinct ~vars
     (* prepend the assignments of arguments to parameters *)
     |> List.fold_right
          (fun ((x, ty), a) s ->
@@ -60,8 +70,6 @@ module Inline = struct
                  { target = x; source = u.array; offset = u.offset }
                  s)
          (Common.zip (K.ParameterList.to_c_type k.parameters) args)
-    (* make the binders in the generate code distinct from free-vars *)
-    |> Scoped.Code.vars_distinct ~vars
     (* then add inside the child, meaning that the free-variables of the
        outer-context are preserved  *)
     |> Scoped.Code.add_inside ~child:s
