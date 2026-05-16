@@ -1,4 +1,5 @@
 open Stage0
+open Protocols
 open Inference
 open D_lang
 
@@ -99,6 +100,185 @@ let test_synthetic_for_init_bound_parses () : unit =
       Alcotest.failf "parse_expr on synthetic init-bound failed: %s"
         (Rjson.error_to_string e)
 
+(* Pointer-dereference rewrite shapes. These pin what [rewrite_exp]
+   produces for [*p = src] / [*(p + n) = src] / [p[n] = src] so we can
+   agree on the right per-shape index before changing the rewriter. *)
+
+let ptr_int_ty : J_type.t = J_type.int (* placeholder — the deref's
+   recorded element type; concrete value isn't asserted below *)
+
+let ident (name : string) : C_lang.Expr.t =
+  Ident (Decl_expr.from_name ~ty:ptr_int_ty (Variable.from_name name))
+
+let deref (child : C_lang.Expr.t) : C_lang.Expr.t =
+  UnaryOperator { opcode = "*"; child; ty = ptr_int_ty }
+
+let assign (lhs : C_lang.Expr.t) (rhs : C_lang.Expr.t) : C_lang.Expr.t =
+  BinaryOperator { opcode = "="; lhs; rhs; ty = ptr_int_ty }
+
+let plus (l : C_lang.Expr.t) (r : C_lang.Expr.t) : C_lang.Expr.t =
+  BinaryOperator { opcode = "+"; lhs = l; rhs = r; ty = ptr_int_ty }
+
+(* Run [rewrite_exp] on a C-AST expression and return the first
+   [WriteAccessStmt] target found in the accumulated D-AST statement,
+   or fail. *)
+let first_write_target (e : C_lang.Expr.t) : D_lang.d_subscript =
+  let stmt, _ = D_lang.run0 (D_lang.rewrite_exp e) in
+  let rec walk : D_lang.Stmt.t -> D_lang.d_subscript option = function
+    | WriteAccessStmt w -> Some w.target
+    | Seq (a, b) -> (
+        match walk a with Some _ as r -> r | None -> walk b)
+    | _ -> None
+  in
+  match walk stmt with
+  | Some t -> t
+  | None ->
+      Alcotest.failf
+        "expected a WriteAccessStmt; got: %s" (D_lang.Stmt.to_string stmt)
+
+let index_to_string (idx : D_lang.Expr.t list) : string =
+  "[" ^ String.concat "; " (List.map D_lang.Expr.to_string idx) ^ "]"
+
+(* Shape 1: bare-deref write [*p = 5]. The rewrite currently emits an
+   unknown index ([rhs = C_lang.Expr.unknown] in [d_lang.ml]); this
+   test pins the desired shape [p[0]] — a bare deref accesses one
+   element at offset 0 from the pointer's value, and the downstream
+   alias pass can resolve [p[0]] back to [base[offset]] when [p] is an
+   alias for [base + offset]. *)
+let test_bare_deref_write_index_zero () : unit =
+  let expr = assign (deref (ident "p")) (IntegerLiteral 5) in
+  let t = first_write_target expr in
+  Alcotest.(check string) "target array name" "p" (Variable.name t.name);
+  match t.index with
+  | [ IntegerLiteral 0 ] -> ()
+  | other ->
+      Alcotest.failf "expected target.index = [IntegerLiteral 0]; got %s"
+        (index_to_string other)
+
+(* Shape 2: offset-deref write [*(p + 3) = 5]. The rewrite already
+   passes the offset through; pin that as a regression guard. *)
+let test_offset_deref_write_index_offset () : unit =
+  let expr = assign (deref (plus (ident "p") (IntegerLiteral 3))) (IntegerLiteral 5) in
+  let t = first_write_target expr in
+  Alcotest.(check string) "target array name" "p" (Variable.name t.name);
+  match t.index with
+  | [ IntegerLiteral 3 ] -> ()
+  | other ->
+      Alcotest.failf "expected target.index = [IntegerLiteral 3]; got %s"
+        (index_to_string other)
+
+(* Shape 3: bare-deref write through an aliased pointer:
+     [float* p = q + 5; *p = 1;]
+   The rewrite happens at the d_lang level, before any alias
+   propagation (which runs later in IMP). So at this stage the
+   produced D-AST should be:
+     - a [DeclStmt] for [p] whose init is the [q + 5] expression, and
+     - a [WriteAccessStmt] for the deref with target.name = p.
+   The interesting assertion is the target.index — under the desired
+   shape it's [IntegerLiteral 0] (alias propagation downstream will
+   then resolve [p[0]] back to [q[5]]); under the current
+   implementation it's [?]. *)
+let first_write_target_stmt (s : C_lang.Stmt.t) : D_lang.d_subscript =
+  let rec walk : D_lang.Stmt.t -> D_lang.d_subscript option = function
+    | WriteAccessStmt w -> Some w.target
+    | Seq (a, b) -> (
+        match walk a with Some _ as r -> r | None -> walk b)
+    | IfStmt { then_stmt; else_stmt; _ } -> (
+        match walk then_stmt with Some _ as r -> r | None -> walk else_stmt)
+    | _ -> None
+  in
+  let result = D_lang.rewrite_stmt s in
+  match walk result with
+  | Some t -> t
+  | None ->
+      Alcotest.failf
+        "expected a WriteAccessStmt; got: %s" (D_lang.Stmt.to_string result)
+
+let test_alias_then_bare_deref_write () : unit =
+  let p_decl : C_lang.c_decl =
+    {
+      var = Variable.from_name "p";
+      ty = ptr_int_ty;
+      init = Some (IExpr (plus (ident "q") (IntegerLiteral 5)));
+      attrs = [];
+    }
+  in
+  let stmt : C_lang.Stmt.t =
+    Seq (DeclStmt [ p_decl ],
+         SExpr (assign (deref (ident "p")) (IntegerLiteral 1)))
+  in
+  let t = first_write_target_stmt stmt in
+  Alcotest.(check string) "target array name" "p" (Variable.name t.name);
+  match t.index with
+  | [ IntegerLiteral 0 ] -> ()
+  | other ->
+      Alcotest.failf "expected target.index = [IntegerLiteral 0]; got %s"
+        (index_to_string other)
+
+(* Shape 4: bare-deref write after pointer reassignment:
+     [float* c = q; c = c + 5; *c = 7;]
+   The pointer has been bumped, so [c] no longer equals its
+   initialisation. We still want [*c] to mean [c[0]] at the d_lang
+   level — alias propagation in IMP is responsible for tracking
+   [c]'s current base+offset and resolving [c[0]] to [q[5]] when
+   that information survives the bumps. The d_lang test only pins
+   the local rewrite: [*c] becomes [c[0]] regardless of c's history. *)
+let test_bumped_pointer_bare_deref_write () : unit =
+  let c_decl : C_lang.c_decl =
+    {
+      var = Variable.from_name "c";
+      ty = ptr_int_ty;
+      init = Some (IExpr (ident "q"));
+      attrs = [];
+    }
+  in
+  let bump : C_lang.Stmt.t =
+    SExpr (assign (ident "c") (plus (ident "c") (IntegerLiteral 5)))
+  in
+  let deref_write : C_lang.Stmt.t =
+    SExpr (assign (deref (ident "c")) (IntegerLiteral 7))
+  in
+  let stmt : C_lang.Stmt.t =
+    Seq (DeclStmt [ c_decl ], Seq (bump, deref_write))
+  in
+  let t = first_write_target_stmt stmt in
+  Alcotest.(check string) "target array name" "c" (Variable.name t.name);
+  match t.index with
+  | [ IntegerLiteral 0 ] -> ()
+  | other ->
+      Alcotest.failf "expected target.index = [IntegerLiteral 0]; got %s"
+        (index_to_string other)
+
+(* Shape 5: bare-deref READ [... = *p]. Currently no read access is
+   emitted at all — the [UnaryOperator { opcode = "*" }] expression
+   falls through to the catch-all in [rewrite_exp] and survives into
+   the D-AST as a UnaryOperator node. Downstream, [d_to_imp] then
+   rewrites it to an [Unknown] nexp. The desired shape: a
+   [ReadAccessStmt] with target = [p[0]], symmetric to the write
+   side. *)
+let first_read_source (e : C_lang.Expr.t) : D_lang.d_subscript =
+  let stmt, _ = D_lang.run0 (D_lang.rewrite_exp e) in
+  let rec walk : D_lang.Stmt.t -> D_lang.d_subscript option = function
+    | ReadAccessStmt r -> Some r.source
+    | Seq (a, b) -> (
+        match walk a with Some _ as r -> r | None -> walk b)
+    | _ -> None
+  in
+  match walk stmt with
+  | Some s -> s
+  | None ->
+      Alcotest.failf
+        "expected a ReadAccessStmt; got: %s" (D_lang.Stmt.to_string stmt)
+
+let test_bare_deref_read_index_zero () : unit =
+  let s = first_read_source (deref (ident "p")) in
+  Alcotest.(check string) "source array name" "p" (Variable.name s.name);
+  match s.index with
+  | [ IntegerLiteral 0 ] -> ()
+  | other ->
+      Alcotest.failf "expected source.index = [IntegerLiteral 0]; got %s"
+        (index_to_string other)
+
 let tests : unit Alcotest.test_case list =
   [
     ("last + skip_last", `Quick, test_last_and_skip_last);
@@ -111,6 +291,21 @@ let tests : unit Alcotest.test_case list =
     ( "path_condition: synthetic for-init bound",
       `Quick,
       test_synthetic_for_init_bound_parses );
+    ( "deref: *p = 5 desired as p[0]",
+      `Quick,
+      test_bare_deref_write_index_zero );
+    ( "deref: *(p + 3) = 5 keeps offset",
+      `Quick,
+      test_offset_deref_write_index_offset );
+    ( "deref: float* p = q + 5; *p = 1; — alias then bare-deref write",
+      `Quick,
+      test_alias_then_bare_deref_write );
+    ( "deref: float* c = q; c = c + 5; *c = 7; — write after pointer bump",
+      `Quick,
+      test_bumped_pointer_bare_deref_write );
+    ( "deref: bare-deref read [... = *p] emits a ReadAccessStmt",
+      `Quick,
+      test_bare_deref_read_index_zero );
   ]
 
 let () = Alcotest.run "D_lang" [ ("dlang", tests) ]

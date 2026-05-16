@@ -989,7 +989,7 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
         _;
       } ->
       rewrite_write
-        { lhs; rhs = C_lang.Expr.unknown; ty; location = Variable.location x }
+        { lhs; rhs = IntegerLiteral 0; ty; location = Variable.location x }
         src
   (*   *w = *)
   | BinaryOperator
@@ -1029,7 +1029,7 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       }
     when Variable.name v = "operator*" ->
       rewrite_write
-        { lhs; rhs = C_lang.Expr.unknown; ty; location = Variable.location x }
+        { lhs; rhs = IntegerLiteral 0; ty; location = Variable.location x }
         src
   | CXXOperatorCallExpr
       { func = Ident { name = v; _ }; args = [ ArraySubscriptExpr a; src ]; _ }
@@ -1099,6 +1099,35 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   | UnaryOperator { child = ArraySubscriptExpr a; opcode = "&"; ty } ->
       rewrite_exp
         (BinaryOperator { lhs = a.lhs; opcode = "+"; rhs = a.rhs; ty })
+  (* *p — bare-deref read; emit p[0] symmetrically with the bare-deref
+     write at the top of this match. Without this case the read falls
+     through to the UnaryOperator catch-all below and never becomes a
+     memory access. *)
+  | UnaryOperator
+      { opcode = "*"; child = Ident { name = x; ty; _ } as lhs; _ } ->
+      let a : C_lang.Expr.c_array_subscript =
+        { lhs; rhs = IntegerLiteral 0; ty; location = Variable.location x }
+      in
+      rewrite_read a
+  (* *(p + offset) — offset-deref read; emit p[offset] symmetrically
+     with the offset-deref write. *)
+  | UnaryOperator
+      {
+        opcode = "*";
+        child =
+          BinaryOperator
+            {
+              lhs = Ident { name = x; ty; _ } as lhs;
+              rhs;
+              opcode = "+";
+              _;
+            };
+        _;
+      } ->
+      let a : C_lang.Expr.c_array_subscript =
+        { lhs; rhs; ty; location = Variable.location x }
+      in
+      rewrite_read a
   | UnaryOperator { child; opcode; ty } ->
       let* child = rewrite_exp child in
       return (UnaryOperator { child; opcode; ty })
