@@ -49,8 +49,11 @@ module Infer = struct
     loop_guard : Exp.bexp;
     cond : Comparator.t unop;
     inc : Increment.t unop;
-    (* Increments of other variables harvested out of the [inc] slot. These
-       get expanded into per-iteration assignments by [extract_incs]. *)
+    (* Increments of other variables harvested out of the [inc] slot or
+       from the body's tail. These get expanded into per-iteration
+       assignments by [extract_incs]. Body-tail entries are also
+       stripped from [body] so the closed-form formula prepended by
+       [extract_incs] isn't double-counted by the original Assign. *)
     other_incs : Increment.t unop list;
     (* Same-variable increments beyond the primary [inc]. These come from
        the body's top level (or from a multi-increment [inc] slot) and
@@ -64,6 +67,9 @@ module Infer = struct
        the For-loop's binding. *)
     needs_shadow : bool;
     post_body : Stmt.t;
+    (* The body with body-tail other-variable additive increments
+       removed. Set to the original body when no harvest occurs. *)
+    body : Stmt.t;
   }
 
   let extract_incs (r : Range.t) (l : Increment.t unop list) : Stmt.t =
@@ -187,6 +193,32 @@ module Infer = struct
   let parse_body_top_incs (s : Stmt.t) : Increment.t unop list =
     Stmt.to_list s |> List.filter_map match_inc
 
+  (** Harvest additive other-variable increments from the END of the body,
+      stopping at the first statement that is either a non-increment or
+      an increment of [name]. Returns the harvested increments together
+      with the body trimmed of those statements. The end-only restriction
+      mirrors the inc-slot semantics, where the increment fires after the
+      body has run — so prepending [extract_incs]'s closed-form
+      [iters * step + var_init] gives each iteration the value it would
+      have seen if the increment had been an inc-slot entry. *)
+  let parse_body_end_other_incs (name : Variable.t) (body : Stmt.t)
+      : Increment.t unop list * Stmt.t =
+    let rev_stmts = body |> Stmt.to_list |> List.rev in
+    let rec take accum = function
+      | s :: rest -> (
+          match match_inc s with
+          | Some i
+            when (not (Variable.equal i.var name))
+                 && (match i.op with
+                    | Increment.Plus | Minus -> true
+                    | _ -> false) ->
+              take (i :: accum) rest
+          | _ -> (accum, List.rev (s :: rest)))
+      | [] -> (accum, [])
+    in
+    let incs, kept = take [] rev_stmts in
+    (incs, Stmt.from_list kept)
+
   let parse ~(body : Stmt.t) (loop : for_) : t option =
     let inc_incs, inc_stmt = parse_inc loop.inc in
     let body_incs = parse_body_top_incs body in
@@ -210,13 +242,21 @@ module Infer = struct
               |> List.filter (fun (i, _) -> Variable.equal i.var name)
               |> List.map fst
             in
-            (* Increments of other variables, harvested only from the inc
-               slot (body-origin ones for other vars stay in place). *)
+            (* Body-tail additive other-variable increments are
+               harvested into [other_incs] and stripped from [body]
+               so [extract_incs]'s closed-form formula isn't
+               double-counted by the original Assign. *)
+            let body_end_other_incs, trimmed_body =
+              parse_body_end_other_incs name body
+            in
+            (* Increments of other variables: inc-slot entries plus
+               the body-tail harvest. *)
             let other_incs =
-              rest
-              |> List.filter (fun (i, from_body) ->
-                     (not from_body) && not (Variable.equal i.var name))
-              |> List.map fst
+              (rest
+               |> List.filter (fun (i, from_body) ->
+                      (not from_body) && not (Variable.equal i.var name))
+               |> List.map fst)
+              @ body_end_other_incs
             in
             let needs_shadow =
               b
@@ -237,6 +277,7 @@ module Infer = struct
                 name;
                 cond;
                 inc;
+                body = trimmed_body;
               }
           with
           | Some _ as o ->
@@ -344,6 +385,10 @@ let to_stmt (l : t) (body : Stmt.t) : Stmt.t =
       Some (inf, r)
     with
     | Some (inf, r) ->
+        (* Use the body with body-tail other-var increments stripped
+           (when [parse] harvested any); otherwise this is just the
+           original body. *)
+        let body = inf.body in
         (* When the loop variable is mutated inside the body, shadow it
            with [Decl x = x] so the body's writes target an iteration-local
            binding rather than the For-loop's range variable. *)

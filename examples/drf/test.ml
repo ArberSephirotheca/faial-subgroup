@@ -120,6 +120,13 @@ let tests =
     ("drf-loop5.cu", [], 0);
     (* (int j = 1; j + k < n; j++) *)
     ("drf-loop6.cu", [], 0);
+    (* Body-tail affine induction: [int base = tid; for (...) {
+     access(base); base += stride; }]. Each thread writes its own
+     column. The body-tail [base += stride] is harvested by
+     [For.parse_body_end_other_incs] into [other_incs] and stripped
+     from the body, so [extract_incs] expands [base] into the
+     closed-form [iters * stride + base_init]. *)
+    ("drf-loop-body-induct.cu", [], 0);
     (* (int j = 0; j <= n; j++) *)
     ("racy-loop1.cu", [ "-p"; "n=0"; "--index=[0]" ], 1);
     (* (int j = n; j >= 0; j--) *)
