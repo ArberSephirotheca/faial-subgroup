@@ -45,7 +45,16 @@ module Defaults = struct
       |> List.map (fun x -> n_ge (Var x) (Num 1))
       |> b_and_ex
     in
-    b_and_ex [ idx_lt_dim; idx_ge_0; dim_ge_1 ]
+    (* CUDA's [warpSize] is a compile-time constant of 32 on every
+       NVIDIA architecture. c-to-json picks it up as an [extern
+       const int], leaving it free in the SMT and letting Z3 witness
+       racy alignments at unreasonable values like [warpSize == 1021].
+       Pin it at the architecture level so every kernel inherits the
+       constant. *)
+    let warp_size_eq_32 : bexp =
+      n_eq (Var (Variable.from_name "warpSize")) (Num 32)
+    in
+    b_and_ex [ idx_lt_dim; idx_ge_0; dim_ge_1; warp_size_eq_32 ]
 
   let block : t =
     {
