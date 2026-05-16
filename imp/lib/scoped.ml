@@ -307,13 +307,22 @@ module Code = struct
       | Decl (d, p) ->
           let defined = Params.add d.var d.ty defined in
           let assigns, p = fix_assigns defined p in
-          (assigns, Decl (d, p))
+          (* [d] already declares [d.var] at this scope, so any
+             outstanding Assign of [d.var] within [p] is satisfied
+             here. Drop it from the bubbled set so the enclosing
+             [For]/[Seq] doesn't wrap an outer [Decl.unset] for it. *)
+          (Params.remove_all (Variable.Set.singleton d.var) assigns, Decl (d, p))
       | Seq (p, q) ->
           let assigns_1, p = fix_assigns defined p in
           let assigns_2, q = fix_assigns defined q in
           (Params.union_left assigns_1 assigns_2, Seq (p, decl assigns_1 q))
       | For (r, p) ->
-          let assigns, p = fix_assigns Params.empty p in
+          (* Inherit the enclosing [defined] set so that outer-scope
+             variables aren't wrongly reported as outstanding for
+             [Assign]s inside the loop body. The For's range variable
+             [r.var] is added too, since it's bound here. *)
+          let defined = Params.add r.var C_type.int defined in
+          let assigns, p = fix_assigns defined p in
           (* convert assigns to decls *)
           (assigns, For (r, decl assigns p))
     in
