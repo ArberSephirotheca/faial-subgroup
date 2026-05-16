@@ -1035,6 +1035,21 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       { func = Ident { name = v; _ }; args = [ ArraySubscriptExpr a; src ]; _ }
     when Variable.name v = "operator=" ->
       rewrite_write a src
+  (* Nested scalar assignment [x = e] used as an expression value (e.g.
+     [(idx /= k) % m] after [c_lang] desugars to [(idx = idx / k) % m]).
+     Lift the assignment as a sequenced [SExpr] side-effect and
+     substitute the LHS identifier for the expression's value, matching
+     C's "assignment-expression evaluates to the new value of [x]". The
+     [SExpr] is then lowered by [d_to_imp]'s existing arm to an
+     [Infer_stmt.Assign]. *)
+  | BinaryOperator { lhs = Ident d; opcode = "="; rhs = src; ty } ->
+      let* src = rewrite_exp src in
+      let* () =
+        AccessState.add
+          (SExpr
+             (BinaryOperator { lhs = Ident d; opcode = "="; rhs = src; ty }))
+      in
+      return (Ident d)
   (* When a read happens *)
   | ArraySubscriptExpr a -> rewrite_read a
   | CallExpr

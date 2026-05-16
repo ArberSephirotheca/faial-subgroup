@@ -279,6 +279,76 @@ let test_bare_deref_read_index_zero () : unit =
       Alcotest.failf "expected source.index = [IntegerLiteral 0]; got %s"
         (index_to_string other)
 
+(* Shape 6: nested scalar assignment-in-expression
+     [(idx = idx / 1) % 6]
+   should desugar at the d_lang level into:
+     - a sequenced side-effect [SExpr (idx = idx / 1)], and
+     - the expression value [idx], substituted in place of the
+       assignment so the host expression becomes [idx %% 6].
+   [rewrite_exp] has dedicated [opcode = "="] arms for every
+   non-scalar lvalue shape (array subscripts, pointer derefs, C++
+   overloaded operators) but no arm for [BinaryOperator
+   { lhs = Ident _; opcode = "="; rhs; _ }]. With no arm, the
+   assignment survives into the D-AST verbatim, [d_to_imp]'s
+   [parse_bin] degrades it to [Unknown], and the dataflow chain
+   into the host expression is lost. This test pins the desired
+   shape. *)
+let div (l : C_lang.Expr.t) (r : C_lang.Expr.t) : C_lang.Expr.t =
+  BinaryOperator { opcode = "/"; lhs = l; rhs = r; ty = ptr_int_ty }
+
+let mod_ (l : C_lang.Expr.t) (r : C_lang.Expr.t) : C_lang.Expr.t =
+  BinaryOperator { opcode = "%"; lhs = l; rhs = r; ty = ptr_int_ty }
+
+let collect_assign_sexprs (s : D_lang.Stmt.t) : D_lang.Expr.t list =
+  let rec walk acc = function
+    | D_lang.Stmt.SExpr
+        (D_lang.Expr.BinaryOperator { opcode = "="; _ } as e) ->
+        e :: acc
+    | D_lang.Stmt.Seq (a, b) -> walk (walk acc a) b
+    | _ -> acc
+  in
+  List.rev (walk [] s)
+
+let ident_name : D_lang.Expr.t -> string option = function
+  | D_lang.Expr.Ident x -> Some (Variable.name (Decl_expr.name x))
+  | _ -> None
+
+let test_nested_scalar_assignment_in_expression () : unit =
+  let idx = ident "idx" in
+  let nested = assign idx (div idx (IntegerLiteral 1)) in
+  let host = mod_ nested (IntegerLiteral 6) in
+  let stmt, value = D_lang.run0 (D_lang.rewrite_exp host) in
+  (* Exactly one [SExpr (idx = idx / 1)] side-effect. *)
+  (match collect_assign_sexprs stmt with
+   | [ BinaryOperator
+         { opcode = "=";
+           lhs = D_lang.Expr.Ident _ as lhs;
+           rhs = D_lang.Expr.BinaryOperator
+                   { opcode = "/";
+                     lhs = D_lang.Expr.Ident _ as div_lhs;
+                     rhs = D_lang.Expr.IntegerLiteral 1;
+                     _ };
+           _ } ]
+     when ident_name lhs = Some "idx" && ident_name div_lhs = Some "idx" ->
+       ()
+   | _ ->
+       Alcotest.failf
+         "expected one [SExpr (idx = idx / 1)] side-effect; got: %s"
+         (D_lang.Stmt.to_string stmt));
+  (* The expression value is [idx %% 6], with [idx] (not the
+     assignment) in the LHS slot. *)
+  match value with
+  | D_lang.Expr.BinaryOperator
+      { opcode = "%";
+        lhs = D_lang.Expr.Ident _ as lhs;
+        rhs = D_lang.Expr.IntegerLiteral 6;
+        _ }
+    when ident_name lhs = Some "idx" -> ()
+  | other ->
+      Alcotest.failf
+        "expected [idx %% 6] as the value expression; got: %s"
+        (D_lang.Expr.to_string other)
+
 let tests : unit Alcotest.test_case list =
   [
     ("last + skip_last", `Quick, test_last_and_skip_last);
@@ -306,6 +376,9 @@ let tests : unit Alcotest.test_case list =
     ( "deref: bare-deref read [... = *p] emits a ReadAccessStmt",
       `Quick,
       test_bare_deref_read_index_zero );
+    ( "nested scalar [(x = e) op v]: lift the assign as a side-effect",
+      `Quick,
+      test_nested_scalar_assignment_in_expression );
   ]
 
 let () = Alcotest.run "D_lang" [ ("dlang", tests) ]
