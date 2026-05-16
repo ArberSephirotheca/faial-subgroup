@@ -98,6 +98,39 @@ module Infer = struct
     in
     l |> List.map Stmt.decl |> Stmt.from_list
 
+  (** Final-value replacement for harvested affine increments: emit a
+      post-[For] [Assign] of each variable's exit value so subsequent
+      sequential code sees [i.var = i.var + i_inc * trip_count] via
+      the substitution encoder (the standard SCEV /
+      IndVarSimplify-style last-value substitution). Only fires when
+      the loop's [step] is [Plus] and a closed-form trip count is
+      computable via [Range.last]; otherwise the post-loop value is
+      left unconstrained (matching the pre-existing behaviour for
+      non-additive cases). *)
+  let post_for_assigns (r : Range.t) (l : Increment.t unop list) : Stmt.t =
+    match (r.step, Range.last r) with
+    | Plus step, Some last ->
+        let trip_count =
+          Exp.n_plus
+            (Exp.n_div (Exp.n_minus last r.lower_bound) step)
+            (Num 1)
+        in
+        l
+        |> List.filter_map (fun (i : Increment.t unop) ->
+            let open Increment in
+            match i.op with
+            | Plus | Minus ->
+                let i_inc =
+                  if i.op = Plus then i.arg else Exp.n_uminus i.arg
+                in
+                let delta = Exp.n_mult i_inc trip_count in
+                Some
+                  (Stmt.assign C_type.int i.var
+                     (Exp.n_plus (Var i.var) delta))
+            | _ -> None)
+        |> Stmt.from_list
+    | _ -> Stmt.Skip
+
   (** Find the first init and return an alterated statement without the init
       found. *)
   let rec parse_init (x : Variable.t) : Stmt.t -> Exp.nexp option * Stmt.t =
@@ -378,7 +411,14 @@ let to_stmt (l : t) (body : Stmt.t) : Stmt.t =
           Stmt.from_list
             [ Stmt.if_ inf.loop_guard body Skip; inf.post_body ]
         in
-        Stmt.seq inf.pre_loop (For (r, body))
+        (* Final-value replacement: emit each harvested var's exit
+           value as a post-[For] [Assign] so subsequent sequential
+           code sees the right value through the substitution
+           encoder. Skip when the loop has no computable closed-form
+           trip count (handled by [post_for_assigns] returning
+           [Skip]). *)
+        let post_for = Infer.post_for_assigns r inf.other_incs in
+        Stmt.seq inf.pre_loop (Stmt.seq (For (r, body)) post_for)
     | None ->
         let body = Stmt.If (l.cond, Stmt.seq body l.inc, Skip) in
         Stmt.seq l.init (Star body)

@@ -134,6 +134,13 @@ let tests =
      shadow gives every iteration the right value via the
      substitution encoder. *)
     ("drf-loop-body-induct-mid.cu", [], 0);
+    (* Two sequential loops sharing a body-mutated induction
+     variable: the first loop's exit value of [base] is propagated
+     to the second loop via [For.post_for_assigns] (final-value
+     replacement, SCEV-style). Without that propagation the second
+     loop's shadow would start from [base]'s pre-first-loop value,
+     and Z3 would witness a fake cross-loop same-column collision. *)
+    ("drf-loop-body-induct-final-value.cu", [], 0);
     (* (int j = 0; j <= n; j++) *)
     ("racy-loop1.cu", [ "-p"; "n=0"; "--index=[0]" ], 1);
     (* (int j = n; j >= 0; j--) *)
