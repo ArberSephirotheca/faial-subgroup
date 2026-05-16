@@ -101,32 +101,41 @@ end
   For each thread-local variable x generate x$1 and x$2 to represent the
   thread-local assignments of each thread.
  *)
+let rec project_n (locals : Variable.Set.t) (t : Task.t) (n : nexp) : nexp =
+  match n with
+  | Num _ -> n
+  | CastInt e -> CastInt (project_b locals t e)
+  | Var x when Variable.Set.mem x locals -> Var (Gen.project t x)
+  | Var _ -> n
+  | Unary (o, e) -> Unary (o, project_n locals t e)
+  | Other e -> project_n locals (Task.other t) e
+  | Binary (o, n1, n2) -> Binary (o, project_n locals t n1, project_n locals t n2)
+  | NIf (b, n1, n2) ->
+      NIf (project_b locals t b, project_n locals t n1, project_n locals t n2)
+  | NCall (x, n) -> NCall (x, project_n locals t n)
+and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
+  match b with
+  | CastBool e -> CastBool (project_n locals t e)
+  | Pred (x, ns) -> Pred (x, List.map (project_n locals t) ns)
+  | Bool _ -> b
+  | BNot b -> BNot (project_b locals t b)
+  | BRel (o, b1, b2) -> BRel (o, project_b locals t b1, project_b locals t b2)
+  | NRel (o, n1, n2) -> NRel (o, project_n locals t n1, project_n locals t n2)
+  | Distinct exprs -> Distinct (List.map (project_n locals t) exprs)
+
 let project_access (locals : Variable.Set.t) (t : Task.t) (ca : CondAccess.t) :
     CondAccess.t =
-  let rec inline_proj_n (t : Task.t) (n : nexp) : nexp =
-    match n with
-    | Num _ -> n
-    | CastInt e -> CastInt (inline_proj_b t e)
-    | Var x when Variable.Set.mem x locals -> Var (Gen.project t x)
-    | Var _ -> n
-    | Unary (o, e) -> Unary (o, inline_proj_n t e)
-    | Other e -> inline_proj_n (Task.other t) e
-    | Binary (o, n1, n2) -> Binary (o, inline_proj_n t n1, inline_proj_n t n2)
-    | NIf (b, n1, n2) ->
-        NIf (inline_proj_b t b, inline_proj_n t n1, inline_proj_n t n2)
-    | NCall (x, n) -> NCall (x, inline_proj_n t n)
-  and inline_proj_b (t : Task.t) (b : bexp) : bexp =
-    match b with
-    | CastBool e -> CastBool (inline_proj_n t e)
-    | Pred (x, ns) -> Pred (x, List.map (inline_proj_n t) ns)
-    | Bool _ -> b
-    | BNot b -> BNot (inline_proj_b t b)
-    | BRel (o, b1, b2) -> BRel (o, inline_proj_b t b1, inline_proj_b t b2)
-    | NRel (o, n1, n2) -> NRel (o, inline_proj_n t n1, inline_proj_n t n2)
-    | Distinct exprs -> Distinct (List.map (inline_proj_n t) exprs)
-  in
-  let inline_acc (a : Access.t) = Access.map (inline_proj_n t) a in
-  { access = inline_acc ca.access; cond = inline_proj_b t ca.cond }
+  let inline_acc (a : Access.t) = Access.map (project_n locals t) a in
+  { access = inline_acc ca.access; cond = project_b locals t ca.cond }
+
+(* Project [k.pre] per-thread so the range conditions on hoisted-
+   For binders (linearIndex etc.) constrain each task's projected
+   copy rather than a single shared variable. Without this, the
+   accesses' [linearIndex$T1]/[$T2] are free in the SMT while only
+   a shared [linearIndex] from [pre] is constrained, and Z3 finds
+   spurious same-address witnesses. *)
+let project_pre (locals : Variable.Set.t) (pre : bexp) : bexp =
+  b_and (project_b locals Task1 pre) (project_b locals Task2 pre)
 
 module SymAccess = struct
   (*
@@ -403,7 +412,7 @@ module Proof = struct
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
-    let goal = from_code_coreach arch locals k.runtime k.code |> b_and k.pre in
+    let goal = from_code_coreach arch locals k.runtime k.code |> b_and (project_pre locals k.pre) in
     let pre_fns = Exp.b_free_names k.pre Variable.Set.empty in
     let accesses =
       List.map
@@ -455,7 +464,7 @@ module Proof = struct
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
-    let goal = from_code_t1 arch locals k.runtime k.code |> b_and k.pre in
+    let goal = from_code_t1 arch locals k.runtime k.code |> b_and (project_pre locals k.pre) in
     let pre_fns = Exp.b_free_names k.pre Variable.Set.empty in
     let accesses =
       List.map
@@ -484,7 +493,7 @@ module Proof = struct
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
     let goal =
-      from_code ~assign_index arch locals k.runtime k.code |> b_and k.pre
+      from_code ~assign_index arch locals k.runtime k.code |> b_and (project_pre locals k.pre)
     in
     let pre_fns = Exp.b_free_names k.pre Variable.Set.empty in
     let accesses =
