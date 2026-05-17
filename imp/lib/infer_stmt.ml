@@ -69,6 +69,13 @@ type t =
          since the downstream race-detector only consults the
          [Atomic_write.t]'s mode tag. *)
       expected : Infer_exp.t option;
+      (* For unique-return atomics ([atomicAdd] / [atomicSub] /
+         WGSL's [Add] / [Subtract]), the additive amount argument.
+         Threaded through to [Atomic_write.t.increment] so that
+         [Scoped.imp_to_scoped] can attach a thread-distinctness
+         [pre] on the target's [Decl] when the increment is a
+         positive literal. [None] for non-Add-family atomics. *)
+      increment : Infer_exp.t option;
     }
   | Write of {
       array : Variable.t;
@@ -136,10 +143,13 @@ let rec to_stmt : t -> Stmt.t =
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
          return (Stmt.Read { target; array; index }))
-  | Atomic { target; ty; atomic; array; index; expected = _ } ->
+  | Atomic { target; ty; atomic; array; index; expected = _; increment } ->
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
-         return (Stmt.Atomic { target; atomic; array; index; ty }))
+         let* increment = State.option_map to_nexp increment in
+         return
+           (Stmt.Atomic
+              { target; atomic; array; index; ty; increment }))
   | Write { array; index; payload } ->
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
@@ -151,7 +161,7 @@ let rec to_stmt : t -> Stmt.t =
   | Decl { var; ty; init } ->
       Infer_exp.unknowns
         (let* init = State.option_map Infer_exp.to_nexp init in
-         return (Stmt.Decl { var; ty; init }))
+         return (Stmt.Decl { var; ty; init; pre = None }))
   | Assign { var; data; ty } ->
       Infer_exp.unknowns
         (let* data = to_nexp data in

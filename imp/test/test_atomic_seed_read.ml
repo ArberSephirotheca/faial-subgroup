@@ -19,7 +19,7 @@ let read_int ~target ~array : t =
       index = [ Infer_exp.NExp (Num 0) ];
     }
 
-let atomic_with ~target ~array ~atomic ?expected () : t =
+let atomic_with ~target ~array ~atomic ?expected ?increment () : t =
   Atomic
     {
       target = var target;
@@ -28,6 +28,7 @@ let atomic_with ~target ~array ~atomic ?expected () : t =
       array = var array;
       index = [ Infer_exp.NExp (Num 0) ];
       expected;
+      increment;
     }
 
 let decl_set ~var:v ~init : t =

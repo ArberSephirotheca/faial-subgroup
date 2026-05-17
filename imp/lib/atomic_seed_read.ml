@@ -209,7 +209,9 @@ let rec rewrite_with ~(seeds : (VarSet.t * Atomic.t) Common.StringMap.t)
       let key = address_key array index in
       match Common.StringMap.find_opt key seeds with
       | Some (seed_set, atomic) when VarSet.mem t seed_set ->
-          Atomic { target = t; ty; atomic; array; index; expected = None }
+          Atomic
+            { target = t; ty; atomic; array; index;
+              expected = None; increment = None }
       | _ -> r)
   | Read _ as r -> r (* read with no target — no seed to match *)
   | Seq (a, b) -> Seq (rew a, rew b)

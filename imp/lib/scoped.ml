@@ -344,6 +344,33 @@ module Code = struct
         ty = C_type.int;
       }
 
+  (* Unique-return contract for atomicAdd / atomicSub: returns
+     [Some (b_not (thread_eq (Var target)))] — the binary
+     thread-distinctness on the atomic's target — when [aw] is an
+     atomicAdd-family op with a strictly-positive literal increment.
+     Returns [None] otherwise. The resulting bexp is attached to the
+     target's [Decl.pre] so that [Kernel.hoist_decls] conjoins it
+     into [Kernel.pre], where the two-thread race query treats it as
+     a global hypothesis on every subsequent access that uses the
+     target as an index. *)
+  let atomic_unique_return_pre (aw : Atomic_write.t) : Exp.bexp option =
+    let name = Variable.name aw.atomic.name in
+    let is_add_family =
+      let starts s prefix =
+        let lp = String.length prefix in
+        String.length s >= lp && String.sub s 0 lp = prefix
+      in
+      starts name "atomicAdd" || starts name "atomicSub"
+    in
+    let positive_literal =
+      match aw.increment with
+      | Some (Exp.Num n) -> n > 0
+      | _ -> false
+    in
+    if is_add_family && positive_literal then
+      Some (Exp.b_not (Exp.thread_eq (Exp.Var aw.target)))
+    else None
+
   let from_stmt : Params.t * Stmt.t -> Params.t * t =
     let open State.Syntax in
     let unknown curr_id : Variable.t =
@@ -383,7 +410,8 @@ module Code = struct
           let a =
             Access { array = e.array; index = e.index; mode = Atomic e.atomic }
           in
-          return (Seq (a, Decl (Decl.unset ~ty:e.ty e.target, s)))
+          let pre = atomic_unique_return_pre e in
+          return (Seq (a, Decl (Decl.unset ~ty:e.ty ~pre e.target, s)))
       | Seq (Call c, s) ->
           let* s = imp_to_scoped s in
           return (Call (c, s))

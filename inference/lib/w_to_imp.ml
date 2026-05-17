@@ -536,7 +536,9 @@ module Const = struct
 
   let to_stmt (c : t) : Imp.Stmt.t option =
     if C_type.is_int c.ty then
-      Some (Imp.Stmt.Decl { var = c.var; ty = c.ty; init = Some c.init })
+      Some
+        (Imp.Stmt.Decl
+           { var = c.var; ty = c.ty; init = Some c.init; pre = None })
     else None
 end
 
@@ -652,6 +654,19 @@ module Statements = struct
                         return (Some e)
                     | _ -> return None
                   in
+                  (* For unique-return atomics ([Add] / [Subtract]),
+                     surface the additive amount so [Scoped
+                     .imp_to_scoped] can emit the thread-distinctness
+                     [pre] on the target's [Decl]. WGSL carries this
+                     in the [value] field. *)
+                  let* increment =
+                    match fun_ with
+                    | W_lang.AtomicFunction.Add
+                    | W_lang.AtomicFunction.Subtract ->
+                        let* v = Expressions.tr value in
+                        return (Some v)
+                    | _ -> return None
+                  in
                   let fun_ = "atomic" ^ W_lang.AtomicFunction.to_string fun_ in
                   let atomic : Atomic.t =
                     {
@@ -672,6 +687,7 @@ module Statements = struct
                          atomic;
                          target = result.var;
                          expected;
+                         increment;
                        })))
         | Store { pointer = Ident { ty; _ } as i; value }
           when W_lang.Type.is_int ty ->
