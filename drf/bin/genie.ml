@@ -764,6 +764,7 @@ let usage_constrained_kernel
    two-thread universe exists under the baseline — and the kernel
    is vacuously DRF. *)
 let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
+    ~(prune_timeout_ms : int)
     ~(usage_pins : per_kernel_extras)
     (app : App.t) : verdict =
   let drf source clauses =
@@ -846,17 +847,14 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
        [Reachability.any_access_reachable] would re-encode the kernel
        per candidate; for pools in the thousands that dominates wall
        time. *)
-    (* Hard cap on per-candidate prune queries. [build_pool] generates
+    (* Per-candidate prune queries are capped by [prune_timeout_ms]
+       (CLI: [--prune-timeout-ms], default 500). [build_pool] emits
        O(P × D + P²) candidates per kernel; on heavy inlined bodies a
        handful of pathological candidates can each take seconds to
-       decide, dwarfing the cumulative cost of the easy ones. A 500ms
-       ceiling shifts those into [UNKNOWN], which
-       [any_access_reachable_delta] already maps to "keep". The
-       surviving pool grows by however many timed out, and MaxSAT
-       carries them downstream. Independent of [app.timeout] (the
-       global per-verdict cap) because that one is typically too
-       loose for per-call pruning. *)
-    let prune_call_timeout_ms = 500 in
+       decide. Queries that hit the cap return [UNKNOWN], which
+       [any_access_reachable_delta] already maps to "keep". Independent
+       of [app.timeout] (the global per-verdict cap), which is typically
+       too loose for per-call pruning. *)
     let slots =
       Phase_timer.measure "genie/prune-prep" (fun () ->
         List.map (fun (k : Kernel.t) ->
@@ -869,7 +867,7 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
           in
           (Kernel.name k,
            Reachability.make_any_access_slot
-             ~timeout:prune_call_timeout_ms prepared))
+             ~timeout:prune_timeout_ms prepared))
           (App.only_kernel app app.kernels))
     in
     let prune_candidate (kn : string) (b : Exp.bexp) : bool =
@@ -993,6 +991,7 @@ let compute_verdict_legacy ~(use_core_shrink : bool) ~(iter_cap : int)
 
 let compute_verdict ~(use_core_shrink : bool) ~(iter_cap : int)
     ~(cached_gate : bool) ~(legacy_gate : bool)
+    ~(prune_timeout_ms : int)
     ~(usage_pins : per_kernel_extras)
     (app : App.t) : verdict =
   (* Stats and Phase_timer are module-level globals. Reset at entry so
@@ -1005,7 +1004,8 @@ let compute_verdict ~(use_core_shrink : bool) ~(iter_cap : int)
     if legacy_gate
     then compute_verdict_legacy ~use_core_shrink ~iter_cap ~cached_gate
            ~usage_pins app
-    else compute_verdict_new ~use_core_shrink ~iter_cap ~usage_pins app
+    else compute_verdict_new ~use_core_shrink ~iter_cap ~prune_timeout_ms
+           ~usage_pins app
   with Z3.Error _ -> Racy
 
 let report_prose (v : verdict) : unit =
@@ -1191,6 +1191,19 @@ let main =
                    Default is 32. Raise to give the MaxSAT search more \
                    budget on kernels whose abductive Φ candidates keep \
                    getting rejected by the gate.")
+  and+ prune_timeout_ms =
+    Arg.(value & opt int 500
+         & info [ "prune-timeout-ms" ] ~docv:"MS"
+             ~doc:"Per-candidate Z3 timeout for [prune_candidate] during \
+                   abductive pool construction. On a heavy inlined body, \
+                   a small tail of candidates can each take seconds to \
+                   decide and dominate [abduction/create]'s wall time. \
+                   Queries hitting the cap return UNKNOWN, which is \
+                   already treated as 'keep'; the surviving pool grows \
+                   by however many timed out and MaxSAT carries them \
+                   downstream. Default is 500. Lower to bound the \
+                   prune step harder, accepting a larger MaxSAT \
+                   workload in return.")
   in
   seed |> Option.iter (fun n ->
     let s = string_of_int n in
@@ -1266,7 +1279,7 @@ let main =
     in
     let v =
       compute_verdict ~use_core_shrink ~iter_cap ~cached_gate ~legacy_gate
-        ~usage_pins app
+        ~prune_timeout_ms ~usage_pins app
     in
     if output_json then report_json app v else report_prose v;
     Ok ()
