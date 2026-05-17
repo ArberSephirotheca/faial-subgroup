@@ -846,6 +846,17 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
        [Reachability.any_access_reachable] would re-encode the kernel
        per candidate; for pools in the thousands that dominates wall
        time. *)
+    (* Hard cap on per-candidate prune queries. [build_pool] generates
+       O(P × D + P²) candidates per kernel; on heavy inlined bodies a
+       handful of pathological candidates can each take seconds to
+       decide, dwarfing the cumulative cost of the easy ones. A 500ms
+       ceiling shifts those into [UNKNOWN], which
+       [any_access_reachable_delta] already maps to "keep". The
+       surviving pool grows by however many timed out, and MaxSAT
+       carries them downstream. Independent of [app.timeout] (the
+       global per-verdict cap) because that one is typically too
+       loose for per-call pruning. *)
+    let prune_call_timeout_ms = 500 in
     let slots =
       Phase_timer.measure "genie/prune-prep" (fun () ->
         List.map (fun (k : Kernel.t) ->
@@ -857,7 +868,8 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
               k
           in
           (Kernel.name k,
-           Reachability.make_any_access_slot ?timeout:app.timeout prepared))
+           Reachability.make_any_access_slot
+             ~timeout:prune_call_timeout_ms prepared))
           (App.only_kernel app app.kernels))
     in
     let prune_candidate (kn : string) (b : Exp.bexp) : bool =
