@@ -560,6 +560,7 @@ let abductive_loop
     ?(scope_of : (string -> Variable.Set.t option) option)
     ?(prune_candidate : (string -> Exp.bexp -> bool) option)
     ?(pre_filter : (App.t -> bool) = fun _ -> true)
+    ?(non_trivial : (per_kernel_extras -> bool) option)
     ~(use_core_shrink : bool)
     ~(gate_check : 'baseline -> App.t -> bool)
     (app : App.t)
@@ -588,27 +589,39 @@ let abductive_loop
        set is vacuous DRF (e.g. forces an effective blockDim.x = 0 so
        no thread runs an access). Implemented as one Z3 query per
        kernel asking "any access reachable?", rather than O(accesses)
-       per-access queries. Only invoked at acceptance. *)
-    let non_trivial (app' : App.t) : bool =
-      app'.kernels |> App.only_kernel app'
-      |> List.exists (fun k ->
-        k
-        |> Reachability.prepare_kernel
-             ~assumes:(App.assumes_of k app')
-             ~assume_dims:app'.assume_dims
-             ~params:app'.params
-        |> Reachability.any_access_reachable ?timeout:app'.timeout)
+       per-access queries. Only invoked at acceptance.
+
+       Callers with a pre-built per-kernel [Any_access_slot] pool
+       (the Tier 3 path: [compute_verdict_new] uses the same slots
+       it built for [prune_candidate]) override via [~non_trivial],
+       turning each check into a slot push/check/pop instead of a
+       full re-encoding. The default impl below is the
+       slot-less fallback used when no override is supplied. *)
+    let non_trivial : per_kernel_extras -> bool =
+      match non_trivial with
+      | Some f -> f
+      | None ->
+        fun extras ->
+          let app' = app_with_extras extras app in
+          app'.kernels |> App.only_kernel app'
+          |> List.exists (fun k ->
+            k
+            |> Reachability.prepare_kernel
+                 ~assumes:(App.assumes_of k app')
+                 ~assume_dims:app'.assume_dims
+                 ~params:app'.params
+            |> Reachability.any_access_reachable ?timeout:app'.timeout)
     in
     let try_finalize (extras : per_kernel_extras) : per_kernel_extras option =
       let minimal = shrink' baseline app extras in
       let app' = app_with_extras minimal app in
-      if pre_filter app' && gate_check baseline app' && non_trivial app'
+      if pre_filter app' && gate_check baseline app' && non_trivial minimal
       then Some minimal
       else
         let weakened = weaken_for_gate app drf_and_gate minimal in
         let weakened_min = shrink' baseline app weakened in
         let app'' = app_with_extras weakened_min app in
-        if pre_filter app'' && gate_check baseline app'' && non_trivial app''
+        if pre_filter app'' && gate_check baseline app'' && non_trivial weakened_min
         then Some weakened_min
         else None
     in
@@ -852,9 +865,35 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
       | None | Some None -> true
       | Some (Some slot) -> Reachability.any_access_reachable_delta slot b
     in
+    (* Slot-amortised non-triviality. Mirrors [prune_candidate]: push
+       the kernel's Φ clauses (conjoined) as a delta on the persistent
+       solver, check, pop. Skips the [prepare_kernel] +
+       [any_access_reachable] full-encoding round-trip that the
+       slot-less fallback in [abductive_loop] pays per call. A kernel
+       without a slot has no accesses to keep reachable, so it cannot
+       contribute non-triviality: skip it.
+
+       Empty per-kernel clause list yields [b_and_ex [] = True], which
+       pushes a no-op and returns whether the slot's base goal is
+       satisfiable, i.e. whether any access is reachable under the
+       baseline. That matches the slot-less fallback's behaviour for
+       a kernel the proposed Φ does not touch. *)
+    let non_trivial (extras : per_kernel_extras) : bool =
+      App.only_kernel app app.kernels
+      |> List.exists (fun k ->
+        let kn = Protocols.Kernel.name k in
+        let delta_clauses =
+          List.assoc_opt kn extras |> Option.value ~default:[]
+        in
+        match List.assoc_opt kn slots with
+        | None | Some None -> false
+        | Some (Some slot) ->
+          let delta = Exp.b_and_ex delta_clauses in
+          Reachability.any_access_reachable_delta slot delta)
+    in
     match Phase_timer.measure "genie/abductive" (fun () ->
             abductive_loop ~iter_cap ~scope_of ~prune_candidate ~pre_filter
-              ~use_core_shrink ~gate_check app baseline_pairs)
+              ~non_trivial ~use_core_shrink ~gate_check app baseline_pairs)
     with
     | Some minimal -> drf Source_abductive minimal
     | None ->
@@ -868,16 +907,7 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
             shrink ~use_core:use_core_shrink baseline_pairs app blanket
           in
           let app' = app_with_extras minimal app in
-          let blanket_non_trivial =
-            app'.kernels |> App.only_kernel app'
-            |> List.exists (fun k ->
-              k
-              |> Reachability.prepare_kernel
-                   ~assumes:(App.assumes_of k app')
-                   ~assume_dims:app'.assume_dims
-                   ~params:app'.params
-              |> Reachability.any_access_reachable ?timeout:app'.timeout)
-          in
+          let blanket_non_trivial = non_trivial minimal in
           if pre_filter app' && gate_check baseline_pairs app'
              && blanket_non_trivial
           then drf Source_blanket minimal
