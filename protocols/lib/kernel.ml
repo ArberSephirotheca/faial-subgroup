@@ -249,32 +249,43 @@ let signature_string (k : t) : string =
 
 (*
   Makes all variables distinct and hoists declarations as
-  thread-locals.
+  thread-locals. Per-declaration [pre] constraints (e.g. the atomicAdd
+  unique-return distinctness on the target) are conjoined into the
+  kernel-level [pre] so they become global hypotheses on every
+  subsequent access.
 *)
 let hoist_decls : t -> t =
-  let rec inline (vars : Params.t) (p : Code.t) : Params.t * Code.t =
+  let rec inline (vars : Params.t) (pre : Exp.bexp) (p : Code.t) :
+      Params.t * Exp.bexp * Code.t =
     match p with
-    | Decl { var = x; body = p; ty } -> inline (Params.add x ty vars) p
-    | Access _ | Skip | Sync _ -> (vars, p)
+    | Decl { var = x; body = p; ty; pre = decl_pre } ->
+        let pre =
+          match decl_pre with
+          | Some b -> Exp.b_and pre b
+          | None -> pre
+        in
+        inline (Params.add x ty vars) pre p
+    | Access _ | Skip | Sync _ -> (vars, pre, p)
     | If (b, p, q) ->
-        let vars, p = inline vars p in
-        let vars, q = inline vars q in
-        (vars, If (b, p, q))
+        let vars, pre, p = inline vars pre p in
+        let vars, pre, q = inline vars pre q in
+        (vars, pre, If (b, p, q))
     | Loop { range = r; body = p } ->
-        let vars, p = inline vars p in
-        (vars, Loop { range = r; body = p })
+        let vars, pre, p = inline vars pre p in
+        (vars, pre, Loop { range = r; body = p })
     | Seq (p, q) ->
-        let vars, p = inline vars p in
-        let vars, q = inline vars q in
-        (vars, Seq (p, q))
+        let vars, pre, p = inline vars pre p in
+        let vars, pre, q = inline vars pre q in
+        (vars, pre, Seq (p, q))
   in
   fun k ->
     let k = vars_distinct k in
-    let locals, p = inline Params.empty k.code in
+    let locals, pre, p = inline Params.empty (Exp.Bool true) k.code in
     {
       k with
       code = p;
       local_variables = Params.union_left locals k.local_variables;
+      pre = Exp.b_and k.pre pre;
     }
 
 let inline_dims (dims : (string * Dim3.t) list) (k : t) : t =

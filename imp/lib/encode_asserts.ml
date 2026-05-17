@@ -107,11 +107,11 @@ let from_encode_assigns : Encode_assigns.t -> Code.t =
         ( Loop { range = r; body = if_ guard p },
           AssertionTree.implies (Range.has_next r) a )
     | Sync e -> (Sync e, AssertionTree.true_)
-    | Decl { var; ty; body = p } ->
+    | Decl { var; ty; pre; body = p } ->
         let p, a = from p in
         let guard = AssertionTree.retain var a in
         let a = AssertionTree.remove var a in
-        (Decl { var; ty; body = if_ guard p }, a)
+        (Decl { var; ty; pre; body = if_ guard p }, a)
   in
   fun e ->
     let p, a = from e in

@@ -99,7 +99,12 @@ let prepend_unused_decl : t =
     apply =
       (fun k ->
         let x = fresh k "mut_unused" in
-        [ { k with code = Decl { var = x; ty = C_type.int; body = k.code } } ]);
+        [
+          {
+            k with
+            code = Decl { var = x; ty = C_type.int; pre = None; body = k.code };
+          };
+        ]);
   }
 
 (* Wrap k.code in If(tid.x < blockDim.x, body, Skip).
@@ -170,7 +175,7 @@ let wrap_decl_if : t =
           [
             {
               k with
-              code = Decl { var = x; ty = C_type.int; body = inner };
+              code = Decl { var = x; ty = C_type.int; pre = None; body = inner };
             };
           ]);
   }
@@ -198,7 +203,7 @@ let wrap_decl_loop : t =
           [
             {
               k with
-              code = Decl { var = n; ty = C_type.int; body = inner };
+              code = Decl { var = n; ty = C_type.int; pre = None; body = inner };
             };
           ]);
   }

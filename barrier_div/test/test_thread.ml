@@ -46,7 +46,9 @@ let test_head_seq_access_then_sync () =
 
 let test_head_decl_transparent () =
   (* Decl { body = Access }  →  head_of descends through Decl *)
-  let proto = Code.Decl { var = v "x"; ty = C_type.int; body = access } in
+  let proto =
+    Code.Decl { var = v "x"; ty = C_type.int; pre = None; body = access }
+  in
   match Thread.head_of proto with
   | Some (Code.Access _, Code.Skip) -> ()
   | _ -> Alcotest.fail "decl-wrapped access should be transparent"
@@ -55,7 +57,9 @@ let test_head_decl_in_seq () =
   (* Seq (Decl { body = Access }, Sync)  →  head is Access, rest is Sync *)
   let proto =
     Code.Seq
-      (Code.Decl { var = v "x"; ty = C_type.int; body = access }, mk_sync "s1")
+      ( Code.Decl
+          { var = v "x"; ty = C_type.int; pre = None; body = access },
+        mk_sync "s1" )
   in
   match Thread.head_of proto with
   | Some (Code.Access _, Code.Sync _) -> ()

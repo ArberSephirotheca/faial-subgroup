@@ -26,7 +26,10 @@ let compile (k : Scoped.Kernel.t) : Protocols.Kernel.t =
      fun (p, locals, pre) ->
       match p with
       | If (b, p, Skip) -> inline_header (p, locals, b_and b pre)
-      | Decl { var = x; body = p; ty } ->
+      | Decl { var = x; body = p; ty; pre = decl_pre } ->
+          let pre =
+            match decl_pre with Some b -> b_and pre b | None -> pre
+          in
           inline_header (p, Params.add x ty locals, pre)
       | _ -> (p, locals, pre)
     in
