@@ -153,6 +153,20 @@ let to_int_dom (c : t) : Int_dom.t option =
   | "long" | "signed long" | "int64_t" -> Some Int_dom.signed_long
   | "unsigned long" | "ulong" | "size_t" | "uint64_t" ->
       Some Int_dom.unsigned_long
+  (* C [long long] / [signed long long] is a separate type from [long]
+     in standard C but has the same 64-bit width on every platform
+     faial targets. cu-to-json emits the type string verbatim
+     (the literal long-long type string, two tokens) when the source
+     uses that keyword (no desugar to long), so without this arm
+     [is_int] returns false and [d_to_imp]'s [infer_decl] silently
+     drops every long-long local, breaking dataflow chains that
+     pass through such variables. Map to [signed_long] /
+     [unsigned_long]: they share the same [Int_dom.t] (Bit64 size,
+     current 32-bit-range clamp in [to_range]) so long-long values
+     are over-approximated to the same range as long, conservative
+     on race-detection. *)
+  | "long long" | "signed long long" -> Some Int_dom.signed_long
+  | "unsigned long long" -> Some Int_dom.unsigned_long
   | _ -> None
 
 let is_int (c : t) : bool = to_int_dom c |> Option.is_some
