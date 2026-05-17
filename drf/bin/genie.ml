@@ -1185,18 +1185,6 @@ let main =
       ~cbor:true
       ~stop_at:None
   in
-  let app, usage_pins =
-    let kernels_with_pins =
-      List.map (usage_constrained_kernel ?timeout ~params:app.params)
-        app.kernels
-    in
-    let kernels = List.map fst kernels_with_pins in
-    let pins =
-      List.map (fun (k, ps) -> (Protocols.Kernel.name k, ps))
-        kernels_with_pins
-    in
-    { app with kernels }, pins
-  in
   if list_kernels then begin
     app.kernels
     |> List.iter (fun k ->
@@ -1205,6 +1193,35 @@ let main =
       else print_endline (Protocols.Kernel.name k));
     Ok ()
   end else
+    let app, usage_pins =
+      (* Compute use-derived dim pins only for kernels [App.only_kernel]
+         would analyse. Each [usage_constrained_kernel] call issues 6
+         Z3 SAT queries (one per dim axis); on heavily-templated
+         launch sites (e.g. 11 wrappers from a [switch] over
+         [log2_elements]) paying for the unfiltered list dwarfs the
+         abductive search itself and can exhaust budgets before any
+         output appears. Skipped kernels keep their unpinned [k.pre]
+         and contribute an empty pin list, preserving the [(name, [])]
+         entry shape that [report_json]'s [assumes] consumer expects. *)
+      let selected_names =
+        App.only_kernel app app.kernels
+        |> List.map Protocols.Kernel.name
+      in
+      let kernels_with_pins =
+        List.map (fun k ->
+          if List.mem (Protocols.Kernel.name k) selected_names then
+            usage_constrained_kernel ?timeout ~params:app.params k
+          else
+            (k, []))
+          app.kernels
+      in
+      let kernels = List.map fst kernels_with_pins in
+      let pins =
+        List.map (fun (k, ps) -> (Protocols.Kernel.name k, ps))
+          kernels_with_pins
+      in
+      { app with kernels }, pins
+    in
     let v =
       compute_verdict ~use_core_shrink ~iter_cap ~cached_gate ~legacy_gate
         ~usage_pins app
