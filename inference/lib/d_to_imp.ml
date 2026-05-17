@@ -477,8 +477,10 @@ module Make (L : Logger) = struct
           in
           let index = List.map infer_expr r.source.index in
           let ty = r.ty |> resolve |> C_type.strip_array in
+          let expected = Option.map infer_expr r.expected in
           Infer_stmt.Atomic
-            { target = r.target; atomic = r.atomic; array; index; ty }
+            { target = r.target; atomic = r.atomic; array; index; ty;
+              expected }
       | IfStmt { cond; then_stmt; else_stmt } ->
           Imp.Infer_stmt.If (infer_expr cond, infer then_stmt, infer else_stmt)
       (* Support for location aliasing that declares a new variable *)
@@ -700,7 +702,11 @@ module Make (L : Logger) = struct
 
   let parse_kernel (ctx : Context.t) (k : D_lang.Kernel.t) :
       Context.t * Imp.Kernel.t =
-    let code, return = Infer_stmt.infer (infer_stmt ctx k.code) in
+    let code, return =
+      infer_stmt ctx k.code
+      |> Imp.Atomic_seed_read.rewrite
+      |> Infer_stmt.infer
+    in
     (* Add inferred shared arrays to global context *)
     let ctx =
       List.fold_left

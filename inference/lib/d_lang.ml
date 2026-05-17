@@ -360,6 +360,12 @@ type d_atomic = {
   source : d_subscript;
   atomic : Atomic.t;
   ty : C_type.t;
+  (* For compare-and-swap atomics ([atomicCAS], scoped variants),
+     the [expected] argument (slot 1 of the call). Carried through
+     d_lang so [Atomic_seed_read] in Imp can identify the variable
+     that seeds the CAS without re-parsing the source. [None] for
+     all non-CAS atomics. *)
+  expected : Expr.t option;
 }
 
 module Stmt = struct
@@ -430,15 +436,15 @@ module Stmt = struct
     in
     ReadAccessStmt { target; source; ty }
 
-  let atomic_access (target : Variable.t) (source : d_subscript)
-      (atomic : Atomic.t) : t =
+  let atomic_access ?(expected : Expr.t option) (target : Variable.t)
+      (source : d_subscript) (atomic : Atomic.t) : t =
     let ty =
       source.ty
       |> J_type.to_c_type ~default:C_type.int
       (* If it's an array get the elements type *)
       |> C_type.strip_array
     in
-    AtomicAccessStmt { target; source; atomic; ty }
+    AtomicAccessStmt { target; source; atomic; ty; expected }
 
   (* Build [assert(<cond>);] as a statement. [d_to_imp] recognises
      calls to [assert] and lifts them to [Imp.Stmt.Assert] with
@@ -657,7 +663,8 @@ module Stmt = struct
         return (ReadAccessStmt { r with source })
     | AtomicAccessStmt a ->
         let* source = map_subscript a.source in
-        return (AtomicAccessStmt { a with source })
+        let* expected = State.option_map f a.expected in
+        return (AtomicAccessStmt { a with source; expected })
     | ReturnStmt e ->
         let* e = State.option_map f e in
         return (ReturnStmt e)
@@ -924,9 +931,10 @@ module AccessState = struct
   let add_read (a : d_subscript) : Variable.t state =
     add_var (subscript_to_s a) (fun x -> Stmt.read_access x a)
 
-  let add_atomic (atomic : Atomic.t) (source : d_subscript) : Variable.t state =
+  let add_atomic ?(expected : Expr.t option) (atomic : Atomic.t)
+      (source : d_subscript) : Variable.t state =
     add_var (subscript_to_s source) (fun target ->
-        Stmt.atomic_access target source atomic)
+        Stmt.atomic_access ?expected target source atomic)
 
   let add_call (c : Expr.d_call) : Variable.t state =
     let e = Expr.CallExpr c in
@@ -961,17 +969,31 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
     when Atomic.is_valid f.name -> (
       let atomic = Atomic.from_name f.name |> Option.get in
       let* e : Expr.t = rewrite_exp e in
-      (* we want to make sure we extract any reads from the other arguments,
-       but we can safely discard the arguments, as we only care that an
-       atomic happened, not exactly what was done by the atomic. *)
+      (* Rewrite the remaining arguments to extract any reads they may
+         hide, but discard them otherwise — the access-protocol layer
+         only needs to know that an atomic happened on the target
+         address, not what was done. The lone exception is the [expected]
+         argument of compare-and-swap atomics: [Imp.Atomic_seed_read]
+         needs the rewritten d_lang expression to identify the seed
+         variable that feeds the CAS. *)
       let* args = State.list_map rewrite_exp args in
+      let expected =
+        if Variable.name f.name = "atomicCAS"
+           || (let n = Variable.name f.name in
+               (* device-scope variants: [atomicCAS_block],
+                  [atomicCAS_system]. *)
+               String.length n > String.length "atomicCAS"
+               && String.sub n 0 (String.length "atomicCAS") = "atomicCAS")
+        then match args with e :: _ -> Some e | [] -> None
+        else None
+      in
       match e with
       | Ident x ->
-          rewrite_atomic atomic
+          rewrite_atomic ?expected atomic
             (make_subscript ~name:x.name ~index:[ IntegerLiteral 0 ]
                ~location:(Variable.location f.name) ~ty)
       | BinaryOperator { lhs = Ident x; rhs = e; opcode = "+"; _ } ->
-          rewrite_atomic atomic
+          rewrite_atomic ?expected atomic
             (make_subscript ~name:x.name ~index:[ e ]
                ~location:(Variable.location f.name) ~ty)
       | _ -> return (CallExpr { func = Ident f; args = e :: args; ty }))
@@ -1222,8 +1244,9 @@ and rewrite_read (a : C_lang.Expr.c_array_subscript) : Expr.t state =
   let* x = AccessState.add_read a in
   return (Expr.ident ~ty:a.ty x)
 
-and rewrite_atomic (atomic : Atomic.t) (a : d_subscript) : Expr.t state =
-  let* x = AccessState.add_atomic atomic a in
+and rewrite_atomic ?(expected : Expr.t option) (atomic : Atomic.t)
+    (a : d_subscript) : Expr.t state =
+  let* x = AccessState.add_atomic ?expected atomic a in
   return (Expr.ident ~ty:a.ty x)
 
 and rewrite_call (a : Expr.d_call) : Expr.t state =

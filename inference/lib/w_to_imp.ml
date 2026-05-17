@@ -639,6 +639,19 @@ module Statements = struct
                   let* _ = Expressions.rewrite value in
                   (* translate the index *)
                   let* index = State.list_map Expressions.tr a.index in
+                  (* Compare-and-swap variants ([Exchange { compare =
+                     Some _ }]) carry an expected/seed argument that
+                     [Imp.Atomic_seed_read] needs to identify the
+                     variable feeding the CAS. Translate the compare
+                     expression once and surface it on the [Infer_stmt
+                     .Atomic]. Non-CAS atomics get [None]. *)
+                  let* expected =
+                    match fun_ with
+                    | W_lang.AtomicFunction.Exchange { compare = Some e } ->
+                        let* e = Expressions.tr e in
+                        return (Some e)
+                    | _ -> return None
+                  in
                   let fun_ = "atomic" ^ W_lang.AtomicFunction.to_string fun_ in
                   let atomic : Atomic.t =
                     {
@@ -658,6 +671,7 @@ module Statements = struct
                          ty = Types.tr result.ty;
                          atomic;
                          target = result.var;
+                         expected;
                        })))
         | Store { pointer = Ident { ty; _ } as i; value }
           when W_lang.Type.is_int ty ->
@@ -821,7 +835,9 @@ module Functions = struct
     let open Imp in
     let body, return =
       let body = e.body |> Statements.tr ctx in
-      Infer_stmt.seq (LocalDeclarations.tr e.locals) body |> Infer_stmt.infer
+      Infer_stmt.seq (LocalDeclarations.tr e.locals) body
+      |> Imp.Atomic_seed_read.rewrite
+      |> Infer_stmt.infer
     in
     {
       name = e.name;

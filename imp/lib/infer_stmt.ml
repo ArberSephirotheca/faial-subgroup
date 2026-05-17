@@ -59,6 +59,16 @@ type t =
       atomic : Atomic.t;
       array : Variable.t;
       index : Infer_exp.t list;
+      (* For compare-and-swap atomics ([atomicCAS] / WGSL's
+         [atomicCompareExchangeWeak]), the [expected] argument.
+         Threaded through from each frontend ([d_lang] carries it on
+         [d_atomic]; w_lang surfaces it via [AtomicFunction.Exchange
+         { compare }]) so [Atomic_seed_read] can identify the
+         variable that seeds the CAS without re-parsing the source.
+         [None] for non-CAS atomics. Stripped at [to_stmt] time
+         since the downstream race-detector only consults the
+         [Atomic_write.t]'s mode tag. *)
+      expected : Infer_exp.t option;
     }
   | Write of {
       array : Variable.t;
@@ -126,7 +136,7 @@ let rec to_stmt : t -> Stmt.t =
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
          return (Stmt.Read { target; array; index }))
-  | Atomic { target; ty; atomic; array; index } ->
+  | Atomic { target; ty; atomic; array; index; expected = _ } ->
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
          return (Stmt.Atomic { target; atomic; array; index; ty }))
