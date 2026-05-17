@@ -1260,6 +1260,175 @@ let run0 (m : 'a state) : Stmt.t * 'a =
   let st, a = State.run m Stmt.Skip in
   (st, a)
 
+(* Lowering for [switch (cond) { case k1: ... case kN: ... default: ... }].
+   Produces a chain of [IfStmt] nodes so downstream passes treat each
+   case body as guarded by [cond == kI] instead of always reachable.
+   The previous [d_to_imp.ml] arm recursed into each case body without
+   the label predicate, modelling every thread as executing every case;
+   the lowering moves the guard into the IR before that arm sees it. *)
+
+type switch_chunk =
+  | SCMark of Expr.t option (* [Some e] = [case e:], [None] = [default:] *)
+  | SCStop                       (* [break] inside the switch body *)
+  | SCPlain of Stmt.t
+
+(* Flatten the switch body into a left-to-right chunk list, unfolding
+   nested [CaseStmt] / [DefaultStmt] so multi-label cases
+   ([case 1: case 2: body;]) appear as adjacent marks. Clang nests
+   such labels in the AST: outer [CaseStmt { case=1; body =
+   CaseStmt { case=2; body = BODY }}]. The recursion handles that
+   shape uniformly. *)
+let rec switch_chunks (s : Stmt.t) : switch_chunk list =
+  match s with
+  | Seq (a, b) -> switch_chunks a @ switch_chunks b
+  | BreakStmt -> [ SCStop ]
+  | CaseStmt { case; body } -> SCMark (Some case) :: switch_chunks body
+  | DefaultStmt body -> SCMark None :: switch_chunks body
+  | Skip -> []
+  | _ -> [ SCPlain s ]
+
+(* A parsed case group: one or more labels (multi-label allowed) and
+   the body that runs when any label matches, plus a flag for
+   [default:]. *)
+type switch_group = {
+  labels : Expr.t list; (* may be empty if [default] is true and no
+                                explicit cases share the body *)
+  has_default : bool;
+  body : Stmt.t;
+}
+
+(* Walk the chunk list and split into groups. Strict semantics: every
+   case body must terminate in [break]. Multi-label cases (consecutive
+   [SCMark]s with no intervening [SCPlain]) accumulate into one group.
+   Returns [Error msg] on shapes the lowering does not handle yet
+   (fall-through, stray statements before the first case, stray
+   [break] outside a case). *)
+type partition_state =
+  | PEmpty
+  | PInLabels of switch_group (* labels accumulated, no stmts yet *)
+  | PInBody of switch_group   (* labels closed, stmts accumulating *)
+
+let partition_switch (chunks : switch_chunk list)
+    : (switch_group list, string) Result.t =
+  let groups = ref [] in
+  let state = ref PEmpty in
+  let error = ref None in
+  let close (g : switch_group) (stmts : Stmt.t list) =
+    let body = Stmt.from_list (List.rev stmts) in
+    groups := { g with body } :: !groups;
+    state := PEmpty
+  in
+  let add_label (m : Expr.t option) : switch_group =
+    match !state with
+    | PEmpty -> {
+        labels = (match m with Some e -> [ e ] | None -> []);
+        has_default = m = None;
+        body = Skip;
+      }
+    | PInLabels g -> {
+        g with
+        labels =
+          (match m with Some e -> e :: g.labels | None -> g.labels);
+        has_default = g.has_default || m = None;
+      }
+    | PInBody _ -> assert false (* caller checks first *)
+  in
+  let stmts_so_far = ref [] in
+  List.iter (fun chunk ->
+    if !error <> None then () else
+    match chunk, !state with
+    | SCMark m, PEmpty ->
+        state := PInLabels (add_label m)
+    | SCMark m, PInLabels _ ->
+        state := PInLabels (add_label m)
+    | SCMark _, PInBody _ ->
+        error := Some "fall-through to next case (no break)"
+    | SCPlain s, PInLabels g ->
+        stmts_so_far := [ s ];
+        state := PInBody g
+    | SCPlain s, PInBody _ ->
+        stmts_so_far := s :: !stmts_so_far
+    | SCPlain _, PEmpty ->
+        error := Some "statement before first case label"
+    | SCStop, PInBody g ->
+        close g !stmts_so_far;
+        stmts_so_far := []
+    | SCStop, PInLabels g ->
+        (* empty case body terminated by break: [case k: break;]. *)
+        close g [];
+        stmts_so_far := []
+    | SCStop, PEmpty ->
+        error := Some "stray break outside any case")
+    chunks;
+  (match !state with
+   | PInBody _ ->
+       (* implicit fall-through to end of switch: not strictly an error
+          because no following case exists, but no [break] was issued
+          either. Treat as a closure for the final group; control
+          falls out of the switch naturally. *)
+       (match !state with
+        | PInBody g -> close g !stmts_so_far
+        | _ -> ())
+   | PInLabels _ | PEmpty -> ());
+  match !error with
+  | Some e -> Error e
+  | None -> Ok (List.rev !groups)
+
+(* Build the if-else chain from the groups. Cases come first, default
+   becomes the final [else]. Each group's labels disjoin with [||]. *)
+let build_switch_chain (cond : Expr.t) (groups : switch_group list)
+    : Stmt.t =
+  let eq_to (label : Expr.t) : Expr.t =
+    BinaryOperator {
+      opcode = "==";
+      lhs = cond;
+      rhs = label;
+      ty = J_type.bool;
+    }
+  in
+  let group_cond (g : switch_group) : Expr.t option =
+    match g.labels with
+    | [] -> None
+    | [ l ] -> Some (eq_to l)
+    | l :: rest ->
+        Some (
+          List.fold_left
+            (fun acc next ->
+              Expr.BinaryOperator {
+                opcode = "||";
+                lhs = acc;
+                rhs = eq_to next;
+                ty = J_type.bool;
+              })
+            (eq_to l) rest)
+  in
+  let cases, defaults =
+    List.partition (fun g -> not g.has_default) groups
+  in
+  let default_body : Stmt.t =
+    match defaults with
+    | [] -> Skip
+    | gs -> Stmt.from_list (List.map (fun g -> g.body) gs)
+  in
+  List.fold_right (fun g acc ->
+    match group_cond g with
+    | None -> acc (* unreachable: a "case" group has at least one label *)
+    | Some c ->
+        Stmt.IfStmt { cond = c; then_stmt = g.body; else_stmt = acc })
+    cases default_body
+
+(* Top-level switch lowering with a warning on unsupported shapes.
+   On failure, returns the original [SwitchStmt] (preserves the
+   previous behaviour rather than introducing a new failure mode). *)
+let lower_switch (cond : Expr.t) (body : Stmt.t) : Stmt.t =
+  match partition_switch (switch_chunks body) with
+  | Ok groups -> build_switch_chain cond groups
+  | Error msg ->
+      prerr_endline
+        ("D_lang.lower_switch: " ^ msg
+         ^ " — preserving switch; case labels will be ignored downstream");
+      SwitchStmt { cond; body }
+
 let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
   let run (m : unit state) =
     let code, () = run0 m in
@@ -1339,8 +1508,13 @@ let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
   | SwitchStmt { cond; body } ->
       run
         (let* cond = rewrite_exp cond in
-         add (SwitchStmt { cond; body = rewrite_stmt body }))
+         let body = rewrite_stmt body in
+         add (lower_switch cond body))
   | CaseStmt { case; body } ->
+      (* Reached only when a [CaseStmt] appears outside any enclosing
+         [SwitchStmt] — ill-formed C the frontend tolerates. Keep the
+         existing C-to-D shape rewrite so downstream behaviour is
+         unchanged for that pathological case. *)
       run
         (let* case = rewrite_exp case in
          add (CaseStmt { case; body = rewrite_stmt body }))
