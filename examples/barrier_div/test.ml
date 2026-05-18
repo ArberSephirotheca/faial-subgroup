@@ -90,21 +90,23 @@ let sync_tests : (string * string list * int) list =
     ("loop-tid-bound.cu", [ "--check=barrier-div" ], 1);
     ("loop-tid-bound.cu", [ "--check=missing-participants" ], 1);
 
-    (* decl-branch: branch on a memory-loaded decl. The decl is
-       projectable, so T1 and T2 can disagree on its sign — every check
-       fails. *)
-    ("decl-branch.cu", [ "--check=well-sync" ], 1);
+    (* decl-branch: branch on a memory-loaded decl. The source array
+       is read-only, so two runs of the same thread (well-sync) see
+       the same value and take the same path — well-sync passes.
+       Two distinct threads (barrier-div) may see different values
+       at different indices, and the single-thread reachability
+       check (missing-participants) still flags. *)
+    ("decl-branch.cu", [ "--check=well-sync" ], 0);
     ("decl-branch.cu", [ "--check=barrier-div" ], 1);
     ("decl-branch.cu", [ "--check=missing-participants" ], 1);
     (* decl-loop-bound: loop count read from memory into a per-thread
-       decl. Same projectable-decl pattern as above. *)
-    ("decl-loop-bound.cu", [ "--check=well-sync" ], 1);
+       decl. Same read-only-source pattern as above. *)
+    ("decl-loop-bound.cu", [ "--check=well-sync" ], 0);
     ("decl-loop-bound.cu", [ "--check=barrier-div" ], 1);
     ("decl-loop-bound.cu", [ "--check=missing-participants" ], 1);
     (* decl-under-tid: nested case, tid-only branch wraps a decl-derived
-       branch. The outer guard doesn't suppress detection of the inner
-       non-determinism. *)
-    ("decl-under-tid.cu", [ "--check=well-sync" ], 1);
+       branch. *)
+    ("decl-under-tid.cu", [ "--check=well-sync" ], 0);
     ("decl-under-tid.cu", [ "--check=barrier-div" ], 1);
     ("decl-under-tid.cu", [ "--check=missing-participants" ], 1);
   ]

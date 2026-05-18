@@ -1,5 +1,5 @@
-//saxpy,data,ind
-//j
+//saxpy,ind,ind
+//
 /*
 
 Example: integer flows from array index

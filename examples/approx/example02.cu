@@ -1,5 +1,5 @@
-//saxpy,ind,ctrl
-//@AccessState1
+//saxpy,ind,ind
+//
 /*
 Example 2: data flows from array to conditional
 

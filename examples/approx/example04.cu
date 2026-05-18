@@ -1,5 +1,5 @@
-//saxpy,ind,ctrl
-//j, k
+//saxpy,ind,ind
+//
 /*
 Example 4: data flows from array to upper bound of loop
 

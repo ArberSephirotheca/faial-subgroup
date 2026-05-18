@@ -1,5 +1,5 @@
-//saxpy,data,ctrl
-//j, k
+//saxpy,ind,ind
+//
 /*
 Example 6: variables `j` and `k` come from an array and are used in a conditional.
 Additionally, `k` is also used to index array `y`.

@@ -223,7 +223,12 @@ let rec from_nexp : Exp.nexp -> t = function
   | Num x -> Num x
   | Binary (b, e1, e2) -> bin (BinOp.from_nbin b) (from_nexp e1) (from_nexp e2)
   | Unary (o, e) -> Unary (o, from_nexp e)
-  | NCall _ -> failwith "NCall(_,_)"
+  (* [NCall (f, args)] is a UF read whose value the resource-algebra
+     translation can't symbolically evaluate. Cost analysis only
+     needs a symbolic placeholder for it, so collapse to a free
+     variable named after [f]; this is sound (opaque) and keeps
+     equal calls aliased to the same symbol. *)
+  | NCall (name, _) -> Var (Variable.from_name name)
   | Other _ -> failwith "Other _"
   | NIf (e1, e2, e3) -> if_ (from_bexp e1) (from_nexp e2) (from_nexp e3)
   | CastInt e -> BoolToInt (from_bexp e)

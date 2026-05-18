@@ -1,5 +1,5 @@
-//saxpy,data,ind
-//j
+//saxpy,ind,ind
+//
 /*
 
 Example 5: Index `j` is read from an array and then used to access array `y`.

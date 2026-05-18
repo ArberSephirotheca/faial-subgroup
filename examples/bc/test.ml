@@ -99,18 +99,16 @@ let bc_tests =
    *)
     ("ifs-3.cu", [], "if ((n < 4)) then 1 else 1");
     (*
-    Condition: (threadIdx.x <= 16 && f() < 4)
-    - exact uniform condition: none
+    Condition: (threadIdx.x <= 16 && x[0] < 4)
+    - exact uniform conditions: x[0] < 4 (substituted by an
+      uninterpreted-function read with constant args)
     - exact non-uniform conditions: threadIdx.x <= 16
-    - approx non-uniform conditions: f() < 4
 
-    No uniform condition, thus equivalent to
-      if (threadIdx.x <= 16) { tick 1} else {tick 1}
-
-    Exact non-uniform condition (threadIdx.x <= 16): yields a cost of 1 in
-    both branches, thus total cost of 2.
+    The thread-uniform but value-unknown UF read keeps the if
+    structure; both branches have cost 1, the conditional itself
+    is preserved.
    *)
-    ("ifs-4.cu", [], "2");
+    ("ifs-4.cu", [], "if (($read_x < 4)) then 1 else 1");
   ]
 
 let ua_tests =
