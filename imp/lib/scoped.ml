@@ -407,14 +407,14 @@ module Code = struct
      hypothesis through path conditions, with [target] still in
      scope (unlike a kernel-level pre, which would lift the
      constraint past its binder). *)
+  let starts_with (s : string) (prefix : string) : bool =
+    let lp = String.length prefix in
+    String.length s >= lp && String.sub s 0 lp = prefix
+
   let atomic_unique_return_assert (aw : Atomic_write.t) : Assert.t option =
     let name = Variable.name aw.atomic.name in
     let is_add_family =
-      let starts s prefix =
-        let lp = String.length prefix in
-        String.length s >= lp && String.sub s 0 lp = prefix
-      in
-      starts name "atomicAdd" || starts name "atomicSub"
+      starts_with name "atomicAdd" || starts_with name "atomicSub"
     in
     let positive_literal =
       match aw.increment with
@@ -424,6 +424,42 @@ module Code = struct
     if is_add_family && positive_literal then
       Some (Assert.make (Exp.thread_distinct [ aw.target ]) Global)
     else None
+
+  (* Winner-uniqueness contract for atomicCAS / scoped variants and
+     WGSL's [atomicCompareExchangeWeak]: at most one thread per
+     address sees [target == expected]. For two threads T1 and T2
+     calling the same CAS site, the conjunction [target$T1 ==
+     expected$T1 && target$T2 == expected$T2 && index$T1 ==
+     index$T2] is contradictory by hardware semantics. The assert
+     expresses the negation; after [Encode_asserts] retains the
+     part mentioning [target], it becomes a guard inside the
+     target's [Decl] that gates every downstream access. Sound
+     under the standard assumption that [expected] is not the
+     value being written back (the common SENTINEL / KEY shape).
+     [None] for non-CAS atomics or when [expected] wasn't
+     captured. *)
+  let atomic_cas_winner_assert (aw : Atomic_write.t) : Assert.t option =
+    let name = Variable.name aw.atomic.name in
+    let is_cas =
+      starts_with name "atomicCAS"
+      || starts_with name "atomicCompareExchangeWeak"
+    in
+    match aw.expected with
+    | Some expected when is_cas ->
+        let target_eq = Exp.n_eq (Exp.Var aw.target) expected in
+        let other_target_eq =
+          Exp.n_eq (Exp.Other (Exp.Var aw.target)) (Exp.Other expected)
+        in
+        let same_index = Exp.b_and_ex (List.map Exp.thread_eq aw.index) in
+        let both_winners =
+          Exp.b_and target_eq (Exp.b_and other_target_eq same_index)
+        in
+        Some (Assert.make (Exp.b_not both_winners) Global)
+    | _ -> None
+
+  let atomic_asserts (aw : Atomic_write.t) : Assert.t list =
+    List.filter_map (fun f -> f aw)
+      [ atomic_unique_return_assert; atomic_cas_winner_assert ]
 
   let from_stmt : Params.t * Stmt.t -> Params.t * t =
     let open State.Syntax in
@@ -465,9 +501,9 @@ module Code = struct
             Access { array = e.array; index = e.index; mode = Atomic e.atomic }
           in
           let s =
-            match atomic_unique_return_assert e with
-            | Some a -> Seq (Assert a, s)
-            | None -> s
+            List.fold_right
+              (fun a body -> Seq (Assert a, body))
+              (atomic_asserts e) s
           in
           return (Seq (a, Decl (Decl.unset ~ty:e.ty e.target, s)))
       | Seq (Call c, s) ->

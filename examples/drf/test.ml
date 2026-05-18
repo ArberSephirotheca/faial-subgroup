@@ -61,6 +61,14 @@ let tests =
     ("racy-alias.cu", [], 1);
     (* Data-race with atomics. *)
     ("racy-atomics.cu", [], 1);
+    (* Atomic-3: atomicCAS winner-uniqueness. The hardware guarantees
+       at most one thread per address sees [old == SENTINEL], so the
+       conditional write at the same slot is DRF even when [loc]
+       could otherwise collide. *)
+    ("drf-cas-winner.cu", [], 0);
+    (* Negative companion: same kernel shape but the seed read is
+       plain (not atomicCAS), so no winner contract applies. *)
+    ("racy-cas-no-winner.cu", [], 1);
     (* A data-race that occurs when we have warp-concurrent semantics *)
     ("racy-reduce.cu", [], 1);
     (* A data-race free example as long as the analysis understands typedefs. *)

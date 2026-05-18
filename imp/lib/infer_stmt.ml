@@ -143,13 +143,14 @@ let rec to_stmt : t -> Stmt.t =
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
          return (Stmt.Read { target; array; index }))
-  | Atomic { target; ty; atomic; array; index; expected = _; increment } ->
+  | Atomic { target; ty; atomic; array; index; expected; increment } ->
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
          let* increment = State.option_map to_nexp increment in
+         let* expected = State.option_map to_nexp expected in
          return
            (Stmt.Atomic
-              { target; atomic; array; index; ty; increment }))
+              { target; atomic; array; index; ty; increment; expected }))
   | Write { array; index; payload } ->
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
