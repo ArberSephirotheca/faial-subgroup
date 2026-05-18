@@ -538,7 +538,7 @@ module Const = struct
     if C_type.is_int c.ty then
       Some
         (Imp.Stmt.Decl
-           { var = c.var; ty = c.ty; init = Some c.init; pre = None })
+           { var = c.var; ty = c.ty; init = Some c.init })
     else None
 end
 

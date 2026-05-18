@@ -199,10 +199,9 @@ module Code = struct
      shape [Seq (Access {mode=Read; ...}, Decl ({init = None; ...},
      ...))] is exactly the pair [imp_to_scoped] emits for [Read e]
      with [e.target = Some _]; reads with [target = None] never
-     produce a paired [Decl] and need no rewrite. Substitution
-     preserves the index's free-variable scope (loop binders stay
-     where they are), so this avoids the [hoist_decls] / [Decl.pre]
-     free-variable interaction. *)
+     produce a paired [Decl] and need no rewrite. The substituted-in
+     [NCall]'s arguments carry the read's index, with its free
+     variables in their original scope. *)
   let bind_uniform_reads (read_only : Variable.Set.t) : t -> t =
     let rec rewrite : t -> t = function
       | Seq
@@ -398,15 +397,17 @@ module Code = struct
       }
 
   (* Unique-return contract for atomicAdd / atomicSub: returns
-     [Some (b_not (thread_eq (Var target)))] — the binary
-     thread-distinctness on the atomic's target — when [aw] is an
-     atomicAdd-family op with a strictly-positive literal increment.
-     Returns [None] otherwise. The resulting bexp is attached to the
-     target's [Decl.pre] so that [Kernel.hoist_decls] conjoins it
-     into [Kernel.pre], where the two-thread race query treats it as
-     a global hypothesis on every subsequent access that uses the
-     target as an index. *)
-  let atomic_unique_return_pre (aw : Atomic_write.t) : Exp.bexp option =
+     [Some (Assert { cond = thread_distinct [target]; Global })]
+     when [aw] is an atomicAdd-family op with a strictly-positive
+     literal increment; [None] otherwise. The assert is emitted
+     adjacent to the target's [Decl], so when [Encode_asserts]
+     bubbles up the assert tree, the part mentioning [target] is
+     retained as a guard inside the [Decl]'s body. That guard
+     gates every subsequent access on the thread-distinctness
+     hypothesis through path conditions, with [target] still in
+     scope (unlike a kernel-level pre, which would lift the
+     constraint past its binder). *)
+  let atomic_unique_return_assert (aw : Atomic_write.t) : Assert.t option =
     let name = Variable.name aw.atomic.name in
     let is_add_family =
       let starts s prefix =
@@ -421,7 +422,7 @@ module Code = struct
       | _ -> false
     in
     if is_add_family && positive_literal then
-      Some (Exp.b_not (Exp.thread_eq (Exp.Var aw.target)))
+      Some (Assert.make (Exp.thread_distinct [ aw.target ]) Global)
     else None
 
   let from_stmt : Params.t * Stmt.t -> Params.t * t =
@@ -463,8 +464,12 @@ module Code = struct
           let a =
             Access { array = e.array; index = e.index; mode = Atomic e.atomic }
           in
-          let pre = atomic_unique_return_pre e in
-          return (Seq (a, Decl (Decl.unset ~ty:e.ty ~pre e.target, s)))
+          let s =
+            match atomic_unique_return_assert e with
+            | Some a -> Seq (Assert a, s)
+            | None -> s
+          in
+          return (Seq (a, Decl (Decl.unset ~ty:e.ty e.target, s)))
       | Seq (Call c, s) ->
           let* s = imp_to_scoped s in
           return (Call (c, s))

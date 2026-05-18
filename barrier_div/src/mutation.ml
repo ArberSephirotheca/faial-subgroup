@@ -102,7 +102,7 @@ let prepend_unused_decl : t =
         [
           {
             k with
-            code = Decl { var = x; ty = C_type.int; pre = None; body = k.code };
+            code = Decl { var = x; ty = C_type.int; body = k.code };
           };
         ]);
   }
@@ -175,7 +175,7 @@ let wrap_decl_if : t =
           [
             {
               k with
-              code = Decl { var = x; ty = C_type.int; pre = None; body = inner };
+              code = Decl { var = x; ty = C_type.int; body = inner };
             };
           ]);
   }
@@ -203,7 +203,7 @@ let wrap_decl_loop : t =
           [
             {
               k with
-              code = Decl { var = n; ty = C_type.int; pre = None; body = inner };
+              code = Decl { var = n; ty = C_type.int; body = inner };
             };
           ]);
   }

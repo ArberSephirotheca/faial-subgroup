@@ -258,12 +258,7 @@ let hoist_decls : t -> t =
   let rec inline (vars : Params.t) (pre : Exp.bexp) (p : Code.t) :
       Params.t * Exp.bexp * Code.t =
     match p with
-    | Decl { var = x; body = p; ty; pre = decl_pre } ->
-        let pre =
-          match decl_pre with
-          | Some b -> Exp.b_and pre b
-          | None -> pre
-        in
+    | Decl { var = x; body = p; ty } ->
         inline (Params.add x ty vars) pre p
     | Access _ | Skip | Sync _ -> (vars, pre, p)
     | If (b, p, q) ->

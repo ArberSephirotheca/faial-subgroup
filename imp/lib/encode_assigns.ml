@@ -12,12 +12,11 @@ type t =
   | Decl of {
       var : Variable.t;
       ty : C_type.t;
-      pre : Exp.bexp option;
       body : t;
     }
 
-let decl ?(ty = C_type.int) ?(pre = None) (var : Variable.t) (body : t) : t =
-  Decl { var; ty; pre; body }
+let decl ?(ty = C_type.int) (var : Variable.t) (body : t) : t =
+  Decl { var; ty; body }
 
 let to_string : t -> string =
   let rec to_s : t -> Indent.t list = function
@@ -125,16 +124,11 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
         If (b, inline known st p1, inline known st p2)
     | Decl ({ var = x; init = Some n; _ }, p)
     | Assign { var = x; data = n; body = p; _ } ->
-        (* TODO: a Decl with both [init = Some _] and [pre = Some _]
-           drops the [pre] on substitution. No current user emits
-           that shape — [pre] is only set on the atomic target's
-           [Decl.unset]. Revisit if a future user needs it. *)
         let n = n_subst st n in
         let st = Subst.SubstAssoc.put st x n in
         inline known st p
-    | Decl ({ var; init = None; ty; pre }, p) ->
-        let pre = Option.map (b_subst st) pre in
-        Decl { var; ty; pre; body = inline known st p }
+    | Decl ({ var; init = None; ty }, p) ->
+        Decl { var; ty; body = inline known st p }
     | For (r, p) ->
         let r = r_subst st r in
         let x, known, st = add_var r.var in

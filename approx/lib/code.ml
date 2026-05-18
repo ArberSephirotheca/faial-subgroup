@@ -39,7 +39,7 @@ let rec from_code : Protocols.Code.t -> t Seq.t = function
   (* Approx ignores the Protocols.Code.Decl's [pre] field: this IR
      captures over-approximations of access patterns, not the precise
      hypothesis pool that the race-detector consults. *)
-  | Decl { var; ty; body; pre = _ } ->
+  | Decl { var; ty; body } ->
       from_code body |> Seq.map (fun body -> Decl { var; ty; body })
 
 let from_kernel (k : Protocols.Kernel.t) : t Seq.t =

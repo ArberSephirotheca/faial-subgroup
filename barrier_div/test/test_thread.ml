@@ -47,7 +47,7 @@ let test_head_seq_access_then_sync () =
 let test_head_decl_transparent () =
   (* Decl { body = Access }  →  head_of descends through Decl *)
   let proto =
-    Code.Decl { var = v "x"; ty = C_type.int; pre = None; body = access }
+    Code.Decl { var = v "x"; ty = C_type.int; body = access }
   in
   match Thread.head_of proto with
   | Some (Code.Access _, Code.Skip) -> ()
@@ -58,7 +58,7 @@ let test_head_decl_in_seq () =
   let proto =
     Code.Seq
       ( Code.Decl
-          { var = v "x"; ty = C_type.int; pre = None; body = access },
+          { var = v "x"; ty = C_type.int; body = access },
         mk_sync "s1" )
   in
   match Thread.head_of proto with

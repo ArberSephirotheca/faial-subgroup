@@ -12,13 +12,7 @@ type t =
   | Loop of { range : Range.t; body : t }
   | Seq of t * t
   | Skip
-  (* [pre] is an optional bexp that holds at the declaration. When
-     [Kernel.hoist_decls] peels this Decl into [local_variables], it
-     conjoins [pre] into [Kernel.pre] so the constraint becomes a
-     global hypothesis on every subsequent access. [None] for plain
-     locals; populated for declarations carrying contracts like the
-     atomicAdd unique-return distinctness. *)
-  | Decl of { var : Variable.t; ty : C_type.t; pre : bexp option; body : t }
+  | Decl of { var : Variable.t; ty : C_type.t; body : t }
 
 let rec filter (f : t -> bool) (p : t) : t =
   if not (f p) then Skip
@@ -90,10 +84,9 @@ let loop (r : Range.t) (p : t) : t =
     in
     if is_empty then Skip else Loop { range = r; body = p }
 
-let decl ?(ty = C_type.int) ?(pre = None) (var : Variable.t) : t -> t =
-  function
+let decl ?(ty = C_type.int) (var : Variable.t) : t -> t = function
   | Skip -> Skip
-  | body -> Decl { var; ty; pre; body }
+  | body -> Decl { var; ty; body }
 
 let rec opt : t -> t = function
   | Skip -> Skip
@@ -134,12 +127,11 @@ let vars_distinct : t -> Variable.Set.t -> t =
           let new_xs = Variable.Set.add new_x xs in
           let s = Subst.SubstPair.make (x, Var new_x) in
           let new_p = PSubstPair.subst s p in
-          let pre = Option.map (Subst.ReplacePair.b_subst s) d.pre in
           let p, new_xs = uniq new_p new_xs in
-          (Decl { var = new_x; body = p; ty = d.ty; pre }, new_xs)
+          (Decl { var = new_x; body = p; ty = d.ty }, new_xs)
         else
           let p, new_xs = uniq p (Variable.Set.add x xs) in
-          (Decl { var = x; body = p; ty = d.ty; pre = d.pre }, new_xs)
+          (Decl { var = x; body = p; ty = d.ty }, new_xs)
     | Loop { range = r; body = p } ->
         let x = r.var in
         if Variable.Set.mem x xs then

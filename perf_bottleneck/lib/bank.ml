@@ -282,7 +282,7 @@ module Code = struct
                 | _ -> Seq.empty)
             |> Result.value ~default:Seq.empty
         | Sync _ -> Seq.empty
-        | Decl { body = p; var; ty; pre = _ } ->
+        | Decl { body = p; var; ty } ->
             p
             |> on_p (Variable.Set.add var locals)
             |> Seq.map (fun (x, i) -> (x, Decl { var; body = i; ty }))

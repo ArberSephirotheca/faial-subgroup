@@ -161,7 +161,7 @@ let rec to_stmt : t -> Stmt.t =
   | Decl { var; ty; init } ->
       Infer_exp.unknowns
         (let* init = State.option_map Infer_exp.to_nexp init in
-         return (Stmt.Decl { var; ty; init; pre = None }))
+         return (Stmt.Decl { var; ty; init }))
   | Assign { var; data; ty } ->
       Infer_exp.unknowns
         (let* data = to_nexp data in
