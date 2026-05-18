@@ -637,7 +637,25 @@ let rec parse_expr (j : json) : c_expr j_result =
           o
       in
       let* ty = get_field "type" o in
-      Ok (CallExpr { func; args; ty = J_type.from_json ty })
+      (* CUDA bit-level reinterpret-cast intrinsics. Each is a
+         bijection on the underlying bits; faial's value model
+         can't represent the type punning, but downstream
+         passes ([Atomic_seed_read]) need the wrapped variable
+         to flow through identity in the alias graph.
+         Unwrapping at the C_lang stage lets the rest of the
+         pipeline see the bare argument as if the intrinsic
+         were absent. *)
+      let is_reinterpret_cast = function
+        | "__double_as_longlong" | "__longlong_as_double"
+        | "__float_as_int" | "__int_as_float"
+        | "__float_as_uint" | "__uint_as_float" ->
+            true
+        | _ -> false
+      in
+      (match func, args with
+       | Ident f, [ arg ] when is_reinterpret_cast (Variable.name f.name) ->
+           Ok arg
+       | _ -> Ok (CallExpr { func; args; ty = J_type.from_json ty }))
   | "CXXBindTemporaryExpr" | "CXXFunctionalCastExpr"
   | "MaterializeTemporaryExpr" | "CompoundLiteralExpr" ->
       let* body = with_field "inner" (cast_list_1 parse_expr) o in
