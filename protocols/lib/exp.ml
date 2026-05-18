@@ -7,7 +7,7 @@ type nexp =
   | Num of int
   | Binary of N_binary.t * nexp * nexp
   | Unary of N_unary.t * nexp
-  | NCall of string * nexp
+  | NCall of string * nexp list
   | NIf of bexp * nexp * nexp
   | Other of nexp
   | CastInt of bexp
@@ -36,9 +36,9 @@ and bexp =
     | Unary (op1, e1), Unary (op2, e2) ->
         let@ () = compare op1 op2 in
         n_compare e1 e2
-    | NCall (f1, e1), NCall (f2, e2) ->
+    | NCall (f1, es1), NCall (f2, es2) ->
         let@ () = compare f1 f2 in
-        n_compare e1 e2
+        List.compare n_compare es1 es2
     | NIf (b1, t1, f1), NIf (b2, t2, f2) ->
         let@ () = b_compare b1 b2 in
         let@ () = n_compare t1 t2 in
@@ -395,7 +395,8 @@ let rec n_fold f e a =
   | Unary (_, e) -> n_fold f e a
   | Binary (_, e1, e2) -> n_fold f e1 a |> n_fold f e2
   | NIf (b, e1, e2) -> b_fold f b a |> n_fold f e1 |> n_fold f e2
-  | NCall (_, e) | Other e -> n_fold f e a
+  | NCall (_, es) -> List.fold_left (fun a e -> n_fold f e a) a es
+  | Other e -> n_fold f e a
 
 and b_fold f e a =
   match e with
@@ -419,7 +420,8 @@ let rec n_exists (f : Variable.t -> bool) : nexp -> bool = function
   | Var x -> f x
   | Num _ -> false
   | Binary (_, e1, e2) -> n_exists f e1 || n_exists f e2
-  | Unary (_, e) | NCall (_, e) | Other e -> n_exists f e
+  | NCall (_, es) -> List.exists (n_exists f) es
+  | Unary (_, e) | Other e -> n_exists f e
   | NIf (b, e1, e2) -> b_exists f b || n_exists f e1 || n_exists f e2
 
 and b_exists (f : Variable.t -> bool) : bexp -> bool = function
@@ -468,7 +470,8 @@ and n_to_string : nexp -> string = function
   | Var x -> Variable.name x
   | Unary (o, n) -> N_unary.to_string o ^ n_par n
   | Binary (b, a1, a2) -> n_par ~context:b a1 ^ " " ^ N_binary.to_string b ^ " " ^ n_par ~context:b a2
-  | NCall (x, arg) -> x ^ "(" ^ n_to_string arg ^ ")"
+  | NCall (x, args) ->
+      x ^ "(" ^ String.concat ", " (List.map n_to_string args) ^ ")"
   | NIf (b, n1, n2) -> b_par b ^ " ? " ^ n_par n1 ^ " : " ^ n_par n2
   | Other e -> "other(" ^ n_to_string e ^ ")"
   | CastInt b -> "int(" ^ b_to_string b ^ ")"

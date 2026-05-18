@@ -380,7 +380,7 @@ module TheoremExporter = struct
     in
     (* Create a goal comparing ua(index) == expected_cost *)
     let goal =
-      Theorem.Goal.Prop (NRel (N_rel.Eq, NCall ("ua", index), expected_cost))
+      Theorem.Goal.Prop (NRel (N_rel.Eq, NCall ("ua", [ index ]), expected_cost))
     in
     {
       cfg;

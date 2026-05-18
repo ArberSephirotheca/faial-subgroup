@@ -369,7 +369,10 @@ let test_theorem_prove_exact_cost =
   (* Test theorem: ua(2 * threadIdx.x) == 2 *)
   let goal =
     Goal.Prop
-      (NRel (N_rel.Eq, NCall ("ua", n_mult (Num k) (Var Variable.tid_x)), Num k))
+      (NRel
+         ( N_rel.Eq,
+           NCall ("ua", [ n_mult (Num k) (Var Variable.tid_x) ]),
+           Num k ))
   in
   prove_thorem "ua(2 * threadIdx.x) should equal 2"
     {
@@ -389,7 +392,7 @@ let test_count_active_threads_block_dim_16 =
   in
   (* Test theorem: count_active(0) == 16 when block_dim.x = 16, threads_per_warp = 32 *)
   let goal =
-    Goal.Prop (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 16))
+    Goal.Prop (NRel (N_rel.Eq, NCall ("count_active", [ Num 0 ]), Num 16))
   in
   prove_thorem "count_active(0) == 16 with block_dim.x=16"
     {
@@ -409,7 +412,7 @@ let test_count_active_threads_block_dim_16x16 =
   in
   (* Test theorem: count_active(0) == 32 when block_dim = {x:16, y:16}, threads_per_warp = 32 *)
   let goal =
-    Goal.Prop (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 32))
+    Goal.Prop (NRel (N_rel.Eq, NCall ("count_active", [ Num 0 ]), Num 32))
   in
   prove_thorem "count_active(0) == 32 with block_dim={x:16,y:16}"
     {
@@ -429,7 +432,7 @@ let test_count_active_threads_block_dim_32 =
   in
   (* Test theorem: count_active(0) == 32 when block_dim.x = 32, threads_per_warp = 32 *)
   let goal =
-    Goal.Prop (NRel (N_rel.Eq, NCall ("count_active", Num 0), Num 32))
+    Goal.Prop (NRel (N_rel.Eq, NCall ("count_active", [ Num 0 ]), Num 32))
   in
   prove_thorem "count_active(0) == 32 with block_dim.x=32"
     {
@@ -456,10 +459,10 @@ let test_count_active_threads_block_dim_40 =
       (b_and
          (b_impl
             (n_eq (Var warp_id) (Num 0))
-            (n_eq (NCall ("count_active", Num 0)) (Num 32)))
+            (n_eq (NCall ("count_active", [ Num 0 ])) (Num 32)))
          (b_impl
             (n_eq (Var warp_id) (Num 1))
-            (n_eq (NCall ("count_active", Num 0)) (Num 8))))
+            (n_eq (NCall ("count_active", [ Num 0 ])) (Num 8))))
   in
   prove_thorem "count_active depends on warp_id with block_dim.x=40"
     {

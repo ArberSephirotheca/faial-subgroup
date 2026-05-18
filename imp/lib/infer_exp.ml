@@ -100,7 +100,7 @@ let rec to_nexp (e : t) : Exp.nexp state =
           return (Exp.Unary (o, n))
       | NCall (x, n) ->
           let* n = to_nexp n in
-          return (Exp.NCall (x, n))
+          return (Exp.NCall (x, [ n ]))
       | NIf (b, n1, n2) ->
           let* b = to_bexp b in
           let* n1 = to_nexp n1 in

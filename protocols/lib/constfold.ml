@@ -34,7 +34,7 @@ let rec gcd a b = if b = 0 then a else gcd b (a mod b)
 let rec n_opt (a : nexp) : nexp =
   match a with
   | Var _ | Num _ -> a
-  | NCall (x, e) -> NCall (x, n_opt e)
+  | NCall (x, args) -> NCall (x, List.map n_opt args)
   | Unary (BitNot, e) -> n_bit_not (n_opt e)
   | Unary (Negate, e) -> n_uminus (n_opt e)
   | CastInt b -> cast_int (b_opt b)

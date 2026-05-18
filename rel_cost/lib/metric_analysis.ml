@@ -82,7 +82,12 @@ module UA = struct
           if is_aligned e1 ty2 || is_aligned e2 ty1 then (Num word, Constant)
           else bin op (e1, ty1) (e2, ty2)
       | Binary (o, e1, e2) -> bin o (from_nexp e1) (from_nexp e2)
-      | NCall (f, e) -> map (fun e -> NCall (f, e)) (from_nexp e)
+      | NCall (f, args) ->
+          let args_t = List.map from_nexp args in
+          let r =
+            List.fold_left (fun acc (_, t) -> max acc t) Constant args_t
+          in
+          (NCall (f, List.map fst args_t), r)
       | Other e -> map (fun e -> Other e) (from_nexp e)
       | CastInt e ->
           let r = if Exp.b_intersects locals e then AnyAccurate else Uniform in
@@ -146,7 +151,14 @@ module BC = struct
           (Var x, r)
       | Unary (o, e) -> map (fun e -> Unary (o, e)) (from_nexp e)
       | Binary (o, e1, e2) -> bin o (from_nexp e1) (from_nexp e2)
-      | NCall (f, e) -> map (fun e -> NCall (f, e)) (from_nexp e)
+      | NCall (f, args) ->
+          let args_t = List.map from_nexp args in
+          let r =
+            List.fold_left
+              (fun acc (_, t) -> if acc = Any || t = Any then Any else Uniform)
+              Uniform args_t
+          in
+          (NCall (f, List.map fst args_t), r)
       | Other e -> map (fun e -> Other e) (from_nexp e)
       | CastInt e ->
           let r = if Exp.b_intersects locals e then Any else Uniform in

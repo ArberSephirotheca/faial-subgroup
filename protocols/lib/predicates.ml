@@ -94,7 +94,9 @@ let get_predicates (b : bexp) : t list =
     | Var _ | Num _ -> ns
     | Binary (_, n1, n2) -> get_names_n n1 ns |> get_names_n n2
     | NIf (b, n1, n2) -> get_names_b b ns |> get_names_n n1 |> get_names_n n2
-    | NCall (_, n) | Other n | Unary (_, n) -> get_names_n n ns
+    | NCall (_, ns') ->
+        List.fold_left (fun acc n -> get_names_n n acc) ns ns'
+    | Other n | Unary (_, n) -> get_names_n n ns
     | CastInt b -> get_names_b b ns
   in
   get_names_b b StringSet.empty
@@ -107,7 +109,8 @@ let get_predicates (b : bexp) : t list =
   |> List.filter_map (Hashtbl.find_opt all_predicates_db)
 
 let rec n_inline : nexp -> nexp = function
-  | (NCall _ | Var _ | Num _) as n -> n
+  | (Var _ | Num _) as n -> n
+  | NCall (x, args) -> NCall (x, List.map n_inline args)
   | CastInt b -> CastInt (b_inline b)
   | Other e -> Other (n_inline e)
   | Unary (o, e) -> Unary (o, n_inline e)

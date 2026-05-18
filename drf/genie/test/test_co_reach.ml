@@ -295,7 +295,8 @@ let rec nexp_has_other (n : Exp.nexp) : bool =
   match n with
   | Exp.Other _ -> true
   | Exp.Num _ | Exp.Var _ -> false
-  | Exp.Unary (_, e) | Exp.NCall (_, e) -> nexp_has_other e
+  | Exp.Unary (_, e) -> nexp_has_other e
+  | Exp.NCall (_, es) -> List.exists nexp_has_other es
   | Exp.CastInt b -> bexp_has_other b
   | Exp.Binary (_, n1, n2) -> nexp_has_other n1 || nexp_has_other n2
   | Exp.NIf (b, n1, n2) ->

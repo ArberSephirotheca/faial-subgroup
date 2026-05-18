@@ -245,7 +245,7 @@ module Proj = struct
     | Binary (o, n1, n2) -> Binary (o, nexp locals t n1, nexp locals t n2)
     | NIf (b, n1, n2) ->
         NIf (bexp locals t b, nexp locals t n1, nexp locals t n2)
-    | NCall (x, n) -> NCall (x, nexp locals t n)
+    | NCall (x, ns) -> NCall (x, List.map (nexp locals t) ns)
 
   and bexp (locals : Variable.Set.t) (t : task) (b : Exp.bexp) : Exp.bexp =
     let open Exp in

@@ -276,6 +276,29 @@ let test_ult_vs_lt_on_zero () : unit =
   | Ok Solver.Unsat -> Alcotest.fail "Lt(x, 0) should be SAT, got UNSAT"
   | Error msg -> Alcotest.failf "Lt(x, 0) solver error: %s" msg
 
+let test_ncall_uninterpreted_function_same_args () : unit =
+  (* Two calls to the same unknown function name with equal arguments
+     must agree, so asserting they differ is UNSAT. Verifies the UF
+     contract [f(x) = f(y) when x = y]. *)
+  let f_of n = NCall ("f_uf_test", [ Num n ]) in
+  let claim = NRel (N_rel.Neq, f_of 7, f_of 7) in
+  match IntGen.solve claim with
+  | Ok Solver.Unsat -> ()
+  | Ok (Solver.Sat _) ->
+      Alcotest.fail "f(7) <> f(7) should be UNSAT for a UF"
+  | Error msg -> Alcotest.failf "solver error: %s" msg
+
+let test_ncall_uninterpreted_function_diff_args () : unit =
+  (* Two calls with distinct arguments are free to disagree, so
+     asserting they differ is SAT. *)
+  let f_of n = NCall ("g_uf_test", [ Num n ]) in
+  let claim = NRel (N_rel.Neq, f_of 1, f_of 2) in
+  match IntGen.solve claim with
+  | Ok (Solver.Sat _) -> ()
+  | Ok Solver.Unsat ->
+      Alcotest.fail "g(1) <> g(2) should be SAT for a UF"
+  | Error msg -> Alcotest.failf "solver error: %s" msg
+
 let test_tactic_skip () : unit =
   (* Test Skip tactic in production mode - should solve tautology *)
   let tautology = Bool true in
@@ -312,6 +335,12 @@ let tests : unit Alcotest.test_case list =
     ("urshift_vs_rshift_on_high_bit", `Quick, test_urshift_vs_rshift_on_high_bit);
     ("udiv_vs_sdiv_on_minus_one", `Quick, test_udiv_vs_sdiv_on_minus_one);
     ("umod_vs_smod_on_minus_one", `Quick, test_umod_vs_smod_on_minus_one);
+    ( "ncall_uninterpreted_function_same_args",
+      `Quick,
+      test_ncall_uninterpreted_function_same_args );
+    ( "ncall_uninterpreted_function_diff_args",
+      `Quick,
+      test_ncall_uninterpreted_function_diff_args );
   ]
 
 let () = Alcotest.run "Gen_z3" [ ("test_gen_z3", tests) ]

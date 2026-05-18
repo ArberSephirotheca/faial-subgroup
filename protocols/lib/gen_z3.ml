@@ -568,10 +568,12 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Other n ->
         let n : string = Exp.n_to_string n in
         raise (Not_implemented ("n_to_expr: not implemented for Other of " ^ n))
-    | NCall _ as c ->
-        preprocessing_error
-          ("b_to_expr: invoke Predicates.inline to remove predicates: "
-         ^ n_to_string c)
+    | NCall (name, args) ->
+        let z3_args = List.map (n_to_expr ctx) args in
+        let sort = Expr.get_sort (N.mk_num ctx 0) in
+        let domain = List.map (fun _ -> sort) args in
+        let func_decl = Z3.FuncDecl.mk_func_decl_s ctx name domain sort in
+        Z3.FuncDecl.apply func_decl z3_args
     | Num (n : int) -> N.mk_num ctx n
     | Binary (op, n1, n2) ->
         (nbin_to_expr op) ctx (n_to_expr ctx n1) (n_to_expr ctx n2)

@@ -34,7 +34,7 @@ module Make (S : SUBST) = struct
     | Unary (o, e) -> Unary (o, n_subst s e)
     | Binary (o, n1, n2) -> Binary (o, n_subst s n1, n_subst s n2)
     | NIf (b, n1, n2) -> NIf (b_subst s b, n_subst s n1, n_subst s n2)
-    | NCall (x, a) -> NCall (x, n_subst s a)
+    | NCall (x, args) -> NCall (x, List.map (n_subst s) args)
     | Other e -> Other (n_subst s e)
 
   and b_subst (s : S.t) (b : bexp) : bexp =

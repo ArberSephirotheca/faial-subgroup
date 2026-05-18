@@ -64,7 +64,7 @@ nexp:
   | v=var                                { Var v }
 
   (* Function calls *)
-  | name=IDENT LPAREN arg=nexp RPAREN    { NCall (name, arg) }
+  | name=IDENT LPAREN arg=nexp RPAREN    { NCall (name, [ arg ]) }
 
   (* Arithmetic binary operators *)
   | left=nexp PLUS right=nexp            { Binary (N_binary.Plus Signedness.Signed, left, right) }

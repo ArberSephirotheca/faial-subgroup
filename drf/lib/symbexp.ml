@@ -112,7 +112,7 @@ let rec project_n (locals : Variable.Set.t) (t : Task.t) (n : nexp) : nexp =
   | Binary (o, n1, n2) -> Binary (o, project_n locals t n1, project_n locals t n2)
   | NIf (b, n1, n2) ->
       NIf (project_b locals t b, project_n locals t n1, project_n locals t n2)
-  | NCall (x, n) -> NCall (x, project_n locals t n)
+  | NCall (x, ns) -> NCall (x, List.map (project_n locals t) ns)
 and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
   match b with
   | CastBool e -> CastBool (project_n locals t e)

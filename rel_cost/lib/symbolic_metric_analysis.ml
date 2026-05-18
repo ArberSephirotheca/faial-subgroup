@@ -29,7 +29,7 @@ module Proj = struct
     | Other _ -> failwith "unsupported"
     | Binary (o, n1, n2) -> Binary (o, proj_n n1 ctx, proj_n n2 ctx)
     | NIf (b, n1, n2) -> NIf (proj_b b ctx, proj_n n1 ctx, proj_n n2 ctx)
-    | NCall (x, n) -> NCall (x, proj_n n ctx)
+    | NCall (x, ns) -> NCall (x, List.map (fun n -> proj_n n ctx) ns)
 
   and proj_b (b : bexp) (ctx : t) : bexp =
     match b with
@@ -721,8 +721,11 @@ let ua = optimize_metric encode_ua
 
 (* Inline ua() function calls in expressions *)
 let rec n_inline_cost : nexp -> nexp state = function
-  | NCall ("ua", index) -> cost_of encode_ua index
-  | NCall ("count_active", index) -> cost_of encode_count_active_threads index
+  | NCall ("ua", [ index ]) -> cost_of encode_ua index
+  | NCall ("count_active", [ index ]) ->
+      cost_of encode_count_active_threads index
+  | NCall ((("ua" | "count_active") as name), _) ->
+      failwith (name ^ " expects exactly one argument")
   | (Var _ | Num _) as e -> return e
   | Other e ->
       let* e' = n_inline_cost e in
@@ -734,9 +737,9 @@ let rec n_inline_cost : nexp -> nexp state = function
   | Unary (op, e) ->
       let* e' = n_inline_cost e in
       return (Unary (op, e'))
-  | NCall (name, e) ->
-      let* e' = n_inline_cost e in
-      return (NCall (name, e'))
+  | NCall (name, args) ->
+      let* args' = State.list_map n_inline_cost args in
+      return (NCall (name, args'))
   | NIf (b, e1, e2) ->
       let* b' = b_inline_cost b in
       let* e1' = n_inline_cost e1 in
