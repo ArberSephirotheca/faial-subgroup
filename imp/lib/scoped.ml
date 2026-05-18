@@ -396,21 +396,35 @@ module Code = struct
         ty = C_type.int;
       }
 
-  (* Unique-return contract for atomicAdd / atomicSub: returns
-     [Some (Assert { cond = thread_distinct [target]; Global })]
-     when [aw] is an atomicAdd-family op with a strictly-positive
-     literal increment; [None] otherwise. The assert is emitted
-     adjacent to the target's [Decl], so when [Encode_asserts]
-     bubbles up the assert tree, the part mentioning [target] is
-     retained as a guard inside the [Decl]'s body. That guard
-     gates every subsequent access on the thread-distinctness
-     hypothesis through path conditions, with [target] still in
-     scope (unlike a kernel-level pre, which would lift the
-     constraint past its binder). *)
+  (* Unique-return contract for atomicAdd / atomicSub with a
+     nonzero literal delta. CUDA semantics: two threads T1, T2
+     calling [atomicAdd(addr, k)] on the same [addr] with [k != 0]
+     see distinct return values (one observes the other's update).
+     Soundness requires the two threads to atomic-modify the same
+     cell, so we gate the [thread_distinct [target]] assert by
+     [same_index]: if [index$T1 == index$T2] then
+     [target$T1 != target$T2]. When [aw.index = []] (singleton
+     counter pointer), [same_index] collapses to [true] and the
+     guard is unconditional.
+
+     The assert is emitted adjacent to the target's [Decl], so
+     when [Encode_asserts] bubbles up the assert tree, the part
+     mentioning [target] is retained as a guard inside the
+     [Decl]'s body. That guard gates every subsequent access on
+     the thread-distinctness hypothesis through path conditions,
+     with [target] still in scope (unlike a kernel-level pre,
+     which would lift the constraint past its binder).
+
+     [atomicInc] / [atomicDec] are intentionally excluded: their
+     wrap-around semantics ([old >= n ? 0 : old + 1]) only
+     preserve distinctness when the counter never wraps, which is
+     a precondition we cannot infer locally. *)
   let atomic_unique_return_assert (aw : Atomic_write.t) : Assert.t option =
     match aw.atomic.operation with
-    | (Add (Some (Exp.Num n)) | Sub (Some (Exp.Num n))) when n > 0 ->
-        Some (Assert.make (Exp.thread_distinct [ aw.target ]) Global)
+    | (Add (Some (Exp.Num n)) | Sub (Some (Exp.Num n))) when n <> 0 ->
+        let same_index = Exp.b_and_ex (List.map Exp.thread_eq aw.index) in
+        let distinct_returns = Exp.thread_distinct [ aw.target ] in
+        Some (Assert.make (Exp.b_impl same_index distinct_returns) Global)
     | _ -> None
 
   (* Winner-uniqueness contract for [atomicCAS] / WGSL's

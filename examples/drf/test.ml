@@ -69,6 +69,20 @@ let tests =
     (* Negative companion: same kernel shape but the seed read is
        plain (not atomicCAS), so no winner contract applies. *)
     ("racy-cas-no-winner.cu", [], 1);
+    (* Atomic-2: atomicAdd unique-slot. Same-cell, nonzero literal
+       delta gives distinct return values across threads, so the
+       downstream slot write is DRF. *)
+    ("drf-atomicadd-slot.cu", [], 0);
+    (* Same contract for a negative literal delta. *)
+    ("drf-atomicadd-slot-neg.cu", [], 0);
+    (* Zero delta is excluded from the contract: every thread sees
+       the same returned value, so the downstream slot write
+       aliases. *)
+    ("racy-atomicadd-zero.cu", [], 1);
+    (* Per-thread counter cells: distinctness only holds when threads
+       atomic-mod the same address; with disjoint cells two threads
+       can both get return 0 and alias on the slot write. *)
+    ("racy-atomicadd-per-thread-counter.cu", [], 1);
     (* A data-race that occurs when we have warp-concurrent semantics *)
     ("racy-reduce.cu", [], 1);
     (* A data-race free example as long as the analysis understands typedefs. *)

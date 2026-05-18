@@ -547,14 +547,17 @@ let rec parse_expr (j : json) : c_expr j_result =
         | "++" -> inc "+"
         | "--" -> inc "-"
         | "+" -> c
-        | "-" ->
-            BinaryOperator
-              {
-                ty = J_type.from_json ty;
-                opcode = op;
-                lhs = IntegerLiteral 0;
-                rhs = c;
-              }
+        | "-" -> (
+            match c with
+            | IntegerLiteral n -> IntegerLiteral (-n)
+            | _ ->
+                BinaryOperator
+                  {
+                    ty = J_type.from_json ty;
+                    opcode = op;
+                    lhs = IntegerLiteral 0;
+                    rhs = c;
+                  })
         | _ ->
             UnaryOperator { ty = J_type.from_json ty; opcode = op; child = c })
   | "CompoundAssignOperator" -> (
