@@ -477,17 +477,14 @@ module Make (L : Logger) = struct
           in
           let index = List.map infer_expr r.source.index in
           let ty = r.ty |> resolve |> C_type.strip_array in
-          let expected = Option.map infer_expr r.expected in
-          let increment = Option.map infer_expr r.increment in
+          let atomic = Atomic.map infer_expr r.atomic in
           Infer_stmt.Atomic
             {
               target = r.target;
-              atomic = r.atomic;
+              atomic;
               array;
               index;
               ty;
-              expected;
-              increment;
             }
       | IfStmt { cond; then_stmt; else_stmt } ->
           Imp.Infer_stmt.If (infer_expr cond, infer then_stmt, infer else_stmt)

@@ -358,23 +358,8 @@ type d_read = { target : Variable.t; source : d_subscript; ty : C_type.t }
 type d_atomic = {
   target : Variable.t;
   source : d_subscript;
-  atomic : Atomic.t;
+  atomic : Expr.t Atomic.t;
   ty : C_type.t;
-  (* For compare-and-swap atomics ([atomicCAS], scoped variants),
-     the [expected] argument (slot 1 of the call). Carried through
-     d_lang so [Atomic_seed_read] in Imp can identify the variable
-     that seeds the CAS without re-parsing the source. [None] for
-     all non-CAS atomics. *)
-  expected : Expr.t option;
-  (* For unique-return atomics ([atomicAdd] / [atomicSub] / scoped
-     variants), the increment argument (slot 1 of the call). Carried
-     through d_lang so [Scoped.imp_to_scoped] can attach a thread-
-     distinctness [pre] on the target's [Decl] when the increment
-     is a positive literal. [None] for non-Add-family atomics.
-     Different field from [expected] because they're different
-     things: [expected] is the CAS comparison value; [increment] is
-     the additive amount. *)
-  increment : Expr.t option;
 }
 
 module Stmt = struct
@@ -445,17 +430,15 @@ module Stmt = struct
     in
     ReadAccessStmt { target; source; ty }
 
-  let atomic_access ?(expected : Expr.t option)
-      ?(increment : Expr.t option) (target : Variable.t)
-      (source : d_subscript) (atomic : Atomic.t) : t =
+  let atomic_access (target : Variable.t) (source : d_subscript)
+      (atomic : Expr.t Atomic.t) : t =
     let ty =
       source.ty
       |> J_type.to_c_type ~default:C_type.int
       (* If it's an array get the elements type *)
       |> C_type.strip_array
     in
-    AtomicAccessStmt
-      { target; source; atomic; ty; expected; increment }
+    AtomicAccessStmt { target; source; atomic; ty }
 
   (* Build [assert(<cond>);] as a statement. [d_to_imp] recognises
      calls to [assert] and lifts them to [Imp.Stmt.Assert] with
@@ -674,9 +657,8 @@ module Stmt = struct
         return (ReadAccessStmt { r with source })
     | AtomicAccessStmt a ->
         let* source = map_subscript a.source in
-        let* expected = State.option_map f a.expected in
-        let* increment = State.option_map f a.increment in
-        return (AtomicAccessStmt { a with source; expected; increment })
+        let* atomic = Atomic.map_state f a.atomic in
+        return (AtomicAccessStmt { a with source; atomic })
     | ReturnStmt e ->
         let* e = State.option_map f e in
         return (ReturnStmt e)
@@ -943,11 +925,10 @@ module AccessState = struct
   let add_read (a : d_subscript) : Variable.t state =
     add_var (subscript_to_s a) (fun x -> Stmt.read_access x a)
 
-  let add_atomic ?(expected : Expr.t option)
-      ?(increment : Expr.t option) (atomic : Atomic.t)
-      (source : d_subscript) : Variable.t state =
+  let add_atomic (atomic : Expr.t Atomic.t) (source : d_subscript) :
+      Variable.t state =
     add_var (subscript_to_s source) (fun target ->
-        Stmt.atomic_access ?expected ?increment target source atomic)
+        Stmt.atomic_access target source atomic)
 
   let add_call (c : Expr.d_call) : Variable.t state =
     let e = Expr.CallExpr c in
@@ -982,41 +963,42 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
     when Atomic.is_valid f.name -> (
       let atomic = Atomic.from_name f.name |> Option.get in
       let* e : Expr.t = rewrite_exp e in
-      (* Rewrite the remaining arguments to extract any reads they may
-         hide, but discard them otherwise — the access-protocol layer
-         only needs to know that an atomic happened on the target
-         address, not what was done. The lone exception is the [expected]
-         argument of compare-and-swap atomics: [Imp.Atomic_seed_read]
-         needs the rewritten d_lang expression to identify the seed
-         variable that feeds the CAS. *)
+      (* Rewrite the remaining arguments to extract any reads they
+         may hide, but most are discarded — the access-protocol
+         layer only needs to know that an atomic happened on the
+         target address, not what was done. The operands threaded
+         into [atomic.operation] are the lone exceptions:
+         [Atomic_seed_read] uses the CAS [expected] expression to
+         identify the seed variable, and [Scoped.imp_to_scoped]
+         uses [Add]/[Sub]'s argument to gate the unique-return
+         assert on a positive literal increment. *)
       let* args = State.list_map rewrite_exp args in
-      let name_starts_with (prefix : string) (name : string) : bool =
-        let lp = String.length prefix in
-        String.length name >= lp && String.sub name 0 lp = prefix
+      let operation : Expr.t Atomic.Operation.t =
+        match atomic.operation, args with
+        | CAS _, expected :: new_val :: _ ->
+            CAS { expected = Some expected; new_val = Some new_val }
+        | CAS _, [ expected ] ->
+            CAS { expected = Some expected; new_val = None }
+        | Add _, value :: _ -> Add (Some value)
+        | Sub _, value :: _ -> Sub (Some value)
+        | Inc _, value :: _ -> Inc (Some value)
+        | Dec _, value :: _ -> Dec (Some value)
+        | And _, value :: _ -> And (Some value)
+        | Or _, value :: _ -> Or (Some value)
+        | Xor _, value :: _ -> Xor (Some value)
+        | Min _, value :: _ -> Min (Some value)
+        | Max _, value :: _ -> Max (Some value)
+        | Exch _, value :: _ -> Exch (Some value)
+        | op, _ -> op
       in
-      let fname = Variable.name f.name in
-      let expected =
-        if name_starts_with "atomicCAS" fname then
-          match args with e :: _ -> Some e | [] -> None
-        else None
-      in
-      (* For atomicAdd / atomicSub (and scoped variants) the slot 1
-         argument is the increment / decrement amount. [Scoped
-         .imp_to_scoped] checks it's a positive literal before
-         emitting the unique-return [pre] on the target's Decl. *)
-      let increment =
-        if name_starts_with "atomicAdd" fname
-           || name_starts_with "atomicSub" fname
-        then match args with e :: _ -> Some e | [] -> None
-        else None
-      in
+      let atomic = { atomic with operation } in
       match e with
       | Ident x ->
-          rewrite_atomic ?expected ?increment atomic
+          rewrite_atomic atomic
             (make_subscript ~name:x.name ~index:[ IntegerLiteral 0 ]
                ~location:(Variable.location f.name) ~ty)
       | BinaryOperator { lhs = Ident x; rhs = e; opcode = "+"; _ } ->
-          rewrite_atomic ?expected ?increment atomic
+          rewrite_atomic atomic
             (make_subscript ~name:x.name ~index:[ e ]
                ~location:(Variable.location f.name) ~ty)
       | _ -> return (CallExpr { func = Ident f; args = e :: args; ty }))
@@ -1267,10 +1249,8 @@ and rewrite_read (a : C_lang.Expr.c_array_subscript) : Expr.t state =
   let* x = AccessState.add_read a in
   return (Expr.ident ~ty:a.ty x)
 
-and rewrite_atomic ?(expected : Expr.t option)
-    ?(increment : Expr.t option) (atomic : Atomic.t) (a : d_subscript) :
-    Expr.t state =
-  let* x = AccessState.add_atomic ?expected ?increment atomic a in
+and rewrite_atomic (atomic : Expr.t Atomic.t) (a : d_subscript) : Expr.t state =
+  let* x = AccessState.add_atomic atomic a in
   return (Expr.ident ~ty:a.ty x)
 
 and rewrite_call (a : Expr.d_call) : Expr.t state =

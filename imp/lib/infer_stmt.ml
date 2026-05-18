@@ -56,26 +56,9 @@ type t =
   | Atomic of {
       target : Variable.t;
       ty : C_type.t;
-      atomic : Atomic.t;
+      atomic : Infer_exp.t Atomic.t;
       array : Variable.t;
       index : Infer_exp.t list;
-      (* For compare-and-swap atomics ([atomicCAS] / WGSL's
-         [atomicCompareExchangeWeak]), the [expected] argument.
-         Threaded through from each frontend ([d_lang] carries it on
-         [d_atomic]; w_lang surfaces it via [AtomicFunction.Exchange
-         { compare }]) so [Atomic_seed_read] can identify the
-         variable that seeds the CAS without re-parsing the source.
-         [None] for non-CAS atomics. Stripped at [to_stmt] time
-         since the downstream race-detector only consults the
-         [Atomic_write.t]'s mode tag. *)
-      expected : Infer_exp.t option;
-      (* For unique-return atomics ([atomicAdd] / [atomicSub] /
-         WGSL's [Add] / [Subtract]), the additive amount argument.
-         Threaded through to [Atomic_write.t.increment] so that
-         [Scoped.imp_to_scoped] can attach a thread-distinctness
-         [pre] on the target's [Decl] when the increment is a
-         positive literal. [None] for non-Add-family atomics. *)
-      increment : Infer_exp.t option;
     }
   | Write of {
       array : Variable.t;
@@ -143,14 +126,11 @@ let rec to_stmt : t -> Stmt.t =
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
          return (Stmt.Read { target; array; index }))
-  | Atomic { target; ty; atomic; array; index; expected; increment } ->
+  | Atomic { target; ty; atomic; array; index } ->
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
-         let* increment = State.option_map to_nexp increment in
-         let* expected = State.option_map to_nexp expected in
-         return
-           (Stmt.Atomic
-              { target; atomic; array; index; ty; increment; expected }))
+         let* atomic = Atomic.map_state to_nexp atomic in
+         return (Stmt.Atomic { target; atomic; array; index; ty }))
   | Write { array; index; payload } ->
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in

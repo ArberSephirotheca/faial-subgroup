@@ -407,45 +407,27 @@ module Code = struct
      hypothesis through path conditions, with [target] still in
      scope (unlike a kernel-level pre, which would lift the
      constraint past its binder). *)
-  let starts_with (s : string) (prefix : string) : bool =
-    let lp = String.length prefix in
-    String.length s >= lp && String.sub s 0 lp = prefix
-
   let atomic_unique_return_assert (aw : Atomic_write.t) : Assert.t option =
-    let name = Variable.name aw.atomic.name in
-    let is_add_family =
-      starts_with name "atomicAdd" || starts_with name "atomicSub"
-    in
-    let positive_literal =
-      match aw.increment with
-      | Some (Exp.Num n) -> n > 0
-      | _ -> false
-    in
-    if is_add_family && positive_literal then
-      Some (Assert.make (Exp.thread_distinct [ aw.target ]) Global)
-    else None
+    match aw.atomic.operation with
+    | (Add (Some (Exp.Num n)) | Sub (Some (Exp.Num n))) when n > 0 ->
+        Some (Assert.make (Exp.thread_distinct [ aw.target ]) Global)
+    | _ -> None
 
-  (* Winner-uniqueness contract for atomicCAS / scoped variants and
-     WGSL's [atomicCompareExchangeWeak]: at most one thread per
-     address sees [target == expected]. For two threads T1 and T2
-     calling the same CAS site, the conjunction [target$T1 ==
-     expected$T1 && target$T2 == expected$T2 && index$T1 ==
-     index$T2] is contradictory by hardware semantics. The assert
-     expresses the negation; after [Encode_asserts] retains the
-     part mentioning [target], it becomes a guard inside the
-     target's [Decl] that gates every downstream access. Sound
-     under the standard assumption that [expected] is not the
-     value being written back (the common SENTINEL / KEY shape).
-     [None] for non-CAS atomics or when [expected] wasn't
-     captured. *)
+  (* Winner-uniqueness contract for [atomicCAS] / WGSL's
+     [atomicCompareExchangeWeak]: at most one thread per address
+     sees [target == expected]. For two threads T1 and T2 calling
+     the same CAS site, the conjunction [target$T1 == expected$T1
+     && target$T2 == expected$T2 && index$T1 == index$T2] is
+     contradictory by hardware semantics. The assert expresses the
+     negation; after [Encode_asserts] retains the part mentioning
+     [target], it becomes a guard inside the target's [Decl] that
+     gates every downstream access. Sound under the standard
+     assumption that [expected] is not the value being written
+     back (the common SENTINEL / KEY shape). [None] when
+     [expected] wasn't captured or the atomic isn't a CAS. *)
   let atomic_cas_winner_assert (aw : Atomic_write.t) : Assert.t option =
-    let name = Variable.name aw.atomic.name in
-    let is_cas =
-      starts_with name "atomicCAS"
-      || starts_with name "atomicCompareExchangeWeak"
-    in
-    match aw.expected with
-    | Some expected when is_cas ->
+    match aw.atomic.operation with
+    | CAS { expected = Some expected; _ } ->
         let target_eq = Exp.n_eq (Exp.Var aw.target) expected in
         let other_target_eq =
           Exp.n_eq (Exp.Other (Exp.Var aw.target)) (Exp.Other expected)

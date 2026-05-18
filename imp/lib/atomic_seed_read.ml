@@ -152,41 +152,33 @@ let address_key (array : Variable.t) (index : Infer_exp.t list) : string =
    block / system scoped variants and WGSL's atomicExchangeWeak (which
    w_to_imp emits with name [atomicExchangeWeak] when [compare = Some
    _]). The downstream [expected = Some _] check is what actually
-   gates the rewrite; the name check is a defence-in-depth filter
-   against non-CAS atomics whose [expected] might accidentally be
-   populated by a future code path. *)
-let is_cas (name : string) : bool =
-  let starts s prefix =
-    let lp = String.length prefix in
-    String.length s >= lp && String.sub s 0 lp = prefix
-  in
-  starts name "atomicCAS" || starts name "atomicExchangeWeak"
+   gates the rewrite. *)
 
 (* Build (array,index)-fingerprint -> (seed targets, the matched
-   Atomic.t) by walking every Atomic with [expected = Some _] and an
-   atomicCAS-class name, computing alias-closure of the expected
-   expression's free vars. *)
+   Atomic.t) by walking every CAS atomic that captured [expected],
+   computing alias-closure of the expected expression's free vars. *)
 let seed_index ~(alias : VarSet.t VarMap.t) (s : t) :
-    (VarSet.t * Atomic.t) Common.StringMap.t =
+    (VarSet.t * Infer_exp.t Atomic.t) Common.StringMap.t =
   let module SM = Common.StringMap in
   let rec walk acc = function
     | Skip | Sync _ | SyncOp _ | Assert _ | Read _ | Write _
     | LocationAlias _ | Call _ | Break | Continue | Return _ | Decl _
     | Assign _ ->
         acc
-    | Atomic { atomic; array; index; expected = Some e; _ }
-      when is_cas (Variable.name atomic.name) ->
-        let key = address_key array index in
-        let seeds =
-          alias_closure ~alias (free_vars VarSet.empty e)
-        in
-        let merged =
-          match SM.find_opt key acc with
-          | Some (existing, _) -> VarSet.union existing seeds
-          | None -> seeds
-        in
-        SM.add key (merged, atomic) acc
-    | Atomic _ -> acc
+    | Atomic { atomic; array; index; _ } ->
+        (match atomic.operation with
+         | CAS { expected = Some e; _ } ->
+             let key = address_key array index in
+             let seeds =
+               alias_closure ~alias (free_vars VarSet.empty e)
+             in
+             let merged =
+               match SM.find_opt key acc with
+               | Some (existing, _) -> VarSet.union existing seeds
+               | None -> seeds
+             in
+             SM.add key (merged, atomic) acc
+         | _ -> acc)
     | Seq (a, b) -> walk (walk acc a) b
     | If (_, p, q) -> walk (walk acc p) q
     | While (_, p) | DoWhile (_, p) -> walk acc p
@@ -197,8 +189,9 @@ let seed_index ~(alias : VarSet.t VarMap.t) (s : t) :
 
 (* ----- 5. Rewrite -------------------------------------------------- *)
 
-let rec rewrite_with ~(seeds : (VarSet.t * Atomic.t) Common.StringMap.t)
-    (s : t) : t =
+let rec rewrite_with
+    ~(seeds : (VarSet.t * Infer_exp.t Atomic.t) Common.StringMap.t) (s : t) : t
+    =
   let rew = rewrite_with ~seeds in
   match s with
   | Skip | Sync _ | SyncOp _ | Assert _ | Atomic _ | Write _
@@ -209,9 +202,7 @@ let rec rewrite_with ~(seeds : (VarSet.t * Atomic.t) Common.StringMap.t)
       let key = address_key array index in
       match Common.StringMap.find_opt key seeds with
       | Some (seed_set, atomic) when VarSet.mem t seed_set ->
-          Atomic
-            { target = t; ty; atomic; array; index;
-              expected = None; increment = None }
+          Atomic { target = t; ty; atomic; array; index }
       | _ -> r)
   | Read _ as r -> r (* read with no target — no seed to match *)
   | Seq (a, b) -> Seq (rew a, rew b)

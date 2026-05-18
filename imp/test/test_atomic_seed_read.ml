@@ -5,10 +5,10 @@ open Infer_stmt
 (* Helpers *)
 let var (name : string) : Variable.t = Variable.from_name name
 
-let atomic_cas : Atomic.t =
+let atomic_cas : Infer_exp.t Atomic.t =
   Atomic.from_name (Variable.from_name "atomicCAS") |> Option.get
 
-let atomic_add : Atomic.t =
+let atomic_add : Infer_exp.t Atomic.t =
   Atomic.from_name (Variable.from_name "atomicAdd") |> Option.get
 
 let read_int ~target ~array : t =
@@ -19,7 +19,7 @@ let read_int ~target ~array : t =
       index = [ Infer_exp.NExp (Num 0) ];
     }
 
-let atomic_with ~target ~array ~atomic ?expected ?increment () : t =
+let atomic_with ~target ~array ~atomic () : t =
   Atomic
     {
       target = var target;
@@ -27,9 +27,15 @@ let atomic_with ~target ~array ~atomic ?expected ?increment () : t =
       atomic;
       array = var array;
       index = [ Infer_exp.NExp (Num 0) ];
-      expected;
-      increment;
     }
+
+(* CAS atomic with [expected] folded into the operation, mirroring
+   what the frontends produce. *)
+let cas_with_expected (expected : Infer_exp.t) : Infer_exp.t Atomic.t =
+  {
+    atomic_cas with
+    operation = Atomic.Operation.CAS { expected = Some expected; new_val = None };
+  }
 
 let decl_set ~var:v ~init : t =
   Decl
@@ -51,7 +57,7 @@ let rec access_summary : t -> (string * string) list = function
   | Read { target = Some (_, t); _ } -> [ ("read", Variable.name t) ]
   | Read { target = None; _ } -> [ ("read", "_") ]
   | Atomic { target = t; atomic; _ } ->
-      [ ("atomic:" ^ Variable.name atomic.name, Variable.name t) ]
+      [ ("atomic:" ^ Atomic.Operation.to_string atomic.operation, Variable.name t) ]
   | Seq (a, b) -> access_summary a @ access_summary b
   | If (_, p, q) -> access_summary p @ access_summary q
   | While (_, p) | DoWhile (_, p) -> access_summary p
@@ -72,9 +78,8 @@ let test_retag_through_one_alias () : unit =
       [
         read_int ~target:"seed" ~array:"p";
         decl_set ~var:"old" ~init:"seed";
-        atomic_with ~target:"r" ~array:"p" ~atomic:atomic_cas
-          ~expected:(Infer_exp.NExp (Var (var "old")))
-          ();
+        atomic_with ~target:"r" ~array:"p"
+          ~atomic:(cas_with_expected (Infer_exp.NExp (Var (var "old")))) ();
       ]
   in
   let result = Atomic_seed_read.rewrite body in
@@ -95,9 +100,8 @@ let test_retag_through_two_aliases () : unit =
         read_int ~target:"seed" ~array:"p";
         decl_set ~var:"mid" ~init:"seed";
         decl_set ~var:"old" ~init:"mid";
-        atomic_with ~target:"r" ~array:"p" ~atomic:atomic_cas
-          ~expected:(Infer_exp.NExp (Var (var "old")))
-          ();
+        atomic_with ~target:"r" ~array:"p"
+          ~atomic:(cas_with_expected (Infer_exp.NExp (Var (var "old")))) ();
       ]
   in
   let result = Atomic_seed_read.rewrite body in
@@ -127,8 +131,8 @@ let test_retag_with_loop_carry () : unit =
             from_list
               [
                 decl_set ~var:"old" ~init:"ret";
-                atomic_with ~target:"cas_ret" ~array:"p" ~atomic:atomic_cas
-                  ~expected:(Infer_exp.NExp (Var (var "old")))
+                atomic_with ~target:"cas_ret" ~array:"p"
+                  ~atomic:(cas_with_expected (Infer_exp.NExp (Var (var "old"))))
                   ();
                 assign ~var:"ret" ~data:"cas_ret";
               ] );
@@ -149,8 +153,9 @@ let test_no_retag_when_seed_doesnt_feed_cas () : unit =
       [
         read_int ~target:"snapshot" ~array:"p";
         (* snapshot is never aliased into the atomicCAS's expected. *)
-        atomic_with ~target:"r" ~array:"p" ~atomic:atomic_cas
-          ~expected:(Infer_exp.NExp (Var (var "some_other_var")))
+        atomic_with ~target:"r" ~array:"p"
+          ~atomic:
+            (cas_with_expected (Infer_exp.NExp (Var (var "some_other_var"))))
           ();
       ]
   in
@@ -185,9 +190,8 @@ let test_no_retag_when_addresses_differ () : unit =
       [
         read_int ~target:"seed" ~array:"q";
         decl_set ~var:"old" ~init:"seed";
-        atomic_with ~target:"r" ~array:"p" ~atomic:atomic_cas
-          ~expected:(Infer_exp.NExp (Var (var "old")))
-          ();
+        atomic_with ~target:"r" ~array:"p"
+          ~atomic:(cas_with_expected (Infer_exp.NExp (Var (var "old")))) ();
       ]
   in
   let result = Atomic_seed_read.rewrite body in

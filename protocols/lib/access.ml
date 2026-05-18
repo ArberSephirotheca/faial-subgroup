@@ -6,7 +6,7 @@ module Mode = struct
        See can-conflict for potentially
        racy accesses. *)
     | Write of int option
-    | Atomic of Atomic.t
+    | Atomic of Exp.nexp Atomic.t
 
   let to_string : t -> string = function
     | Read -> "ro"

@@ -641,38 +641,44 @@ module Statements = struct
                   let* _ = Expressions.rewrite value in
                   (* translate the index *)
                   let* index = State.list_map Expressions.tr a.index in
-                  (* Compare-and-swap variants ([Exchange { compare =
-                     Some _ }]) carry an expected/seed argument that
-                     [Imp.Atomic_seed_read] needs to identify the
-                     variable feeding the CAS. Translate the compare
-                     expression once and surface it on the [Infer_stmt
-                     .Atomic]. Non-CAS atomics get [None]. *)
-                  let* expected =
+                  let* value = Expressions.tr value in
+                  (* Build the [Atomic.Operation] from WGSL's
+                     [AtomicFunction]. CAS variants ([Exchange {
+                     compare = Some _ }]) surface [expected] for
+                     [Atomic_seed_read] and the winner-uniqueness
+                     contract; arithmetic / bitwise / min / max
+                     operations surface the [value] operand for
+                     downstream contracts that need it. *)
+                  let* operation : Infer_exp.t Atomic.Operation.t =
                     match fun_ with
                     | W_lang.AtomicFunction.Exchange { compare = Some e } ->
-                        let* e = Expressions.tr e in
-                        return (Some e)
-                    | _ -> return None
-                  in
-                  (* For unique-return atomics ([Add] / [Subtract]),
-                     surface the additive amount so [Scoped
-                     .imp_to_scoped] can emit the thread-distinctness
-                     [pre] on the target's [Decl]. WGSL carries this
-                     in the [value] field. *)
-                  let* increment =
-                    match fun_ with
-                    | W_lang.AtomicFunction.Add
+                        let* expected = Expressions.tr e in
+                        return
+                          (Atomic.Operation.CAS
+                             { expected = Some expected; new_val = Some value })
+                    | W_lang.AtomicFunction.Exchange { compare = None } ->
+                        return (Atomic.Operation.Exch (Some value))
+                    | W_lang.AtomicFunction.Add ->
+                        return (Atomic.Operation.Add (Some value))
                     | W_lang.AtomicFunction.Subtract ->
-                        let* v = Expressions.tr value in
-                        return (Some v)
-                    | _ -> return None
+                        return (Atomic.Operation.Sub (Some value))
+                    | W_lang.AtomicFunction.And ->
+                        return (Atomic.Operation.And (Some value))
+                    | W_lang.AtomicFunction.ExclusiveOr ->
+                        return (Atomic.Operation.Xor (Some value))
+                    | W_lang.AtomicFunction.InclusiveOr ->
+                        return (Atomic.Operation.Or (Some value))
+                    | W_lang.AtomicFunction.Min ->
+                        return (Atomic.Operation.Min (Some value))
+                    | W_lang.AtomicFunction.Max ->
+                        return (Atomic.Operation.Max (Some value))
                   in
-                  let fun_ = "atomic" ^ W_lang.AtomicFunction.to_string fun_ in
-                  let atomic : Atomic.t =
+                  let atomic : Infer_exp.t Atomic.t =
                     {
-                      name = Variable.from_name fun_;
+                      operation;
                       (* TODO: what scope does WGSL default to? *)
                       scope = Atomic.Scope.Device;
+                      location = Some location;
                     }
                   in
                   let array = Variable.set_location location a.array.var in
@@ -686,8 +692,6 @@ module Statements = struct
                          ty = Types.tr result.ty;
                          atomic;
                          target = result.var;
-                         expected;
-                         increment;
                        })))
         | Store { pointer = Ident { ty; _ } as i; value }
           when W_lang.Type.is_int ty ->
