@@ -12,11 +12,11 @@ let decl_is_valid_j : json -> bool = function
       | Ok _ -> true)
   | _ -> false
 
-(* The C-AST parsers form a knot: parsing an expression may need to
+(* The C-AST parsers are mutually recursive. Parsing an expression may need to
    parse a statement (for [StmtExpr] and [LambdaExpr] bodies), and
    parsing a statement requires parsing expressions, declarations, and
    for-init clauses. They are defined as a single mutually-recursive
-   group here; each per-category module ([Expr], [Stmt], etc.)
+   function. Each per-category module ([Expr], [Stmt], etc.)
    re-exports the relevant entry point as a thin delegate. *)
 let rec parse_expr (j : json) : c_expr j_result =
   let open Rjson in

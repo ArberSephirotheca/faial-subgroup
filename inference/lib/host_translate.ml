@@ -1,13 +1,13 @@
 open Stage0
 open Protocols
 
-(** Launch-site argument resolution.
+(** Host-to-kernel expression translation.
 
     Launch-site expressions are host-side and broadcast as uniform
     constants to every thread; routing them through the in-kernel
     rewriter [D_lang.rewrite_exp] surfaces false-positive races on
-    non-[Ident] args. This module resolves each launch arg to a
-    [D_lang.Expr.t] usable directly by the synthesiser, abstracting
+    non-[Ident] args. This module rewrites each host expression into
+    a [D_lang.Expr.t] usable directly by the synthesiser, abstracting
     opaque sub-expressions behind fresh variables (deduped per
     launch). *)
 
@@ -15,7 +15,7 @@ open Protocols
    classes are captured structurally rather than by stringifying every
    expression we look up. *)
 
-(** Resolver state: a per-launch dedup cache keyed by canonical
+(** Translator state: a per-launch dedup cache keyed by canonical
     (location-stripped) stringification, plus the running list of
     fresh params minted for this launch, newest-first. *)
 type t = {
@@ -117,7 +117,7 @@ let rec strip_pointer_offset (e : C_lang.Expr.t) : pointer option =
            | Indexed _ -> None))
   | _ -> None
 
-let resolve_offset (proposed_name : Variable.t) (off : C_lang.Expr.t) :
+let rewrite_offset (proposed_name : Variable.t) (off : C_lang.Expr.t) :
     (t, Decl_expr.t) State.t =
   let open State.Syntax in
   match off with
@@ -127,9 +127,9 @@ let resolve_offset (proposed_name : Variable.t) (off : C_lang.Expr.t) :
       let* name = intern off ~name:proposed_name in
       return (Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name)
 
-(** Resolves [e] verbatim when possible; defers to [opaque] otherwise.
-    Shared between [resolve] and [resolve_axis]. *)
-let resolve_pure_or
+(** Rewrites [e] verbatim when possible; defers to [opaque] otherwise.
+    Shared between [rewrite_arg] and [rewrite_axis]. *)
+let rewrite_pure_or
     (opaque : C_lang.Expr.t -> (t, D_lang.Expr.t) State.t)
     (e : C_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
   let open State.Syntax in
@@ -137,11 +137,11 @@ let resolve_pure_or
   | Some pure -> return pure
   | None -> opaque e
 
-(** Resolves the launch-site argument at position [idx]. *)
-let resolve (idx : int) :
+(** Rewrites the launch-site argument at position [idx]. *)
+let rewrite_arg (idx : int) :
     C_lang.Expr.t -> (t, D_lang.Expr.t) State.t =
   let open State.Syntax in
-  resolve_pure_or (fun e ->
+  rewrite_pure_or (fun e ->
       let ty = C_lang.Expr.to_type e in
       if J_type.matches C_type.is_array ty then
         match strip_pointer_offset e with
@@ -150,7 +150,7 @@ let resolve (idx : int) :
               Variable.from_name
                 (Printf.sprintf "__faial_launch_arg_%d_off" idx)
             in
-            let* off_decl = resolve_offset off_name offset in
+            let* off_decl = rewrite_offset off_name offset in
             return
               D_lang.Expr.(
                 BinaryOperator
@@ -188,10 +188,10 @@ let dim3_axes (e : C_lang.Expr.t) :
       (Some x, Some one, Some one)
   | _ -> (None, None, None)
 
-(** Resolves the x/y/z axes of a [gridDim]/[blockDim] expression.
+(** Rewrites the x/y/z axes of a [gridDim]/[blockDim] expression.
     [None] propagates per axis from [dim3_axes] when that slot can't
     be decomposed. *)
-let resolve_axis (base : string) (e : C_lang.Expr.t) :
+let rewrite_axis (base : string) (e : C_lang.Expr.t) :
     (t, D_lang.Expr.t option * D_lang.Expr.t option * D_lang.Expr.t option)
     State.t =
   let open State.Syntax in
@@ -201,7 +201,7 @@ let resolve_axis (base : string) (e : C_lang.Expr.t) :
     | None -> return None
     | Some e ->
         let* d =
-          resolve_pure_or
+          rewrite_pure_or
             (fun e -> abstract e ~name:(mk_axis_name base axis))
             e
         in

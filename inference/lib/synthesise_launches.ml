@@ -25,12 +25,12 @@ let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
 
 (** One assert per axis; non-[Ident] axis expressions fold into a
     fresh per-axis pseudo-parameter, deduplicated against earlier
-    slots through the resolver cache. An axis that [resolve_axis]
+    slots through the resolver cache. An axis that [rewrite_axis]
     returns as [None] emits [Skip] instead — under [--all-dims] that
     dim then ranges freely, which is sound but imprecise. *)
 let dim_asserts (base : string) (e : C_lang.Expr.t) :
-    (Launch_arg.t, Stmt.t) State.t =
-  let* rhs_x, rhs_y, rhs_z = Launch_arg.resolve_axis base e in
+    (Host_translate.t, Stmt.t) State.t =
+  let* rhs_x, rhs_y, rhs_z = Host_translate.rewrite_axis base e in
   let mk axis = function
     | None -> Stmt.Skip
     | Some rhs -> assert_axis_eq base axis rhs
@@ -38,11 +38,11 @@ let dim_asserts (base : string) (e : C_lang.Expr.t) :
   return (Stmt.from_list [ mk "x" rhs_x; mk "y" rhs_y; mk "z" rhs_z ])
 
 let call_stmt (kernel : Decl_expr.t) (args : C_lang.Expr.t list) :
-    (Launch_arg.t, Stmt.t) State.t =
+    (Host_translate.t, Stmt.t) State.t =
   let* args =
     args
     |> List.mapi (fun i a -> (i, a))
-    |> State.list_map (fun (i, a) -> Launch_arg.resolve i a)
+    |> State.list_map (fun (i, a) -> Host_translate.rewrite_arg i a)
   in
   let func : Expr.t =
     Ident
@@ -74,7 +74,7 @@ let param_of_free_var (d : Decl_expr.t) : C_lang.Param.t option =
 let path_cond_asserts (lp : C_lang.LaunchParam.t) : Stmt.t =
   let ( let* ) = Option.bind in
   (let* e = lp.path_condition in
-   let* d_expr = Launch_arg.lift_pure e in
+   let* d_expr = Host_translate.lift_pure e in
    Some (Stmt.assert_stmt d_expr))
   |> Option.value ~default:Stmt.Skip
 
@@ -82,7 +82,7 @@ let path_cond_asserts (lp : C_lang.LaunchParam.t) : Stmt.t =
     binding instead of a universally-quantified parameter. *)
 let const_binding_decl (b : C_lang.ConstBinding.t) : Stmt.t option =
   let ( let* ) = Option.bind in
-  let* rhs = Launch_arg.lift_pure b.init in
+  let* rhs = Host_translate.lift_pure b.init in
   let ty_var = Ty_variable.make ~ty:b.ty ~name:b.name in
   let d = D_lang.Decl.from_expr ty_var rhs in
   Some (Stmt.DeclStmt [ d ])
@@ -95,7 +95,7 @@ let const_binding_decls (lp : C_lang.LaunchParam.t) : Stmt.t =
 let bound_names_emitted (lp : C_lang.LaunchParam.t) : Variable.Set.t =
   lp.const_bindings
   |> List.filter_map (fun (b : C_lang.ConstBinding.t) ->
-         Option.map (fun _ -> b.name) (Launch_arg.lift_pure b.init))
+         Option.map (fun _ -> b.name) (Host_translate.lift_pure b.init))
   |> Variable.Set.of_list
 
 let dedup_by_name (type a) ~(name_of : a -> Variable.t) (xs : a list) : a list =
@@ -143,7 +143,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
   (* Shared resolver state across grid, block, and args so duplicate
      expressions across slots collapse to one uniform symbol. *)
   let ctx, (body_grid, body_block, body_call) =
-    Launch_arg.empty
+    Host_translate.empty
     |> State.run (
       let* body_grid = dim_asserts "gridDim" lp.grid in
       let* body_block = dim_asserts "blockDim" lp.block in
@@ -183,7 +183,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
              in
              param_of_free_var d)
   in
-  let fresh_params = Launch_arg.fresh_params ctx in
+  let fresh_params = Host_translate.fresh_params ctx in
   let params =
     direct_params @ rebound_params @ fresh_params
     |> dedup_by_name ~name_of:C_lang.Param.name

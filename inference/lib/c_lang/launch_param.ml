@@ -30,7 +30,7 @@ type t = {
      between the guard's branch entry and the launch — calls,
      members, escaped locals, side effects — so what survives is
      always pure arithmetic / boolean over [Ident]s and literals
-     that [Launch_arg.lift_pure] handles directly. Absent when no
+     that [Host_translate.lift_pure] handles directly. Absent when no
      conjunct survives the soundness check. *)
   path_condition : c_expr option;
   (* Host-local [const]-qualified variables reachable from the
