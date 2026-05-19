@@ -709,7 +709,7 @@ let format_assume_flags (extras : per_kernel_extras) : string =
    are first-class assumptions and the caller threads them into the
    verdict so they surface in [Discovered: --assume ...]. *)
 let usage_constrained_kernel
-    ?(timeout : int option)
+    ~(gate_timeout_ms : int)
     ~(params : (string * int) list)
     (k : Kernel.t) : Kernel.t * Exp.bexp list =
   let used = Code.free_names k.code Variable.Set.empty in
@@ -732,11 +732,16 @@ let usage_constrained_kernel
       (* Reject-on-Unknown here. A pin accepted on Unknown can
          silently make [k.pre] unsatisfiable when the truth was Unsat,
          making later axis pre-flights and downstream gate queries
-         answer against a contradictory pre — and the answer would
+         answer against a contradictory pre, and the answer would
          vary with Z3 timing. The optimistic accept-on-Unknown
          policy used by the CEGAR gate is intentional there but
-         wrong for this optimisation step. *)
-      match Reachability.preconditions_check ?timeout probe' with
+         wrong for this optimisation step. The same policy makes the
+         [gate_timeout_ms] cap safe: a slow axis query that exceeds
+         the budget returns UNKNOWN, drops the pin, and the kernel
+         is analysed without that extra prune. *)
+      match
+        Reachability.preconditions_check ~timeout:gate_timeout_ms probe'
+      with
       | Reachability.Pre_sat ->
         (probe', Kernel.add_pre candidate k_acc, candidate :: pins)
       | Reachability.Pre_unsat | Reachability.Pre_unknown ->
@@ -1204,6 +1209,20 @@ let main =
                    downstream. Default is 500. Lower to bound the \
                    prune step harder, accepting a larger MaxSAT \
                    workload in return.")
+  and+ gate_timeout_ms =
+    Arg.(value & opt int 500
+         & info [ "gate-timeout-ms" ] ~docv:"MS"
+             ~doc:"Per-axis Z3 timeout for [usage_constrained_kernel]'s \
+                   pin pre-flight. The pin discovery step issues 6 \
+                   satisfiability queries per kernel (one per \
+                   tid.{x,y,z} / bid.{x,y,z} axis). On kernels whose \
+                   [k.pre] is structurally heavy (e.g. inlined device \
+                   functions with control flow), a single axis can \
+                   burn seconds of wall time. Queries hitting the cap \
+                   return UNKNOWN, which already drops the pin in the \
+                   conservative reject-on-Unknown policy, so the cap \
+                   trades a possible prune for bounded gate cost. \
+                   Default is 500. Set to 0 to disable the cap.")
   in
   seed |> Option.iter (fun n ->
     let s = string_of_int n in
@@ -1265,7 +1284,7 @@ let main =
       let kernels_with_pins =
         List.map (fun k ->
           if List.mem (Protocols.Kernel.name k) selected_names then
-            usage_constrained_kernel ?timeout ~params:app.params k
+            usage_constrained_kernel ~gate_timeout_ms ~params:app.params k
           else
             (k, []))
           app.kernels
