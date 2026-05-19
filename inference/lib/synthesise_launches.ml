@@ -25,12 +25,12 @@ let assert_axis_eq (base : string) (axis : string) (rhs : Expr.t) : Stmt.t =
 
 (** One assert per axis; non-[Ident] axis expressions fold into a
     fresh per-axis pseudo-parameter, deduplicated against earlier
-    slots through the resolver cache. An axis that [rewrite_axis]
+    slots through the resolver cache. An axis that [rewrite_dim3]
     returns as [None] emits [Skip] instead — under [--all-dims] that
     dim then ranges freely, which is sound but imprecise. *)
 let dim_asserts (base : string) (e : C_lang.Expr.t) :
     (Host_translate.t, Stmt.t) State.t =
-  let* rhs_x, rhs_y, rhs_z = Host_translate.rewrite_axis base e in
+  let* rhs_x, rhs_y, rhs_z = Host_translate.rewrite_dim3 base e in
   let mk axis = function
     | None -> Stmt.Skip
     | Some rhs -> assert_axis_eq base axis rhs

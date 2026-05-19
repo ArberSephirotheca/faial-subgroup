@@ -128,7 +128,7 @@ let rewrite_offset (proposed_name : Variable.t) (off : C_lang.Expr.t) :
       return (Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name)
 
 (** Rewrites [e] verbatim when possible; defers to [opaque] otherwise.
-    Shared between [rewrite_arg] and [rewrite_axis]. *)
+    Shared between [rewrite_arg] and [rewrite_dim3]. *)
 let rewrite_pure_or
     (opaque : C_lang.Expr.t -> (t, D_lang.Expr.t) State.t)
     (e : C_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
@@ -171,7 +171,7 @@ let rewrite_arg (idx : int) :
     existing dim3 value like a function return or struct field). The
     value ctor [dim3(unsigned int, ...)] only applies when each arg is
     integer; the dim3-typed shape falls through to [None]. *)
-let dim3_axes (e : C_lang.Expr.t) :
+let unpack_dim3 (e : C_lang.Expr.t) :
     C_lang.Expr.t option * C_lang.Expr.t option * C_lang.Expr.t option =
   let one : C_lang.Expr.t = IntegerLiteral 1 in
   let is_int_arg (a : C_lang.Expr.t) : bool =
@@ -188,14 +188,14 @@ let dim3_axes (e : C_lang.Expr.t) :
       (Some x, Some one, Some one)
   | _ -> (None, None, None)
 
-(** Rewrites the x/y/z axes of a [gridDim]/[blockDim] expression.
-    [None] propagates per axis from [dim3_axes] when that slot can't
-    be decomposed. *)
-let rewrite_axis (base : string) (e : C_lang.Expr.t) :
+(** Rewrites a [gridDim]/[blockDim] dim3 expression into its x/y/z
+    axes. [None] propagates per axis from [dim3_axes] when that slot
+    can't be decomposed. *)
+let rewrite_dim3 (base : string) (e : C_lang.Expr.t) :
     (t, D_lang.Expr.t option * D_lang.Expr.t option * D_lang.Expr.t option)
     State.t =
   let open State.Syntax in
-  let xe, ye, ze = dim3_axes e in
+  let xe, ye, ze = unpack_dim3 e in
   let one (axis : string) (e_opt : C_lang.Expr.t option) =
     match e_opt with
     | None -> return None
