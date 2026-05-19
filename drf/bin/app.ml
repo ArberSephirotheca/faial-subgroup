@@ -106,6 +106,7 @@ type t = {
   assumes : (string * Exp.bexp list) list;
   assume_dims : bool;
   assume_launch : bool;
+  memory_model : Memory_model.t;
   stop_at : Stage.t option;
 }
 
@@ -187,6 +188,7 @@ let to_string (app : t) : string =
    assumes;
    assume_dims;
    assume_launch;
+   memory_model;
    stop_at;
   } ->
       let only_kernel = Option.value ~default:"(null)" only_kernel in
@@ -208,6 +210,7 @@ let to_string (app : t) : string =
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
       ^ "\nassume_launch = " ^ bool assume_launch
+      ^ "\nmemory_model = " ^ Memory_model.to_string memory_model
       ^ "\nstop_at = " ^ opt Stage.to_string stop_at
       ^ "\nassumes: "
       ^ list_string (
@@ -222,7 +225,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize
-    ~assume_delin ~assumes ~assume_dims ~assume_launch ~cbor
+    ~assume_delin ~assumes ~assume_dims ~assume_launch ~memory_model ~cbor
     ~stop_at : t =
   let parsed =
     Phase_timer.measure "inference" (fun () ->
@@ -307,6 +310,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     assumes;
     assume_dims;
     assume_launch;
+    memory_model;
     stop_at;
   }
 
@@ -449,7 +453,7 @@ let check_unreachable (a : t) : unit =
 let run (a : t) : Analysis.t list =
   let check_kernel arch (kernel : Protocols.Kernel.t) : Analysis.t =
     let report =
-      kernel |> translate arch a |> Symbexp.translate arch
+      kernel |> translate arch a |> Symbexp.translate ~memory_model:a.memory_model arch
       |> Symbexp.add_rel_index (N_rel.Le Signedness.Signed) a.le_index
       |> Symbexp.add_rel_index (N_rel.Ge Signedness.Signed) a.ge_index
       |> Symbexp.add_rel_index N_rel.Eq a.eq_index

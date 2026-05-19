@@ -85,6 +85,19 @@ let tests =
     ("racy-atomicadd-per-thread-counter.cu", [], 1);
     (* A data-race that occurs when we have warp-concurrent semantics *)
     ("racy-reduce.cu", [], 1);
+    (* Pre-Volta warp-synchronous halving reduction on a single warp:
+       racy under post-Volta independent thread scheduling, DRF under
+       --assume-warp-synch. *)
+    ("drf-warp-synch-reduce.cu", [ "--block-dim=32" ], 1);
+    ( "drf-warp-synch-reduce.cu",
+      [ "--block-dim=32"; "--assume-warp-synch" ],
+      0 );
+    (* Negative companion: a cross-warp data race that must survive
+       --assume-warp-synch, since the implicit same-warp barrier does
+       not order threads in different warps. *)
+    ( "racy-cross-warp.cu",
+      [ "--block-dim=64"; "--assume-warp-synch" ],
+      1 );
     (* A data-race free example as long as the analysis understands typedefs. *)
     ("drf-typedef.cu", [], 0);
     (* The running example of CAV21 *)

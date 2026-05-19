@@ -314,6 +314,42 @@ module AtomicAxioms = struct
     |> b_and_ex
 end
 
+(* Encoded memory-consistency-model assumptions over the race witness.
+   Each assumption is projected over [Task1] and [Task2] and conjoined
+   into the goal. *)
+module MemoryModelAxioms = struct
+  (* [same_warp ~warp_size] holds when the two tasks' linearised
+     in-block thread ids fall into the same warp:
+       (tid_x + bdim_x * tid_y + bdim_x * bdim_y * tid_z) / warp_size
+     is equal across [Task1] and [Task2]. Under [warp_synchronous],
+     same-warp pairs are implicitly barrier-ordered, so the race goal
+     excludes them.
+
+     [warp_size] is passed as a literal [Num] (not [Var "warpSize"])
+     so the divisor doesn't introduce [Var / Var] non-linearity into
+     the BV encoding. The [bdim_x * bdim_y] cross-term in the [tid_z]
+     coefficient remains [Var * Var] unless [blockDim] is pinned
+     (via [--assume-launch] or explicit [--block-dim]); in practice
+     the warp-synchronous assumption is most useful when the launch
+     dimensions are known. *)
+  let same_warp ~(warp_size : int) : bexp =
+    let v (t : Task.t) (x : Variable.t) : nexp = Var (Gen.project t x) in
+    let linear (t : Task.t) : nexp =
+      n_plus
+        (v t Variable.tid_x)
+        (n_plus
+          (n_mult (v t Variable.tid_y) (Var Variable.bdim_x))
+          (n_mult (v t Variable.tid_z)
+            (n_mult (Var Variable.bdim_x) (Var Variable.bdim_y))))
+    in
+    n_eq
+      (n_div (linear Task1) (Num warp_size))
+      (n_div (linear Task2) (Num warp_size))
+
+  let axiom_of (m : Memory_model.t) : bexp =
+    if m.warp_synchronous then b_not (same_warp ~warp_size:32) else b_true
+end
+
 module SymAccess = struct
   (*
 
@@ -671,16 +707,19 @@ module Proof = struct
     make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
       ~accesses
 
-  let from_flat ?(assign_index = true) (arch : Architecture.t) (proof_id : int)
-      (k : Flatacc.Kernel.t) : t =
+  let from_flat ?(assign_index = true)
+      ?(memory_model = Memory_model.default) (arch : Architecture.t)
+      (proof_id : int) (k : Flatacc.Kernel.t) : t =
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
     let atomic_axioms = AtomicAxioms.axioms_of k locals in
+    let memory_model_axiom = MemoryModelAxioms.axiom_of memory_model in
     let goal =
       from_code ~assign_index arch locals k.runtime k.code
       |> b_and (project_pre locals k.pre)
       |> b_and atomic_axioms
+      |> b_and memory_model_axiom
       |> Predicates.strip_cross_thread
     in
     let pre_fns = Exp.b_free_names k.pre Variable.Set.empty in
@@ -713,9 +752,9 @@ let add_rel_index (o : N_rel.t) (idx : int list) (s : Proof.t Streamutil.stream)
 let add ~tid ~bid : Proof.t Streamutil.stream -> Proof.t Streamutil.stream =
   Streamutil.map (Proof.add ~tid ~bid)
 
-let translate (arch : Architecture.t)
+let translate ?(memory_model = Memory_model.default) (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
-  Streamutil.mapi (Proof.from_flat arch) stream
+  Streamutil.mapi (Proof.from_flat ~memory_model arch) stream
 
 let translate_coreach (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =

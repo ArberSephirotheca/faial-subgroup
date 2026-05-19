@@ -1256,6 +1256,7 @@ let main =
       ~assumes:extra_assumes
       ~assume_dims:false
       ~assume_launch:true
+      ~memory_model:Memory_model.default
       ~cbor:true
       ~stop_at:None
   in

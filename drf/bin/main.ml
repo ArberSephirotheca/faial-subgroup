@@ -364,6 +364,24 @@ let main =
              called kernel's parameters and demotes the original \
              kernel to __device__ for inlining. Off by default; only \
              the parsed launch metadata is used.")
+  and+ assume_warp_synch =
+    Arg.(
+      value & flag
+      & info [ "assume-warp-synch" ]
+          ~doc:
+            "Assume pre-Volta warp-synchronous execution: threads \
+             inside the same warp execute in lockstep, so an implicit \
+             barrier holds between every statement for any two \
+             threads whose linear in-block tids share a warpSize \
+             quotient. Race witnesses where both tasks fall into the \
+             same warp are excluded; cross-warp pairs keep normal \
+             race-detection semantics. UNSOUND on post-Volta \
+             hardware, which has independent thread scheduling; \
+             kernels relying on this assumption need explicit \
+             __syncwarp() for portability. Most useful with a known \
+             blockDim (via --assume-launch or --block-dim) — the \
+             linear-tid encoding contains a blockDim.x * blockDim.y \
+             cross-term that stays non-linear otherwise.")
   and+ cbor =
     Arg.(
       value & flag
@@ -436,7 +454,9 @@ let main =
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assume_delin
-        ~assumes ~assume_dims ~assume_launch ~cbor ~stop_at
+        ~assumes ~assume_dims ~assume_launch
+        ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
+        ~cbor ~stop_at
     in
     let ui = if output_json then Jui.render else Tui.render in
     if list_kernels then
