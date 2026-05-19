@@ -241,7 +241,6 @@ module Proj = struct
     | Var x when Variable.Set.mem x locals -> Var (project t x)
     | Var _ -> n
     | Unary (o, e) -> Unary (o, nexp locals t e)
-    | Other e -> nexp locals (other t) e
     | Binary (o, n1, n2) -> Binary (o, nexp locals t n1, nexp locals t n2)
     | NIf (b, n1, n2) ->
         NIf (bexp locals t b, nexp locals t n1, nexp locals t n2)
@@ -257,6 +256,16 @@ module Proj = struct
     | BRel (o, b1, b2) -> BRel (o, bexp locals t b1, bexp locals t b2)
     | NRel (o, n1, n2) -> NRel (o, nexp locals t n1, nexp locals t n2)
     | Distinct es -> Distinct (List.map (nexp locals t) es)
+    | AtomicResult { target; array; index; operation } ->
+        AtomicResult
+          { target;
+            array;
+            index = List.map (nexp locals t) index;
+            operation = Protocols.Atomic.Operation.map (nexp locals t) operation;
+          }
+    | ThreadUnif e ->
+        let _ = t in
+        NRel (Eq, nexp locals T1 e, nexp locals T2 e)
 end
 
 (* Stage 2: lower a Check into a Proof.t carrying a concrete bexp goal.

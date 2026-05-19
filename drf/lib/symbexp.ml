@@ -108,7 +108,6 @@ let rec project_n (locals : Variable.Set.t) (t : Task.t) (n : nexp) : nexp =
   | Var x when Variable.Set.mem x locals -> Var (Gen.project t x)
   | Var _ -> n
   | Unary (o, e) -> Unary (o, project_n locals t e)
-  | Other e -> project_n locals (Task.other t) e
   | Binary (o, n1, n2) -> Binary (o, project_n locals t n1, project_n locals t n2)
   | NIf (b, n1, n2) ->
       NIf (project_b locals t b, project_n locals t n1, project_n locals t n2)
@@ -122,6 +121,22 @@ and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
   | BRel (o, b1, b2) -> BRel (o, project_b locals t b1, project_b locals t b2)
   | NRel (o, n1, n2) -> NRel (o, project_n locals t n1, project_n locals t n2)
   | Distinct exprs -> Distinct (List.map (project_n locals t) exprs)
+  | AtomicResult { target; array; index; operation } ->
+      (* Rename [target] for the active task; project [index] and
+         operand expressions. [array] is a global binding and
+         stays unchanged. *)
+      let target =
+        if Variable.Set.mem target locals then Gen.project t target
+        else target
+      in
+      let index = List.map (project_n locals t) index in
+      let operation = Atomic.Operation.map (project_n locals t) operation in
+      AtomicResult { target; array; index; operation }
+  | ThreadUnif e ->
+      (* Expand to [e_T1 = e_T2]; the equality is symmetric so the
+         active task [t] doesn't affect the encoding. *)
+      let _ = t in
+      NRel (Eq, project_n locals Task1 e, project_n locals Task2 e)
 
 let project_access (locals : Variable.Set.t) (t : Task.t) (ca : CondAccess.t) :
     CondAccess.t =
@@ -136,6 +151,168 @@ let project_access (locals : Variable.Set.t) (t : Task.t) (ca : CondAccess.t) :
    spurious same-address witnesses. *)
 let project_pre (locals : Variable.Set.t) (pre : bexp) : bexp =
   b_and (project_b locals Task1 pre) (project_b locals Task2 pre)
+
+(* Instantiates the hardware contracts for atomic operations as
+   pair-wise cross-thread axioms over the race query.
+
+   atomicCAS is linearisable: at most one thread per address sees
+   [old == expected]. atomicAdd / atomicSub with a nonzero literal
+   delta produce distinct returns across threads atomic-modifying
+   the same cell. Both contracts are conjoined into the race
+   query goal in single-thread bexp form ([$T1] / [$T2] suffixes
+   baked in via [project_n]).
+
+   Inputs come from [AtomicResult] markers carried in path
+   conditions and [k.pre]: each marker holds [target] (the binding
+   for the atomic's return value), [array] / [index] (the cell),
+   and [operation] (kind plus captured operands). *)
+module AtomicAxioms = struct
+  type marker = {
+    target : Variable.t;
+    array : Variable.t;
+    index : nexp list;
+    operation : nexp Atomic.Operation.t;
+  }
+
+  let marker_compare (a : marker) (b : marker) : int =
+    let c = Variable.compare a.target b.target in
+    if c <> 0 then c
+    else
+      let c = Variable.compare a.array b.array in
+      if c <> 0 then c
+      else
+        let c = List.compare n_compare a.index b.index in
+        if c <> 0 then c
+        else Atomic.Operation.compare n_compare a.operation b.operation
+
+  (* Every [AtomicResult] marker reachable in a bexp. *)
+  let rec collect_b (acc : marker list) (b : bexp) : marker list =
+    match b with
+    | AtomicResult { target; array; index; operation } ->
+        { target; array; index; operation } :: acc
+    | Bool _ -> acc
+    | NRel (_, n1, n2) -> collect_n (collect_n acc n1) n2
+    | BRel (_, b1, b2) -> collect_b (collect_b acc b1) b2
+    | BNot b -> collect_b acc b
+    | Pred (_, ns) -> List.fold_left collect_n acc ns
+    | CastBool n -> collect_n acc n
+    | Distinct ns -> List.fold_left collect_n acc ns
+    | ThreadUnif n -> collect_n acc n
+
+  and collect_n (acc : marker list) (n : nexp) : marker list =
+    match n with
+    | Var _ | Num _ -> acc
+    | CastInt b -> collect_b acc b
+    | Unary (_, e) -> collect_n acc e
+    | Binary (_, n1, n2) -> collect_n (collect_n acc n1) n2
+    | NIf (b, n1, n2) -> collect_n (collect_n (collect_b acc b) n1) n2
+    | NCall (_, args) -> List.fold_left collect_n acc args
+
+  let collect (k : Flatacc.Kernel.t) : marker list =
+    let pre_markers = collect_b [] k.pre in
+    let cond_markers =
+      Flatacc.Code.to_list k.code
+      |> List.fold_left
+           (fun acc (ca : CondAccess.t) -> collect_b acc ca.cond)
+           []
+    in
+    pre_markers @ cond_markers |> List.sort_uniq marker_compare
+
+  (* Project a marker for task [t]: every local [Var] in [target] /
+     [index] / [operation] gets the task suffix. *)
+  let project_marker (locals : Variable.Set.t) (t : Task.t) (m : marker) :
+      marker =
+    let target =
+      if Variable.Set.mem m.target locals then Gen.project t m.target
+      else m.target
+    in
+    {
+      target;
+      array = m.array;
+      index = List.map (project_n locals t) m.index;
+      operation = Atomic.Operation.map (project_n locals t) m.operation;
+    }
+
+  (* For two atomicCAS accesses on the same array, returns
+     [b_not (same_index ∧ target_T1 = expected_T1
+                        ∧ target_T2 = expected_T2)].
+     [None] when either operand is not a CAS with captured
+     [expected], or the arrays differ. *)
+  let cas_winner_axiom (locals : Variable.Set.t) (m1 : marker) (m2 : marker)
+      : bexp option =
+    if not (Variable.equal m1.array m2.array) then None
+    else
+      match m1.operation, m2.operation with
+      | ( Atomic.Operation.CAS { expected = Some e1; _ },
+          Atomic.Operation.CAS { expected = Some e2; _ } ) ->
+          let p1 = project_marker locals Task1 m1 in
+          let p2 = project_marker locals Task2 m2 in
+          let same_index =
+            if List.length p1.index <> List.length p2.index then None
+            else
+              Some
+                (List.combine p1.index p2.index
+                |> List.map (fun (i1, i2) -> n_eq i1 i2)
+                |> b_and_ex)
+          in
+          let e1' = project_n locals Task1 e1 in
+          let e2' = project_n locals Task2 e2 in
+          let t1_won = n_eq (Var p1.target) e1' in
+          let t2_won = n_eq (Var p2.target) e2' in
+          Option.map
+            (fun same_index ->
+              b_not (b_and_ex [ same_index; t1_won; t2_won ]))
+            same_index
+      | _ -> None
+
+  (* For two atomicAdd / atomicSub accesses on the same array
+     with nonzero literal deltas, returns
+       [same_index → target_T1 ≠ target_T2].
+     [None] when either operation isn't Add/Sub with a nonzero
+     literal, or arrays differ. atomicInc / atomicDec are
+     excluded: their wrap semantics break distinctness when the
+     counter wraps. *)
+  let unique_return_axiom (locals : Variable.Set.t) (m1 : marker)
+      (m2 : marker) : bexp option =
+    if not (Variable.equal m1.array m2.array) then None
+    else
+      let is_nonzero_add_sub (op : nexp Atomic.Operation.t) : bool =
+        match op with
+        | Atomic.Operation.Add (Some (Num n))
+        | Atomic.Operation.Sub (Some (Num n)) ->
+            n <> 0
+        | _ -> false
+      in
+      if not (is_nonzero_add_sub m1.operation && is_nonzero_add_sub m2.operation)
+      then None
+      else
+        let p1 = project_marker locals Task1 m1 in
+        let p2 = project_marker locals Task2 m2 in
+        if List.length p1.index <> List.length p2.index then None
+        else
+          let same_index =
+            List.combine p1.index p2.index
+            |> List.map (fun (i1, i2) -> n_eq i1 i2)
+            |> b_and_ex
+          in
+          let distinct_targets = b_not (n_eq (Var p1.target) (Var p2.target)) in
+          Some (b_impl same_index distinct_targets)
+
+  (* Conjunction of every applicable cross-thread axiom for the
+     kernel's atomic accesses. Iterates ordered pairs of markers
+     (including self-pairs, so a single site constrains T1 vs T2
+     at that site). *)
+  let axioms_of (k : Flatacc.Kernel.t) (locals : Variable.Set.t) : bexp =
+    let markers = collect k in
+    let pairs =
+      List.concat_map (fun m1 -> List.map (fun m2 -> (m1, m2)) markers) markers
+    in
+    let mk = [ cas_winner_axiom; unique_return_axiom ] in
+    pairs
+    |> List.concat_map (fun (m1, m2) ->
+           List.filter_map (fun f -> f locals m1 m2) mk)
+    |> b_and_ex
+end
 
 module SymAccess = struct
   (*
@@ -390,16 +567,15 @@ module Proof = struct
       |> List.map (SymAccess.to_bexp ~assign_index:false t)
       |> b_or_ex
     in
-    (* No explicit [thread_distinct] term: [Kernel.apply_arch] folds
-       the arch's [distinct] clause into [k.pre] upstream, which
-       [Phasesplit] then wraps as [Cond (pre, u)] over the kernel's
-       unsynced code. Each [Flatacc.CondAccess.cond] therefore already
-       includes [thread_distinct], and [SymAccess.from_cond_access]
-       projects it per task — so [assign_accesses Task1] and
+    (* No explicit [thread_distinct] term: [Kernel.apply_arch]
+       folds the arch's [distinct] clause into [k.pre] upstream,
+       which [Phasesplit] then wraps as [Cond (pre, u)] over the
+       kernel's unsynced code. Each [Flatacc.CondAccess.cond]
+       therefore already carries [thread_distinct], and
+       [SymAccess.from_cond_access] expands its [ThreadUnif]
+       primitives per task — so [assign_accesses Task1] and
        [assign_accesses Task2] each carry a properly-projected
-       distinct constraint without an additional explicit term.
-       Adding one here would re-introduce raw [Other (Var tid.x)]
-       nodes that the [Bv64Gen] encoder cannot represent. *)
+       distinct constraint without an additional explicit term. *)
     b_and_ex
       [
         assign_accesses Task1;
@@ -412,7 +588,11 @@ module Proof = struct
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
-    let goal = from_code_coreach arch locals k.runtime k.code |> b_and (project_pre locals k.pre) in
+    let goal =
+      from_code_coreach arch locals k.runtime k.code
+      |> b_and (project_pre locals k.pre)
+      |> Predicates.strip_cross_thread
+    in
     let pre_fns = Exp.b_free_names k.pre Variable.Set.empty in
     let accesses =
       List.map
@@ -464,7 +644,11 @@ module Proof = struct
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
-    let goal = from_code_t1 arch locals k.runtime k.code |> b_and (project_pre locals k.pre) in
+    let goal =
+      from_code_t1 arch locals k.runtime k.code
+      |> b_and (project_pre locals k.pre)
+      |> Predicates.strip_cross_thread
+    in
     let pre_fns = Exp.b_free_names k.pre Variable.Set.empty in
     let accesses =
       List.map
@@ -492,8 +676,12 @@ module Proof = struct
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
+    let atomic_axioms = AtomicAxioms.axioms_of k locals in
     let goal =
-      from_code ~assign_index arch locals k.runtime k.code |> b_and (project_pre locals k.pre)
+      from_code ~assign_index arch locals k.runtime k.code
+      |> b_and (project_pre locals k.pre)
+      |> b_and atomic_axioms
+      |> Predicates.strip_cross_thread
     in
     let pre_fns = Exp.b_free_names k.pre Variable.Set.empty in
     let accesses =

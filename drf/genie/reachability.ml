@@ -97,12 +97,13 @@ type entry = {
    (one Z3 call per path-condition class, not one per access). *)
 let z3_call_hook : (unit -> unit) ref = ref (fun () -> ())
 
-(* Apply the same precondition layering App.translate's "map" phase
-   does, minus the [apply_arch] distinct clause. Result: a protocol
-   kernel whose [pre] includes user [--assume]s, [--assume-dims],
-   inlined globals, and [Architecture.Defaults.base] — but no
-   [thread_distinct] (which would require the [Other] constructor
-   for the second-thread reduction we don't do here). *)
+(* Layer the same preconditions [App.translate]'s "map" phase
+   does, except the [apply_arch] distinct clause. The result is a
+   protocol kernel whose [pre] includes user [--assume]s,
+   [--assume-dims], inlined globals, and
+   [Architecture.Defaults.base], without the [thread_distinct]
+   axiom (a two-task fact, irrelevant to the single-task
+   reachability gate). *)
 let prepare_kernel
     ?(arch = Architecture.Block)
     ~(assumes : Exp.bexp list)
@@ -210,7 +211,11 @@ let make_check_slot ~(timeout : int) (k : Kernel.t)
   let runtime =
     Params.to_bexp (Params.union_left k.global_variables k.local_variables)
   in
-  let base_goal = Exp.b_and k.pre runtime |> Predicates.b_inline in
+  let base_goal =
+    Exp.b_and k.pre runtime
+    |> Predicates.b_inline
+    |> Predicates.strip_cross_thread
+  in
   let args =
     if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
   in
@@ -281,7 +286,11 @@ let check_kernel ?(timeout = 0) (k : Kernel.t) : entry list =
           let classes = group_by_path_cond parameter_touching in
           List.concat_map (fun (path_cond, members) ->
             !z3_call_hook ();
-            let delta = Predicates.b_inline path_cond in
+            let delta =
+              path_cond
+              |> Predicates.b_inline
+              |> Predicates.strip_cross_thread
+            in
             Z3.Solver.push solver;
             Z3.Solver.add solver [ Gen_z3.Bv64Gen.b_to_expr ctx delta ];
             let result =
@@ -339,7 +348,11 @@ let preconditions_check ?(timeout = 0) (k : Kernel.t) : pre_check =
   let runtime =
     Params.to_bexp (Params.union_left k.global_variables k.local_variables)
   in
-  let goal = Exp.b_and k.pre runtime |> Predicates.b_inline in
+  let goal =
+    Exp.b_and k.pre runtime
+    |> Predicates.b_inline
+    |> Predicates.strip_cross_thread
+  in
   match
     Phase_timer.measure "gate/solve" (fun () ->
       Gen_z3.Bv64Gen.solve ~timeout goal)
@@ -368,6 +381,7 @@ let any_access_reachable ?(timeout = 0) (k : Kernel.t) : bool =
     let goal =
       Exp.b_and_ex [ k.pre; runtime; Exp.b_or_ex path_conds ]
       |> Predicates.b_inline
+      |> Predicates.strip_cross_thread
     in
     match
       Phase_timer.measure "non-trivial/solve" (fun () ->
@@ -408,6 +422,7 @@ let make_any_access_slot ?(timeout = 0) (k : Kernel.t)
     let base_goal =
       Exp.b_and_ex [ k.pre; runtime; Exp.b_or_ex path_conds ]
       |> Predicates.b_inline
+      |> Predicates.strip_cross_thread
     in
     Z3.Solver.add solver [ Gen_z3.Bv64Gen.b_to_expr ctx base_goal ];
     Some Any_access_slot.{ ctx; solver }
@@ -417,7 +432,8 @@ let any_access_reachable_delta
   let { Any_access_slot.ctx; solver } = slot in
   Z3.Solver.push solver;
   Z3.Solver.add solver
-    [ Gen_z3.Bv64Gen.b_to_expr ctx (Predicates.b_inline delta) ];
+    [ Gen_z3.Bv64Gen.b_to_expr ctx
+        (delta |> Predicates.b_inline |> Predicates.strip_cross_thread) ];
   let result =
     Phase_timer.measure "non-trivial/solve" (fun () ->
       !z3_call_hook ();
@@ -456,7 +472,11 @@ let make_slot ?(arch = Architecture.Block)
     Params.to_bexp
       (Params.union_left base.global_variables base.local_variables)
   in
-  let base_goal = Exp.b_and base.pre runtime |> Predicates.b_inline in
+  let base_goal =
+    Exp.b_and base.pre runtime
+    |> Predicates.b_inline
+    |> Predicates.strip_cross_thread
+  in
   let args =
     match timeout with
     | Some t -> [ ("timeout", string_of_int t) ]
@@ -484,6 +504,7 @@ let preconditions_satisfiable_delta
     |> List.map (Subst.ReplaceAssoc.b_subst slot.subst)
     |> List.map Predicates.b_inline
     |> Exp.b_and_ex
+    |> Predicates.strip_cross_thread
   in
   Z3.Solver.push slot.solver;
   Z3.Solver.add slot.solver [ Gen_z3.Bv64Gen.b_to_expr slot.ctx delta ];

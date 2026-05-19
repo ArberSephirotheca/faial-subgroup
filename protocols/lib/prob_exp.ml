@@ -43,7 +43,6 @@ let rec n_eval_res ?(env = default_env) (n : Exp.nexp) :
       let* n1 = n_eval_res ~env n1 in
       let* n2 = n_eval_res ~env n2 in
       Ok (eval_nbin o n1 n2)
-  | Other _ -> Error "n_eval: other"
   | NCall (x, _) -> Error ("n_eval: call " ^ x)
   | NIf (b, n1, n2) ->
       let* b = b_eval_res ~env b in
@@ -69,6 +68,8 @@ and b_eval_res ?(env = default_env) (b : Exp.bexp) : (bool, string) Result.t =
       Ok (not b)
   | Pred (x, _) -> Error ("b_eval: pred " ^ x)
   | Distinct _ -> Error "Distinct evaluation not implemented yet"
+  | AtomicResult _ -> Error "b_eval: atomic_result"
+  | ThreadUnif _ -> Error "b_eval: thread_unif"
 
 (* Standard int32 bounds *)
 let int32_range : Int32.t * Int32.t = (Int32.min_int, Int32.max_int)

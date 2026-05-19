@@ -83,15 +83,10 @@ module KeySet = Set.Make (Key)
    the under-Φ set gains a conservative entry. Either way, the
    gate stays permissive.
 
-   Encoder choice: the co-reach goal always contains [Other (Var
-   threadIdx.x)] / [Other (Var threadIdx.y)] / [Other (Var
-   threadIdx.z)] from the [thread_distinct] clause (added through
-   [k.pre] by [Kernel.apply_arch]). The natural-number encoder
-   [IntGen] does not handle [Other] and raises [Not_implemented]
-   on encoding; the BV encoder [Bv64Gen] does. Rather than mirror
-   [Solve_drf.Solution.solve]'s try-IntGen-then-fall-back-to-BV
-   dance, we go straight to BV — the co-reach goal will always
-   trigger the fallback, so the IntGen attempt is dead work.
+   Encoder choice: go straight to [Bv64Gen]. The co-reach goal's
+   bit-width assumptions match the BV encoder, and bypassing the
+   try-IntGen-then-fall-back-to-BV dance keeps the encoding cost
+   bounded.
 
    The [Z3.Error] catch mirrors [compute_verdict]'s top-level
    handler: when Z3 exhausts its memory cap (default ~6 GB) the
@@ -136,7 +131,8 @@ let solve_one ?(timeout : int option = None) (p : Symbexp.Proof.t)
   let ctx = Z3.mk_context options in
   let solver = Z3.Solver.mk_simple_solver ctx in
   let expr =
-    Gen_z3.Bv64Gen.b_to_expr ctx (Predicates.b_inline p.goal)
+    Gen_z3.Bv64Gen.b_to_expr ctx
+      (p.goal |> Predicates.b_inline |> Predicates.strip_cross_thread)
   in
   Z3.Solver.add solver [ expr ];
   Z3.Solver.check solver []

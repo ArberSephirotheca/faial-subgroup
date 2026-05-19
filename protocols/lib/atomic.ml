@@ -83,6 +83,42 @@ module Operation = struct
         let* new_val = opt new_val in
         return (CAS { expected; new_val })
 
+  (* Operands flattened to a list in a canonical order. Used by
+     [fold] / [exists] / [compare] to traverse uniformly without
+     re-stating each variant's payload shape. *)
+  let to_list : 'a t -> 'a option list = function
+    | Add e | Sub e | Inc e | Dec e | And e | Or e | Xor e | Min e | Max e
+    | Exch e ->
+        [ e ]
+    | CAS { expected; new_val } -> [ expected; new_val ]
+
+  (* Variant tag for compare. Keep stable across versions. *)
+  let tag_int : 'a t -> int = function
+    | Add _ -> 0
+    | Sub _ -> 1
+    | Inc _ -> 2
+    | Dec _ -> 3
+    | And _ -> 4
+    | Or _ -> 5
+    | Xor _ -> 6
+    | Min _ -> 7
+    | Max _ -> 8
+    | Exch _ -> 9
+    | CAS _ -> 10
+
+  let compare (cmp : 'a -> 'a -> int) (a : 'a t) (b : 'a t) : int =
+    let c = Int.compare (tag_int a) (tag_int b) in
+    if c <> 0 then c
+    else List.compare (Option.compare cmp) (to_list a) (to_list b)
+
+  let fold (f : 'a -> 'b -> 'b) (op : 'a t) (init : 'b) : 'b =
+    List.fold_left
+      (fun acc e -> match e with Some e -> f e acc | None -> acc)
+      init (to_list op)
+
+  let exists (f : 'a -> bool) (op : 'a t) : bool =
+    List.exists (function Some e -> f e | None -> false) (to_list op)
+
   (* Parse the unscoped operation name (e.g. "atomicAdd"). Scope
      suffixes ("_block" / "_system") are stripped by [from_name]
      before calling this. Operands start as [None]; the caller

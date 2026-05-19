@@ -8,7 +8,6 @@ type n =
   | Binary of N_binary.t * t * t
   | NCall of string * t
   | NIf of t * t * t
-  | Other of t
 
 and b =
   | Bool of bool
@@ -16,6 +15,7 @@ and b =
   | BRel of B_rel.t * t * t
   | BNot of t
   | Pred of string * t
+  | ThreadUnif of t
 
 and t = NExp of n | BExp of b | Unknown of string
 
@@ -36,7 +36,6 @@ and to_n_string : n -> string = function
       let e2 = to_string e2 in
       let e3 = to_string e3 in
       "(" ^ e1 ^ ") ? (" ^ e2 ^ ") : (" ^ e3 ^ ")"
-  | Other e -> "$other(" ^ to_string e ^ ")"
 
 and to_b_string : b -> string = function
   | Bool b -> if b then "true" else "false"
@@ -52,6 +51,7 @@ and to_b_string : b -> string = function
       "(" ^ e1 ^ ") " ^ o ^ " (" ^ e2 ^ ")"
   | BNot e -> "!(" ^ to_string e ^ ")"
   | Pred (o, e) -> o ^ "(" ^ to_string e ^ ")"
+  | ThreadUnif e -> "thread_unif(" ^ to_string e ^ ")"
 
 let n_bin (o : N_binary.t) (e1 : t) (e2 : t) : n = Binary (o, e1, e2)
 let plus : t -> t -> n = n_bin (Plus Signedness.Signed)
@@ -62,8 +62,8 @@ let max (e1 : t) (e2 : t) : n = NIf (BExp (gt e1 e2), e1, e2)
 let or_ (e1 : t) (e2 : t) : b = BRel (BOr, e1, e2)
 let not_ (e : t) : b = BNot e
 let n_eq (e1 : t) (e2 : t) : b = NRel (Eq, e1, e2)
-let thread_equal (e : t) : b = n_eq e (NExp (Other e))
-let thread_distinct (e : t) : b = NRel (Neq, e, NExp (Other e))
+let thread_equal (e : t) : b = ThreadUnif e
+let thread_distinct (e : t) : b = BNot (BExp (ThreadUnif e))
 let num (n : int) : t = NExp (Num n)
 let bool (b : bool) : t = BExp (Bool b)
 let unknown (lbl : string) : t = Unknown lbl
@@ -92,9 +92,6 @@ let rec to_nexp (e : t) : Exp.nexp state =
           let* n1 = to_nexp n1 in
           let* n2 = to_nexp n2 in
           return (Exp.Binary (o, n1, n2))
-      | Other n ->
-          let* n = to_nexp n in
-          return (Exp.Other n)
       | Unary (o, n) ->
           let* n = to_nexp n in
           return (Exp.Unary (o, n))
@@ -131,7 +128,10 @@ and to_bexp (e : t) : Exp.bexp state =
           return (Exp.BNot b)
       | Pred (x, n) ->
           let* n = to_nexp n in
-          return (Exp.Pred (x, [ n ])))
+          return (Exp.Pred (x, [ n ]))
+      | ThreadUnif n ->
+          let* n = to_nexp n in
+          return (Exp.ThreadUnif n))
   | NExp _ ->
       let* n = to_nexp e in
       return (Exp.cast_bool n)

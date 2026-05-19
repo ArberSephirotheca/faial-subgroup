@@ -88,7 +88,6 @@ module UA = struct
             List.fold_left (fun acc (_, t) -> max acc t) Constant args_t
           in
           (NCall (f, List.map fst args_t), r)
-      | Other e -> map (fun e -> Other e) (from_nexp e)
       | CastInt e ->
           let r = if Exp.b_intersects locals e then AnyAccurate else Uniform in
           (CastInt e, r)
@@ -159,7 +158,6 @@ module BC = struct
               Uniform args_t
           in
           (NCall (f, List.map fst args_t), r)
-      | Other e -> map (fun e -> Other e) (from_nexp e)
       | CastInt e ->
           let r = if Exp.b_intersects locals e then Any else Uniform in
           (CastInt e, r)

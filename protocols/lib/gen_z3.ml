@@ -565,9 +565,6 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | CastInt b -> n_to_expr ctx (n_if b (Num 1) (Num 0))
     | Unary (BitNot, n) -> N.mk_not ctx (n_to_expr ctx n)
     | Unary (Negate, n) -> N.mk_unary_minus ctx (n_to_expr ctx n)
-    | Other n ->
-        let n : string = Exp.n_to_string n in
-        raise (Not_implemented ("n_to_expr: not implemented for Other of " ^ n))
     | NCall (name, args) ->
         let z3_args = List.map (n_to_expr ctx) args in
         let sort = Expr.get_sort (N.mk_num ctx 0) in
@@ -601,6 +598,15 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Distinct exprs ->
         let z3_exprs = List.map (n_to_expr ctx) exprs in
         Boolean.mk_distinct ctx z3_exprs
+    | AtomicResult _ as c ->
+        preprocessing_error
+          ("b_to_expr: AtomicResult must be expanded by symbexp or stripped \
+            by single-thread analyses before codegen: " ^ b_to_string c)
+    | ThreadUnif _ as c ->
+        preprocessing_error
+          ("b_to_expr: ThreadUnif must be expanded by symbexp's project_b or \
+            stripped by single-thread analyses before codegen: "
+          ^ b_to_string c)
 
   let ( let* ) = Option.bind
 

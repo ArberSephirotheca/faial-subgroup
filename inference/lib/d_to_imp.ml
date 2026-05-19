@@ -138,11 +138,6 @@ module Make (L : Logger) = struct
         NExp (Binary (Div Signedness.Signed, NExp n1_plus_n2_minus_1, n2))
     | CallExpr
         { func = Ident { name = f; kind = Function; _ }; args = [ n ]; _ }
-      when Variable.name f = "__other_int" ->
-        let n = infer_expr n in
-        NExp (Other n)
-    | CallExpr
-        { func = Ident { name = f; kind = Function; _ }; args = [ n ]; _ }
       when Variable.name f = "__uniform_int" ->
         let n = infer_expr n in
         BExp (Infer_exp.thread_equal n)

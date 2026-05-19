@@ -26,7 +26,6 @@ module Proj = struct
     | CastInt e -> CastInt (proj_b e ctx)
     | Var x -> Var (proj_var x ctx)
     | Unary (o, e) -> Unary (o, proj_n e ctx)
-    | Other _ -> failwith "unsupported"
     | Binary (o, n1, n2) -> Binary (o, proj_n n1 ctx, proj_n n2 ctx)
     | NIf (b, n1, n2) -> NIf (proj_b b ctx, proj_n n1 ctx, proj_n n2 ctx)
     | NCall (x, ns) -> NCall (x, List.map (fun n -> proj_n n ctx) ns)
@@ -40,6 +39,15 @@ module Proj = struct
     | BRel (o, b1, b2) -> BRel (o, proj_b b1 ctx, proj_b b2 ctx)
     | NRel (o, n1, n2) -> NRel (o, proj_n n1 ctx, proj_n n2 ctx)
     | Distinct exprs -> Distinct (List.map (fun expr -> proj_n expr ctx) exprs)
+    | AtomicResult { target; array; index; operation } ->
+        AtomicResult
+          {
+            target;
+            array;
+            index = List.map (fun n -> proj_n n ctx) index;
+            operation = Atomic.Operation.map (fun n -> proj_n n ctx) operation;
+          }
+    | ThreadUnif e -> ThreadUnif (proj_n e ctx)
 
   (*
     General algorithm to replicate an element as a list of elements
@@ -727,9 +735,6 @@ let rec n_inline_cost : nexp -> nexp state = function
   | NCall ((("ua" | "count_active") as name), _) ->
       failwith (name ^ " expects exactly one argument")
   | (Var _ | Num _) as e -> return e
-  | Other e ->
-      let* e' = n_inline_cost e in
-      return (Other e')
   | Binary (op, e1, e2) ->
       let* e1' = n_inline_cost e1 in
       let* e2' = n_inline_cost e2 in
@@ -778,6 +783,13 @@ and b_inline_cost : bexp -> bexp state = function
   | Distinct exprs ->
       let* exprs' = State.list_map n_inline_cost exprs in
       return (Distinct exprs')
+  | AtomicResult { target; array; index; operation } ->
+      let* index = State.list_map n_inline_cost index in
+      let* operation = Atomic.Operation.map_state n_inline_cost operation in
+      return (AtomicResult { target; array; index; operation })
+  | ThreadUnif e ->
+      let* e = n_inline_cost e in
+      return (ThreadUnif e)
 
 module ProofResult = struct
   type t =

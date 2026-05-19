@@ -285,32 +285,38 @@ let test_pair_keys_subset_of_proof_keys () =
      [mode_spec] / [assign_dim] / [id_le] clauses, which all have
      stable variable-name patterns ($T1$mode, $T1$idx$N, $T1$id).
 
-   - [bexp_has_other], [nexp_has_other] walk the bexp/nexp tree
-     and return [true] iff any [Other _] node appears. The
-     [thread_distinct] clause is the only source of [Other] nodes
-     in a co-reach goal (it expands to [n_eq e (Other e)] over
-     tid/bid variables), so [bexp_has_other goal] is a structural
-     probe for "thread_distinct present somewhere in the bexp". *)
-let rec nexp_has_other (n : Exp.nexp) : bool =
+   - [bexp_has_thread_unif], [nexp_has_thread_unif] walk the
+     bexp/nexp tree and return [true] iff any [ThreadUnif _] node
+     appears. The [thread_distinct] clause is the only source of
+     [ThreadUnif] nodes in a co-reach goal (it expands to
+     [BNot (ThreadUnif (Var x))] over tid/bid variables), so
+     [bexp_has_thread_unif goal] is a structural probe for
+     "thread_distinct present somewhere in the bexp". *)
+let rec nexp_has_thread_unif (n : Exp.nexp) : bool =
   match n with
-  | Exp.Other _ -> true
   | Exp.Num _ | Exp.Var _ -> false
-  | Exp.Unary (_, e) -> nexp_has_other e
-  | Exp.NCall (_, es) -> List.exists nexp_has_other es
-  | Exp.CastInt b -> bexp_has_other b
-  | Exp.Binary (_, n1, n2) -> nexp_has_other n1 || nexp_has_other n2
+  | Exp.Unary (_, e) -> nexp_has_thread_unif e
+  | Exp.NCall (_, es) -> List.exists nexp_has_thread_unif es
+  | Exp.CastInt b -> bexp_has_thread_unif b
+  | Exp.Binary (_, n1, n2) ->
+      nexp_has_thread_unif n1 || nexp_has_thread_unif n2
   | Exp.NIf (b, n1, n2) ->
-      bexp_has_other b || nexp_has_other n1 || nexp_has_other n2
+      bexp_has_thread_unif b || nexp_has_thread_unif n1
+      || nexp_has_thread_unif n2
 
-and bexp_has_other (b : Exp.bexp) : bool =
+and bexp_has_thread_unif (b : Exp.bexp) : bool =
   match b with
   | Exp.Bool _ -> false
-  | Exp.BNot b -> bexp_has_other b
-  | Exp.BRel (_, b1, b2) -> bexp_has_other b1 || bexp_has_other b2
-  | Exp.NRel (_, n1, n2) -> nexp_has_other n1 || nexp_has_other n2
-  | Exp.Pred (_, ns) -> List.exists nexp_has_other ns
-  | Exp.CastBool n -> nexp_has_other n
-  | Exp.Distinct ns -> List.exists nexp_has_other ns
+  | Exp.BNot b -> bexp_has_thread_unif b
+  | Exp.BRel (_, b1, b2) -> bexp_has_thread_unif b1 || bexp_has_thread_unif b2
+  | Exp.NRel (_, n1, n2) -> nexp_has_thread_unif n1 || nexp_has_thread_unif n2
+  | Exp.Pred (_, ns) -> List.exists nexp_has_thread_unif ns
+  | Exp.CastBool n -> nexp_has_thread_unif n
+  | Exp.Distinct ns -> List.exists nexp_has_thread_unif ns
+  | Exp.AtomicResult { operation; index; _ } ->
+      List.exists nexp_has_thread_unif index
+      || Protocols.Atomic.Operation.exists nexp_has_thread_unif operation
+  | Exp.ThreadUnif _ -> true
 
 let str_contains (hay : string) (needle : string) : bool =
   let h = String.length hay and n = String.length needle in
@@ -356,34 +362,21 @@ let _count_substr (hay : string) (needle : string) : int =
 
    - carries the kernel's [pre] — for an [Architecture.Block]
      kernel, [Kernel.apply_arch] folds [thread_distinct] into
-     [k.pre]. After projection through [SymAccess.from_cond_access],
-     the raw [Other _] nodes are flattened into per-task variables
-     like [threadIdx.x$T1] / [threadIdx.x$T2], so the goal carries
-     the projected [thread_distinct] disjunction rather than any
-     raw [Other _].
+     [k.pre]. After [SymAccess.from_cond_access]'s [project_b]
+     runs, each [ThreadUnif (Var x)] expands to [NRel (Eq, x$T1,
+     x$T2)], so the goal carries the projected
+     [thread_distinct] disjunction (e.g. [threadIdx.x$T1 !=
+     threadIdx.x$T2]) and no raw [ThreadUnif _] node.
 
    The race translator [Symbexp.translate] is used as a control:
    its goal must contain the [mode_spec] / [assign_dim] forms
    that are missing from the co-reach goal.
 
-   Findings:
-
-   1. [SymAccess.to_bexp] always emits [assign_mode] (the
-      mode-variable binding), so [$T1$mode == N] / [$T2$mode == N]
-      appear in *both* goals. The brief described "no mode_spec"
-      as "no $T1$mode / $T2$mode reference", but the actual
-      mode_spec contribution is the *disjunctive conflict pattern*
-      ([$T2$mode !=] in textual form), not the mode-variable
-      binding itself.
-
-   2. By the time the goal is finalised, the [Other _] nodes
-      introduced by [thread_distinct] in [k.pre] have already been
-      projected away by [SymAccess.from_cond_access]. The goal
-      carries the projected inequality form
-      [threadIdx.x$T1 != threadIdx.x$T2], not raw [Other _]. The
-      [Bv64Gen] encoder's no-[Other] requirement is satisfied by
-      the projection step, not by the absence of [thread_distinct]
-      from the co-reach builder. *)
+   The shared mode-variable binding ([assign_mode]) appears in
+   both goals via [SymAccess.to_bexp]: the discriminator for
+   co-reach vs race is the *disjunctive conflict pattern* in
+   [mode_spec] ([$T2$mode !=] in textual form), not the
+   mode-variable bindings themselves. *)
 let test_translate_coreach_output_shape () =
   let body = access_w (var "threadIdx.x") in
   let k = mk_kernel [ ("A", shared_int) ] body in
@@ -442,22 +435,17 @@ let test_translate_coreach_output_shape () =
      printed as [$T1$id <= $T2$id]. *)
   Alcotest.(check bool) "co-reach goal has $T1$id <= $T2$id (id_le)"
     true (str_contains cg "$T1$id <= $T2$id");
-  (* k.pre: [Kernel.apply_arch] folds [thread_distinct] (built via
-     [thread_eq], i.e. [n_eq e (Other e)]) into [k.pre]. By the
-     time the goal is assembled, [Phasesplit] / [SymAccess.from_cond_access]
-     have projected the [Other] nodes through both tasks, yielding
-     the [thread_distinct]'s [b_or_ex] of projected inequalities
-     like [threadIdx.x$T1 != threadIdx.x$T2]. So the goal contains
-     no raw [Other _] node, but does contain the projected
-     thread_distinct disjunction's textual marker.
-
-     Finding: the [Other _] nodes are eliminated by the projection
-     step before the goal is finalised. The [Bv64Gen] encoder's
-     no-[Other] requirement is satisfied by the projection, not by
-     the absence of [thread_distinct]. *)
+  (* [Kernel.apply_arch] folds [thread_distinct] (built via
+     [thread_eq], i.e. [ThreadUnif e]) into [k.pre]. By the time
+     the goal is assembled, [SymAccess.from_cond_access]'s
+     [project_b] has expanded each [ThreadUnif (Var x)] to
+     [NRel (Eq, x$T1, x$T2)], so the projected goal carries the
+     [thread_distinct]'s [b_or_ex] of inequalities like
+     [threadIdx.x$T1 != threadIdx.x$T2] and contains no raw
+     [ThreadUnif _] node. *)
   Alcotest.(check bool)
-    "co-reach goal has no raw Other _ node (projection eliminated it)"
-    false (bexp_has_other cp.goal);
+    "co-reach goal has no raw ThreadUnif _ node (projection eliminated it)"
+    false (bexp_has_thread_unif cp.goal);
   Alcotest.(check bool)
     "co-reach goal has projected thread_distinct (threadIdx.x$T1 != threadIdx.x$T2)"
     true (str_contains cg "threadIdx.x$T1 != threadIdx.x$T2"
@@ -512,11 +500,12 @@ let test_translate_coreach_round_trip_sat () =
    asserts the narrower-but-cleaner claim directly:
 
    For a hand-built [Kernel.t]:
-   - before [apply_arch]: [k.pre] contains no [Other _] nodes.
-   - after [apply_arch] (Block arch): [k.pre] contains [Other _]
-     nodes — specifically, the [thread_distinct] clause's
-     [thread_eq (Var tid.x|y|z)] expansions, each of which is
-     [n_eq e (Other e)].
+   - before [apply_arch]: [k.pre] contains no [ThreadUnif _]
+     nodes.
+   - after [apply_arch] (Block arch): [k.pre] contains
+     [ThreadUnif _] nodes — specifically, the [thread_distinct]
+     clause's [thread_eq (Var tid.x|y|z)] expansions, each of
+     which is [ThreadUnif (Var tid.X)].
 
    This pins the architectural design point referenced in
    [from_code_coreach]'s comment: the co-reach goal does not need
@@ -526,12 +515,12 @@ let test_apply_arch_adds_thread_distinct_to_pre () =
   let body = access_w (Exp.Num 0) in
   let k_raw = mk_kernel [ ("A", shared_int) ] body in
   Alcotest.(check bool)
-    "raw kernel pre has no Other _ (no thread_distinct yet)"
-    false (bexp_has_other k_raw.pre);
+    "raw kernel pre has no ThreadUnif _ (no thread_distinct yet)"
+    false (bexp_has_thread_unif k_raw.pre);
   let k_arch = Kernel.apply_arch arch k_raw in
   Alcotest.(check bool)
-    "after apply_arch, pre contains Other _ (thread_distinct present)"
-    true (bexp_has_other k_arch.pre)
+    "after apply_arch, pre contains ThreadUnif _ (thread_distinct present)"
+    true (bexp_has_thread_unif k_arch.pre)
 
 (* T1-only proof stream, mirrors [coreach_proofs] but goes through
    [Symbexp.translate_t1] for the single-thread variant. *)

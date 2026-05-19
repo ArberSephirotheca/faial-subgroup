@@ -8,7 +8,11 @@ let rec norm (b : bexp) : bexp list =
   | Bool _
   | BNot (CastBool _)
   | NRel _ | Distinct _
-  | BNot (Distinct _) ->
+  | BNot (Distinct _)
+  | AtomicResult _
+  | BNot (AtomicResult _)
+  | ThreadUnif _
+  | BNot (ThreadUnif _) ->
       [ b ]
   | BRel (BAnd, b1, b2) -> List.append (norm b1) (norm b2)
   | BNot (Bool b) -> [ Bool (not b) ]
@@ -38,7 +42,6 @@ let rec n_opt (a : nexp) : nexp =
   | Unary (BitNot, e) -> n_bit_not (n_opt e)
   | Unary (Negate, e) -> n_uminus (n_opt e)
   | CastInt b -> cast_int (b_opt b)
-  | Other e -> Other (n_opt e)
   | NIf (b, n1, n2) ->
       let b = b_opt b in
       let n1 = n_opt n1 in
@@ -66,6 +69,15 @@ and b_opt (e : bexp) : bexp =
   | NRel (o, a1, a2) -> n_rel o (n_opt a1) (n_opt a2)
   | BNot b -> b_not (b_opt b)
   | Distinct exprs -> Distinct (List.map n_opt exprs)
+  | AtomicResult { target; array; index; operation } ->
+      AtomicResult
+        {
+          target;
+          array;
+          index = List.map n_opt index;
+          operation = Atomic.Operation.map n_opt operation;
+        }
+  | ThreadUnif e -> ThreadUnif (n_opt e)
 
 let r_opt (r : Range.t) : Range.t =
   {

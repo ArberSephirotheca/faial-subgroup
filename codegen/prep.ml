@@ -27,7 +27,7 @@ and n_to_vars : nexp -> Variable.t list = function
   | Var x -> [ x ]
   | Num _ -> []
   | Binary (_, e1, e2) -> n_to_vars e1 @ n_to_vars e2
-  | Unary (_, e) | Other e -> n_to_vars e
+  | Unary (_, e) -> n_to_vars e
   | NCall (_, es) -> List.concat_map n_to_vars es
   | NIf (b, e1, e2) -> b_to_vars b @ n_to_vars e1 @ n_to_vars e2
   | CastInt e -> b_to_vars e
@@ -40,6 +40,13 @@ and b_to_vars : bexp -> Variable.t list = function
   | BNot b -> b_to_vars b
   | Pred (_, es) -> List.concat_map n_to_vars es
   | Distinct exprs -> List.concat_map n_to_vars exprs
+  | AtomicResult { target; array; index; operation } ->
+      let from_index = List.concat_map n_to_vars index in
+      let from_op =
+        Atomic.Operation.fold (fun e acc -> n_to_vars e @ acc) operation []
+      in
+      target :: array :: from_index @ from_op
+  | ThreadUnif e -> n_to_vars e
 
 and r_to_vars (r : Range.t) : Variable.t list =
   let step_variables =

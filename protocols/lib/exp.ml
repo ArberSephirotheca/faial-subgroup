@@ -9,7 +9,6 @@ type nexp =
   | Unary of N_unary.t * nexp
   | NCall of string * nexp list
   | NIf of bexp * nexp * nexp
-  | Other of nexp
   | CastInt of bexp
 
 and bexp =
@@ -20,6 +19,13 @@ and bexp =
   | Pred of string * nexp list
   | CastBool of nexp
   | Distinct of nexp list
+  | AtomicResult of {
+      target : Variable.t;
+      array : Variable.t;
+      index : nexp list;
+      operation : nexp Atomic.Operation.t;
+    }
+  | ThreadUnif of nexp
 
 
 
@@ -43,7 +49,6 @@ and bexp =
         let@ () = b_compare b1 b2 in
         let@ () = n_compare t1 t2 in
         n_compare f1 f2
-    | Other e1, Other e2 -> n_compare e1 e2
     | CastInt b1, CastInt b2 -> b_compare b1 b2
     | Var _, _ -> -1
     | _, Var _ -> 1
@@ -57,8 +62,6 @@ and bexp =
     | _, NCall _ -> 1
     | NIf _, _ -> -1
     | _, NIf _ -> 1
-    | Other _, _ -> -1
-    | _, Other _ -> 1
 
   and b_compare a b =
     match a, b with
@@ -77,6 +80,14 @@ and bexp =
         List.compare n_compare es1 es2
     | CastBool e1, CastBool e2 -> n_compare e1 e2
     | Distinct l1, Distinct l2 -> List.compare n_compare l1 l2
+    | ( AtomicResult { target = t1; array = a1; index = i1; operation = op1 },
+        AtomicResult { target = t2; array = a2; index = i2; operation = op2 } )
+      ->
+        let@ () = Variable.compare t1 t2 in
+        let@ () = Variable.compare a1 a2 in
+        let@ () = List.compare n_compare i1 i2 in
+        Atomic.Operation.compare n_compare op1 op2
+    | ThreadUnif e1, ThreadUnif e2 -> n_compare e1 e2
     | Bool _, _ -> -1
     | _, Bool _ -> 1
     | NRel _, _ -> -1
@@ -89,6 +100,10 @@ and bexp =
     | _, Pred _ -> 1
     | CastBool _, _ -> -1
     | _, CastBool _ -> 1
+    | Distinct _, _ -> -1
+    | _, Distinct _ -> 1
+    | AtomicResult _, _ -> -1
+    | _, AtomicResult _ -> 1
 
 let rec n_eval_res (n : nexp) : (int, string) Result.t =
   let ( let* ) = Result.bind in
@@ -109,7 +124,6 @@ let rec n_eval_res (n : nexp) : (int, string) Result.t =
   | NIf (b, n1, n2) ->
       let* b = b_eval_res b in
       if b then n_eval_res n1 else n_eval_res n2
-  | Other _ -> Error "n_eval: other"
 
 and b_eval_res (b : bexp) : (bool, string) Result.t =
   let ( let* ) = Result.bind in
@@ -133,6 +147,8 @@ and b_eval_res (b : bexp) : (bool, string) Result.t =
   | Distinct _ ->
       (* You'll implement this - placeholder for now *)
       Error "Distinct evaluation not implemented yet"
+  | AtomicResult _ -> Error "b_eval: atomic_result"
+  | ThreadUnif _ -> Error "b_eval: thread_unif"
 
 let n_eval_opt (n : nexp) : int option = n_eval_res n |> Result.to_option
 let b_eval_opt (b : bexp) : bool option = b_eval_res b |> Result.to_option
@@ -370,7 +386,7 @@ let rec b_and_ex l =
 let rec b_or_ex l =
   match l with [] -> Bool true | [ x ] -> x | x :: l -> b_or x (b_or_ex l)
 
-let thread_eq (e : nexp) : bexp = n_eq e (Other e)
+let thread_eq (e : nexp) : bexp = ThreadUnif e
 
 let thread_distinct (idx : Variable.t list) : bexp =
   b_or_ex (List.map (fun x -> b_not (thread_eq (Var x))) idx)
@@ -396,7 +412,6 @@ let rec n_fold f e a =
   | Binary (_, e1, e2) -> n_fold f e1 a |> n_fold f e2
   | NIf (b, e1, e2) -> b_fold f b a |> n_fold f e1 |> n_fold f e2
   | NCall (_, es) -> List.fold_left (fun a e -> n_fold f e a) a es
-  | Other e -> n_fold f e a
 
 and b_fold f e a =
   match e with
@@ -407,6 +422,12 @@ and b_fold f e a =
   | BRel (_, b1, b2) -> b_fold f b1 a |> b_fold f b2
   | BNot b -> b_fold f b a
   | Distinct exprs -> List.fold_left (fun acc expr -> n_fold f expr acc) a exprs
+  | AtomicResult { target; array; index; operation } ->
+      let a = f target a in
+      let a = f array a in
+      let a = List.fold_left (fun a e -> n_fold f e a) a index in
+      Atomic.Operation.fold (fun e a -> n_fold f e a) operation a
+  | ThreadUnif e -> n_fold f e a
 
 let n_free_names : nexp -> Variable.Set.t -> Variable.Set.t =
   n_fold Variable.Set.add
@@ -421,7 +442,7 @@ let rec n_exists (f : Variable.t -> bool) : nexp -> bool = function
   | Num _ -> false
   | Binary (_, e1, e2) -> n_exists f e1 || n_exists f e2
   | NCall (_, es) -> List.exists (n_exists f) es
-  | Unary (_, e) | Other e -> n_exists f e
+  | Unary (_, e) -> n_exists f e
   | NIf (b, e1, e2) -> b_exists f b || n_exists f e1 || n_exists f e2
 
 and b_exists (f : Variable.t -> bool) : bexp -> bool = function
@@ -432,6 +453,11 @@ and b_exists (f : Variable.t -> bool) : bexp -> bool = function
   | BRel (_, e1, e2) -> b_exists f e1 || b_exists f e2
   | BNot e -> b_exists f e
   | Distinct exprs -> List.exists (n_exists f) exprs
+  | AtomicResult { target; array; index; operation } ->
+      f target || f array
+      || List.exists (n_exists f) index
+      || Atomic.Operation.exists (n_exists f) operation
+  | ThreadUnif e -> n_exists f e
 
 (* Checks if variable [x] is in the given expression *)
 let n_mem (x : Variable.t) : nexp -> bool = n_exists (Variable.equal x)
@@ -453,6 +479,15 @@ let rec b_map (f : nexp -> nexp) : bexp -> bexp = function
   | Pred (s, es) -> Pred (s, List.map f es)
   | CastBool e -> CastBool (f e)
   | Distinct l -> Distinct (List.map f l)
+  | AtomicResult { target; array; index; operation } ->
+      AtomicResult
+        {
+          target;
+          array;
+          index = List.map f index;
+          operation = Atomic.Operation.map f operation;
+        }
+  | ThreadUnif e -> ThreadUnif (f e)
 
 type side = Left | Right
 
@@ -462,7 +497,7 @@ let rec n_par ?context (* ?side *) (n : nexp) : string =
       Binary ((N_binary.Plus _ | N_binary.Mult _ | N_binary.Div _), _, _) )
   | Some (N_binary.Mult _), Binary (N_binary.Mult _, _, _) ->
       n_to_string n
-  | _, Num _ | _, Var _ | _, NCall _ | _, Other _ | _, CastInt _ -> n_to_string n
+  | _, Num _ | _, Var _ | _, NCall _ | _, CastInt _ -> n_to_string n
   | _, NIf _ | _, Unary _ | _, Binary _ -> "(" ^ n_to_string n ^ ")"
 
 and n_to_string : nexp -> string = function
@@ -473,7 +508,6 @@ and n_to_string : nexp -> string = function
   | NCall (x, args) ->
       x ^ "(" ^ String.concat ", " (List.map n_to_string args) ^ ")"
   | NIf (b, n1, n2) -> b_par b ^ " ? " ^ n_par n1 ^ " : " ^ n_par n2
-  | Other e -> "other(" ^ n_to_string e ^ ")"
   | CastInt b -> "int(" ^ b_to_string b ^ ")"
 
 and b_to_string : bexp -> string = function
@@ -485,17 +519,33 @@ and b_to_string : bexp -> string = function
   | Pred (x, vs) -> x ^ "(" ^ String.concat ", " (List.map n_to_string vs) ^ ")"
   | Distinct exprs ->
       "distinct(" ^ String.concat ", " (List.map n_to_string exprs) ^ ")"
+  | AtomicResult { target; array; index; operation } ->
+      let op_args =
+        Atomic.Operation.to_list operation
+        |> List.filter_map (Option.map n_to_string)
+        |> String.concat ", "
+      in
+      let idx_s = List.map n_to_string index |> String.concat ", " in
+      "atomic_result(" ^ Variable.name target ^ " = "
+      ^ Variable.name array ^ "[" ^ idx_s ^ "], "
+      ^ Atomic.Operation.to_string operation
+      ^ (if op_args = "" then "" else "(" ^ op_args ^ ")")
+      ^ ")"
+  | ThreadUnif e -> "thread_unif(" ^ n_to_string e ^ ")"
 
 and b_par (b : bexp) : string =
   match b with
-  | Pred _ | CastBool _ | Bool _ | BNot _ | Distinct _ -> b_to_string b
+  | Pred _ | CastBool _ | Bool _ | BNot _ | Distinct _ | AtomicResult _
+  | ThreadUnif _ ->
+      b_to_string b
   | BRel _ | NRel _ -> "(" ^ b_to_string b ^ ")"
 
 let b_to_s : bexp -> Indent.t list =
   let rec to_s (in_and : bool) (b : bexp) : Indent.t list =
     let open Indent in
     match b with
-    | NRel _ | Bool _ | BNot _ | CastBool _ | Pred _ | Distinct _ ->
+    | NRel _ | Bool _ | BNot _ | CastBool _ | Pred _ | Distinct _
+    | AtomicResult _ | ThreadUnif _ ->
         [ Line (b_to_string b) ]
     | BRel (o, _, _) ->
         let op = B_rel.to_string o in

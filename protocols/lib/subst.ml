@@ -35,7 +35,6 @@ module Make (S : SUBST) = struct
     | Binary (o, n1, n2) -> Binary (o, n_subst s n1, n_subst s n2)
     | NIf (b, n1, n2) -> NIf (b_subst s b, n_subst s n1, n_subst s n2)
     | NCall (x, args) -> NCall (x, List.map (n_subst s) args)
-    | Other e -> Other (n_subst s e)
 
   and b_subst (s : S.t) (b : bexp) : bexp =
     match b with
@@ -46,6 +45,18 @@ module Make (S : SUBST) = struct
     | BRel (o, b1, b2) -> BRel (o, b_subst s b1, b_subst s b2)
     | BNot b -> BNot (b_subst s b)
     | Distinct exprs -> Distinct (List.map (n_subst s) exprs)
+    | AtomicResult { target; array; index; operation } ->
+        (* Substitute through index and operand expressions; leave
+           [target] and [array] as-is (binding-name references, not
+           free expressions). *)
+        AtomicResult
+          {
+            target;
+            array;
+            index = List.map (n_subst s) index;
+            operation = Atomic.Operation.map (n_subst s) operation;
+          }
+    | ThreadUnif e -> ThreadUnif (n_subst s e)
 
   let a_subst (s : S.t) (a : Access.t) : Access.t =
     { a with index = List.map (n_subst s) a.index }

@@ -396,66 +396,22 @@ module Code = struct
         ty = C_type.int;
       }
 
-  (* Unique-return contract for atomicAdd / atomicSub with a
-     nonzero literal delta. CUDA semantics: two threads T1, T2
-     calling [atomicAdd(addr, k)] on the same [addr] with [k != 0]
-     see distinct return values (one observes the other's update).
-     Soundness requires the two threads to atomic-modify the same
-     cell, so we gate the [thread_distinct [target]] assert by
-     [same_index]: if [index$T1 == index$T2] then
-     [target$T1 != target$T2]. When [aw.index = []] (singleton
-     counter pointer), [same_index] collapses to [true] and the
-     guard is unconditional.
-
-     The assert is emitted adjacent to the target's [Decl], so
-     when [Encode_asserts] bubbles up the assert tree, the part
-     mentioning [target] is retained as a guard inside the
-     [Decl]'s body. That guard gates every subsequent access on
-     the thread-distinctness hypothesis through path conditions,
-     with [target] still in scope (unlike a kernel-level pre,
-     which would lift the constraint past its binder).
-
-     [atomicInc] / [atomicDec] are intentionally excluded: their
-     wrap-around semantics ([old >= n ? 0 : old + 1]) only
-     preserve distinctness when the counter never wraps, which is
-     a precondition we cannot infer locally. *)
-  let atomic_unique_return_assert (aw : Atomic_write.t) : Assert.t option =
-    match aw.atomic.operation with
-    | (Add (Some (Exp.Num n)) | Sub (Some (Exp.Num n))) when n <> 0 ->
-        let same_index = Exp.b_and_ex (List.map Exp.thread_eq aw.index) in
-        let distinct_returns = Exp.thread_distinct [ aw.target ] in
-        Some (Assert.make (Exp.b_impl same_index distinct_returns) Global)
-    | _ -> None
-
-  (* Winner-uniqueness contract for [atomicCAS] / WGSL's
-     [atomicCompareExchangeWeak]: at most one thread per address
-     sees [target == expected]. For two threads T1 and T2 calling
-     the same CAS site, the conjunction [target$T1 == expected$T1
-     && target$T2 == expected$T2 && index$T1 == index$T2] is
-     contradictory by hardware semantics. The assert expresses the
-     negation; after [Encode_asserts] retains the part mentioning
-     [target], it becomes a guard inside the target's [Decl] that
-     gates every downstream access. Sound under the standard
-     assumption that [expected] is not the value being written
-     back (the common SENTINEL / KEY shape). [None] when
-     [expected] wasn't captured or the atomic isn't a CAS. *)
-  let atomic_cas_winner_assert (aw : Atomic_write.t) : Assert.t option =
-    match aw.atomic.operation with
-    | CAS { expected = Some expected; _ } ->
-        let target_eq = Exp.n_eq (Exp.Var aw.target) expected in
-        let other_target_eq =
-          Exp.n_eq (Exp.Other (Exp.Var aw.target)) (Exp.Other expected)
-        in
-        let same_index = Exp.b_and_ex (List.map Exp.thread_eq aw.index) in
-        let both_winners =
-          Exp.b_and target_eq (Exp.b_and other_target_eq same_index)
-        in
-        Some (Assert.make (Exp.b_not both_winners) Global)
-    | _ -> None
-
-  let atomic_asserts (aw : Atomic_write.t) : Assert.t list =
-    List.filter_map (fun f -> f aw)
-      [ atomic_unique_return_assert; atomic_cas_winner_assert ]
+  (* Tags an atomic site with its binding, address, and operation.
+     [Symbexp.AtomicAxioms] reads the marker at race-query
+     construction time and instantiates the cross-thread axiom
+     schema for each compatible pair. [Predicates.strip_cross_thread]
+     neutralises the marker in single-thread codegen paths. *)
+  let atomic_result_marker (aw : Atomic_write.t) : Assert.t =
+    let marker =
+      Exp.AtomicResult
+        {
+          target = aw.target;
+          array = aw.array;
+          index = aw.index;
+          operation = aw.atomic.operation;
+        }
+    in
+    Assert.make marker Global
 
   let from_stmt : Params.t * Stmt.t -> Params.t * t =
     let open State.Syntax in
@@ -496,11 +452,7 @@ module Code = struct
           let a =
             Access { array = e.array; index = e.index; mode = Atomic e.atomic }
           in
-          let s =
-            List.fold_right
-              (fun a body -> Seq (Assert a, body))
-              (atomic_asserts e) s
-          in
+          let s = Seq (Assert (atomic_result_marker e), s) in
           return (Seq (a, Decl (Decl.unset ~ty:e.ty e.target, s)))
       | Seq (Call c, s) ->
           let* s = imp_to_scoped s in

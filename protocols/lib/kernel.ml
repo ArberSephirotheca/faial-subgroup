@@ -148,7 +148,8 @@ let constants (k : t) =
     | NRel (Eq, Var x, Num n) | NRel (Eq, Num n, Var x) ->
         (Variable.name x, n) :: kvs
     | BRel (BAnd, b1, b2) -> constants b1 kvs |> constants b2
-    | Bool _ | CastBool _ | BNot _ | Pred _ | NRel _ | BRel _ | Distinct _ ->
+    | Bool _ | CastBool _ | BNot _ | Pred _ | NRel _ | BRel _ | Distinct _
+    | AtomicResult _ | ThreadUnif _ ->
         kvs
   in
   constants k.pre []
