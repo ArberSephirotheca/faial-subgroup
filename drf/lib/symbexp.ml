@@ -521,7 +521,7 @@ module Proof = struct
     let open Indent in
     let preds =
       let open Predicates in
-      List.map (fun x -> x.pred_name) p.preds |> String.concat ", "
+      List.map (fun x -> x.name) p.preds |> String.concat ", "
     in
     [
       Line ("id: " ^ string_of_int p.id);

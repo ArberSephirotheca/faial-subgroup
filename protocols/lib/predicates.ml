@@ -4,79 +4,83 @@ open Exp
 
 type 'a codegen = { codegen_arg : string; codegen_body : 'a }
 
-(* [pred_body] takes the full argument list. Every predicate currently
-   registered in [all_predicates] is unary, but [bvumul_noovfl] and any
-   future overflow-style guards take more than one [nexp]; representing
-   the body as [nexp list -> bexp] keeps the registry uniform. *)
-type t = { pred_name : string; pred_body : nexp list -> bexp }
+(* [body] takes the full argument list. Every entry currently registered
+   in [all] is unary, but [bvumul_noovfl] and any future overflow-style
+   guards take more than one [nexp]; representing the body as
+   [nexp list -> bexp] keeps the registry uniform. *)
+type t = { name : string; body : nexp list -> bexp }
 
 let pred_to_codegen (pred : t) : bexp codegen =
   {
     codegen_arg = "x";
-    codegen_body = pred.pred_body [ Var (Variable.from_name "x") ];
+    codegen_body = pred.body [ Var (Variable.from_name "x") ];
   }
 
-let all_predicates : t list =
+let all : t list =
   let unary (f : nexp -> bexp) : nexp list -> bexp = function
     | [ x ] -> f x
     | _ -> failwith "predicate expects a single argument"
   in
   let mk_uint size : t =
     {
-      pred_name = "uint" ^ string_of_int size;
-      pred_body =
+      name = "uint" ^ string_of_int size;
+      body =
         unary (fun x -> n_le x (Num (Common.pow ~base:2 size - 1)));
     }
   in
   let pow ~base : t =
-    { pred_name = "pow" ^ string_of_int base;
-      pred_body = unary (Range.pow ~base) }
+    { name = "pow" ^ string_of_int base;
+      body = unary (Range.pow ~base) }
   in
-  (* Unsigned BV32 multiplication no-overflow check. The Bv64Gen and
-     SignedBitVectorOps encoders consume [Pred ("bvumul_noovfl", ...)]
-     directly via [mk_umul_no_overflow]; this body folds the case
-     where both arguments are integer literals, so [b_inline] and
-     [constfold] can collapse [bvumul_noovfl(c, d)] with both [c] and
-     [d] [Num] to a [Bool] decision before Z3 sees it. When one
-     argument is symbolic the body reconstructs the [Pred] with its
-     inlined arguments, leaving the BV encoder to handle the
-     no-overflow semantics. *)
   let bvumul_noovfl : t =
     let max_unsigned = 1 lsl 32 in
-    { pred_name = "bvumul_noovfl";
-      pred_body = (function
+    { name = "bvumul_noovfl";
+      body = (function
         | [ Num k1; Num k2 ] -> Bool (k1 >= 0 && k2 >= 0 && k1 * k2 < max_unsigned)
         | [ _; _ ] as args -> Pred ("bvumul_noovfl", args)
         | _ -> failwith "bvumul_noovfl: expects exactly 2 arguments") }
   in
-  (* [nonneg v] is the natural-number assertion [v >= 0]. The body
-     inlines directly to a signed comparison so downstream
-     [constfold] / [eval_b] / the BV and Int encoders all reuse the
-     existing [NRel (Ge Signed, _, _)] machinery — no special
-     encoder case is required.
-
-     The abductive pool wraps mixed-signedness comparisons
-     ([signed_param >=u unsigned_expr], etc.) with this guard so the
-     BV gate can't pick a signed-negative model whose unsigned
-     reinterpretation makes the inequality trivially true. *)
   let nonneg : t =
-    { pred_name = "nonneg";
-      pred_body = (function
+    { name = "nonneg";
+      body = (function
         | [ v ] -> NRel (Ge Signedness.Signed, v, Num 0)
         | _ -> failwith "nonneg: expects exactly 1 argument") }
   in
+  (* C-call recognisers: the d_to_imp dispatcher consults this registry
+     by the source-level function name and emits the [body] result
+     directly, so the C name never appears as a [Pred] node. *)
+  let is_pow2 : t =
+    { name = "__is_pow2";
+      body = (function
+        | [ n ] -> Pred ("pow2", [ n ])
+        | _ -> failwith "__is_pow2: expects exactly 1 argument") }
+  in
+  let uniform_int : t =
+    { name = "__uniform_int";
+      body = (function
+        | [ n ] -> ThreadUnif n
+        | _ -> failwith "__uniform_int: expects exactly 1 argument") }
+  in
+  let distinct_int : t =
+    { name = "__distinct_int";
+      body = (function
+        | [ n ] -> BNot (ThreadUnif n)
+        | _ -> failwith "__distinct_int: expects exactly 1 argument") }
+  in
   [ pow ~base:2; pow ~base:3; mk_uint 32; mk_uint 16; mk_uint 8;
-    bvumul_noovfl; nonneg ]
+    bvumul_noovfl; nonneg;
+    is_pow2; uniform_int; distinct_int ]
 
-let make_pred_db (l : t list) : (string, t) Hashtbl.t =
-  List.map (fun p -> (p.pred_name, p)) l |> Common.hashtbl_from_list
+let all_db : t StringMap.t =
+  List.fold_left (fun m (p : t) -> StringMap.add p.name p m) StringMap.empty all
 
-let all_predicates_db : (string, t) Hashtbl.t = make_pred_db all_predicates
+let call_opt (name : string) (ns : nexp list) : bexp option =
+  StringMap.find_opt name all_db |> Option.map (fun (p : t) -> p.body ns)
 
-let pred_call_opt (name : string) (ns : nexp list) : bexp option =
-  match Hashtbl.find_opt all_predicates_db name with
-  | Some p -> Some (p.pred_body ns)
-  | None -> None
+let supported (name : string) : bool = StringMap.mem name all_db
+
+(* Back-compat alias kept until external callers migrate. *)
+let pred_call_opt = call_opt
 
 let get_predicates (b : bexp) : t list =
   let rec get_names_b (b : bexp) (preds : StringSet.t) : StringSet.t =
@@ -107,12 +111,11 @@ let get_predicates (b : bexp) : t list =
   in
   get_names_b b StringSet.empty
   |> StringSet.elements
-  (* Predicate names not registered in [all_predicates_db] (e.g.
-     [bvumul_noovfl], handled directly by the BV encoder) are skipped:
-     [get_predicates] is consumed by codegen passes that need the
-     inline body, so an absent body means "this predicate is opaque
-     to the codegen". *)
-  |> List.filter_map (Hashtbl.find_opt all_predicates_db)
+  (* Predicate names not registered in [all_db] (e.g. [bvumul_noovfl],
+     handled directly by the BV encoder) are skipped: [get_predicates]
+     is consumed by codegen passes that need the inline body, so an
+     absent body means "this predicate is opaque to the codegen". *)
+  |> List.filter_map (fun n -> StringMap.find_opt n all_db)
 
 let rec n_inline : nexp -> nexp = function
   | (Var _ | Num _) as n -> n
@@ -129,8 +132,8 @@ and b_inline : bexp -> bexp = function
          not in the database (e.g. [bvumul_noovfl], which the BV encoder
          consumes directly via [mk_mul_no_overflow]) pass through with
          their arguments inlined. *)
-      (match Hashtbl.find_opt all_predicates_db x with
-       | Some p -> p.pred_body inlined
+      (match StringMap.find_opt x all_db with
+       | Some p -> p.body inlined
        | None -> if inlined = ns then p_orig else Pred (x, inlined))
   | Bool _ as b -> b
   | CastBool e -> CastBool (n_inline e)

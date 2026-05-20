@@ -124,7 +124,7 @@ let rec free_vars_n (acc : VarSet.t) : Infer_exp.n -> VarSet.t = function
   | Num _ -> acc
   | Unary (_, e) -> free_vars acc e
   | Binary (_, l, r) -> free_vars (free_vars acc l) r
-  | NCall (_, e) -> free_vars acc e
+  | NCall (_, es) -> List.fold_left free_vars acc es
   | NIf (c, l, r) -> free_vars (free_vars (free_vars acc c) l) r
 
 and free_vars_b (acc : VarSet.t) : Infer_exp.b -> VarSet.t = function
@@ -132,7 +132,7 @@ and free_vars_b (acc : VarSet.t) : Infer_exp.b -> VarSet.t = function
   | NRel (_, l, r) -> free_vars (free_vars acc l) r
   | BRel (_, l, r) -> free_vars (free_vars acc l) r
   | BNot e -> free_vars acc e
-  | Pred (_, e) -> free_vars acc e
+  | Pred (_, es) -> List.fold_left free_vars acc es
   | ThreadUnif e -> free_vars acc e
 
 and free_vars (acc : VarSet.t) : Infer_exp.t -> VarSet.t = function

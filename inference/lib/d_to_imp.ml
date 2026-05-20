@@ -123,46 +123,22 @@ module Make (L : Logger) = struct
     | UnaryOperator { opcode = "~"; child = e; _ } ->
         let n = infer_expr e in
         NExp (Unary (BitNot, n))
+    (* Whitelisted pure functions / predicates are lifted to [NCall]
+       / [Pred] nodes; their lowering bodies live in [Functions] /
+       [Predicates] and run at [Constfold] / [Predicates.b_inline]
+       time. [Functions.supported] covers [divUp] / [min] / [max] /
+       [log2] / [log] / [sqrt] / [__ffs] / [__clz]; [Predicates.supported]
+       covers [__is_pow2] / [__uniform_int] / [__distinct_int]. *)
     | CallExpr
-        { func = Ident { name = n; kind = Function; _ }; args = [ n1; n2 ]; _ }
-      when Variable.name n = "divUp" ->
-        let n1 = infer_expr n1 in
-        let n2 = infer_expr n2 in
-        (*  (n1 + n2 - 1)/n2 *)
-        let n2_minus_1 : Infer_exp.n =
-          Binary (Minus Signedness.Signed, n2, NExp (Num 1))
-        in
-        let n1_plus_n2_minus_1 : Infer_exp.n =
-          Binary (Plus Signedness.Signed, n1, NExp n2_minus_1)
-        in
-        NExp (Binary (Div Signedness.Signed, NExp n1_plus_n2_minus_1, n2))
+        { func = Ident { name = f; kind = Function; _ }; args; _ }
+      when Functions.supported (Variable.name f) ->
+        let args = List.map infer_expr args in
+        NExp (NCall (Variable.name f, args))
     | CallExpr
-        { func = Ident { name = f; kind = Function; _ }; args = [ n ]; _ }
-      when Variable.name f = "__uniform_int" ->
-        let n = infer_expr n in
-        BExp (Infer_exp.thread_equal n)
-    | CallExpr
-        { func = Ident { name = f; kind = Function; _ }; args = [ n ]; _ }
-      when Variable.name f = "__distinct_int" ->
-        let n = infer_expr n in
-        BExp (Infer_exp.thread_distinct n)
-    | CallExpr
-        { func = Ident { name = f; kind = Function; _ }; args = [ n ]; _ }
-      when Variable.name f = "__is_pow2" ->
-        let n = infer_expr n in
-        BExp (Pred ("pow2", n))
-    | CallExpr
-        { func = Ident { name = n; kind = Function; _ }; args = [ n1; n2 ]; _ }
-      when Variable.name n = "min" ->
-        let n1 = infer_expr n1 in
-        let n2 = infer_expr n2 in
-        NExp (NIf (BExp (NRel (Lt Signedness.Signed, n1, n2)), n1, n2))
-    | CallExpr
-        { func = Ident { name = n; kind = Function; _ }; args = [ n1; n2 ]; _ }
-      when Variable.name n = "max" ->
-        let n1 = infer_expr n1 in
-        let n2 = infer_expr n2 in
-        NExp (NIf (BExp (NRel (Gt Signedness.Signed, n1, n2)), n1, n2))
+        { func = Ident { name = f; kind = Function; _ }; args; _ }
+      when Predicates.supported (Variable.name f) ->
+        let args = List.map infer_expr args in
+        BExp (Pred (Variable.name f, args))
     | BinaryOperator { lhs = l; opcode = "&"; rhs = IntegerLiteral 1; _ } ->
         let n = infer_expr l in
         BExp
@@ -190,7 +166,7 @@ module Make (L : Logger) = struct
         let n = infer_expr e in
         BExp
           (Infer_exp.or_
-             (BExp (Pred ("pow2", n)))
+             (BExp (Pred ("pow2", [ n ])))
              (BExp (Infer_exp.n_eq n (NExp (Num 0)))))
     | BinaryOperator { opcode = ","; lhs = _; rhs = e; _ } -> infer_expr e
     | BinaryOperator { opcode = o; lhs = n1; rhs = n2; _ } ->
@@ -490,9 +466,15 @@ module Make (L : Logger) = struct
           let s =
             match d with
             (* Detect kernel-calls: *)
-            | { init = Some (IExpr (CallExpr { func; args; _ })); _ } ->
-                (* Found a call, so extract the call and parse the rest
-            of the declaration yet unsetting the first decl *)
+            | { init = Some (IExpr (CallExpr { func; args; _ })); _ }
+              when Context.lookup_sig func (List.length args) ctx
+                   |> Option.is_some ->
+                (* Found a kernel call, so extract the call and parse
+                   the rest of the declaration yet unsetting the first
+                   decl. The signature lookup gates this arm so calls
+                   to pure functions (e.g. [log2]) fall through to
+                   [infer_decl], which lifts them via the [Functions]
+                   registry into an [NCall]-init decl. *)
                 let ty = infer_type d.ty in
                 Some (infer_call ~result:(Some (d.var, ty)) func args)
             (* Detect array alias: *)

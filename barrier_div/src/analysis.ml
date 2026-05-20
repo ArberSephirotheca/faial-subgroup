@@ -304,7 +304,7 @@ module Proof = struct
     let open Indent in
     let preds_str =
       let open Predicates in
-      List.map (fun x -> x.pred_name) p.preds |> String.concat ", "
+      List.map (fun x -> x.name) p.preds |> String.concat ", "
     in
     let loc_str =
       match p.barrier.loc with

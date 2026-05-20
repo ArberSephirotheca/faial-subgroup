@@ -124,6 +124,15 @@ let rewrite_expr (e : C_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
   (* abstract these following operations *)
   |> D_lang.Expr.st_map (fun e ->
       match e with
+      (* Calls to whitelisted pure functions / predicates survive into
+         [D_lang.Expr] so [d_to_imp] can lift them to [NCall] / [Pred].
+         The Z3 encoder then treats matching names as the same UF
+         symbol across launches, preserving cross-call-site sharing
+         that an opaque [@LaunchN] abstraction would lose. *)
+      | CallExpr { func = Ident { name = f; _ }; _ }
+        when Functions.supported (Variable.name f)
+             || Predicates.supported (Variable.name f) ->
+          State.return e
       | CXXNewExpr _
       | CXXDeleteExpr _
       | CallExpr _

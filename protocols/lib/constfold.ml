@@ -38,7 +38,18 @@ let rec gcd a b = if b = 0 then a else gcd b (a mod b)
 let rec n_opt (a : nexp) : nexp =
   match a with
   | Var _ | Num _ -> a
-  | NCall (x, args) -> NCall (x, List.map n_opt args)
+  | NCall (x, args) ->
+      let folded = List.map n_opt args in
+      (* Symmetric to [b_opt]'s [Pred] arm below: when every argument
+         folded to a [Num], delegate to the [Functions] registry so
+         calls like [log2(8)] collapse to [Num 3]. Otherwise leave
+         [NCall (x, folded)] so the Z3 encoder can treat it as a UF
+         application. *)
+      if List.for_all (function Num _ -> true | _ -> false) folded then
+        (match Functions.call_opt x folded with
+         | Some n -> n
+         | None -> NCall (x, folded))
+      else NCall (x, folded)
   | Unary (BitNot, e) -> n_bit_not (n_opt e)
   | Unary (Negate, e) -> n_uminus (n_opt e)
   | CastInt b -> cast_int (b_opt b)

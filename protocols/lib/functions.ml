@@ -1,0 +1,104 @@
+open Stage0
+open Common
+open Exp
+
+(* Pure-function registry: parallels [Predicates] but for entries
+   whose body returns [nexp]. Two flavours of body coexist:
+
+   - Algebraic rewrites ([divUp], [min], [max]) that lower to
+     existing [nexp] shapes ([Binary], [NIf]) regardless of whether
+     arguments are literal.
+
+   - Uninterpreted-function bodies ([log2], [log], [sqrt], [__ffs],
+     [__clz]) that default to [NCall name args] and concrete-fold
+     to a [Num] when every argument is a [Num] literal. The Z3
+     encoder (see [Gen_z3.n_to_expr]) treats matching [NCall] names
+     as the same UF symbol, so two call sites with the same
+     arguments share a value naturally. *)
+
+type t = { name : string; body : nexp list -> nexp }
+
+(* Integer log2 floor: the largest [k] with [2^k <= n], for [n >= 1]. *)
+let log2_floor (n : int) : int =
+  if n < 1 then invalid_arg "log2_floor: requires n >= 1"
+  else
+    let rec aux acc n = if n <= 1 then acc else aux (acc + 1) (n lsr 1) in
+    aux 0 n
+
+(* Integer square root: the largest [k] with [k*k <= n], for [n >= 0]. *)
+let isqrt (n : int) : int =
+  if n < 0 then invalid_arg "isqrt: requires n >= 0"
+  else int_of_float (Float.sqrt (Float.of_int n))
+
+let all : t list =
+  let div_up : t =
+    { name = "divUp";
+      body = (function
+        | [ a; b ] ->
+            let open Signedness in
+            Binary (Div Signed,
+                    Binary (Plus Signed, a, Binary (Minus Signed, b, Num 1)),
+                    b)
+        | _ -> failwith "divUp: expects exactly 2 arguments") }
+  in
+  let min_fn : t =
+    { name = "min";
+      body = (function
+        | [ a; b ] -> NIf (NRel (Lt Signedness.Signed, a, b), a, b)
+        | _ -> failwith "min: expects exactly 2 arguments") }
+  in
+  let max_fn : t =
+    { name = "max";
+      body = (function
+        | [ a; b ] -> NIf (NRel (Gt Signedness.Signed, a, b), a, b)
+        | _ -> failwith "max: expects exactly 2 arguments") }
+  in
+  let log2_fn : t =
+    { name = "log2";
+      body = (function
+        | [ Num k ] when k > 0 -> Num (log2_floor k)
+        | args -> NCall ("log2", args)) }
+  in
+  let log_fn : t =
+    (* [log] returns a real value; integer truncation depends on the
+       caller's cast, so concrete-fold is intentionally absent. The
+       UF default is enough for cross-call-site sharing. *)
+    { name = "log";
+      body = (fun args -> NCall ("log", args)) }
+  in
+  let sqrt_fn : t =
+    { name = "sqrt";
+      body = (function
+        | [ Num k ] when k >= 0 ->
+            let s = isqrt k in
+            if s * s = k then Num s else NCall ("sqrt", [ Num k ])
+        | args -> NCall ("sqrt", args)) }
+  in
+  let ffs : t =
+    (* CUDA's [__ffs(x)] returns position of the lowest set bit + 1,
+       or 0 when x = 0. *)
+    { name = "__ffs";
+      body = (function
+        | [ Num 0 ] -> Num 0
+        | [ Num k ] -> Num (log2_floor (k land -k) + 1)
+        | args -> NCall ("__ffs", args)) }
+  in
+  let clz : t =
+    (* CUDA's [__clz(x)] returns the count of leading zeros in the
+       32-bit unsigned representation. *)
+    { name = "__clz";
+      body = (function
+        | [ Num 0 ] -> Num 32
+        | [ Num k ] when k > 0 -> Num (31 - log2_floor k)
+        | args -> NCall ("__clz", args)) }
+  in
+  [ div_up; min_fn; max_fn;
+    log2_fn; log_fn; sqrt_fn; ffs; clz ]
+
+let all_db : t StringMap.t =
+  List.fold_left (fun m (e : t) -> StringMap.add e.name e m) StringMap.empty all
+
+let call_opt (name : string) (args : nexp list) : nexp option =
+  StringMap.find_opt name all_db |> Option.map (fun (e : t) -> e.body args)
+
+let supported (name : string) : bool = StringMap.mem name all_db

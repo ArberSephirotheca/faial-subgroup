@@ -6,7 +6,7 @@ type n =
   | Num of int
   | Unary of N_unary.t * t
   | Binary of N_binary.t * t * t
-  | NCall of string * t
+  | NCall of string * t list
   | NIf of t * t * t
 
 and b =
@@ -14,7 +14,7 @@ and b =
   | NRel of N_rel.t * t * t
   | BRel of B_rel.t * t * t
   | BNot of t
-  | Pred of string * t
+  | Pred of string * t list
   | ThreadUnif of t
 
 and t = NExp of n | BExp of b | Unknown of string
@@ -30,7 +30,8 @@ and to_n_string : n -> string = function
   | Unary (o, e) -> N_unary.to_string o ^ " (" ^ to_string e ^ ")"
   | Binary (o, l, r) ->
       "(" ^ to_string l ^ ") " ^ N_binary.to_string o ^ " (" ^ to_string r ^ ")"
-  | NCall (o, e) -> o ^ "(" ^ to_string e ^ ")"
+  | NCall (o, es) ->
+      o ^ "(" ^ String.concat ", " (List.map to_string es) ^ ")"
   | NIf (e1, e2, e3) ->
       let e1 = to_string e1 in
       let e2 = to_string e2 in
@@ -50,7 +51,8 @@ and to_b_string : b -> string = function
       let e2 = to_string e2 in
       "(" ^ e1 ^ ") " ^ o ^ " (" ^ e2 ^ ")"
   | BNot e -> "!(" ^ to_string e ^ ")"
-  | Pred (o, e) -> o ^ "(" ^ to_string e ^ ")"
+  | Pred (o, es) ->
+      o ^ "(" ^ String.concat ", " (List.map to_string es) ^ ")"
   | ThreadUnif e -> "thread_unif(" ^ to_string e ^ ")"
 
 let n_bin (o : N_binary.t) (e1 : t) (e2 : t) : n = Binary (o, e1, e2)
@@ -95,9 +97,9 @@ let rec to_nexp (e : t) : Exp.nexp state =
       | Unary (o, n) ->
           let* n = to_nexp n in
           return (Exp.Unary (o, n))
-      | NCall (x, n) ->
-          let* n = to_nexp n in
-          return (Exp.NCall (x, [ n ]))
+      | NCall (x, ns) ->
+          let* ns = State.list_map to_nexp ns in
+          return (Exp.NCall (x, ns))
       | NIf (b, n1, n2) ->
           let* b = to_bexp b in
           let* n1 = to_nexp n1 in
@@ -126,9 +128,9 @@ and to_bexp (e : t) : Exp.bexp state =
       | BNot b ->
           let* b = to_bexp b in
           return (Exp.BNot b)
-      | Pred (x, n) ->
-          let* n = to_nexp n in
-          return (Exp.Pred (x, [ n ]))
+      | Pred (x, ns) ->
+          let* ns = State.list_map to_nexp ns in
+          return (Exp.Pred (x, ns))
       | ThreadUnif n ->
           let* n = to_nexp n in
           return (Exp.ThreadUnif n))

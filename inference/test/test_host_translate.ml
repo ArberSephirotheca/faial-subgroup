@@ -103,6 +103,20 @@ let tests : unit Alcotest.test_case list =
     test_rewrite_arg "&buf[i]"
       (addr_of (subscript buf i))
       "buf (+.int *) i" [];
+    (* Whitelisted pure functions are not abstracted: [log2(i)]
+       survives as a [CallExpr] so [d_to_imp] can lift it to
+       [NCall("log2", [i])]. The Z3 encoder treats matching names
+       as the same UF symbol, so two [log2(i)] sites share a value. *)
+    test_rewrite_arg "log2(i)"
+      (CallExpr {
+        func = Ident (Decl_expr.from_name
+                        ~ty:int_ty
+                        ~kind:Decl_expr.Kind.Function
+                        (Variable.from_name "log2"));
+        args = [ i ];
+        ty = int_ty;
+      })
+      "log2(i)" [];
   ]
 
 let () = Alcotest.run "Host_translate" [ ("rewrite_arg", tests) ]
