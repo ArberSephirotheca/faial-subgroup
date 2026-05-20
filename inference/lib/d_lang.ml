@@ -178,6 +178,51 @@ module Expr = struct
     | UnaryOperator { opcode; child; ty } ->
         let* child = st_map f child in
         f (UnaryOperator { opcode; child; ty })
+
+  let rec map (f : t -> t) (e : t) : t =
+    match e with
+    | SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _
+    | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _ | Ident _
+    | UnresolvedLookupExpr _ ->
+        f e
+    | CXXNewExpr { arg; ty } ->
+        let arg = map f arg in
+        f (CXXNewExpr { arg; ty })
+    | CXXDeleteExpr { arg; ty } ->
+        let arg = map f arg in
+        f (CXXDeleteExpr { arg; ty })
+    | BinaryOperator { opcode; lhs; rhs; ty } ->
+        let lhs = map f lhs in
+        let rhs = map f rhs in
+        f (BinaryOperator { opcode; lhs; rhs; ty })
+    | CallExpr { func; args; ty } ->
+        let func = map f func in
+        let args = List.map (map f) args in
+        f (CallExpr { func; args; ty })
+    | ConditionalOperator { cond; then_expr; else_expr; ty } ->
+        let cond = map f cond in
+        let then_expr = map f then_expr in
+        let else_expr = map f else_expr in
+        f (ConditionalOperator { cond; then_expr; else_expr; ty })
+    | CXXConstructExpr { args; ty } ->
+        let args = List.map (map f) args in
+        f (CXXConstructExpr { args; ty })
+    | CXXOperatorCallExpr { func; args; ty } ->
+        let func = map f func in
+        let args = List.map (map f) args in
+        f (CXXOperatorCallExpr { func; args; ty })
+    | MemberExpr { name; base; ty } ->
+        let base = map f base in
+        f (MemberExpr { name; base; ty })
+    | UnaryOperator { opcode; child; ty } ->
+        let child = map f child in
+        f (UnaryOperator { opcode; child; ty })
+
+  let subst (var : Variable.t) (replacement : t) : t -> t =
+    map (function
+    | Ident d when Variable.equal (Decl_expr.name d) var -> replacement
+    | e -> e)
+
 end
 
 module Init = struct
@@ -201,10 +246,7 @@ module Init = struct
     | InitListExpr i -> list_to_s Expr.to_string i.args
     | IExpr i -> Expr.to_string i
 
-  (* Thread an [Expr.t] rewriter through the [Expr.t] children of an
-     initializer. [CXXConstructExpr] has no Expr children, so it
-     passes through untouched. *)
-  let map_expr (f : Expr.t -> ('s, Expr.t) State.t) (i : t) : ('s, t) State.t =
+  let st_map (f : Expr.t -> ('s, Expr.t) State.t) (i : t) : ('s, t) State.t =
     let open State.Syntax in
     match i with
     | IExpr e ->
@@ -214,6 +256,14 @@ module Init = struct
         let* args = State.list_map f args in
         return (InitListExpr { ty; args })
     | CXXConstructExpr _ -> return i
+
+  let map (f : Expr.t -> Expr.t) (i : t) : t =
+    match i with
+    | IExpr e -> IExpr (f e)
+    | InitListExpr { ty; args } ->
+        let args = List.map f args in
+        InitListExpr { ty; args }
+    | CXXConstructExpr _ -> i
 end
 
 module Decl = struct
@@ -280,11 +330,14 @@ module Decl = struct
     let x = Variable.name d.var in
     attr ^ ty ^ " " ^ x ^ i
 
-  (* Thread an [Expr.t] rewriter through the decl's optional initializer. *)
-  let map_expr (f : Expr.t -> ('s, Expr.t) State.t) (d : t) : ('s, t) State.t =
+  let st_map (f : Expr.t -> ('s, Expr.t) State.t) (d : t) : ('s, t) State.t =
     let open State.Syntax in
-    let* init = State.option_map (Init.map_expr f) d.init in
+    let* init = State.option_map (Init.st_map f) d.init in
     return { d with init }
+
+  let map (f : Expr.t -> Expr.t) (d : t) : t =
+    let init = Option.map (Init.map f) d.init in
+    { d with init }
 end
 
 module ForInit = struct
@@ -317,11 +370,11 @@ module ForInit = struct
 
   (* Thread an [Expr.t] rewriter through a [ForInit.t]: for [Decls],
      descend into each decl's initializer; for [Expr], rewrite directly. *)
-  let map_expr (f : Expr.t -> ('s, Expr.t) State.t) (fi : t) : ('s, t) State.t =
+  let st_map (f : Expr.t -> ('s, Expr.t) State.t) (fi : t) : ('s, t) State.t =
     let open State.Syntax in
     match fi with
     | Decls ds ->
-        let* ds = State.list_map (Decl.map_expr f) ds in
+        let* ds = State.list_map (Decl.st_map f) ds in
         return (Decls ds)
     | Expr e ->
         let* e = f e in
@@ -666,7 +719,7 @@ module Stmt = struct
         let* cond = f cond in
         return (IfStmt { cond; then_stmt; else_stmt })
     | DeclStmt ds ->
-        let* ds = State.list_map (Decl.map_expr f) ds in
+        let* ds = State.list_map (Decl.st_map f) ds in
         return (DeclStmt ds)
     | WhileStmt { cond; body } ->
         let* cond = f cond in
@@ -675,7 +728,7 @@ module Stmt = struct
         let* cond = f cond in
         return (DoStmt { cond; body })
     | ForStmt { init; cond; inc; body } ->
-        let* init = State.option_map (ForInit.map_expr f) init in
+        let* init = State.option_map (ForInit.st_map f) init in
         let* cond = State.option_map f cond in
         return (ForStmt { init; cond; inc; body })
     | SwitchStmt { cond; body } ->
@@ -710,15 +763,7 @@ module Stmt = struct
         return (LambdaDecl { var; captures; params; body; ret_ty })
 end
 
-(*
-let for_to_expr (f:Stmt.d_for) : Expr.t list =
-  let l1 = f.init |> Option.map ForInit.to_exp |> Option.value ~default:[] in
-  let l2 = f.cond |> Option.map (fun x -> [x]) |> Option.value ~default:[] in
-  let l3 = f.inc |> Option.map (fun x -> [x]) |> Option.value ~default:[] in
-  l1
-  |> Common.append_rev1 l2
-  |> Common.append_rev1 l3
-*)
+
 let for_loop_vars (f : Stmt.d_for) : Variable.t list =
   f.init |> Option.map ForInit.loop_vars |> Option.value ~default:[]
 
