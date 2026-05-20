@@ -19,158 +19,122 @@ open Protocols
     (location-stripped) stringification, plus the running list of
     fresh params minted for this launch, newest-first. *)
 type t = {
-  cache : Variable.t Common.StringMap.t;
+  cache : Variable.t D_lang.Expr.Map.t;
   fresh : Ty_variable.t list;
 }
 
-let empty : t = { cache = Common.StringMap.empty; fresh = [] }
+let empty : t = { cache = D_lang.Expr.Map.empty; fresh = [] }
+
+let to_string (st : t) : string =
+  st.cache
+  |> D_lang.Expr.Map.bindings
+  |> List.map (fun (e, v) ->
+         Printf.sprintf "%s = %s" (Variable.name v) (D_lang.Expr.to_string e))
+  |> String.concat "\n"
 
 let fresh_params (st : t) : C_lang.Param.t list =
   st.fresh
   |> List.rev_map (fun ty_var ->
          C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false)
 
-(** Returns a fresh name for [e], reused for equivalent expressions
-    in the same launch. *)
-let intern (e : C_lang.Expr.t) ~(name : Variable.t) :
-    (t, Variable.t) State.t =
-  let key = C_lang.Expr.to_string e in
-  let ty = C_lang.Expr.to_type e in
+(** Build a [$read_<arr>(idx...)] call from a read. *)
+let read_to_call (r : D_lang.d_read) : D_lang.Expr.t =
+  let read_name = Variable.update_name (fun x -> "$read_" ^ x) r.source.name in
+  CallExpr {
+    func = D_lang.Expr.ident read_name;
+    args = r.source.index;
+    ty = J_type.from_c_type r.ty;
+  }
+
+(** A simplistic substitution function for statements that is only
+    enough to handle the result of D_lang.rewrite_expr. *)
+let rec subst_in_stmt (var : Variable.t) (e_new : D_lang.Expr.t)
+    (stmt : D_lang.Stmt.t) : D_lang.Stmt.t =
+  let subst = D_lang.Expr.subst var e_new in
+  let subst_subscript (s : D_lang.d_subscript) : D_lang.d_subscript =
+    { s with index = List.map subst s.index }
+  in
+  let subst_decl : D_lang.Decl.t -> D_lang.Decl.t = D_lang.Decl.map subst in
+  match stmt with
+  | Seq (a, b) ->
+      Seq (subst_in_stmt var e_new a, subst_in_stmt var e_new b)
+  | ReadAccessStmt r ->
+      ReadAccessStmt { r with source = subst_subscript r.source }
+  | WriteAccessStmt w ->
+      WriteAccessStmt
+        { w with target = subst_subscript w.target; source = subst w.source }
+  | AtomicAccessStmt a ->
+      AtomicAccessStmt { a with source = subst_subscript a.source }
+  | DeclStmt ds -> DeclStmt (List.map subst_decl ds)
+  | SExpr e -> SExpr (subst e)
+  | _ -> stmt
+
+let rec inline_reads ((stmt, e) : D_lang.Stmt.t * D_lang.Expr.t) : D_lang.Expr.t =
+  match stmt with
+  | Seq (DeclStmt [{var; init = Some (IExpr v); _}], stmt) ->
+    inline_reads (subst_in_stmt var v stmt, D_lang.Expr.subst var v e)
+  | Seq (DeclStmt [{init = Some (InitListExpr _); _}], stmt)
+  | Seq (DeclStmt [{init = Some (CXXConstructExpr _); _}], stmt)
+  | Seq (DeclStmt [{init = None; _}], stmt)
+  | Seq (DeclStmt [], stmt) ->
+    inline_reads (stmt, e)
+  | Seq (DeclStmt (d :: l), stmt) ->
+    inline_reads (Seq (DeclStmt [d], Seq (DeclStmt l, stmt)), e)
+  | Seq (ReadAccessStmt ({ target; _ } as r), rest) ->
+      let call = read_to_call r in
+      let rest = subst_in_stmt target call rest in
+      let e = D_lang.Expr.subst target call e in
+      inline_reads (rest, e)
+  | Seq (stmt1, stmt2) ->
+      let e = inline_reads (stmt1, e) in
+      inline_reads (stmt2, e)
+  | DeclStmt _ | ReadAccessStmt _ -> inline_reads (Seq (stmt, Skip), e)
+  | _ -> e
+
+let make_var ?label ?location (st : t) : Variable.t =
+  let count = D_lang.Expr.Map.cardinal st.cache in
+  let name : string = "@Launch" ^ string_of_int count in
+  { name; label; location }
+
+let abstract (e : D_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
+  let ty = D_lang.Expr.to_type e in
   State.update_return (fun st ->
-    match Common.StringMap.find_opt key st.cache with
-    | Some existing -> (st, existing)
-    | None ->
-        ( {
-            cache = Common.StringMap.add key name st.cache;
-            fresh = Ty_variable.make ~name ~ty :: st.fresh;
-          },
-          name ))
+    let (st, name) =
+      match D_lang.Expr.Map.find_opt e st.cache with
+      | Some name -> (st, name)
+      | None ->
+        let name = make_var st in
+        ({
+              cache = D_lang.Expr.Map.add e name st.cache;
+              fresh = Ty_variable.make ~name ~ty :: st.fresh;
+            }, name)
+    in
+      (st, D_lang.Expr.ident ~ty name)
+  )
 
-(** Abstracts [e] behind a fresh variable, shared with equivalent
-    expressions in the same launch. *)
-let abstract (e : C_lang.Expr.t) ~(name : Variable.t) :
-    (t, D_lang.Expr.t) State.t =
-  let open State.Syntax in
-  let ty = C_lang.Expr.to_type e in
-  let* name = intern e ~name in
-  let d = Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name in
-  return (D_lang.Expr.Ident d)
 
-(** Lifts [e] to a [D_lang.Expr.t] if it's side-effect-free —
-    literals, idents, and pure arithmetic / conditional / unary
-    combinations. Returns [None] on calls, members, subscripts, and
-    other impure shapes. *)
-let rec lift_pure (e : C_lang.Expr.t) : D_lang.Expr.t option =
-  let open D_lang.Expr in
-  let ( let* ) = Option.bind in
-  match e with
-  | Ident d -> Some (Ident d)
-  | IntegerLiteral n -> Some (IntegerLiteral n)
-  | FloatingLiteral f -> Some (FloatingLiteral f)
-  | CharacterLiteral c -> Some (CharacterLiteral c)
-  | CXXBoolLiteralExpr b -> Some (CXXBoolLiteralExpr b)
-  | BinaryOperator { opcode; lhs; rhs; ty }
-    when not
-           (List.mem opcode
-              [ "="; "+="; "-="; "*="; "/="; "%=";
-                "&="; "|="; "^="; "<<="; ">>=" ]) ->
-      let* lhs = lift_pure lhs in
-      let* rhs = lift_pure rhs in
-      Some (BinaryOperator { opcode; lhs; rhs; ty })
-  | UnaryOperator { opcode; child; ty }
-    when List.mem opcode [ "-"; "+"; "!"; "~" ] ->
-      let* child = lift_pure child in
-      Some (UnaryOperator { opcode; child; ty })
-  | ConditionalOperator { cond; then_expr; else_expr; ty } ->
-      let* cond = lift_pure cond in
-      let* then_expr = lift_pure then_expr in
-      let* else_expr = lift_pure else_expr in
-      Some (ConditionalOperator { cond; then_expr; else_expr; ty })
-  | _ -> None
-
-let mk_arg_name (idx : int) : Variable.t =
-  Variable.from_name (Printf.sprintf "__faial_launch_arg_%d" idx)
-
-let mk_axis_name (base : string) (axis : string) : Variable.t =
-  Variable.from_name (Printf.sprintf "__faial_launch_%s_%s" base axis)
-
-(** Decomposition of a pointer-shaped launch argument. *)
-type pointer =
-  | Pointer of Decl_expr.t
-  | Indexed of { base : Decl_expr.t; offset : C_lang.Expr.t }
-
-(** Matches [a], [a + offset], and [offset + a]; otherwise [None]. *)
-let rec strip_pointer_offset (e : C_lang.Expr.t) : pointer option =
-  let ( let* ) = Option.bind in
-  match e with
-  | Ident d -> Some (Pointer d)
-  | BinaryOperator { opcode = "+"; lhs; rhs; _ } -> (
-      match (lhs, rhs) with
-      | Ident d, offset | offset, Ident d ->
-          Some (Indexed { base = d; offset })
+let rewrite_expr (e : C_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
+  e
+  (* convert from C_lang.Expr.t to D_lang.Expr.t *)
+  |> D_lang.rewrite_exp
+  (* unpack from the monadic result *)
+  |> D_lang.run0
+  (* apply rewrites of reads *)
+  |> inline_reads
+  (* abstract these following operations *)
+  |> D_lang.Expr.st_map (fun e ->
+      match e with
+      | CXXNewExpr _
+      | CXXDeleteExpr _
+      | CallExpr _
+      | CXXConstructExpr _
+      | MemberExpr _ -> abstract e
       | _ ->
-          let* p = strip_pointer_offset lhs in
-          (match p with
-           | Pointer d -> Some (Indexed { base = d; offset = rhs })
-           (* Limitation: nested offsets like [(a + b) + c] return
-              [None] instead of [Indexed { base = a; offset = b + c }]. *)
-           | Indexed _ -> None))
-  | _ -> None
+      (* Otherwise, leave intact *)
+      State.return e
+    )
 
-let rewrite_offset (proposed_name : Variable.t) (off : C_lang.Expr.t) :
-    (t, Decl_expr.t) State.t =
-  let open State.Syntax in
-  match off with
-  | Ident d -> return d
-  | _ ->
-      let ty = C_lang.Expr.to_type off in
-      let* name = intern off ~name:proposed_name in
-      return (Decl_expr.from_name ~ty ~kind:Decl_expr.Kind.Var name)
 
-(** Rewrites [e] verbatim when possible; defers to [opaque] otherwise.
-    Shared between [rewrite_arg] and [rewrite_dim3]. *)
-let rewrite_pure_or
-    (opaque : C_lang.Expr.t -> (t, D_lang.Expr.t) State.t)
-    (e : C_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
-  let open State.Syntax in
-  match lift_pure e with
-  | Some pure -> return pure
-  | None -> opaque e
-
-(** Rewrites the launch-site argument at position [idx]. *)
-let rewrite_arg (idx : int) :
-    C_lang.Expr.t -> (t, D_lang.Expr.t) State.t =
-  let open State.Syntax in
-  rewrite_pure_or (fun e ->
-      let ty = C_lang.Expr.to_type e in
-      if J_type.matches C_type.is_array ty then
-        match strip_pointer_offset e with
-        | Some (Indexed { base; offset }) ->
-            let off_name =
-              Variable.from_name
-                (Printf.sprintf "__faial_launch_arg_%d_off" idx)
-            in
-            let* off_decl = rewrite_offset off_name offset in
-            return
-              D_lang.Expr.(
-                BinaryOperator
-                  { opcode = "+"; lhs = Ident base; rhs = Ident off_decl; ty })
-        | _ -> abstract e ~name:(mk_arg_name idx)
-      else abstract e ~name:(mk_arg_name idx))
-
-(** Given a dim3 expression, extract each axis independently. [None]
-    on an axis signals that no static information is available and no
-    per-axis constraint should be emitted; fabricating
-    [IntegerLiteral 1] for an unknown axis would be unsound. For
-    [CXXConstructExpr], unspecified trailing args are CUDA-semantically
-    [1] (e.g. [dim3(32)] means [(32, 1, 1)]) and stay [Some].
-
-    Arms are gated by "all args integer-typed" — Clang sometimes
-    materialises a 3-arg [CXXConstructExpr] whose first arg is itself
-    a dim3-typed copy/move construct (when the launch slot receives an
-    existing dim3 value like a function return or struct field). The
-    value ctor [dim3(unsigned int, ...)] only applies when each arg is
-    integer; the dim3-typed shape falls through to [None]. *)
 let unpack_dim3 (e : C_lang.Expr.t) :
     C_lang.Expr.t option * C_lang.Expr.t option * C_lang.Expr.t option =
   let one : C_lang.Expr.t = IntegerLiteral 1 in
@@ -191,23 +155,13 @@ let unpack_dim3 (e : C_lang.Expr.t) :
 (** Rewrites a [gridDim]/[blockDim] dim3 expression into its x/y/z
     axes. [None] propagates per axis from [dim3_axes] when that slot
     can't be decomposed. *)
-let rewrite_dim3 (base : string) (e : C_lang.Expr.t) :
+let rewrite_dim3 (e : C_lang.Expr.t) :
     (t, D_lang.Expr.t option * D_lang.Expr.t option * D_lang.Expr.t option)
     State.t =
   let open State.Syntax in
   let xe, ye, ze = unpack_dim3 e in
-  let one (axis : string) (e_opt : C_lang.Expr.t option) =
-    match e_opt with
-    | None -> return None
-    | Some e ->
-        let* d =
-          rewrite_pure_or
-            (fun e -> abstract e ~name:(mk_axis_name base axis))
-            e
-        in
-        return (Some d)
-  in
-  let* rx = one "x" xe in
-  let* ry = one "y" ye in
-  let* rz = one "z" ze in
+  let one = State.option_map rewrite_expr in
+  let* rx = one xe in
+  let* ry = one ye in
+  let* rz = one ze in
   return (rx, ry, rz)
