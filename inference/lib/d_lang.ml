@@ -137,6 +137,53 @@ module Expr = struct
     | Some c -> to_string c
     | None -> ""
 
+  let ( let@ ) c k = if c <> 0 then c else k ()
+
+  let rec compare (e1 : t) (e2 : t) : int =
+    match e1, e2 with
+    | Ident d1, Ident d2 -> Decl_expr.compare d1 d2
+    | UnresolvedLookupExpr a, UnresolvedLookupExpr b ->
+        let@ () = Variable.compare a.name b.name in
+        Stdlib.compare a.tys b.tys
+    | CXXNewExpr a, CXXNewExpr b ->
+        let@ () = compare a.arg b.arg in
+        Stdlib.compare a.ty b.ty
+    | CXXDeleteExpr a, CXXDeleteExpr b ->
+        let@ () = compare a.arg b.arg in
+        Stdlib.compare a.ty b.ty
+    | BinaryOperator a, BinaryOperator b ->
+        let@ () = String.compare a.opcode b.opcode in
+        let@ () = compare a.lhs b.lhs in
+        let@ () = compare a.rhs b.rhs in
+        Stdlib.compare a.ty b.ty
+    | CallExpr a, CallExpr b ->
+        let@ () = compare a.func b.func in
+        let@ () = List.compare compare a.args b.args in
+        Stdlib.compare a.ty b.ty
+    | CXXOperatorCallExpr a, CXXOperatorCallExpr b ->
+        let@ () = compare a.func b.func in
+        let@ () = List.compare compare a.args b.args in
+        Stdlib.compare a.ty b.ty
+    | ConditionalOperator a, ConditionalOperator b ->
+        let@ () = compare a.cond b.cond in
+        let@ () = compare a.then_expr b.then_expr in
+        let@ () = compare a.else_expr b.else_expr in
+        Stdlib.compare a.ty b.ty
+    | CXXConstructExpr a, CXXConstructExpr b ->
+        let@ () = List.compare compare a.args b.args in
+        Stdlib.compare a.ty b.ty
+    | MemberExpr a, MemberExpr b ->
+        let@ () = String.compare a.name b.name in
+        let@ () = compare a.base b.base in
+        Stdlib.compare a.ty b.ty
+    | UnaryOperator a, UnaryOperator b ->
+        let@ () = String.compare a.opcode b.opcode in
+        let@ () = compare a.child b.child in
+        Stdlib.compare a.ty b.ty
+    | _ -> Stdlib.compare e1 e2
+
+  let equal (e1 : t) (e2 : t) : bool = compare e1 e2 = 0
+
   (* Post-order stateful rewrite: children of [e] are rewritten first, then
      [f] is applied to the reconstructed node. *)
   let rec st_map (f : t -> ('s, t) State.t) (e : t) : ('s, t) State.t =
@@ -222,6 +269,15 @@ module Expr = struct
     map (function
     | Ident d when Variable.equal (Decl_expr.name d) var -> replacement
     | e -> e)
+
+  module OT = struct
+    type nonrec t = t
+
+    let compare = compare
+  end
+
+  module Map = Map.Make (OT)
+  module Set = Set.Make (OT)
 
 end
 
