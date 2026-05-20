@@ -58,8 +58,8 @@ module TypeAlias = struct
 end
 
 module Make (L : Logger) = struct
-  let parse_bin ?(unsigned = false) (op : string) (l : Imp.Infer_exp.t)
-      (r : Infer_exp.t) : Infer_exp.t =
+  let parse_bin ?(sign = Signedness.Signed) (op : string)
+      (l : Imp.Infer_exp.t) (r : Infer_exp.t) : Infer_exp.t =
     match op with
     (* bool -> bool -> bool *)
     | "||" -> BExp (BRel (BOr, l, r))
@@ -67,18 +67,17 @@ module Make (L : Logger) = struct
     (* int -> int -> bool *)
     | "==" -> BExp (NRel (Eq, l, r))
     | "!=" -> BExp (NRel (Neq, l, r))
-    | "<=" -> BExp (NRel (Le (if unsigned then Unsigned else Signed), l, r))
-    | "<" -> BExp (NRel (Lt (if unsigned then Unsigned else Signed), l, r))
-    | ">=" -> BExp (NRel (Ge (if unsigned then Unsigned else Signed), l, r))
-    | ">" -> BExp (NRel (Gt (if unsigned then Unsigned else Signed), l, r))
+    | "<=" -> BExp (NRel (Le sign, l, r))
+    | "<" -> BExp (NRel (Lt sign, l, r))
+    | ">=" -> BExp (NRel (Ge sign, l, r))
+    | ">" -> BExp (NRel (Gt sign, l, r))
     (* int -> int -> int *)
-    | "+" -> NExp (Binary (Plus (if unsigned then Unsigned else Signed), l, r))
-    | "-" -> NExp (Binary (Minus (if unsigned then Unsigned else Signed), l, r))
-    | "*" -> NExp (Binary (Mult (if unsigned then Unsigned else Signed), l, r))
-    | "/" -> NExp (Binary (Div (if unsigned then Unsigned else Signed), l, r))
-    | "%" -> NExp (Binary (Mod (if unsigned then Unsigned else Signed), l, r))
-    | ">>" ->
-        NExp (Binary (RightShift (if unsigned then Unsigned else Signed), l, r))
+    | "+" -> NExp (Binary (Plus sign, l, r))
+    | "-" -> NExp (Binary (Minus sign, l, r))
+    | "*" -> NExp (Binary (Mult sign, l, r))
+    | "/" -> NExp (Binary (Div sign, l, r))
+    | "%" -> NExp (Binary (Mod sign, l, r))
+    | ">>" -> NExp (Binary (RightShift sign, l, r))
     | "<<" -> NExp (Binary (LeftShift, l, r))
     | "^" -> NExp (Binary (BitXOr, l, r))
     | "|" -> NExp (Binary (BitOr, l, r))
@@ -178,10 +177,13 @@ module Make (L : Logger) = struct
           |> Option.map C_type.is_unsigned
           |> Option.value ~default:false
         in
-        let unsigned = is_unsigned_operand n1 || is_unsigned_operand n2 in
+        let sign : Signedness.t =
+          if is_unsigned_operand n1 || is_unsigned_operand n2
+          then Unsigned else Signed
+        in
         let n1 = infer_expr n1 in
         let n2 = infer_expr n2 in
-        parse_bin ~unsigned o n1 n2
+        parse_bin ~sign o n1 n2
     | CXXBoolLiteralExpr b -> BExp (Bool b)
     | UnaryOperator u when u.opcode = "!" ->
         let b = infer_expr u.child in
