@@ -101,9 +101,15 @@ module Inline = struct
             | Some (x, _) -> Variable.Set.add x vars
             | None -> vars
           in
+          (* Inline the continuation first, then this call. The
+             continuation is the rest of the call chain in [Scoped.Code]
+             (e.g. [Call (c1, Call (c2, Call (c3, ...)))]); without
+             recursing into [s] here, only the head call ever gets
+             inlined and the tail remains as opaque [Call] nodes. *)
+          let s = inline vars s in
           match StringMap.find_opt (Call.unique_id c) funcs with
           | Some (k : Scoped.Kernel.t) -> apply vars c.result c.args k s
-          | None -> Call (c, inline vars s))
+          | None -> Call (c, s))
       | Seq (p, q) -> Seq (inline vars p, inline vars q)
       | If (b, s1, s2) -> If (b, inline vars s1, inline vars s2)
       | For (r, s) -> For (r, inline (Variable.Set.add r.var vars) s)
