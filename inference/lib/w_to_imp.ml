@@ -81,11 +81,11 @@ module Types = struct
     if W_lang.Type.is_array ty then
       ty |> Arrays.tr_memory
       |> Option.map (fun m -> Array m)
-      |> Option.value ~default:Unsupported
+      |> Option.value ~default:(Unsupported (tr ty))
     else if W_lang.Type.is_int ty then Scalar (tr ty)
     else
-      (* unsupported *)
-      Unsupported
+      (* unsupported; retain the translated [C_type.t] from [tr]. *)
+      Unsupported (tr ty)
 end
 
 module Variables = struct
@@ -789,13 +789,14 @@ module Statements = struct
                             | Infer_exp.NExp (Var x) ->
                                 Infer_stmt.Arg.Array
                                   (Infer_stmt.Array_use.make x)
-                            | _ -> Unsupported
+                            | _ -> Unsupported (Types.tr ty)
                           else if W_lang.Type.is_int ty then
                             (* handle scalar *)
                             Scalar arg
                           else
-                            (* unsupported *)
-                            Unsupported
+                            (* unsupported; retain the translated
+                               [C_type.t] from [Types.tr]. *)
+                            Unsupported (Types.tr ty)
                         in
                         arg)
                       args k

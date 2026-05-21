@@ -235,12 +235,12 @@ module Make (L : Logger) = struct
       e |> to_array_use
       (* If we have an array, wrap it under Array *)
       |> Option.map (fun o -> Infer_stmt.Arg.Array o)
-      (* Otherwise, return unsupported *)
-      |> Option.value ~default:Infer_stmt.Arg.Unsupported
+      (* Otherwise, return unsupported retaining the source type. *)
+      |> Option.value ~default:(Infer_stmt.Arg.Unsupported ty)
     else if C_type.is_int ty then
       (* Handle scalars *)
       Scalar (infer_expr e)
-    else Unsupported
+    else Unsupported ty
 
   (* -------------------------------------------------------------- *)
 
@@ -636,7 +636,7 @@ module Make (L : Logger) = struct
         else Mem_hierarchy.GlobalMemory
       in
       Kernel.Parameter.array x (mk_array h ty)
-    else Kernel.Parameter.unsupported x
+    else Kernel.Parameter.unsupported x ty
 
   let parse_shared (ctx : Context.t) (s : D_lang.Stmt.t) :
       (Variable.t * Memory.t) list =

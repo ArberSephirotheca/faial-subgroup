@@ -37,21 +37,27 @@ type access_expr = { access_index : nexp list; access_mode : Access.Mode.t }
 *)
 module Parameter = struct
   module Type = struct
+    (* [Unsupported] retains the source [C_type.t] so the IR keeps
+       the parameter's declared type even when the C-to-Imp lifting
+       has no specialised handling for it (pointer-to-pointer, opaque
+       structs, function pointers, etc.). Downstream analyses can
+       inspect the type without having to re-read the source. *)
     type t =
       | Scalar of C_type.t
       | Array of Memory.t
       | Enum of Enum.t
-      | Unsupported
+      | Unsupported of C_type.t
 
     let to_string : t -> string = function
       | Scalar s -> C_type.to_string s
       | Array m -> Memory.to_string m
       | Enum e -> Enum.name e
-      | Unsupported -> "?"
+      | Unsupported ty -> C_type.to_string ty
 
     let to_c_type : t -> C_type.t = function
       | Enum e -> Enum.to_c_type e
-      | Array _ | Unsupported -> C_type.unknown
+      | Array _ -> C_type.unknown
+      | Unsupported ty -> ty
       | Scalar ty -> ty
   end
 
@@ -63,7 +69,8 @@ module Parameter = struct
   let enum (name : Variable.t) (e : Enum.t) : t = (name, Enum e)
   let array (name : Variable.t) (m : Memory.t) : t = (name, Array m)
   let scalar (name : Variable.t) (ty : C_type.t) : t = (name, Scalar ty)
-  let unsupported (name : Variable.t) : t = (name, Unsupported)
+  let unsupported (name : Variable.t) (ty : C_type.t) : t =
+    (name, Unsupported ty)
 
   let to_array ((name, ty) : t) : (Variable.t * Memory.t) option =
     match ty with Type.Array m -> Some (name, m) | _ -> None
@@ -90,7 +97,7 @@ module ParameterList = struct
         | Parameter.Type.Enum e ->
             Params.add ~bound:(Some (Enum.to_bexp x e)) x (Enum.to_c_type e) ps
         | Scalar ty -> Params.add x ty ps
-        | Unsupported | Array _ -> ps)
+        | Unsupported _ | Array _ -> ps)
       Params.empty l
 
   let to_c_type (x : t) : (Variable.t * C_type.t) list =

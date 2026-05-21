@@ -79,7 +79,7 @@ module Inline = struct
            | Scalar e ->
                let x, s = rename_param vars x s in
                decl_set ~ty x e s
-           | Unsupported ->
+           | Unsupported _ ->
                let x, s = rename_param vars x s in
                decl_unset ~ty x s
            | Array u ->

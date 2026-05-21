@@ -25,7 +25,10 @@ end
 module O_Arg = Arg (* Refer to the root Arg *)
 
 module Arg = struct
-  type t = Scalar of Infer_exp.t | Array of Array_use.t | Unsupported
+  type t =
+    | Scalar of Infer_exp.t
+    | Array of Array_use.t
+    | Unsupported of C_type.t
 
   let infer : t -> O_Arg.t Infer_exp.state = function
     | Scalar e ->
@@ -34,7 +37,7 @@ module Arg = struct
     | Array { array; offset } ->
         let* offset = Infer_exp.to_nexp offset in
         return (O_Arg.Array { array; offset })
-    | Unsupported -> return O_Arg.Unsupported
+    | Unsupported ty -> return (O_Arg.Unsupported ty)
 end
 
 type t =
