@@ -397,13 +397,17 @@ module Code = struct
           (Params.union_left assigns_1 assigns_2, If (b, p, q))
       | Assign a ->
           let assigns, body = fix_assigns defined a.body in
-          let assigns =
-            if Params.mem a.var defined then
-              (* already defined, so no need to record outstanding
-                assignment *)
-              assigns
-            else Params.add a.var a.ty assigns
-          in
+          (* Always bubble [a.var]. The enclosing [Decl (d, p)] case
+             removes [d.var] from the bubbled set when [d.var = a.var],
+             so a sequential [decl x = e in Assign x = e' in ...] still
+             collapses cleanly. The bubble matters when the [Assign]
+             sits inside a branch of an [If] (or a [For] body): the
+             enclosing [Seq] wraps the continuation with a [Decl.unset
+             a.var] so the post-conditional code sees a fresh free
+             variable rather than the prior [Decl]'s [init] (or any
+             prior [Assign]'s value), which is the correct semantics
+             for a mutation that only fires on some control-flow paths. *)
+          let assigns = Params.add a.var a.ty assigns in
           (assigns, Assign { a with body })
       | Call (c, p) -> (
           match c.result with

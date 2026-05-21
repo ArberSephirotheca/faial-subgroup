@@ -110,6 +110,14 @@ let tests =
     ("racy-template-alias.cu", [], 1);
     (* A data-race that uses aliasing and templated arrays *)
     ("racy-template.cu", [], 1);
+    (* Conditional assignment to a scalar [flag] decides which of
+     two writes a thread issues. After [fix_assigns] hoists the
+     conditional [Assign] to a [Decl.unset] in the post-If Seq,
+     [encode_assigns] sees [flag] as a fresh free local from the
+     join point onward and the prover picks adversarial values
+     for [flag] per thread to surface the same-cell write between
+     adjacent threads. *)
+    ("racy-mutation.cu", [], 1);
     (* Support for enumerates *)
     ("drf-enum.cu", [], 0);
     (* Support for anonymous enumerates named via typedef *)
@@ -383,12 +391,6 @@ let unsupported : Fpath.t list =
     "racy-struct.cu";
     (* A racy example that calls a device function without array as args *)
     "racy-device-no-args.cu";
-    (* Conditional reassignment to a scalar [flag] decides which
-     of two writes a thread issues; faial-drf currently reports
-     DRF even though odd threads write both [y[i]] and [y[i+1]]
-     and even threads write [y[i]], producing same-cell writes
-     between adjacent threads. *)
-    "racy-mutation.cu";
     (* Crashes the codegen with [b_to_expr: ThreadUnif must be
      expanded by symbexp's project_b or stripped by single-thread
      analyses before codegen]. The kernel's body contains an
