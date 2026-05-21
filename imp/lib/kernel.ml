@@ -162,35 +162,4 @@ let is_global (k : t) : bool = k.visibility = Visibility.Global
 let remove_global_asserts (k : t) : t =
   { k with code = Stmt.filter_asserts Assert.is_local k.code }
 
-(* Drop kernel parameters the body never references. The synthesised
-   launch wrapper introduces a [@Launch<i>] arg per host launch-site
-   argument and an [int i] per enclosing host for-loop; only those
-   actually used by the body's expressions, asserts, or call
-   arguments contribute to any downstream analysis, so the rest can
-   be removed at the Imp stage. A parameter is kept iff
-   [Stmt.free_names] reports its name, which counts only references
-   (not binders), so any parameter that appears solely as the target
-   of an assign or a read result stays. Globals are intentionally
-   left untouched: [warpSize] and other implicit names are
-   referenced via architecture pins and later passes rather than the
-   body itself, so trimming them would break downstream analyses
-   that rely on their presence in the kernel's global scope. *)
-let trim_unused (k : t) : t =
-  let used = Stmt.free_names k.code Variable.Set.empty in
-  (* [Auxiliary] kernels (the [__device__] helpers introduced by C++
-     lambda hoisting and inline-able return-expression functions)
-     carry their result in [k.return] rather than in the body, so a
-     helper of the shape [return bid * 256 + tid] has an empty body
-     and would lose every parameter without this. *)
-  let used =
-    match k.return with
-    | Some e -> Exp.n_free_names e used
-    | None -> used
-  in
-  let parameters =
-    List.filter (fun ((x, _) : Parameter.t) -> Variable.Set.mem x used)
-      k.parameters
-  in
-  { k with parameters }
-
 let calls (k : t) : StringSet.t = Stmt.calls k.code

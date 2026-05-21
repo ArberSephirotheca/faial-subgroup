@@ -788,7 +788,6 @@ module Make (L : Logger) = struct
     in
     let sigs = D_lang.SignatureDB.from_program p in
     parse_p (Context.from_signature_db sigs) p
-    |> List.map Imp.Kernel.trim_unused
 end
 
 module Default = Make (Logger.Colors)
