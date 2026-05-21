@@ -114,7 +114,17 @@ module ArithmeticOps : NUMERIC_OPS = struct
   let mk_ult = Arithmetic.mk_lt
   let mk_unary_minus = Arithmetic.mk_unary_minus
   let mk_not = missing1 "~"
-  let parse_num (x : string) = x
+  (* Z3 renders Int-sort model values as either [N] (positive) or
+     [(- N)] in S-expression syntax (negative). Downstream consumers
+     ([Solve_drf.Environ.parse], the abductive witness evaluator)
+     expect a parseable integer string, so normalise the negative
+     form before returning. *)
+  let parse_num (x : string) =
+    let x = String.trim x in
+    let n = String.length x in
+    if n >= 4 && x.[0] = '(' && x.[1] = '-' && x.[n - 1] = ')' then
+      "-" ^ String.trim (String.sub x 2 (n - 3))
+    else x
 
   (* Natural-number multiplication can't overflow. *)
   let mk_umul_no_overflow ctx _ _ = Boolean.mk_true ctx
