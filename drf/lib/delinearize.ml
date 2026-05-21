@@ -277,7 +277,8 @@ end = struct
         in match v1 - v2 with
         | 0 -> None
         | _ -> Some diff)
-    | Some v, None | None, Some v -> Some v
+    | Some v, None -> Some v
+    | None, Some v -> Some (-v)
     | None, None -> None) t1 t2
   let ( * ) (t1: t) (t2: t): t =
     TermMap.fold (fun k1 v1 acc ->
