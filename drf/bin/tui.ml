@@ -182,9 +182,7 @@ end
 let print_box : PrintBox.t -> unit = PrintBox_text.output stdout
 
 let render (output : Analysis.t list) : unit =
-  let total = ref 0 in
-  output
-  |> List.iter (fun solution ->
+  let render_one (solution : Analysis.t) : int =
       let kernel_name =
         let open Analysis in
         solution.kernel.name
@@ -253,24 +251,49 @@ let render (output : Analysis.t list) : unit =
             T.print_string [ T.Underlined ]
               ("(proof #" ^ string_of_int w.proof_id ^ ")\n"))
       in
-      match Common.either_split errors with
-      | [], [] ->
+      let unk, errs = Common.either_split errors in
+      let errs = List.split errs |> snd in
+      let err_count = List.length errs in
+      match Analysis.verdict solution with
+      | Analysis.Verdict.Vacuous ->
+          T.print_string
+            [ T.Bold; T.Foreground T.Yellow ]
+            ("Kernel '" ^ kernel_name
+             ^ "' is vacuous (precondition is unsatisfiable; race pipeline skipped).\n");
+          (match solution.Analysis.vacuous with
+           | Some pre ->
+               T.print_string [ T.Bold ] "Precondition:\n";
+               print_string (Indent.to_string (Exp.b_to_s pre));
+               print_endline ""
+           | None -> ());
+          1
+      | Analysis.Verdict.Drf ->
           T.print_string
             [ T.Bold; T.Foreground T.Green ]
-            ("Kernel '" ^ kernel_name ^ "' is DRF!\n")
-      | unk, errs ->
-          let has_unknown = List.length unk > 0 in
-          let errs = List.split errs |> snd in
-          let err_count = List.length errs |> string_of_int in
-          let dr = "data-race" ^ if err_count = "1" then "" else "s" in
+            ("Kernel '" ^ kernel_name ^ "' is DRF!\n");
+          0
+      | Analysis.Verdict.Timeout ->
+          let n = List.length unk |> string_of_int in
+          T.print_string
+            [ T.Bold; T.Foreground T.Yellow ]
+            ("Kernel '" ^ kernel_name ^ "' timed out on " ^ n
+             ^ " proof query"
+             ^ (if n = "1" then "" else "s")
+             ^ "; verdict is inconclusive. Try increasing the timeout.\n");
+          1
+      | Analysis.Verdict.Racy ->
+          let err_count_s = string_of_int err_count in
+          let dr = "data-race" ^ if err_count = 1 then "" else "s" in
           T.print_string
             [ T.Bold; T.Foreground T.Red ]
-            ("Kernel '" ^ kernel_name ^ "' has " ^ err_count ^ " " ^ dr ^ ".\n");
+            ("Kernel '" ^ kernel_name ^ "' has " ^ err_count_s ^ " " ^ dr ^ ".\n");
           print_errors errs;
-          if has_unknown then
+          if List.length unk > 0 then
             T.print_string [ T.Foreground T.Red ]
               "A portion of the kernel was not analyzable. Try to increasing \
                the timeout.\n"
           else ();
-          if err_count <> "0" || has_unknown then total := !total + 1 else ());
-  if !total > 0 then exit 1 else ()
+          1
+  in
+  let total = List.fold_left (fun acc s -> acc + render_one s) 0 output in
+  if total > 0 then exit 1 else ()

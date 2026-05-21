@@ -38,11 +38,11 @@ let render (output : Analysis.t list) : unit =
           in
           cd ^ dd
         in
-        let is_ok = List.length unknowns + List.length errors = 0 in
         `Assoc
           [
             ("kernel_name", `String kernel_name);
-            ("status", `String (if is_ok then "drf" else "racy"));
+            ("status",
+             `String (Verdict.to_string (Analysis.verdict analysis)));
             ("unknowns", `List (List.map Symbexp.Proof.to_json unknowns));
             ("logics", `List logics);
             ( "errors",

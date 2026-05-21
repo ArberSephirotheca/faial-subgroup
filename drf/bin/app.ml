@@ -106,6 +106,13 @@ type t = {
   assumes : (string * Exp.bexp list) list;
   assume_dims : bool;
   assume_launch : bool;
+  (* Opt-in Z3 pre-flight on the merged [k.pre]: when set, [run]
+     SAT-checks each kernel's precondition before race goals run
+     and prints a warning if it is UNSAT. An UNSAT [k.pre] makes
+     every race query unsat too, so the kernel reports "is DRF"
+     for the wrong reason. Defaults to false; the check costs one
+     Z3 call per kernel. *)
+  check_pre_sat : bool;
   memory_model : Memory_model.t;
   stop_at : Stage.t option;
 }
@@ -188,6 +195,7 @@ let to_string (app : t) : string =
    assumes;
    assume_dims;
    assume_launch;
+   check_pre_sat;
    memory_model;
    stop_at;
   } ->
@@ -210,6 +218,7 @@ let to_string (app : t) : string =
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
       ^ "\nassume_launch = " ^ bool assume_launch
+      ^ "\ncheck_pre_sat = " ^ bool check_pre_sat
       ^ "\nmemory_model = " ^ Memory_model.to_string memory_model
       ^ "\nstop_at = " ^ opt Stage.to_string stop_at
       ^ "\nassumes: "
@@ -225,8 +234,8 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize
-    ~assume_delin ~assumes ~assume_dims ~assume_launch ~memory_model ~cbor
-    ~stop_at : t =
+    ~assume_delin ~assumes ~assume_dims ~assume_launch ~check_pre_sat
+    ~memory_model ~cbor ~stop_at : t =
   let parsed =
     Phase_timer.measure "inference" (fun () ->
       Protocol_parser.Silent.to_proto
@@ -310,6 +319,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     assumes;
     assume_dims;
     assume_launch;
+    check_pre_sat;
     memory_model;
     stop_at;
   }
@@ -330,6 +340,37 @@ let show_or_stop ~(stop_at : Stage.t option) ~(stage : Stage.t)
   if show || matched then call x;
   if matched then raise Stop_at_stage else x
 
+(* Steps 0-1.2 of [translate]: apply array filtering, dim pinning,
+   architecture defaults, user [--assume] clauses, and (when
+   [--assume-dims] is on) the unused-dim pin-to-1 assumptions. After
+   this prefix the kernel's [pre] is the full merged precondition
+   that downstream race checks will assume. Factored out so [run]
+   can ask "is this precondition satisfiable?" before kicking off
+   the rest of the pipeline; without that pre-flight, an unsat [pre]
+   produces a silent "kernel is DRF" verdict because every race goal
+   inherits the contradiction. *)
+let prepare_pre (arch : Architecture.t) (a : t) (k : Kernel.t) : Kernel.t =
+  k
+  (* 0. filter arrays *)
+  |> (fun k ->
+    match a.only_array with
+    | Some arr -> Protocols.Kernel.filter_array (fun x -> Variable.name x = arr) k
+    | None -> k)
+  (* 1. apply block-level/grid-level analysis constraints and set dimensions *)
+  |> Protocols.Kernel.try_set_block_dim a.block_dim
+  |> Protocols.Kernel.try_set_grid_dim a.grid_dim
+  |> Protocols.Kernel.apply_arch arch
+  (* 1.1 inject user-provided assumptions into the kernel precondition.
+     Look up per-kernel; an absent entry means no extra assumes. *)
+  |> (fun k ->
+    let assumes =
+      List.assoc_opt (Protocols.Kernel.name k) a.assumes
+      |> Option.value ~default:[]
+    in
+    List.fold_left (fun k b -> Protocols.Kernel.add_pre b k) k assumes)
+  (* 1.2 optionally pin unreferenced launch dimensions to 1 *)
+  |> (if a.assume_dims then Protocols.Kernel.add_dim_assumptions else Fun.id)
+
 let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
     Flatacc.Kernel.t Streamutil.stream =
   (* The "map" phase is single-kernel work (no stream), so we wrap it
@@ -341,25 +382,7 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   let k =
     Phase_timer.measure "map" (fun () ->
       k
-      (* 0. filter arrays *)
-      |> (fun k ->
-      match a.only_array with
-      | Some arr -> Protocols.Kernel.filter_array (fun x -> Variable.name x = arr) k
-      | None -> k)
-      (* 1. apply block-level/grid-level analysis constraints and set dimensions *)
-      |> Protocols.Kernel.try_set_block_dim a.block_dim
-      |> Protocols.Kernel.try_set_grid_dim a.grid_dim
-      |> Protocols.Kernel.apply_arch arch
-      (* 1.1 inject user-provided assumptions into the kernel precondition.
-         Look up per-kernel; an absent entry means no extra assumes. *)
-      |> (fun k ->
-        let assumes =
-          List.assoc_opt (Protocols.Kernel.name k) a.assumes
-          |> Option.value ~default:[]
-        in
-        List.fold_left (fun k b -> Protocols.Kernel.add_pre b k) k assumes)
-      (* 1.2 optionally pin unreferenced launch dimensions to 1 *)
-      |> (if a.assume_dims then Protocols.Kernel.add_dim_assumptions else Fun.id)
+      |> prepare_pre arch a
       (* 2. inline global assignments, including block_dim/grid_dim *)
       |> Protocols.Kernel.inline_globals a.params
       (* 2.1 inline block_id as a constant when architecture is Grid *)
@@ -473,17 +496,36 @@ let run (a : t) : Analysis.t list =
       |> Phase_timer.boundary "solve"
       |> Streamutil.to_list
     in
-    Analysis.{ kernel; report }
+    Analysis.{ kernel; report; vacuous = None }
   in
   a.kernels |> only_kernel a
   |> List.map (fun kernel ->
-      let rec check_until (archs : Architecture.t list) : Analysis.t =
-        match archs with
-        | [] -> Analysis.{ kernel; report = [] }
-        | [ arch ] -> check_kernel arch kernel
-        | arch :: archs ->
-            let a = check_kernel arch kernel in
-            if Analysis.is_safe a then check_until archs else a
+      let vacuous : Exp.bexp option =
+        if not a.check_pre_sat then None
+        else match a.archs with
+          | arch :: _ ->
+            let prepared = prepare_pre arch a kernel in
+            (match
+               Phase_timer.measure "pre-sat"
+                 (fun () -> Solve_drf.check_bexp_sat ~timeout:a.timeout
+                              ~logic:a.logic prepared.pre)
+             with
+             | Z3.Solver.UNSATISFIABLE -> Some prepared.pre
+             | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN -> None)
+          | [] -> None
       in
-      try check_until a.archs
-      with Stop_at_stage -> Analysis.{ kernel; report = [] })
+      match vacuous with
+      | Some _ ->
+        Analysis.{ kernel; report = []; vacuous }
+      | None ->
+        let rec check_until (archs : Architecture.t list) : Analysis.t =
+          match archs with
+          | [] -> Analysis.{ kernel; report = []; vacuous = None }
+          | [ arch ] -> check_kernel arch kernel
+          | arch :: archs ->
+              let a = check_kernel arch kernel in
+              if Analysis.is_safe a then check_until archs else a
+        in
+        try check_until a.archs
+        with Stop_at_stage ->
+          Analysis.{ kernel; report = []; vacuous = None })

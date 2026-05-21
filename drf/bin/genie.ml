@@ -1330,6 +1330,7 @@ let main =
       ~assumes:extra_assumes
       ~assume_dims:false
       ~assume_launch:true
+      ~check_pre_sat:false
       ~memory_model:Memory_model.default
       ~cbor:true
       ~stop_at:None

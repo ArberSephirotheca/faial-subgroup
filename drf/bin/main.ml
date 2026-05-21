@@ -364,6 +364,19 @@ let main =
              called kernel's parameters and demotes the original \
              kernel to __device__ for inlining. Off by default; only \
              the parsed launch metadata is used.")
+  and+ check_pre_sat =
+    Arg.(
+      value & flag
+      & info [ "check-pre-sat" ]
+          ~doc:
+            "Before checking each kernel for races, ask Z3 whether its \
+             merged precondition is satisfiable. If UNSAT, every race \
+             goal is also UNSAT, so the kernel's \"is DRF\" verdict \
+             is vacuous regardless of the actual access pattern. \
+             Prints a per-kernel warning naming the affected kernel. \
+             Off by default; turn on as a soundness check when \
+             combining multiple --assume / --assume-launch / \
+             --assume-dims sources that may contradict each other.")
   and+ assume_warp_synch =
     Arg.(
       value & flag
@@ -454,7 +467,7 @@ let main =
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assume_delin
-        ~assumes ~assume_dims ~assume_launch
+        ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at
     in

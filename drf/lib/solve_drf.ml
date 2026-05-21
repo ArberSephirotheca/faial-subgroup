@@ -353,6 +353,77 @@ let solve ?(timeout = None) ?(logic = None) (p : Symbexp.Proof.t) :
   add b_to_expr s ctx p;
   Solver.check s []
 
+(* Bexp-to-Z3 encoder pair: which [Gen_z3] codegen module to use
+   ([IntGen] or [Bv64Gen]) plus the Z3 logic string (if any) to
+   request when creating the solver. Lives at the top level so
+   both the per-proof race solver and the pre-flight
+   [check_bexp_sat] share one selection / fallback rule. *)
+module Encoder = struct
+  type t = {
+    b_to_expr : Z3.context -> Exp.bexp -> Z3.Expr.expr;
+    parse_num : string -> string;
+    logic     : string option;
+  }
+
+  let intgen ~(logic : string option) : t =
+    { b_to_expr = IntGen.b_to_expr;
+      parse_num = IntGen.parse_num;
+      logic }
+
+  let bv64 () : t =
+    { b_to_expr = Bv64Gen.b_to_expr;
+      parse_num = Bv64Gen.parse_num;
+      logic     = None }
+
+  (* Starting encoder. Respect a user-requested BV logic; otherwise
+     default to the arithmetic encoder. *)
+  let initial ~(logic : string option) : t =
+    match logic with
+    | Some l when String.ends_with ~suffix:"BV" l -> bv64 ()
+    | _ -> intgen ~logic
+
+  let mk_solver (enc : t) (ctx : Z3.context) : Solver.solver =
+    match enc.logic with
+    | None -> Solver.mk_simple_solver ctx
+    | Some l -> Solver.mk_solver_s ctx l
+end
+
+(* Single-bexp satisfiability check. Used by [App.run] as a pre-flight
+   on the merged kernel precondition: if the precondition is UNSAT,
+   every race goal is also UNSAT, so faial-drf would report DRF
+   vacuously. [check_bexp_sat] surfaces that case so the caller can
+   warn instead of silently claiming DRF.
+
+   The input is [b_inline]'d (expanding predicate definitions) and
+   then run through [strip_cross_thread], which replaces
+   [ThreadUnif] / [AtomicResult] occurrences with fresh stable
+   booleans. Cross-thread primitives are normally expanded by
+   symbexp's [project_b]; before symbexp runs (this pre-flight's
+   position in the pipeline), they are still raw and the Z3 codegen
+   rejects them. The conservative replacement is sound for our
+   check: a fresh boolean is free to be true or false, so an
+   over-approximation of satisfiability. If the result is UNSAT,
+   the original bexp is also UNSAT under any consistent
+   interpretation of the cross-thread primitives. *)
+let check_bexp_sat ?(timeout : int option = None) ?(logic : string option = None)
+    (b : bexp) : Z3.Solver.status =
+  let options =
+    [ ("model", "false"); ("proof", "false") ]
+    @
+    match timeout with
+    | Some timeout -> [ ("timeout", string_of_int timeout) ]
+    | None -> []
+  in
+  let prepared = b |> Predicates.b_inline |> Predicates.strip_cross_thread in
+  let try_with (enc : Encoder.t) =
+    let ctx = Z3.mk_context options in
+    let s = Encoder.mk_solver enc ctx in
+    Solver.add s [ enc.b_to_expr ctx prepared ];
+    Solver.check s []
+  in
+  try try_with (Encoder.initial ~logic)
+  with Not_implemented _ -> try_with (Encoder.bv64 ())
+
 module Outcome = struct
   type t =
     | Drf
@@ -383,39 +454,12 @@ module Solution = struct
 
   let is_safe (x : t) : bool = Outcome.is_safe x.outcome
 
-  (* The per-proof encoder choice. Pulled out of [solve] so that each
-     proof in the stream picks its encoder locally instead of through
-     module-scoped refs that an earlier proof might have mutated.
-
-     The arithmetic ([IntGen]) encoder is preferred because it admits
-     no wrap-around models. A proof whose [goal] uses operators
-     [IntGen] can't represent ([^], [&], [<<], etc.) raises
-     [Not_implemented] on encoding; the per-proof handler then
-     escalates that proof — and only that proof — to [Bv64Gen]. *)
-  module Encoder = struct
-    type t = {
-      b_to_expr : Z3.context -> Exp.bexp -> Z3.Expr.expr;
-      parse_num : string -> string;
-      logic     : string option;
-    }
-
-    let intgen ~(logic : string option) : t =
-      { b_to_expr = IntGen.b_to_expr;
-        parse_num = IntGen.parse_num;
-        logic }
-
-    let bv64 () : t =
-      { b_to_expr = Bv64Gen.b_to_expr;
-        parse_num = Bv64Gen.parse_num;
-        logic     = None }
-
-    (* Per-proof starting encoder. Respect a user-requested BV logic;
-       otherwise default to the arithmetic encoder. *)
-    let initial ~(logic : string option) : t =
-      match logic with
-      | Some l when String.ends_with ~suffix:"BV" l -> bv64 ()
-      | _ -> intgen ~logic
-  end
+  (* The encoder choice is the top-level [Solve_drf.Encoder]: per
+     proof in the stream we start with [Encoder.initial ~logic]
+     (preferring the arithmetic [IntGen] encoder because it admits
+     no wrap-around models) and fall back to [Encoder.bv64 ()] on
+     [Not_implemented] for that single proof. The bexp-only
+     pre-flight [check_bexp_sat] uses the same encoder pair. *)
 
   (*
     Example of retrieving values from a model.
