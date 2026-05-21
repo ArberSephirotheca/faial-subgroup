@@ -127,24 +127,58 @@ let decl_to_bexp (var : Variable.t) (ty : C_type.t) : bexp =
   |> Option.value ~default:Int_dom.signed_int
   |> Int_dom.to_bexp var
 
+(* When the [Plus] step evaluates to a literal [k > 1] we switch
+   to an existential-quotient encoding [x - lb = k * q], [q >= 0].
+   Linear in [(x, lb, q)] for literal [k], replacing the
+   [(x - lb) % k == 0] form that forces Z3 onto its non-linear-int
+   tactic. The step is matched via [n_eval_res] so post-assume
+   constant expressions (e.g. [blockDim.x * 2] under
+   [__assume(blockDim.x == 1024)]) also qualify, not only syntactic
+   [Num] literals. *)
+let plus_step_literal (s : Step.t) : int option =
+  match s with
+  | Step.Plus e ->
+      (match n_eval_res e with
+       | Ok k when k > 1 -> Some k
+       | _ -> None)
+  | _ -> None
+
+let quotient_var (r : t) : Variable.t option =
+  match plus_step_literal r.step with
+  | Some _ -> Some (Variable.from_name (Variable.name r.var ^ "$q"))
+  | None -> None
+
 let to_cond (r : t) : bexp =
   let x = Var r.var in
   let lb = r.lower_bound in
   let ub = r.upper_bound in
-  (match r.step with
-    | Plus (Num 1) -> []
-    | Plus n ->
+  let step_clauses =
+    match plus_step_literal r.step with
+    | Some k ->
+        let q = Var (Variable.from_name (Variable.name r.var ^ "$q")) in
         [
-          (* (x + lb) % step  == 0 *)
-          n_eq (n_mod (n_minus x lb) n) (Num 0);
-          (* Ensure that the step is positive *)
-          (* n > 0 *)
-          n_gt n (Num 0);
+          (* x - lb = k * q *)
+          n_eq (n_minus x lb) (n_mult (Num k) q);
+          (* q >= 0 *)
+          n_ge q (Num 0);
         ]
-    | Mult (Num base) -> [ pow ~base x; (* base > 1 *) n_gt (Num base) (Num 1) ]
-    | Mult e ->
-        prerr_endline ("range_to_cond: unsupported range: " ^ Exp.n_to_string e);
-        [ (* Ensure that the step is positive *) n_gt e (Num 1) ])
+    | None ->
+        (match r.step with
+        | Plus (Num 1) -> []
+        | Plus n ->
+            [
+              (* (x + lb) % step  == 0 *)
+              n_eq (n_mod (n_minus x lb) n) (Num 0);
+              (* Ensure that the step is positive *)
+              (* n > 0 *)
+              n_gt n (Num 0);
+            ]
+        | Mult (Num base) -> [ pow ~base x; (* base > 1 *) n_gt (Num base) (Num 1) ]
+        | Mult e ->
+            prerr_endline ("range_to_cond: unsupported range: " ^ Exp.n_to_string e);
+            [ (* Ensure that the step is positive *) n_gt e (Num 1) ])
+  in
+  step_clauses
   @ [ (* lb <= x < ub *) n_le lb x; n_le x ub; decl_to_bexp r.var r.ty ]
   |> b_and_ex
 

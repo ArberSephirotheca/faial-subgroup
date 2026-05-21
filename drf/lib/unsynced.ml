@@ -79,6 +79,12 @@ let rec free_names (p : t) (fns : Variable.Set.t) : Variable.Set.t =
   | Cond (b, l) -> Exp.b_free_names b fns |> free_names l
   | Seq (p, q) -> free_names p fns |> free_names q
 
+let add_range_locals (r : Range.t) (vars : Variable.Set.t) : Variable.Set.t =
+  let vars = Variable.Set.add r.var vars in
+  match Range.quotient_var r with
+  | Some q -> Variable.Set.add q vars
+  | None -> vars
+
 let rec unsafe_binders (i : t) (vars : Variable.Set.t) : Variable.Set.t =
   match i with
   | Skip | Assert _ | Access _ -> vars
@@ -87,7 +93,7 @@ let rec unsafe_binders (i : t) (vars : Variable.Set.t) : Variable.Set.t =
       let vars =
         let r_vars = Range.free_names r Variable.Set.empty in
         if Variable.Set.is_empty (Variable.Set.inter r_vars vars) then vars
-        else Variable.Set.add r.var vars
+        else add_range_locals r vars
       in
       unsafe_binders p vars
   | Seq (p, q) -> unsafe_binders p vars |> unsafe_binders q
@@ -96,7 +102,7 @@ let rec binders (i : t) (vars : Variable.Set.t) : Variable.Set.t =
   match i with
   | Skip | Assert _ | Access _ -> vars
   | Cond (_, p) -> binders p vars
-  | Loop (r, p) -> binders p (Variable.Set.add r.var vars)
+  | Loop (r, p) -> binders p (add_range_locals r vars)
   | Seq (p, q) -> binders p vars |> binders q
 
 let inline_asserts : t -> t =

@@ -115,7 +115,7 @@ module Kernel = struct
             (fun acc (r : Range.t) ->
               let r_vars = Range.free_names r Variable.Set.empty in
               if Variable.Set.is_empty (Variable.Set.inter r_vars acc) then acc
-              else Variable.Set.add r.var acc)
+              else Unsynced.add_range_locals r acc)
             (Params.to_set k.local_variables)
             k.ranges
         in
