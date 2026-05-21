@@ -40,6 +40,20 @@ let all : t list =
         | [ _; _ ] as args -> Pred ("bvumul_noovfl", args)
         | _ -> failwith "bvumul_noovfl: expects exactly 2 arguments") }
   in
+  (* Signedness-safety guard for the abductive pool. Lowers to
+     [v >= 0] under signed comparison; kept as a named predicate so
+     the assumes dump reads [nonneg(Win)] rather than [Win >= 0],
+     communicating that the guard exists for signed-negative
+     reinterpretation in the BV gate, not a launch-shape claim the
+     user is meant to know. The guard is operationally vacuous
+     because kernel-size parameters are non-negative at runtime, but
+     mandatory at the SMT layer when the pool emits [v >=u rhs] over
+     a signed [v]: without it, the BV gate accepts models where [v]
+     is signed-negative and its unsigned reinterpretation
+     ([0xFFFFFFFE...]) is trivially [>=u] any small RHS. The named-
+     predicate form also keeps the lowering and any future encoder
+     special-casing here in one place, parallel to [bvumul_noovfl]
+     above. *)
   let nonneg : t =
     { name = "nonneg";
       body = (function
