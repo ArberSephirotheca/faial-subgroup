@@ -97,13 +97,58 @@ let abductive_universe (k : Kernel.t) : Variable.Set.t =
   Variable.Set.union (kernel_param_set k) Variable.launch_config_set
   |> (fun s -> Variable.Set.diff s Variable.thread_index_set)
 
+(* Kernel params that [k.pre] equates to a launch-config dim
+   (e.g. [gridDim.x == N], or its symmetric [N == gridDim.x]).
+   Such params are load-bearing for the abductive search even
+   when no access references them directly: candidates of the
+   shape [v == dim] / [v >= dim] / [v >= dim_a * dim_b] tie them
+   back to the kernel's launch shape. Other pre-only params (the
+   wrapper's loop counters [i] and [repeat], synthesised from a
+   host-side [for (i = 0; i < repeat; ...)] around the launch
+   site) appear in [k.pre] only as a non-equality bound like
+   [i < repeat]; they don't shape any access, and including them
+   pads the abductive pool with cross-param candidates of the
+   form [repeat >= Win] that exercise Z3's nonlinear-arithmetic
+   solver on the irrelevant axis. *)
+let pre_dim_equated (pre : bexp) : Variable.Set.t =
+  let dims = Variable.launch_config_set in
+  let rec conjuncts (b : bexp) : bexp list =
+    match b with
+    | BRel (BAnd, b1, b2) -> conjuncts b1 @ conjuncts b2
+    | _ -> [ b ]
+  in
+  let pair_of = function
+    | NRel (Eq, Var a, Var b) -> Some (a, b)
+    | _ -> None
+  in
+  conjuncts pre
+  |> List.fold_left (fun acc b ->
+       match pair_of b with
+       | Some (a, b) when Variable.Set.mem a dims
+                          && not (Variable.Set.mem b dims) ->
+           Variable.Set.add b acc
+       | Some (a, b) when Variable.Set.mem b dims
+                          && not (Variable.Set.mem a dims) ->
+           Variable.Set.add a acc
+       | _ -> acc)
+       Variable.Set.empty
+
 let abductive_scope (k : Kernel.t) : Variable.Set.t =
   let entries = partition k in
   let from_code = parameter_universe entries in
+  let kp = kernel_param_set k in
+  let dim_equated = pre_dim_equated k.pre in
+  (* Filter [from_pre] to drop kernel params that appear in [k.pre]
+     only in non-equality preconditions (the wrapper-loop-counter
+     case [i < repeat]). Dim built-ins always pass through. *)
   let from_pre =
     Variable.Set.inter
       (b_free_names k.pre Variable.Set.empty)
       (abductive_universe k)
+    |> Variable.Set.filter (fun v ->
+         not (Variable.Set.mem v kp)
+         || Variable.Set.mem v from_code
+         || Variable.Set.mem v dim_equated)
   in
   let open Variable in
   Set.union from_code from_pre
