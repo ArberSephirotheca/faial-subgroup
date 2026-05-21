@@ -576,82 +576,126 @@ let abductive_loop
     let solve s = Phase_timer.measure "genie/maxsat" (fun () ->
       Stats.incr "maxsat_solves"; Abduction.solve s)
     in
-    let drf_and_gate (extras : per_kernel_extras) =
-      let app' = app_with_extras extras app in
-      Cegar.check_three_tier
-        ~tier1:(fun () -> pre_filter app')
-        ~tier2:(fun () -> gate_check baseline app')
-        ~drf:(fun () -> verifies_drf_only app extras)
+    (* Run baseline (extras = []) once upfront. Two purposes:
+       (1) if every kernel is already DRF the abductive search is
+       trivially satisfied; return empty extras.
+       (2) otherwise, narrow [app_for_drf] to baseline-racy kernels.
+       DRF is monotone under stronger preconditions: a kernel safe at
+       baseline stays safe under any extras (extras can only restrict
+       the model space). Re-running the full drf pipeline on
+       baseline-DRF kernels each CTI round is pure waste, so all
+       subsequent [run_assuming] / [verifies_drf_only] / shrink /
+       weaken calls receive [app_for_drf]. [pre_filter] and
+       [gate_check] keep the full [app] because their baseline
+       comparisons span the whole kernel set (reachable-set subset
+       checks would spuriously fail under a narrowed under-Φ set). *)
+    Stats.set "cti_rounds" 0;
+    let baseline_result =
+      Phase_timer.measure "genie/baseline-race" (fun () ->
+        Stats.incr "race_queries"; App.run app)
     in
-    let shrink' = shrink ~use_core:use_core_shrink in
-    (* Non-triviality: at least one access must remain reachable under
-       the proposed clearance. A clearance that empties the access
-       set is vacuous DRF (e.g. forces an effective blockDim.x = 0 so
-       no thread runs an access). Implemented as one Z3 query per
-       kernel asking "any access reachable?", rather than O(accesses)
-       per-access queries. Only invoked at acceptance.
+    if all_safe baseline_result then Some []
+    else
+      let racy_names =
+        List.filter_map (fun (a : Analysis.t) ->
+          if Analysis.is_safe a then None
+          else Some (Protocols.Kernel.name a.kernel))
+          baseline_result
+      in
+      Stats.set "racy_kernels" (List.length racy_names);
+      Stats.set "drf_kernels" (List.length kernels - List.length racy_names);
+      let app_for_drf =
+        { app with kernels =
+            List.filter (fun k ->
+              List.mem (Protocols.Kernel.name k) racy_names)
+              app.kernels }
+      in
+      let drf_and_gate (extras : per_kernel_extras) =
+        let app' = app_with_extras extras app in
+        Cegar.check_three_tier
+          ~tier1:(fun () -> pre_filter app')
+          ~tier2:(fun () -> gate_check baseline app')
+          ~drf:(fun () -> verifies_drf_only app_for_drf extras)
+      in
+      let shrink' = shrink ~use_core:use_core_shrink in
+      (* Non-triviality: at least one access must remain reachable
+         under the proposed clearance. A clearance that empties the
+         access set is vacuous DRF (e.g. forces an effective
+         blockDim.x = 0 so no thread runs an access). Implemented as
+         one Z3 query per kernel asking "any access reachable?",
+         rather than O(accesses) per-access queries. Only invoked at
+         acceptance.
 
-       Callers with a pre-built per-kernel [Any_access_slot] pool
-       (the Tier 3 path: [compute_verdict_new] uses the same slots
-       it built for [prune_candidate]) override via [~non_trivial],
-       turning each check into a slot push/check/pop instead of a
-       full re-encoding. The default impl below is the
-       slot-less fallback used when no override is supplied. *)
-    let non_trivial : per_kernel_extras -> bool =
-      match non_trivial with
-      | Some f -> f
-      | None ->
-        fun extras ->
-          let app' = app_with_extras extras app in
-          app'.kernels |> App.only_kernel app'
-          |> List.exists (fun k ->
-            k
-            |> Reachability.prepare_kernel
-                 ~assumes:(App.assumes_of k app')
-                 ~assume_dims:app'.assume_dims
-                 ~params:app'.params
-            |> Reachability.any_access_reachable ?timeout:app'.timeout)
-    in
-    let try_finalize (extras : per_kernel_extras) : per_kernel_extras option =
-      let minimal = shrink' baseline app extras in
-      let app' = app_with_extras minimal app in
-      if pre_filter app' && gate_check baseline app' && non_trivial minimal
-      then Some minimal
-      else
-        let weakened = weaken_for_gate app drf_and_gate minimal in
-        let weakened_min = shrink' baseline app weakened in
-        let app'' = app_with_extras weakened_min app in
-        if pre_filter app'' && gate_check baseline app'' && non_trivial weakened_min
-        then Some weakened_min
-        else None
-    in
-    let rec loop iter (extras : per_kernel_extras) =
-      Stats.set "cti_rounds" iter;
-      if iter >= iter_cap then None
-      else
-        let result = run_assuming extras app in
-        if all_safe result then
-          match try_finalize extras with
-          | Some final -> Some final
-          | None ->
-            (* Gate rejected even after weakening — ban this exact
-               per-kernel combination and re-solve. *)
-            Stats.incr "rejections";
-            if Abduction.reject_combination session extras = 0 then None
-            else
-              (match solve session with
-               | None -> None
-               | Some new_extras -> loop (iter + 1) new_extras)
+         Callers with a pre-built per-kernel [Any_access_slot] pool
+         (the Tier 3 path: [compute_verdict_new] uses the same slots
+         it built for [prune_candidate]) override via [~non_trivial],
+         turning each check into a slot push/check/pop instead of a
+         full re-encoding. The default impl below is the slot-less
+         fallback used when no override is supplied. *)
+      let non_trivial : per_kernel_extras -> bool =
+        match non_trivial with
+        | Some f -> f
+        | None ->
+          fun extras ->
+            let app' = app_with_extras extras app in
+            app'.kernels |> App.only_kernel app'
+            |> List.exists (fun k ->
+              k
+              |> Reachability.prepare_kernel
+                   ~assumes:(App.assumes_of k app')
+                   ~assume_dims:app'.assume_dims
+                   ~params:app'.params
+              |> Reachability.any_access_reachable ?timeout:app'.timeout)
+      in
+      let try_finalize (extras : per_kernel_extras) : per_kernel_extras option =
+        let minimal = shrink' baseline app_for_drf extras in
+        let app' = app_with_extras minimal app in
+        if pre_filter app' && gate_check baseline app' && non_trivial minimal
+        then Some minimal
         else
-          let added = Abduction.add_all result session in
-          Stats.incr ~by:added "samples_added";
-          if added = 0 then None
+          let weakened = weaken_for_gate app_for_drf drf_and_gate minimal in
+          let weakened_min = shrink' baseline app_for_drf weakened in
+          let app'' = app_with_extras weakened_min app in
+          if pre_filter app'' && gate_check baseline app'' && non_trivial weakened_min
+          then Some weakened_min
+          else None
+      in
+      let rec loop iter (extras : per_kernel_extras) =
+        Stats.set "cti_rounds" iter;
+        if iter >= iter_cap then None
+        else
+          let result = run_assuming extras app_for_drf in
+          if all_safe result then
+            match try_finalize extras with
+            | Some final -> Some final
+            | None ->
+              (* Gate rejected even after weakening — ban this exact
+                 per-kernel combination and re-solve. *)
+              Stats.incr "rejections";
+              if Abduction.reject_combination session extras = 0 then None
+              else
+                (match solve session with
+                 | None -> None
+                 | Some new_extras -> loop (iter + 1) new_extras)
           else
-            match solve session with
-            | None -> None
-            | Some new_extras -> loop (iter + 1) new_extras
-    in
-    loop 0 []
+            let added = Abduction.add_all result session in
+            Stats.incr ~by:added "samples_added";
+            if added = 0 then None
+            else
+              match solve session with
+              | None -> None
+              | Some new_extras -> loop (iter + 1) new_extras
+      in
+      (* Seed the session with the baseline racy witnesses, then solve
+         once to pick the first abductive candidate before entering
+         the loop body at iter 1. *)
+      let added = Abduction.add_all baseline_result session in
+      Stats.incr ~by:added "samples_added";
+      if added = 0 then None
+      else
+        match solve session with
+        | None -> None
+        | Some initial_extras -> loop 1 initial_extras
 
 (* Per-kernel blanket. Each kernel's blanket entries are built from
    its own [int_params] and its own signedness function — every
