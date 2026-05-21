@@ -155,6 +155,15 @@ let tests =
     ("drf-loop5.cu", [], 0);
     (* (int j = 1; j + k < n; j++) *)
     ("drf-loop6.cu", [], 0);
+    (* Literal-stride [+= blockDim.x * 2] loop with a [/ 2]
+     access mirroring a [(half2*)src] cast. Drives
+     [Range.normalize] / [Unsynced.normalize_loops]: the modulo
+     stride constraint [(y - 2*tid) % 128 == 0] would otherwise
+     combine with [y / 2] into a goal Z3's non-linear-int tactic
+     cannot decide; normalization substitutes the iteration
+     variable by [2*tid + 128*q] and the goal becomes linear in
+     [(tid, q)]. *)
+    ("drf-loop-stride-half-cast.cu", [ "--all-dims"; "--assume-dims" ], 0);
     (* Body-top affine induction: [int base = tid; for (...) {
      access(base); base += stride; }]. Each thread writes its own
      column. The body-top [base += stride] is harvested into
