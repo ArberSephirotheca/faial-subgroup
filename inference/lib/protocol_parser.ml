@@ -130,6 +130,7 @@ module Make (L : Logger.Logger) = struct
             List.map Imp.Kernel.remove_global_asserts kernels
           else kernels
         in
+        let kernels = List.map Imp.Kernel.trim_unused kernels in
         Stdlib.flush_all ();
         { options; kernels }
     | Error e ->

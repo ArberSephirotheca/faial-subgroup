@@ -893,3 +893,4 @@ let translate (p : W_lang.Program.t) : Imp.Kernel.t list =
         | EntryPoint e -> Some (EntryPoints.tr ctx e)
         | Function f -> Some (Functions.tr ctx f)
         | Declaration _ -> None)
+  |> List.map Imp.Kernel.trim_unused

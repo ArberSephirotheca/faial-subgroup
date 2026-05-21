@@ -60,6 +60,57 @@ let calls : t -> StringSet.t =
   in
   calls StringSet.empty
 
+(* Collect every variable name that appears as a reference in the
+   statement: expression operands, array references in [Read] /
+   [Write] / [Atomic] / [LocationAlias], range bounds in [For],
+   call argument expressions and the arrays they point at. Binders
+   (decl var, assign LHS, read / atomic targets, location alias
+   target, for index var) are not counted. Used by
+   [Kernel.trim_unused] to find which parameters and globals are
+   actually referenced. *)
+let free_names : t -> Variable.Set.t -> Variable.Set.t =
+  let n = Exp.n_free_names in
+  let b = Exp.b_free_names in
+  let collect_indices (acc : Variable.Set.t) (indices : Exp.nexp list)
+      : Variable.Set.t =
+    List.fold_left (fun acc e -> n e acc) acc indices
+  in
+  let collect_arg (acc : Variable.Set.t) (a : Arg.t) : Variable.Set.t =
+    match a with
+    | Arg.Scalar e -> n e acc
+    | Arg.Array u -> Variable.Set.add u.array (n u.offset acc)
+    | Arg.Unsupported _ -> acc
+  in
+  let rec go (s : t) (acc : Variable.Set.t) : Variable.Set.t =
+    match s with
+    | Skip | Sync _ -> acc
+    | Seq (p, q) -> go q (go p acc)
+    | Assert a -> b a.cond acc
+    | Read r -> Variable.Set.add r.array (collect_indices acc r.index)
+    | Atomic a ->
+        Variable.Set.add a.array (collect_indices acc a.index)
+        |> Atomic.Operation.fold n a.atomic.operation
+    | Write w -> Variable.Set.add w.array (collect_indices acc w.index)
+    | LocationAlias a -> Variable.Set.add a.source (n a.offset acc)
+    | Decl d -> (match d.init with Some e -> n e acc | None -> acc)
+    | Assign { data; _ } -> n data acc
+    | If (c, p, q) -> go q (go p (b c acc))
+    | For (r, p) ->
+        (* [Range.free_names] in protocols walks lower / upper but
+           not the step expression; the step also references
+           kernel variables (e.g. [j -= step] makes [step] a free
+           name of the For). Walk it here. *)
+        let acc = Range.free_names r acc in
+        let acc =
+          match r.step with
+          | Plus e | Mult e -> n e acc
+        in
+        go p acc
+    | Star p -> go p acc
+    | Call c -> List.fold_left collect_arg acc c.args
+  in
+  fun s acc -> go s acc
+
 let fold : 'a. (t -> 'a -> 'a) -> t -> 'a -> 'a =
  fun (f : t -> 'a -> 'a) (p : t) (init : 'a) ->
   let rec fold_i (s : t) (init : 'a) : 'a =
