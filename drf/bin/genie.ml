@@ -298,9 +298,8 @@ let[@warning "-32"] gate_holds = gate_holds_simple
    [(kernel_name, array_name, id)]).
 
    The under-Φ rebuild is per-round; no caching. The dominant cost
-   inside [Co_reach.candidates] is the per-proof solve, which already
-   uses [Solve_drf.solve] (the same machinery the DRF baseline uses).
-   Caching the under-Φ pair set would require a cache key over
+   inside [Co_reach.candidates] is the per-proof solve via
+   [Co_reach.solve_one]. Caching the under-Φ pair set would require a cache key over
    [app.assumes]; bumping that per round defeats the cache. The
    straight rebuild gives the design's "sharp drop in gate cost"
    precisely because Φ trivialisations turn baseline-SAT proofs into

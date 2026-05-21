@@ -707,8 +707,7 @@ module Proof = struct
     make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
       ~accesses
 
-  let from_flat ?(assign_index = true)
-      ?(memory_model = Memory_model.default) (arch : Architecture.t)
+  let from_flat ?(memory_model = Memory_model.default) (arch : Architecture.t)
       (proof_id : int) (k : Flatacc.Kernel.t) : t =
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
@@ -716,7 +715,7 @@ module Proof = struct
     let atomic_axioms = AtomicAxioms.axioms_of k locals in
     let memory_model_axiom = MemoryModelAxioms.axiom_of memory_model in
     let goal =
-      from_code ~assign_index arch locals k.runtime k.code
+      from_code arch locals k.runtime k.code
       |> b_and (project_pre locals k.pre)
       |> b_and atomic_axioms
       |> b_and memory_model_axiom
@@ -763,10 +762,6 @@ let translate_coreach (arch : Architecture.t)
 let translate_t1 (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
   Streamutil.mapi (Proof.from_flat_t1 arch) stream
-
-let sanity_check (arch : Architecture.t)
-    (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
-  Streamutil.mapi (Proof.from_flat ~assign_index:false arch) stream
 
 (* ------------------- SERIALIZE ---------------------- *)
 

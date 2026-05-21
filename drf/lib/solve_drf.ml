@@ -15,10 +15,6 @@ module StringMap = Common.StringMap
 
 type json = Yojson.Basic.t
 
-let add (b_to_expr : Z3.context -> bexp -> Expr.expr) (s : Solver.solver)
-    (ctx : Z3.context) (p : Symbexp.Proof.t) : unit =
-  [ b_to_expr ctx (Predicates.b_inline p.goal) ] |> Solver.add s
-
 module Environ = struct
   open Common
 
@@ -327,32 +323,6 @@ module Witness = struct
     |> filter_variables all_vars
 end
 
-let solve ?(timeout = None) ?(logic = None) (p : Symbexp.Proof.t) :
-    Z3.Solver.status =
-  let options =
-    [ ("model", "true"); ("proof", "false") ]
-    @
-    match timeout with
-    | Some timeout -> [ ("timeout", string_of_int timeout) ]
-    | None -> []
-  in
-  let b_to_expr =
-    logic
-    |> Option.map (fun l ->
-        if String.ends_with ~suffix:"BV" l then Bv64Gen.b_to_expr
-        else IntGen.b_to_expr)
-    |> Option.value ~default:IntGen.b_to_expr
-  in
-  (* Create a solver and try to solve, might fail with Not_Implemented *)
-  let ctx = Z3.mk_context options in
-  let s =
-    match logic with
-    | None -> Solver.mk_simple_solver ctx
-    | Some logic -> Solver.mk_solver_s ctx logic
-  in
-  add b_to_expr s ctx p;
-  Solver.check s []
-
 (* Bexp-to-Z3 encoder pair: which [Gen_z3] codegen module to use
    ([IntGen] or [Bv64Gen]) plus the Z3 logic string (if any) to
    request when creating the solver. Lives at the top level so
@@ -476,7 +446,7 @@ module Solution = struct
        prerr_endline ("WARNING: user set bit-vector logic " ^ l)
      | _ -> ());
     Streamutil.map
-      (fun p ->
+      (fun (p : Symbexp.Proof.t) ->
         let want_core = extras <> [] in
         let options =
           [ ("model", "true"); ("proof", "false") ]
@@ -516,7 +486,7 @@ module Solution = struct
              unsat-core. *)
           let ctx = Z3.mk_context options in
           let s = mk_solver_for enc ctx in
-          add enc.b_to_expr s ctx p;
+          Solver.add s [ enc.b_to_expr ctx (Predicates.b_inline p.goal) ];
           trackers :=
             List.map
               (fun (id, b) ->

@@ -42,11 +42,11 @@ module Stage = struct
 end
 
 (* Raised by [show_or_stop] when [stop_at] matches the current
-   stage. Caught at the per-kernel boundary in [run] /
-   [check_unreachable] so the surrounding [List.map] / [List.iter]
-   continues to the next kernel. The exception unwinds the lazy
-   stream computation cleanly: every downstream stage in the [|>]
-   chain is bypassed without forcing further work. *)
+   stage. Caught at the per-kernel boundary in [run] so the
+   surrounding [List.map] continues to the next kernel. The
+   exception unwinds the lazy stream computation cleanly: every
+   downstream stage in the [|>] chain is bypassed without forcing
+   further work. *)
 exception Stop_at_stage
 
 type t = {
@@ -332,8 +332,7 @@ let show (b : bool) (call : 'a -> unit) (x : 'a) : 'a =
    prints when either (a) the matching [--show-X] flag is set, or
    (b) [stop_at] names this stage; then raises [Stop_at_stage] in
    case (b) to unwind the rest of the pipeline. The exception is
-   caught at the per-kernel boundary in [run] /
-   [check_unreachable]. *)
+   caught at the per-kernel boundary in [run]. *)
 let show_or_stop ~(stop_at : Stage.t option) ~(stage : Stage.t)
     ~(show : bool) (call : 'a -> unit) (x : 'a) : 'a =
   let matched = stop_at = Some stage in
@@ -448,30 +447,6 @@ let only_kernel (a : t) (ks : Protocols.Kernel.t list) : Protocols.Kernel.t list
         exit (-1))
       else ks
   | None -> ks
-
-let check_unreachable (a : t) : unit =
-  a.kernels |> only_kernel a
-  |> List.iter (fun kernel ->
-      try
-        let report =
-          kernel
-          |> translate Architecture.Block a
-          |> Symbexp.sanity_check Architecture.Block
-          |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Symbexp
-               ~show:a.show_symbexp Symbexp.print_kernels
-          |> Streamutil.map (fun b ->
-              (b, Solve_drf.solve ~timeout:a.timeout ~logic:a.logic b))
-          |> Streamutil.to_list
-        in
-        Stdlib.flush_all ();
-        report
-        |> List.iter (fun (p, s) ->
-            let open Z3.Solver in
-            match s with
-            | UNSATISFIABLE | UNKNOWN ->
-                Symbexp.Proof.to_string p |> print_endline
-            | SATISFIABLE -> ())
-      with Stop_at_stage -> ())
 
 let run (a : t) : Analysis.t list =
   let check_kernel arch (kernel : Protocols.Kernel.t) : Analysis.t =

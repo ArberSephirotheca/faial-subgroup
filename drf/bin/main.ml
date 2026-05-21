@@ -281,9 +281,6 @@ let main =
           ~doc:
             "By default we perform block-level verification, this option \
              performs grid-level verification.")
-  and+ unreachable =
-    Arg.(
-      value & flag & info [ "unreachable" ] ~doc:"Check unreachable accesses.")
   and+ all_levels =
     Arg.(
       value & flag
@@ -478,7 +475,6 @@ let main =
         if show_signature
         then print_endline (Protocols.Kernel.signature_string k)
         else print_endline (Protocols.Kernel.name k))
-    else if unreachable then App.check_unreachable app
     else if Option.is_some stop_at then
       (* Run the pipeline for its printing side effects (each
          [show_or_stop] dumps the IR at its stage when matched), but
