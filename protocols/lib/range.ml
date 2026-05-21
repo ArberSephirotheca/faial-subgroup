@@ -127,14 +127,14 @@ let decl_to_bexp (var : Variable.t) (ty : C_type.t) : bexp =
   |> Option.value ~default:Int_dom.signed_int
   |> Int_dom.to_bexp var
 
-(* When the [Plus] step evaluates to a literal [k > 1] we switch
-   to an existential-quotient encoding [x - lb = k * q], [q >= 0].
-   Linear in [(x, lb, q)] for literal [k], replacing the
-   [(x - lb) % k == 0] form that forces Z3 onto its non-linear-int
-   tactic. The step is matched via [n_eval_res] so post-assume
-   constant expressions (e.g. [blockDim.x * 2] under
-   [__assume(blockDim.x == 1024)]) also qualify, not only syntactic
-   [Num] literals. *)
+(* Loop normalization. For a [Plus] range whose stride evaluates
+   to a literal [k > 1], rewrite to a step-1 range over a fresh
+   quotient variable [<r.var>$q] in [[0, (ub - lb) / k]] together
+   with the substitution that recovers the original iteration
+   variable as [lb + k * q]. Applied as a pre-flatacc pass so no
+   downstream stage sees a literal-step Plus and the [Plus n] arm
+   below never has to emit the [(x - lb) % k == 0] form (which
+   pushes Z3 onto its non-linear-int tactic). *)
 let plus_step_literal (s : Step.t) : int option =
   match s with
   | Step.Plus e ->
@@ -143,42 +143,41 @@ let plus_step_literal (s : Step.t) : int option =
        | _ -> None)
   | _ -> None
 
-let quotient_var (r : t) : Variable.t option =
+let normalize (r : t) : (t * (Variable.t * nexp)) option =
   match plus_step_literal r.step with
-  | Some _ -> Some (Variable.from_name (Variable.name r.var ^ "$q"))
   | None -> None
+  | Some k ->
+      let q = Variable.from_name (Variable.name r.var ^ "$q") in
+      let r' =
+        {
+          r with
+          var = q;
+          lower_bound = Num 0;
+          upper_bound = n_div (n_minus r.upper_bound r.lower_bound) (Num k);
+          step = Plus (Num 1);
+        }
+      in
+      let orig_expr = n_plus r.lower_bound (n_mult (Num k) (Var q)) in
+      Some (r', (r.var, orig_expr))
 
 let to_cond (r : t) : bexp =
   let x = Var r.var in
   let lb = r.lower_bound in
   let ub = r.upper_bound in
-  let step_clauses =
-    match plus_step_literal r.step with
-    | Some k ->
-        let q = Var (Variable.from_name (Variable.name r.var ^ "$q")) in
+  (match r.step with
+    | Plus (Num 1) -> []
+    | Plus n ->
         [
-          (* x - lb = k * q *)
-          n_eq (n_minus x lb) (n_mult (Num k) q);
-          (* q >= 0 *)
-          n_ge q (Num 0);
+          (* (x + lb) % step  == 0 *)
+          n_eq (n_mod (n_minus x lb) n) (Num 0);
+          (* Ensure that the step is positive *)
+          (* n > 0 *)
+          n_gt n (Num 0);
         ]
-    | None ->
-        (match r.step with
-        | Plus (Num 1) -> []
-        | Plus n ->
-            [
-              (* (x + lb) % step  == 0 *)
-              n_eq (n_mod (n_minus x lb) n) (Num 0);
-              (* Ensure that the step is positive *)
-              (* n > 0 *)
-              n_gt n (Num 0);
-            ]
-        | Mult (Num base) -> [ pow ~base x; (* base > 1 *) n_gt (Num base) (Num 1) ]
-        | Mult e ->
-            prerr_endline ("range_to_cond: unsupported range: " ^ Exp.n_to_string e);
-            [ (* Ensure that the step is positive *) n_gt e (Num 1) ])
-  in
-  step_clauses
+    | Mult (Num base) -> [ pow ~base x; (* base > 1 *) n_gt (Num base) (Num 1) ]
+    | Mult e ->
+        prerr_endline ("range_to_cond: unsupported range: " ^ Exp.n_to_string e);
+        [ (* Ensure that the step is positive *) n_gt e (Num 1) ])
   @ [ (* lb <= x < ub *) n_le lb x; n_le x ub; decl_to_bexp r.var r.ty ]
   |> b_and_ex
 

@@ -85,6 +85,31 @@ module Kernel = struct
 
   let from_loc_split (arch : Architecture.t) (k : Locsplit.Kernel.t) : t option
       =
+    (* Loop normalization. Walk [k.ranges] (hoisted) and [k.code]
+       (still-nested [Loop]s) and rewrite every range whose stride
+       evaluates to a literal [k > 1] into a step-1 range over a
+       fresh quotient variable, substituting [lb + k * q] for the
+       original iteration variable everywhere it appears. After
+       this point no consumer ([Code.from_unsync] /
+       [Range.to_cond] / [unsafe_binders] / [binders] / symbexp's
+       projection) sees a literal-step stride, so the modulo
+       constraint in [Range.to_cond]'s [Plus n] arm only fires for
+       genuinely-symbolic strides. *)
+    let normalized_ranges, subst_pairs =
+      List.fold_right
+        (fun r (rs, sps) ->
+          match Range.normalize r with
+          | None -> (r :: rs, sps)
+          | Some (r', sp) -> (r' :: rs, sp :: sps))
+        k.ranges ([], [])
+    in
+    let k_code =
+      List.fold_left (fun c sp -> Unsynced.subst sp c) k.code subst_pairs
+      |> Unsynced.normalize_loops
+    in
+    let k =
+      { k with code = k_code; ranges = normalized_ranges }
+    in
     let code = Code.from_unsync k.code in
     if code = [] then None
     else
@@ -115,7 +140,7 @@ module Kernel = struct
             (fun acc (r : Range.t) ->
               let r_vars = Range.free_names r Variable.Set.empty in
               if Variable.Set.is_empty (Variable.Set.inter r_vars acc) then acc
-              else Unsynced.add_range_locals r acc)
+              else Variable.Set.add r.var acc)
             (Params.to_set k.local_variables)
             k.ranges
         in
