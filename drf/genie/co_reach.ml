@@ -120,15 +120,63 @@ let dump_line ~(tag : string) (p : Symbexp.Proof.t)
     flush stderr
   end
 
-let mk_solver_options ?(timeout : int option = None) () : (string * string) list =
-  [ ("model", "false"); ("proof", "false") ]
-  @ (match timeout with
-     | Some t -> [ ("timeout", string_of_int t) ]
-     | None -> [])
+(* Per-proof [Z3.mk_context] / [Z3.Solver.mk_simple_solver]
+   allocation, NOT a shared context across the per-stream sweep.
+   The shape looks wasteful next to [Reachability.make_check_slot]
+   in [reachability.ml], which allocates one ctx + solver per
+   per-kernel sweep and runs the per-class loop via
+   [push] / [add] / [check] / [pop]: gate/solve there sits at
+   ~18 ms/call while coreach-solve here sits at 130-140 ms/call,
+   so the temptation is to fold this loop onto the same pattern.
+   Don't.
 
+   Instrumentation: split a per-call [genie/co-reach-solve] into
+   sub-phases [encode] (Bv64Gen.b_to_expr) and [sat]
+   (Z3.Solver.check). On a 60s sample of a coreach-heavy kernel
+   (1663+ per-stream proofs), [encode] is 0.074s cumulative;
+   [sat] is 54.6s; ctx allocation plus residual is ~2.5s. The
+   per-call cost is the Z3 SAT check itself, intrinsic to the
+   per-proof goal and not amortisable by sharing the context.
+
+   Variants tried on the known-good corpus:
+
+   (a) Shared ctx + shared solver, push/check/pop per proof
+       (mirrors make_check_slot). Helped the coreach-heavy
+       kernel: per-call dropped from ~143 ms to ~126 ms
+       (~15% throughput). Hurt several others: a kernel with
+       only 16 coreach proofs went from 22s to 38s wall-clock
+       (+70%); every Z3 phase ([co-reach-solve], [t1-solve],
+       [baseline-coreach], [gate]) doubled per-call. Z3 in
+       incremental push/pop mode applies different
+       preprocessing than fresh-context one-shot, and on the
+       cross-thread BV goals this incremental preprocessing is
+       slower per goal. Corpus total: +12% wall-clock.
+
+   (b) Shared ctx, fresh solver per proof, no push/pop.
+       Recovered the regressed kernels but lost the heavy-
+       kernel win: sharing the context alone amortises a small
+       fraction of total per-call cost, and creating a fresh
+       solver per proof inside a shared context still pays most
+       of (a)'s allocation. Several moderate-proof-count kernels
+       regressed ~10-15%.
+
+   Neither variant is a net corpus win. Per-proof ctx stays.
+   To make coreach-heavy kernels faster, attack the SAT check
+   itself: parallel solving across independent per-proof
+   queries, a tactic tuned for cross-thread BV goals, or an
+   upstream pre-filter that decides proofs whose verdict no
+   [--assume] can shift without invoking Z3 (mirroring
+   [Reachability.is_parameter_touching]'s structural
+   classification). *)
 let solve_one ?(timeout : int option = None) (p : Symbexp.Proof.t)
     : Z3.Solver.status =
-  let ctx = Z3.mk_context (mk_solver_options ~timeout ()) in
+  let options =
+    [ ("model", "false"); ("proof", "false") ]
+    @ (match timeout with
+       | Some t -> [ ("timeout", string_of_int t) ]
+       | None -> [])
+  in
+  let ctx = Z3.mk_context options in
   let solver = Z3.Solver.mk_simple_solver ctx in
   let expr =
     Gen_z3.Bv64Gen.b_to_expr ctx
@@ -137,60 +185,19 @@ let solve_one ?(timeout : int option = None) (p : Symbexp.Proof.t)
   Z3.Solver.add solver [ expr ];
   Z3.Solver.check solver []
 
-(* Solve a list of proofs under a single shared [Z3.context] +
-   [Solver], one [push] / [add] / [check] / [pop] per proof.
-   Returns one [(proof, status)] per input, in input order. On
-   kernels whose pair-enumeration produces thousands of coreach
-   proofs, sharing the context amortises the per-proof
-   [Z3.mk_context] / [mk_simple_solver] fixed overhead across
-   the sweep instead of paying it on every call as the
-   one-shot [solve_one] does. The SAT check itself remains the
-   bulk of per-call cost, since each proof carries the full
-   cross-thread bexp and re-encodes it via [Bv64Gen.b_to_expr];
-   the ctx-sharing win is therefore in the low tens of percent,
-   not an order of magnitude. Mirrors the
-   [Reachability.make_check_slot] pattern in [reachability.ml]:
-   one ctx + solver per per-kernel sweep, push/check/pop per
-   per-proof query, [reset] at end via [Fun.protect] for clean
-   disposal. *)
-let solve_many ~(phase : string) ?(timeout : int option = None)
-    (proofs : Symbexp.Proof.t list)
-    : (Symbexp.Proof.t * Z3.Solver.status) list =
-  if proofs = [] then []
-  else
-    let ctx = Z3.mk_context (mk_solver_options ~timeout ()) in
-    let solver = Z3.Solver.mk_simple_solver ctx in
-    Fun.protect
-      ~finally:(fun () -> Z3.Solver.reset solver)
-      (fun () ->
-        List.map (fun (p : Symbexp.Proof.t) ->
-          let status =
-            try
-              Phase_timer.measure phase (fun () ->
-                let expr =
-                  Gen_z3.Bv64Gen.b_to_expr ctx
-                    (p.goal
-                     |> Predicates.b_inline
-                     |> Predicates.strip_cross_thread)
-                in
-                Z3.Solver.push solver;
-                Z3.Solver.add solver [ expr ];
-                let r = Z3.Solver.check solver [] in
-                Z3.Solver.pop solver 1;
-                r)
-            with Z3.Error _ -> Z3.Solver.UNKNOWN
-          in
-          (p, status))
-          proofs)
-
 let candidates ?(tag : string = "baseline") ?(timeout : int option = None)
     ?(logic : string option = None)
     (stream : Symbexp.Proof.t Streamutil.stream) : pair list =
   let _ = logic in
   stream
   |> Streamutil.to_list
-  |> solve_many ~phase:"genie/co-reach-solve" ~timeout
-  |> List.filter_map (fun (p, status) ->
+  |> List.filter_map (fun (p : Symbexp.Proof.t) ->
+    let status =
+      try
+        Phase_timer.measure "genie/co-reach-solve" (fun () ->
+          solve_one ~timeout p)
+      with Z3.Error _ -> Z3.Solver.UNKNOWN
+    in
     dump_line ~tag p status;
     match status with
     | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN ->
@@ -235,20 +242,26 @@ let candidates_restricted ?(tag : string = "under-phi")
     (stream : Symbexp.Proof.t Streamutil.stream) : pair list =
   stream
   |> Streamutil.to_list
-  |> List.filter (fun (p : Symbexp.Proof.t) ->
-    KeySet.mem (p.kernel_name, p.array_name, p.id) baseline_keys)
-  |> solve_many ~phase:"genie/co-reach-solve" ~timeout
-  |> List.filter_map (fun (p, status) ->
-    dump_line ~tag p status;
-    match status with
-    | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN ->
-      Some {
-        kernel_name = p.kernel_name;
-        array_name = p.array_name;
-        id = p.id;
-        proof = p;
-      }
-    | Z3.Solver.UNSATISFIABLE -> None)
+  |> List.filter_map (fun (p : Symbexp.Proof.t) ->
+    let key = (p.kernel_name, p.array_name, p.id) in
+    if not (KeySet.mem key baseline_keys) then None
+    else
+      let status =
+        try
+          Phase_timer.measure "genie/co-reach-solve" (fun () ->
+            solve_one ~timeout p)
+        with Z3.Error _ -> Z3.Solver.UNKNOWN
+      in
+      dump_line ~tag p status;
+      match status with
+      | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN ->
+        Some {
+          kernel_name = p.kernel_name;
+          array_name = p.array_name;
+          id = p.id;
+          proof = p;
+        }
+      | Z3.Solver.UNSATISFIABLE -> None)
 
 (* Build [baseline_keys : KeySet.t] from a [baseline : pair list]. *)
 let keys_of (pairs : pair list) : KeySet.t =
@@ -277,15 +290,20 @@ let t1_keys_restricted ?(tag : string = "tier1")
     (stream : Symbexp.Proof.t Streamutil.stream) : KeySet.t =
   stream
   |> Streamutil.to_list
-  |> List.filter (fun (p : Symbexp.Proof.t) ->
-    KeySet.mem (p.kernel_name, p.array_name, p.id) baseline_keys)
-  |> solve_many ~phase:"genie/t1-solve" ~timeout
-  |> List.fold_left (fun acc (p, status) ->
-    dump_line ~tag p status;
-    match status with
-    | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN ->
-      KeySet.add (p.kernel_name, p.array_name, p.id) acc
-    | Z3.Solver.UNSATISFIABLE -> acc)
+  |> List.fold_left (fun acc (p : Symbexp.Proof.t) ->
+    let key = (p.kernel_name, p.array_name, p.id) in
+    if not (KeySet.mem key baseline_keys) then acc
+    else
+      let status =
+        try
+          Phase_timer.measure "genie/t1-solve" (fun () ->
+            solve_one ~timeout p)
+        with Z3.Error _ -> Z3.Solver.UNKNOWN
+      in
+      dump_line ~tag p status;
+      match status with
+      | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN -> KeySet.add key acc
+      | Z3.Solver.UNSATISFIABLE -> acc)
     KeySet.empty
 
 (* Pretty-print a pair set as a sorted list of keys for debug /
