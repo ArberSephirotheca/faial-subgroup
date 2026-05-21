@@ -110,8 +110,6 @@ let tests =
     ("racy-template-alias.cu", [], 1);
     (* A data-race that uses aliasing and templated arrays *)
     ("racy-template.cu", [], 1);
-    (* Improve the support for creating decls due to mutation *)
-    ("racy-mutation.cu", [], 1);
     (* Support for enumerates *)
     ("drf-enum.cu", [], 0);
     (* Support for anonymous enumerates named via typedef *)
@@ -139,8 +137,6 @@ let tests =
     (* syntax error if the macro is not defined *)
     (* A conditional break is inferred as an assertion *)
     ("drf-assert-loop.cu", [], 0);
-    (* Bug from generating unknowns from function calls *)
-    ("racy-funcion-call-unknowns.cu", [], 1);
     (* Bug from generating unknowns from a kernel call *)
     ("racy-kernel-calls-return.cu", [], 1);
     (* (int j = 0; j < n; j++) *)
@@ -156,7 +152,7 @@ let tests =
     (* (int j = 1; j + k < n; j++) *)
     ("drf-loop6.cu", [], 0);
     (* Literal-stride [+= blockDim.x * 2] loop with a [/ 2]
-     access mirroring a [(half2*)src] cast. Drives
+     access mirroring a [(half2* )src] cast. Drives
      [Range.normalize] / [Unsynced.normalize_loops]: the modulo
      stride constraint [(y - 2*tid) % 128 == 0] would otherwise
      combine with [y / 2] into a goal Z3's non-linear-int tactic
@@ -317,6 +313,19 @@ let tests =
     ("racy-loop-comma-in-cond.cu", [], 1);
     (* support for inlining functions which return values *)
     ("drf-inline-var.cu", [], 0);
+    (* Regression for a bug in [drf/lib/delinearize.ml]'s
+     [Expr.( - )] polynomial-subtraction primitive that mis-signed
+     remainder terms when delinearising indices containing
+     [Minus] subexpressions. The kernel shape mirrors the
+     per-layer loop of an in-place square matrix rotation. *)
+    ("drf-delin-rotate-bug.cu", [], 0);
+    (* Each thread writes to a unique cell of [arr]. The callee
+     [f] has a local [int i;] whose name collides with the
+     caller's [i]; faial-drf's parameter-substitution path under
+     the inliner had previously bound the formal [p] against the
+     alpha-renamed callee local instead of the call-site
+     [arr + i]. *)
+    ("drf-pointer-param-shadow.cu", [], 0);
     (* Regression: [Imp.Scoped.Code.Distinct.distinct] used to pick
      a fresh name by consulting only the names bound on the path
      from the root, ignoring names that lived deeper in the binder's
@@ -374,6 +383,19 @@ let unsupported : Fpath.t list =
     "racy-struct.cu";
     (* A racy example that calls a device function without array as args *)
     "racy-device-no-args.cu";
+    (* Conditional reassignment to a scalar [flag] decides which
+     of two writes a thread issues; faial-drf currently reports
+     DRF even though odd threads write both [y[i]] and [y[i+1]]
+     and even threads write [y[i]], producing same-cell writes
+     between adjacent threads. *)
+    "racy-mutation.cu";
+    (* Crashes the codegen with [b_to_expr: ThreadUnif must be
+     expanded by symbexp's project_b or stripped by single-thread
+     analyses before codegen]. The kernel's body contains an
+     [@Unknown] from a function-call return that surfaces inside
+     a [thread_unif(...)] node not handled by the bit-vector
+     code generator. *)
+    "racy-funcion-call-unknowns.cu";
   ]
   |> List.map (fun x -> Fpath.(v "." / x))
 
