@@ -68,6 +68,47 @@ let parameter_universe (entries : entry list) : Variable.Set.t =
     | Parameter_touching { params; _ } -> Variable.Set.union acc params)
     Variable.Set.empty entries
 
+(* The launch-dim built-ins ([blockDim.*], [gridDim.*]) of every axis
+   any access actually navigates. Used by [Abduction] to weight pool
+   candidates: a candidate whose dim references fall outside this set
+   is paying selector cost on an axis the kernel does not address, so
+   MaxSAT can demote it without losing recall under [--assume-launch]
+   (where the wrapper [k.pre] already pins unused dims).
+
+   An access navigates an axis when its index expression mentions any
+   of that axis four launch-config built-ins ([threadIdx.x],
+   [blockIdx.x], [blockDim.x], [gridDim.x] for the x axis, analogous
+   for y and z). Once an axis is touched, both [blockDim.axis] and
+   [gridDim.axis] are added: candidates of the shape
+   [param >= blockDim.axis * gridDim.axis] (per-thread spacing across
+   the launch) need both, and including only one would demote the
+   cross-dim product. Tid/bid axes are not added because [build_pool]
+   never uses them as candidate RHS.
+
+   Path conditions are intentionally excluded. A path condition like
+   [threadIdx.x < N] is always present on tid-indexed accesses and
+   would flood the axis set; the index itself is the sharper signal
+   for which dims the kernel addresses. *)
+let accessed_dims (k : Kernel.t) : Variable.Set.t =
+  let open Variable in
+  let touched =
+    partition k
+    |> List.fold_left (fun acc e -> Access.free_names e.access acc)
+         Set.empty
+  in
+  let touches (axis_vars : Variable.t list) : bool =
+    List.exists (fun v -> Set.mem v touched) axis_vars
+  in
+  let add_if (cond : bool) (dims : Variable.t list)
+      (acc : Set.t) : Set.t =
+    if cond then List.fold_left (fun s v -> Set.add v s) acc dims
+    else acc
+  in
+  Set.empty
+  |> add_if (touches [ tid_x; bid_x; bdim_x; gdim_x ]) [ bdim_x; gdim_x ]
+  |> add_if (touches [ tid_y; bid_y; bdim_y; gdim_y ]) [ bdim_y; gdim_y ]
+  |> add_if (touches [ tid_z; bid_z; bdim_z; gdim_z ]) [ bdim_z; gdim_z ]
+
 (* Variables the abductive pool must be free to range over. The
    kernel-parameter part of the scope is taken from anywhere a
    parameter could affect a DRF query: in [k.pre] (typically a

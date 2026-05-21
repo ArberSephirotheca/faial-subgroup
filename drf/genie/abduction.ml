@@ -293,15 +293,62 @@ type t = {
   candidates : candidate list;
 }
 
+(* The six launch-dim built-ins ([blockDim.{x,y,z}], [gridDim.{x,y,z}])
+   that [build_pool] uses as candidate RHS. The cost-weighting filter
+   below intersects each candidate's free names with this set to read
+   off which dims the candidate constrains. *)
+let pool_dim_set : Variable.Set.t =
+  let open Variable in
+  Set.of_list [ bdim_x; bdim_y; bdim_z; gdim_x; gdim_y; gdim_z ]
+
+(* Soft-cost picker for an [add_soft] call: cost ["1"] is the default,
+   ["10"] demotes a candidate to a fallback tier. Demotion fires only
+   when [accessed_dims_of] is supplied, the candidate references at
+   least one launch dim, and every kernel in [kns] reports its
+   accessed dim set with that set not covering the candidate's dims.
+   Candidates with no dim references (cross-param shapes like
+   [v >= w]) stay at ["1"] regardless. *)
+let candidate_cost
+    (accessed_dims_of : (string -> Variable.Set.t option) option)
+    (kns : string list) (b : bexp) : string =
+  match accessed_dims_of with
+  | None -> "1"
+  | Some f ->
+    let cand_dims =
+      b_free_names b Variable.Set.empty
+      |> Variable.Set.inter pool_dim_set
+    in
+    if Variable.Set.is_empty cand_dims then "1"
+    else
+      let accepted =
+        List.exists (fun kn ->
+          match f kn with
+          | None -> true
+          | Some allowed -> Variable.Set.subset cand_dims allowed)
+          kns
+      in
+      if accepted then "1" else "10"
+
 (* [scope_of], when supplied, returns the [?scope] argument
    [build_pool] should use for the given kernel. [None] preserves
    the unscoped pool. The caller derives per-kernel scopes from each
    kernel's [Access_partition] parameter universe so the abductive
    pool only ranges over variables that appear in some access's
-   path condition. *)
+   path condition.
+
+   [accessed_dims_of], when supplied, returns the launch-dim built-ins
+   each kernel actually addresses (typically
+   [Access_partition.accessed_dims]). It steers the per-candidate
+   [add_soft] cost: a candidate whose dim references all lie inside
+   the accessed set keeps cost ["1"]; one referencing a dim no
+   kernel sharing the selector accesses gets cost ["10"]. The filter
+   is safe under [--assume-launch], where unused dims are pinned by
+   the wrapper [k.pre] and demoting their candidates loses no
+   recall. Pass [None] to recover the uniform-cost-["1"] behaviour. *)
 let create_for_kernels
     ?(scope_of : (string -> Variable.Set.t option) option)
     ?(prune_candidate : (string -> bexp -> bool) option)
+    ?(accessed_dims_of : (string -> Variable.Set.t option) option)
     (ks : Kernel.t list) : t =
   Phase_timer.measure "abduction/create" (fun () ->
     let ctx = Z3.mk_context [] in
@@ -343,8 +390,9 @@ let create_for_kernels
         let sel =
           Z3.Boolean.mk_const_s ctx (Printf.sprintf "b_%d" i)
         in
+        let cost = candidate_cost accessed_dims_of kns b in
         let _ : Z3.Optimize.handle =
-          Z3.Optimize.add_soft opt (Z3.Boolean.mk_not ctx sel) "1" group
+          Z3.Optimize.add_soft opt (Z3.Boolean.mk_not ctx sel) cost group
         in
         { kernel_names = List.rev kns; bexp = b; selector = sel;
           tag = FragmentSet.empty })

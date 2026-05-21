@@ -559,6 +559,7 @@ let abductive_loop
     ?(iter_cap = 32)
     ?(scope_of : (string -> Variable.Set.t option) option)
     ?(prune_candidate : (string -> Exp.bexp -> bool) option)
+    ?(accessed_dims_of : (string -> Variable.Set.t option) option)
     ?(pre_filter : (App.t -> bool) = fun _ -> true)
     ?(non_trivial : (per_kernel_extras -> bool) option)
     ~(use_core_shrink : bool)
@@ -570,7 +571,8 @@ let abductive_loop
   if kernels = [] then None
   else
     let session =
-      Abduction.create_for_kernels ?scope_of ?prune_candidate kernels
+      Abduction.create_for_kernels
+        ?scope_of ?prune_candidate ?accessed_dims_of kernels
     in
     Stats.set "pool_size" (List.length session.candidates);
     let solve s = Phase_timer.measure "genie/maxsat" (fun () ->
@@ -885,6 +887,23 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
     let scope_of (kn : string) : Variable.Set.t option =
       List.assoc_opt kn scopes
     in
+    (* Per-kernel accessed-dim sets fed into the [add_soft] weighting
+       (see [Abduction.candidate_cost]). Only enabled under
+       [--assume-launch]: the wrapper [k.pre] pins unused dims so
+       demoting a candidate that references them loses no recall.
+       Outside that mode, an unused dim could still be load-bearing
+       in a candidate, so the demotion would risk dropping real
+       solutions. *)
+    let accessed_dims_of : (string -> Variable.Set.t option) option =
+      if app.assume_launch then
+        let table =
+          List.map (fun (k : Kernel.t) ->
+            (Kernel.name k, Access_partition.accessed_dims k))
+            (App.only_kernel app app.kernels)
+        in
+        Some (fun kn -> List.assoc_opt kn table)
+      else None
+    in
     (* Drop pool candidates that on their own make [kn]'s access set
        empty. Including such a clause in any Φ would yield vacuous DRF
        (the [non_trivial] check at acceptance would reject it), so
@@ -951,8 +970,9 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
           Reachability.any_access_reachable_delta slot delta)
     in
     match Phase_timer.measure "genie/abductive" (fun () ->
-            abductive_loop ~iter_cap ~scope_of ~prune_candidate ~pre_filter
-              ~non_trivial ~use_core_shrink ~gate_check app baseline_pairs)
+            abductive_loop ~iter_cap ~scope_of ~prune_candidate
+              ?accessed_dims_of ~pre_filter ~non_trivial ~use_core_shrink
+              ~gate_check app baseline_pairs)
     with
     | Some minimal -> drf Source_abductive minimal
     | None ->
@@ -1008,9 +1028,19 @@ let compute_verdict_legacy ~(use_core_shrink : bool) ~(iter_cap : int)
     let scope_of (kn : string) : Variable.Set.t option =
       List.assoc_opt kn scopes
     in
+    let accessed_dims_of : (string -> Variable.Set.t option) option =
+      if app.assume_launch then
+        let table =
+          List.map (fun (k : Kernel.t) ->
+            (Kernel.name k, Access_partition.accessed_dims k))
+            (App.only_kernel app app.kernels)
+        in
+        Some (fun kn -> List.assoc_opt kn table)
+      else None
+    in
     match Phase_timer.measure "genie/abductive" (fun () ->
-            abductive_loop ~iter_cap ~scope_of ~use_core_shrink ~gate_check
-              app baseline_reachable)
+            abductive_loop ~iter_cap ~scope_of ?accessed_dims_of
+              ~use_core_shrink ~gate_check app baseline_reachable)
     with
     | Some minimal -> drf Source_abductive minimal
     | None ->
