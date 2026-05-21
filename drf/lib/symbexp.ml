@@ -141,15 +141,30 @@ and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
 let project_access (locals : Variable.Set.t) (t : Task.t) (ca : CondAccess.t) :
     CondAccess.t =
   let inline_acc (a : Access.t) = Access.map (project_n locals t) a in
-  { access = inline_acc ca.access; cond = project_b locals t ca.cond }
+  (* Inline cross-thread predicates ([__uniform_int] etc.) in the
+     access condition before projection so [project_b]'s
+     [ThreadUnif] case expands them to the per-pair equality. See
+     the analogous comment on [project_pre]. *)
+  let cond = Predicates.b_inline ca.cond in
+  { access = inline_acc ca.access; cond = project_b locals t cond }
 
 (* Project [k.pre] per-thread so the range conditions on hoisted-
    For binders (linearIndex etc.) constrain each task's projected
    copy rather than a single shared variable. Without this, the
    accesses' [linearIndex$T1]/[$T2] are free in the SMT while only
    a shared [linearIndex] from [pre] is constrained, and Z3 finds
-   spurious same-address witnesses. *)
+   spurious same-address witnesses.
+
+   Inline cross-thread predicates ([__uniform_int] /
+   [__distinct_int]) before projecting, so [project_b]'s
+   [ThreadUnif] case expands them to the per-pair equality
+   [e$T1 == e$T2] (or its negation). Leaving the predicate as
+   [Pred] until after projection would let [Predicates.b_inline]
+   re-introduce a [ThreadUnif] downstream of [strip_cross_thread]
+   with already-projected inner [Var]s; the bit-vector codegen
+   rejects bare [ThreadUnif] nodes via [Gen_z3.b_to_expr]. *)
 let project_pre (locals : Variable.Set.t) (pre : bexp) : bexp =
+  let pre = Predicates.b_inline pre in
   b_and (project_b locals Task1 pre) (project_b locals Task2 pre)
 
 (* Instantiates the hardware contracts for atomic operations as

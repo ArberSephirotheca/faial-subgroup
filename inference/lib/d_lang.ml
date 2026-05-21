@@ -940,13 +940,22 @@ module SignatureDB = struct
     |> Option.map (fun sigs ->
         match StringMap.find_opt ty sigs with
         | Some e -> Some e
-        | None ->
-            (* iterate over all kernels and try finding one with
-           the same number of parameters *)
+        | None when ty = "?" ->
+            (* Unresolved-lookup call: clang couldn't resolve the
+               overload at parse time, so we fall back to the
+               first kernel whose arity matches. A concrete [ty]
+               that doesn't appear as a key means the call's
+               source type doesn't match any registered kernel
+               signature, and falling back here would silently
+               bind the call to an unrelated overload (e.g.
+               picking [std::get<T1,T2>(pair<T1,T2>&)] for a
+               user-declared [unsigned int get(int)] whose body
+               isn't in the DB). *)
             sigs |> StringMap.bindings |> List.map snd
             |> List.find_opt (fun k ->
                 let open Kernel in
-                List.length k.params = arg_count))
+                List.length k.params = arg_count)
+        | None -> None)
     |> Option.join
 
   let lookup (e : Expr.t) (arg_count : int) (db : t) : Signature.t option =

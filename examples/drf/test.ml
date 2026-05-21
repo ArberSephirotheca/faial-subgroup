@@ -145,6 +145,13 @@ let tests =
     (* syntax error if the macro is not defined *)
     (* A conditional break is inferred as an assertion *)
     ("drf-assert-loop.cu", [], 0);
+    (* Two calls to a forward-declared [__device__ unsigned int
+     get(int)] must each produce a distinct unknown-valued local.
+     The [__uniform_int] asserts pin both as thread-uniform, so
+     the race witness picks adversarial values that make
+     [y[i + offset1]] and [y[i + offset2]] coincide across two
+     threads. *)
+    ("racy-funcion-call-unknowns.cu", [], 1);
     (* Bug from generating unknowns from a kernel call *)
     ("racy-kernel-calls-return.cu", [], 1);
     (* (int j = 0; j < n; j++) *)
@@ -391,13 +398,6 @@ let unsupported : Fpath.t list =
     "racy-struct.cu";
     (* A racy example that calls a device function without array as args *)
     "racy-device-no-args.cu";
-    (* Crashes the codegen with [b_to_expr: ThreadUnif must be
-     expanded by symbexp's project_b or stripped by single-thread
-     analyses before codegen]. The kernel's body contains an
-     [@Unknown] from a function-call return that surfaces inside
-     a [thread_unif(...)] node not handled by the bit-vector
-     code generator. *)
-    "racy-funcion-call-unknowns.cu";
   ]
   |> List.map (fun x -> Fpath.(v "." / x))
 
