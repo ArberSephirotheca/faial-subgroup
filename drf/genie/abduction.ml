@@ -291,6 +291,22 @@ type t = {
   ctx : Z3.context;
   opt : Z3.Optimize.optimize;
   candidates : candidate list;
+  (* Per-kernel [(name, value)] pairs extracted from each kernel's
+     [k.pre] via [Kernel.constants]. Under [--assume-launch] these
+     are the synthesised wrapper's [blockDim.x == 512],
+     [gridDim.y == 1], etc. pins; under [--assume-dims] alone they
+     are the unused-axis [bdim_y == 1] / [gdim_y == 1] pins; under
+     a host-side [kernel<<<>>>(arr, 256)] literal arg they are the
+     argument's value. Used as a fallback layer in
+     [add_sample_for_kernel]'s [lookup]: a model-derived witness
+     for a launch-synth kernel drops these dim variables (Z3
+     substituted them away to literals before solving), so
+     dim-referencing pool candidates ([s >= blockDim.x],
+     [s % blockDim.x == 0], [blockDim.x <= K], etc.) evaluate to
+     [None] under the bare witness and never enter [bad]. The
+     CEGAR sample-rejection step then makes no progress past
+     candidates whose free names are entirely kernel params. *)
+  kernel_constants : (string * (string * int) list) list;
 }
 
 (* The six launch-dim built-ins ([blockDim.{x,y,z}], [gridDim.{x,y,z}])
@@ -397,7 +413,10 @@ let create_for_kernels
         { kernel_names = List.rev kns; bexp = b; selector = sel;
           tag = FragmentSet.empty })
     in
-    { ctx; opt; candidates })
+    let kernel_constants =
+      List.map (fun k -> (Kernel.name k, Kernel.constants k)) ks
+    in
+    { ctx; opt; candidates; kernel_constants })
 
 let create_for_kernels_scoped
     (kernels : Kernel.t list)
@@ -426,7 +445,10 @@ let create_for_kernels_scoped
           selector = sel; tag })
         tagged
     in
-    { ctx; opt; candidates })
+    let kernel_constants =
+      List.map (fun k -> (Kernel.name k, Kernel.constants k)) kernels
+    in
+    { ctx; opt; candidates; kernel_constants })
 
 let witness_lookup (vars : (string * string) list) : string -> int option =
   let table = Hashtbl.create 32 in
@@ -437,6 +459,22 @@ let witness_lookup (vars : (string * string) list) : string -> int option =
     vars;
   fun name -> Hashtbl.find_opt table name
 
+(* Compose a witness lookup with the per-kernel [k.pre] constants
+   pool. The witness binding wins when both define a name (the
+   witness is the Z3-derived sample, the constants are static pins);
+   in practice this is moot because Z3 substitutes pinned dims away
+   before solving, so the witness never contains them. The fallback
+   layer is what lets dim-referencing candidates ([s >= blockDim.x],
+   [blockDim.x <= K], etc.) evaluate to a concrete bool against a
+   launch-synthesised witness. *)
+let compose_lookup (vars : (string * string) list)
+    (consts : (string * int) list) : string -> int option =
+  let from_witness = witness_lookup vars in
+  fun name ->
+    match from_witness name with
+    | Some _ as v -> v
+    | None -> List.assoc_opt name consts
+
 (* Add a witness from a specific kernel's racy proof. Only candidates
    for the same kernel can reject this witness — a candidate from a
    different kernel references different variables (even when the
@@ -444,7 +482,10 @@ let witness_lookup (vars : (string * string) list) : string -> int option =
    under the model). *)
 let add_sample_for_kernel (s : t) (kn : string)
     (vars : (string * string) list) : int =
-  let lookup = witness_lookup vars in
+  let consts =
+    List.assoc_opt kn s.kernel_constants |> Option.value ~default:[]
+  in
+  let lookup = compose_lookup vars consts in
   let bad =
     List.filter_map (fun c ->
       if not (List.mem kn c.kernel_names) then None
