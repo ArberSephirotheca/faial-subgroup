@@ -317,6 +317,21 @@ let tests =
     ("racy-loop-comma-in-cond.cu", [], 1);
     (* support for inlining functions which return values *)
     ("drf-inline-var.cu", [], 0);
+    (* Regression: [Imp.Scoped.Code.Distinct.distinct] used to pick
+     a fresh name by consulting only the names bound on the path
+     from the root, ignoring names that lived deeper in the binder's
+     body. A helper with a parameter named [i] was inlined into a
+     kernel whose local [int i] clashed with the host-loop [int i]
+     captured by the synthesised launch wrapper; the wrapper pass
+     renamed the kernel's [i] to [i1], the same fresh name the
+     earlier helper-inline pass had already chosen for the helper's
+     [i] deeper in the body, and the subsequent rename of that
+     deeper [i1] to [i11] captured the kernel's freshly-placed
+     index reference. The access landed on the helper's
+     uninitialised float local and the analysis reported a false
+     race. *)
+    ("drf-inline-rename-capture.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
     (* ensure that an aligned protocol remains aligned *)
     ("drf-loop-aligned-1.cu", [], 0);
     (* End-to-end smoke test for IntegerLiteral parsing of uint64

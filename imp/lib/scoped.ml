@@ -244,6 +244,55 @@ module Code = struct
     in
     filter
 
+  (* Collect every variable name mentioned anywhere in [p] (binders
+     and free references). Used by [Distinct.distinct] so that
+     freshly-generated names cannot collide with a name introduced
+     by a deeper binder; without the subtree scan, two independent
+     renames could pick the same fresh name and the second rename's
+     subst would capture references the first rename had placed
+     there. *)
+  let mentioned : t -> Variable.Set.t =
+    let n = Exp.n_free_names in
+    let b = Exp.b_free_names in
+    let collect_arg (acc : Variable.Set.t) (a : Arg.t) : Variable.Set.t =
+      match a with
+      | Arg.Scalar e -> n e acc
+      | Arg.Array u -> Variable.Set.add u.array (n u.offset acc)
+      | Arg.Unsupported _ -> acc
+    in
+    let rec go (acc : Variable.Set.t) : t -> Variable.Set.t = function
+      | Skip -> acc
+      | Sync s ->
+          let acc = n s.id acc in
+          (match s.participants with Some e -> n e acc | None -> acc)
+      | Assert a -> b a.cond acc
+      | Access a ->
+          let acc = Variable.Set.add a.array acc in
+          List.fold_left (fun acc e -> n e acc) acc a.index
+      | Decl (d, p) ->
+          let acc = Variable.Set.add d.var acc in
+          let acc = match d.init with Some e -> n e acc | None -> acc in
+          go acc p
+      | Assign { var; data; body; _ } ->
+          let acc = Variable.Set.add var acc in
+          go (n data acc) body
+      | If (cond, p, q) -> go (go (b cond acc) p) q
+      | Seq (p, q) -> go (go acc p) q
+      | For (r, p) ->
+          let acc = Variable.Set.add r.var acc in
+          let acc = Range.free_names r acc in
+          let acc = match r.step with Plus e | Mult e -> n e acc in
+          go acc p
+      | Call (c, p) ->
+          let acc =
+            match c.result with
+            | Some (x, _) -> Variable.Set.add x acc
+            | None -> acc
+          in
+          go (List.fold_left collect_arg acc c.args) p
+    in
+    go Variable.Set.empty
+
   module Distinct = struct
     open State.Syntax
 
@@ -258,10 +307,16 @@ module Code = struct
     let add_var (x : Variable.t) : unit state =
       State.update (Variable.Set.add x)
 
-    (* Generate fresh variable and add it to state *)
-    let fresh_var (x : Variable.t) : Variable.t state =
+    (* Generate a fresh name for [x] that avoids both the names
+       bound on the path from the root (the state) and every name
+       mentioned in [subtree]. The subtree set must include any
+       binder that lives inside [subtree], because otherwise a
+       freshly-picked name could shadow that binder and a later
+       rename of that binder would re-substitute the fresh name. *)
+    let fresh_var ~(subtree : Variable.Set.t) (x : Variable.t) :
+        Variable.t state =
       let* vars = State.get in
-      let new_x = Variable.fresh vars x in
+      let new_x = Variable.fresh (Variable.Set.union vars subtree) x in
       let* () = add_var new_x in
       return new_x
 
@@ -273,7 +328,7 @@ module Code = struct
             | Some (x, ty) ->
                 let* used = is_used x in
                 if used then
-                  let* new_x = fresh_var x in
+                  let* new_x = fresh_var ~subtree:(mentioned p) x in
                   let p = subst (x, Var new_x) p in
                   return ({ c with result = Some (new_x, ty) }, p)
                 else
@@ -298,7 +353,7 @@ module Code = struct
           let x = d.var in
           let* used = is_used x in
           if used then
-            let* new_x = fresh_var x in
+            let* new_x = fresh_var ~subtree:(mentioned p) x in
             let p = subst (x, Var new_x) p in
             let* p = distinct p in
             return (Decl ({ d with var = new_x }, p))
@@ -310,7 +365,7 @@ module Code = struct
           let x = Range.var r in
           let* used = is_used x in
           if used then
-            let* new_x = fresh_var x in
+            let* new_x = fresh_var ~subtree:(mentioned p) x in
             let p = subst (x, Var new_x) p in
             let* p = distinct p in
             return (For ({ r with var = new_x }, p))
