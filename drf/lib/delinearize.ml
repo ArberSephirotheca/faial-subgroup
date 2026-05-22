@@ -1,15 +1,11 @@
 open Stage0
 open Protocols
 
-(* [@@@warning "-unused-value-declaration"]
-[@@@warning "-unused-type-declaration"] *)
-
-
 let list_to_string (f : 'a -> string) (l : 'a list): string =
   "[" ^ (l |> List.map f |> String.concat "; ") ^ "]"
 let option_to_string (f : 'a -> string): 'a option -> string = function
 | None -> "none"
-| Some x -> f x 
+| Some x -> f x
 
 module Expr : sig
   type t
@@ -30,10 +26,8 @@ module Expr : sig
     type t
     val compare : t -> t -> int
     val to_string : t -> string
-    (* val of_int : int -> t *)
     val parameter : string -> t
     val induction : string -> t
-    (* val one : t *)
     val ( * ) : t -> t -> t
 
     val try_div : t -> t -> t option
@@ -71,62 +65,42 @@ module Expr : sig
   val to_nexp : t -> Exp.nexp
 end = struct
   module Atom = struct
-    type t = {
-      value: Exp.nexp;
-      thread_global: bool;
-    }
+    type t =
+      | Induction of Exp.nexp
+      | Parameter of Exp.nexp
 
-    let induction s = {
-      value = Exp.Var (Variable.from_name s);
-      thread_global = false;
-    }
-    let parameter s = {
-      value = Exp.Var (Variable.from_name s);
-      thread_global = true;
-    }
+    let induction s = Induction (Exp.Var (Variable.from_name s))
+    let parameter s = Parameter (Exp.Var (Variable.from_name s))
 
-    let compare x y = match Exp.n_compare x.value y.value with
-      | 0 -> compare x.thread_global y.thread_global
+    let to_nexp : t -> Exp.nexp = function
+      | Induction n | Parameter n -> n
+
+    let is_induction = function Induction _ -> true | Parameter _ -> false
+    let is_parameter = function Parameter _ -> true | Induction _ -> false
+
+    let compare x y = match Exp.n_compare (to_nexp x) (to_nexp y) with
+      | 0 -> compare (is_parameter x) (is_parameter y)
       | n -> n
-      
-    let to_string = function
-      | { value; thread_global = true } -> Exp.n_to_string value ^ " (global)"
-      | { value; thread_global = false} -> Exp.n_to_string value
 
-    let from_nexp ~globals (value: Exp.nexp) : t =
-      let thread_global = 
+    let to_string = function
+      | Parameter n -> Exp.n_to_string n ^ " (global)"
+      | Induction n -> Exp.n_to_string n
+
+    let from_nexp ~globals (value : Exp.nexp) : t =
+      let thread_global =
         let free = Exp.n_free_names value Variable.Set.empty in
         Variable.Set.diff free globals |> Variable.Set.is_empty
       in
-      {
-        value; thread_global
-      }
-
-
-    let to_nexp : t -> Exp.nexp = function
-      | { value; _ } -> value
-
-    let is_induction v = not v.thread_global
-    let is_parameter v = v.thread_global
+      if thread_global then Parameter value else Induction value
   end
   module VarMap = Map.Make(Atom)
   module TermInner = struct
     type t = int VarMap.t
 
     let compare = VarMap.compare Int.compare
-    (* let to_string t =
-      if VarMap.is_empty t
-      then "TermInner.of_factors []"
-      else
-        VarMap.bindings t
-        |> List.map (fun (a, i) -> (Atom.to_string a, i))
-        |> List.map (function
-        | k, v -> Printf.sprintf "%s, %d" k v)
-        |> String.concat "; "
-        |> Printf.sprintf "TermInner.of_factors [%s]" *)
 
     let normalize = VarMap.filter (fun _ v -> v != 0)
-    let (||>) (x, y) f = f x y
+    let ( ||> ) (x, y) f = f x y
     let ( * ) (t1: t) (t2: t): t = (t1, t2)
       ||> VarMap.merge (fun _ v1 v2 -> match v1, v2 with
         | Some v1, Some v2 -> Some (v1 + v2)
@@ -148,10 +122,6 @@ end = struct
     let compare (c1, t1) (c2, t2) = match c1 - c2 with
       | 0 -> TermInner.compare t1 t2
       | x -> x
-    (* let to_string (c, t) = match c with
-      | 0 -> "0"
-      | 1 -> Printf.sprintf "(%s)" (TermInner.to_string t)
-      | _ -> Printf.sprintf "(%d * %s)" c (TermInner.to_string t) *)
     let to_string (c, t) =
       let ctor = match c with
         | 1 -> "Term.of_factors"
@@ -168,8 +138,6 @@ end = struct
         |> Printf.sprintf "%s [%s]" ctor
     let parameter s = (1, VarMap.singleton (Atom.parameter s) 1)
     let induction s = (1, VarMap.singleton (Atom.induction s) 1)
-    (* let of_int i = (i, VarMap.empty) *)
-    (* let one = of_int 1 *)
 
     let ( * ) (c1, t1) (c2, t2) = (c1 * c2, TermInner.( * ) t1 t2)
     let coeff (c, _) = c
@@ -253,13 +221,6 @@ end = struct
         | t -> Printf.sprintf "  %s;\n" (Term.to_string t))
       |> String.concat ""
       |> Printf.sprintf "Expr.of_list [\n%s]"
-      (* |> List.map (function
-        | k, v -> Printf.sprintf "(%s, %d)"
-          (TermInner.to_string v)
-          v
-      )
-      |> String.concat ";\n"
-      |> Printf.sprintf "TermMap.of_list [\n  %s]" *)
 
   let ( + ) t1 t2 =
     TermMap.merge (fun _ v1 v2 -> match v1, v2 with
@@ -312,7 +273,6 @@ end = struct
       ) (Term.to_nexp x)
 end
 
-(* module StringSet = Set.Make(String) *)
 module Term = Expr.Term
 module Atom = Expr.Atom
 
@@ -397,16 +357,6 @@ end = struct
       dims = List.map Expr.Term.to_nexp ds;
       conditions = conditions ds is
     }
-  
-
-  (* let list_bind (x : 'a list) (f : 'a -> 'b list) : 'b list =
-    x |> List.map f |> List.flatten
-
-  let loption_bind (x : 'a list option) (f : 'a -> 'b list option) : 'b list option =
-    match x with  *)
-
-  (* let rewrite_access_with (dims : Term.t list) (acc : Access.t) : Acccess.t = *)
-    
 
   (* Throwing out conditions for now. eventually will use t as a sort of rewrite template *)
 
@@ -425,7 +375,7 @@ end = struct
     in get_accesses_unsync unsync Variable.Map.empty
 
   let rewrite_unsync ~(globals : Variable.Set.t) (unsync : Unsynced.t) : Unsynced.t =
-    let (let*) = Option.bind in
+    let ( let* ) = Option.bind in
     let open Unsynced in
     (* Three sub-phases of [rewrite_unsync], measured separately so the
        JSON phase_times shows where delin time actually goes. They sum
