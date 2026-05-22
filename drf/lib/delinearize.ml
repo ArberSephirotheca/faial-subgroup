@@ -92,29 +92,42 @@ end = struct
         Variable.Set.diff free globals |> Variable.Set.is_empty
       in
       if thread_global then Parameter value else Induction value
+
+
+    module OT = struct
+      type nonrec t = t
+      let compare = compare
+    end
+
+    module Map = Map.Make (OT)
   end
-  module VarMap = Map.Make(Atom)
   module TermInner = struct
-    type t = int VarMap.t
+    type t = int Atom.Map.t
 
-    let compare = VarMap.compare Int.compare
+    let compare = Atom.Map.compare Int.compare
 
-    let normalize = VarMap.filter (fun _ v -> v != 0)
+    let normalize = Atom.Map.filter (fun _ v -> v != 0)
     let ( ||> ) (x, y) f = f x y
     let ( * ) (t1: t) (t2: t): t = (t1, t2)
-      ||> VarMap.merge (fun _ v1 v2 -> match v1, v2 with
+      ||> Atom.Map.merge (fun _ v1 v2 -> match v1, v2 with
         | Some v1, Some v2 -> Some (v1 + v2)
         | Some v, None | None, Some v -> Some v
         | None, None -> None
       )
       |> normalize
-    let fold f acc t = VarMap.fold f t acc
-    let to_list = VarMap.bindings
+    let fold f acc t = Atom.Map.fold f t acc
+    let to_list = Atom.Map.bindings
     let nfactors t = t
-      |> VarMap.to_list
+      |> Atom.Map.to_list
       |> List.length
       let is_const t = nfactors t = 0
 
+    module OT = struct
+      type nonrec t = t
+      let compare = compare
+    end
+
+    module Map = Map.Make (OT)
   end
 
   module Term = struct
@@ -127,24 +140,24 @@ end = struct
         | 1 -> "Term.of_factors"
         | n -> Printf.sprintf "Term.of_factors ~coeff:%d" n
       in
-      if VarMap.is_empty t
+      if Atom.Map.is_empty t
       then Printf.sprintf "%s []" ctor
       else
-        VarMap.bindings t
+        Atom.Map.bindings t
         |> List.map (fun (a, i) -> (Atom.to_string a, i))
         |> List.map (function
         | k, v -> Printf.sprintf "%s, %d" k v)
         |> String.concat "; "
         |> Printf.sprintf "%s [%s]" ctor
-    let parameter s = (1, VarMap.singleton (Atom.parameter s) 1)
-    let induction s = (1, VarMap.singleton (Atom.induction s) 1)
+    let parameter s = (1, Atom.Map.singleton (Atom.parameter s) 1)
+    let induction s = (1, Atom.Map.singleton (Atom.induction s) 1)
 
     let ( * ) (c1, t1) (c2, t2) = (c1 * c2, TermInner.( * ) t1 t2)
     let coeff (c, _) = c
     let fold f acc (_, t) = TermInner.fold f acc t
-    let filter f (c, t) = c, VarMap.filter f t
+    let filter f (c, t) = c, Atom.Map.filter f t
     let factors (_, t): (Atom.t * int) list = TermInner.to_list t
-    let of_factors ?(coeff = 1) factors = coeff, VarMap.of_list factors
+    let of_factors ?(coeff = 1) factors = coeff, Atom.Map.of_list factors
 
     let is_const (_, t) = TermInner.is_const t
     let nfactors (_, t) = TermInner.nfactors t
@@ -183,38 +196,37 @@ end = struct
 
     let try_div ((c1, f1) : t) ((c2, f2) : t) : t option = 
     match c1 mod c2 with
-    | 0 -> let d = TermInner.(f1 * (VarMap.map (~-) f2))
-      in if (VarMap.exists (fun _ e -> e < 0) d)
+    | 0 -> let d = TermInner.(f1 * (Atom.Map.map (~-) f2))
+      in if (Atom.Map.exists (fun _ e -> e < 0) d)
         then None
         else Some (c1 / c2, d)
     | _ -> None
   end
 
-  module TermMap = Map.Make(TermInner)
-  type t = int TermMap.t
+  type t = int TermInner.Map.t
 
-  let compare = TermMap.compare Int.compare
+  let compare = TermInner.Map.compare Int.compare
 
   let of_int i = match i with
-    | 0 -> TermMap.empty
-    | _ -> TermMap.singleton (VarMap.empty) i
+    | 0 -> TermInner.Map.empty
+    | _ -> TermInner.Map.singleton (Atom.Map.empty) i
 
-  let of_atom (v : Atom.t): t = TermMap.singleton (VarMap.singleton v 1) 1
+  let of_atom (v : Atom.t): t = TermInner.Map.singleton (Atom.Map.singleton v 1) 1
 
   let to_list t: Term.t list = t
-    |> TermMap.bindings
+    |> TermInner.Map.bindings
     |> List.map (fun (t, c) -> (c, t))
   let of_list (t : Term.t list): t = t
     |>  List.map (fun (c, t) -> (t, c))
-    |> TermMap.of_list
-  let fold f acc t = TermMap.fold (fun t c acc -> f (c, t) acc) t acc
+    |> TermInner.Map.of_list
+  let fold f acc t = TermInner.Map.fold (fun t c acc -> f (c, t) acc) t acc
 
-  let parameter v = TermMap.singleton (VarMap.singleton (Atom.parameter v) 1) 1
-  let induction v = TermMap.singleton (VarMap.singleton (Atom.induction v) 1) 1
-  let zero = TermMap.empty
+  let parameter v = TermInner.Map.singleton (Atom.Map.singleton (Atom.parameter v) 1) 1
+  let induction v = TermInner.Map.singleton (Atom.Map.singleton (Atom.induction v) 1) 1
+  let zero = TermInner.Map.empty
 
   let to_string (t : t) : string =
-    if TermMap.is_empty t then "Expr.of_list []"
+    if TermInner.Map.is_empty t then "Expr.of_list []"
     else t
       |> to_list
       |> List.map (function
@@ -223,7 +235,7 @@ end = struct
       |> Printf.sprintf "Expr.of_list [\n%s]"
 
   let ( + ) t1 t2 =
-    TermMap.merge (fun _ v1 v2 -> match v1, v2 with
+    TermInner.Map.merge (fun _ v1 v2 -> match v1, v2 with
     | Some v1, Some v2 ->
         (let sum = v1 + v2
         in match v1 + v2 with
@@ -232,7 +244,7 @@ end = struct
     | Some v, None | None, Some v -> Some v
     | None, None -> None) t1 t2
   let ( - ) t1 t2 =
-    TermMap.merge (fun _ v1 v2 -> match v1, v2 with
+    TermInner.Map.merge (fun _ v1 v2 -> match v1, v2 with
     | Some v1, Some v2 ->
         (let diff = v1 - v2
         in match v1 - v2 with
@@ -242,11 +254,11 @@ end = struct
     | None, Some v -> Some (-v)
     | None, None -> None) t1 t2
   let ( * ) (t1: t) (t2: t): t =
-    TermMap.fold (fun k1 v1 acc ->
-      TermMap.fold (fun k2 v2 acc ->
+    TermInner.Map.fold (fun k1 v1 acc ->
+      TermInner.Map.fold (fun k2 v2 acc ->
         let product = TermInner.(k1 * k2)
         in let coeff = v1 * v2
-        in TermMap.singleton product coeff + acc) t2 acc) t1 zero
+        in TermInner.Map.singleton product coeff + acc) t2 acc) t1 zero
 
   let div_mod (n : t) (d : Term.t) : t * t =
     let q, r = n
