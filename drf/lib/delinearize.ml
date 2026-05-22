@@ -331,44 +331,50 @@ let to_string: t -> string = function
     (list_to_string Exp.n_to_string dims)
     (list_to_string Exp.b_to_string conditions)
 
+let size_params (t : Expr.t) : Term.t list = t
+  |> Expr.to_list
+  |> List.filter (fun t -> Term.has_induction t && Term.has_parameter t)
+  |> List.map (Term.filter (fun v _ -> Atom.is_parameter v))
+  |> List.sort_uniq Term.compare
+  |> List.sort (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
+
+let size_params_all (ts : Expr.t list) : Term.t list = ts
+  |> List.concat_map size_params
+  |> List.sort_uniq Term.compare
+  |> List.sort (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
+
+(* Divides out size params *)
+let rec dims: Term.t list -> Term.t list option = function
+  | [] -> Some []
+  | [x] -> Some [x]
+  | x :: y :: ys ->
+    let ( let* ) = Option.bind in
+    let* dim = Term.try_div x y in
+    let* r = dims (y :: ys) in
+    Some (dim :: r)
+
+let accesses (dims : Term.t list) (t : Expr.t): Expr.t list =
+  let rec loop rdims t = match rdims with
+  | [] -> [t]
+  | d :: ds -> let q, r = Expr.div_mod t d in
+    r :: loop ds q
+  in
+  t |> loop (List.rev dims)
+  |> List.rev
+
 module Make(L:Logger.Logger) : sig
+  val size_params : Expr.t -> Term.t list
+  val size_params_all : Expr.t list -> Term.t list
+  val dims : Term.t list -> Term.t list option
+  val accesses : Term.t list -> Expr.t -> Expr.t list
+  val from_exp : Term.t list -> Expr.t -> t option
   val rewrite_kernel : Aligned.Kernel.t -> Aligned.Kernel.t
 end = struct
 
-  let size_params_all (ts : Expr.t list) : Term.t list = ts
-      |> List.map (fun t -> (*print_endline (Expr.to_string t);*) t
-        |> Expr.to_list
-        |> List.filter (fun t ->
-          Term.has_induction t && Term.has_parameter t
-        )
-        |> List.map (Term.filter (fun v _ -> Atom.is_parameter v))
-      )
-      |> List.flatten
-      (* TODO?: handle some kind of dimension selection. i need a deduplication then a size sort *)
-      (* deduplicate *)
-      |> List.sort_uniq Term.compare
-      |> List.sort (fun a b -> -compare (Term.nfactors a) (Term.nfactors b))
-
-  (* Divides out size params *)
-  let rec dims: Term.t list -> Term.t list option = function
-    | [] -> (*print_endline "no dim";*) Some []
-    | [x] -> Some [x]
-    | x :: y :: ys ->
-      let ( let* ) = Option.bind in
-      let* dim = Term.try_div x y in
-      let* r = dims (y :: ys) in
-      Some (dim :: r)
-    (* don't consider numbers params? or do *)
-
-  let accesses (dims : Term.t list) (t : Expr.t): Expr.t list =
-    let rec loop rdims t = match rdims with
-    | [] -> [t]
-    | d :: ds -> let q, r = Expr.div_mod t d in
-      r :: loop ds q
-    in
-    t |> loop (List.rev dims)
-    |> List.rev
-    (*turn this into a fold later*)
+  let size_params = size_params
+  let size_params_all = size_params_all
+  let dims = dims
+  let accesses = accesses
 
   let from_exp (ds : Term.t list) (expr : Expr.t) : t option =
     L.info (fun () -> "Dims = \n" ^ list_to_string Term.to_string ds);

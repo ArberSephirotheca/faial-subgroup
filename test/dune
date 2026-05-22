@@ -1,6 +1,7 @@
 (tests
  (names
    test_locsplit
+   test_delinearization
  )
  (libraries stage0 ra protocols drf inference oUnit rel_cost)
 )
