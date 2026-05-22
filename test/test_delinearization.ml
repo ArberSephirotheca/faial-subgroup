@@ -203,12 +203,135 @@ let kernel_tests =
         ~printer:Aligned.Kernel.to_string
         after got)
 
+(* Static_bound predicate: white-box tests that exercise the recognised
+   patterns directly. *)
+let make_range (name : string) (lb : nexp) (ub : nexp) : Range.t =
+  {
+    var = Variable.from_name name;
+    ty = C_type.int;
+    dir = Range.Increase;
+    lower_bound = lb;
+    upper_bound = ub;
+    step = Range.Step.Plus (Num 1);
+  }
+
+let ranges_of (items : (string * nexp * nexp) list) : Range.t Variable.Map.t =
+  items
+  |> List.map (fun (n, lb, ub) -> (Variable.from_name n, make_range n lb ub))
+  |> List.to_seq
+  |> Variable.Map.of_seq
+
+let static_bound_tests =
+  "Static_bound.holds" >:: fun _ ->
+  let open Build in
+  let expr e = Delinearize.Expr.from_nexp ~globals e in
+  let term e =
+    match
+      Delinearize.Expr.to_list (Delinearize.Expr.from_nexp ~globals e)
+    with
+    | [t] -> t
+    | _ -> failwith "test fixture: expected single-term dim"
+  in
+  let check ?(msg = "") ~ranges expected i d =
+    let got = Delinearize.Static_bound.holds ~globals ~ranges i d in
+    assert_equal ~msg ~printer:string_of_bool expected got
+  in
+  (* y in [0, N-1], dim N: holds *)
+  check
+    ~msg:"loop range matches dim"
+    ~ranges:(ranges_of [("y", Num 0, vN + Num (-1))])
+    true (expr y) (term vN);
+  (* No range information: cannot prove *)
+  check
+    ~msg:"empty ranges -> false"
+    ~ranges:Variable.Map.empty
+    false (expr y) (term vN);
+  (* y in [0, N] (one too large): cannot prove *)
+  check
+    ~msg:"loose upper bound -> false"
+    ~ranges:(ranges_of [("y", Num 0, vN)])
+    false (expr y) (term vN);
+  (* y in [1, N-1] (lower bound > 0 not recognised): conservative false *)
+  check
+    ~msg:"non-zero lower bound -> false"
+    ~ranges:(ranges_of [("y", Num 1, vN + Num (-1))])
+    false (expr y) (term vN);
+  (* Constant index: not the single-atom pattern, falls through *)
+  check
+    ~msg:"constant index -> false"
+    ~ranges:Variable.Map.empty
+    false (expr (Num 3)) (term vN);
+  (* Sum of two atoms: not the single-atom pattern *)
+  check
+    ~msg:"two-atom index -> false"
+    ~ranges:(ranges_of [("y", Num 0, vN + Num (-1)); ("z", Num 0, vN + Num (-1))])
+    false (expr (y + z)) (term vN);
+  (* Numeric range: y in [0, 9], dim 10 *)
+  check
+    ~msg:"numeric range matches numeric dim"
+    ~ranges:(ranges_of [("y", Num 0, Num 9)])
+    true (expr y) (term (Num 10))
+
+(* End-to-end via [from_exp]: with the elision flag, [t.conditions] drops
+   bounds that [Static_bound] can prove; without the flag, all bounds emit. *)
+let delin_with
+    ~elide_provable_bounds
+    ~ranges
+    (e : nexp) : Delinearize.t option =
+  let expr = Delinearize.Expr.from_nexp ~globals e in
+  match Delinearize.size_params expr |> Delinearize.dims with
+  | None -> None
+  | Some d ->
+    Delinearize.Silent.from_exp
+      ~elide_provable_bounds ~globals ~ranges d expr
+
+let elision_tests =
+  "from_exp elision" >:: fun _ ->
+  let open Build in
+  let cond_count r =
+    match r with
+    | None -> -1
+    | Some (t : Delinearize.t) -> List.length t.conditions
+  in
+  let case ~msg ~ranges expr expected_off expected_on =
+    let off =
+      delin_with ~elide_provable_bounds:false ~ranges expr |> cond_count
+    in
+    let on =
+      delin_with ~elide_provable_bounds:true ~ranges expr |> cond_count
+    in
+    assert_equal ~msg:(msg ^ " (flag off)") ~printer:string_of_int
+      expected_off off;
+    assert_equal ~msg:(msg ^ " (flag on)") ~printer:string_of_int
+      expected_on on
+  in
+  (* Single inner-axis bound, loop range matches: elidable. *)
+  case
+    ~msg:"numdim with loop range"
+    ~ranges:(ranges_of [("y", Num 0, vN + Num (-1))])
+    (vN * x + y)
+    1 0;
+  (* No range info available: bound stays. *)
+  case
+    ~msg:"numdim no range"
+    ~ranges:Variable.Map.empty
+    (vN * x + y)
+    1 1;
+  (* Two axes, one elidable, the other not (z has no range). *)
+  case
+    ~msg:"3dim, only y bounded"
+    ~ranges:(ranges_of [("y", Num 0, vM + Num (-1))])
+    (vM * vN * x + vN * y + z)
+    2 1
+
 let tests =
   "delinearization" >::: [
     stage1_tests;
     stage2_tests;
     stage3_tests;
     kernel_tests;
+    static_bound_tests;
+    elision_tests;
   ]
 
 let _ = run_test_tt_main tests

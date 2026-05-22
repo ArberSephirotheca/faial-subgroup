@@ -20,6 +20,10 @@ module Atom : sig
   val is_induction : t -> bool
   val is_parameter : t -> bool
 
+  (* When the atom is a bare induction variable [Var v], return [Some v].
+     Returns [None] for parameters or compound induction expressions. *)
+  val as_induction_var : t -> Variable.t option
+
   module Map : Map.S with type key = t
 end = struct
   type t =
@@ -34,6 +38,10 @@ end = struct
 
   let is_induction = function Induction _ -> true | Parameter _ -> false
   let is_parameter = function Parameter _ -> true | Induction _ -> false
+
+  let as_induction_var = function
+    | Induction (Exp.Var v) -> Some v
+    | _ -> None
 
   let compare x y = match Exp.n_compare (to_nexp x) (to_nexp y) with
     | 0 -> compare (is_parameter x) (is_parameter y)
@@ -332,13 +340,57 @@ let accesses (dims : Term.t list) (t : Expr.t): Expr.t list =
   t |> loop (List.rev dims)
   |> List.rev
 
+(* Statically decide [0 <= i < d] for an inner-axis index [i] and dimension
+   [d]. Returns [true] only when the bound can be proved without recourse to a
+   solver; conservative on every pattern it doesn't recognise. *)
+module Static_bound : sig
+  val holds :
+    globals:Variable.Set.t ->
+    ranges:Range.t Variable.Map.t ->
+    Expr.t -> Term.t -> bool
+end = struct
+  (* When [i] is a single induction variable [v] whose range has lower bound
+     0, return its inclusive upper bound; [None] otherwise. *)
+  let upper_bound_of_single_atom
+      ~(ranges : Range.t Variable.Map.t) (i : Expr.t) : Exp.nexp option =
+    match Expr.to_list i with
+    | [t] when Term.coeff t = 1 ->
+      (match Term.factors t with
+       | [(a, 1)] ->
+         (match Atom.as_induction_var a with
+          | Some v ->
+            (match Variable.Map.find_opt v ranges with
+             | Some { Range.lower_bound = Exp.Num 0; upper_bound; _ } ->
+               Some upper_bound
+             | _ -> None)
+          | None -> None)
+       | _ -> None)
+    | _ -> None
+
+  let holds ~globals ~ranges (i : Expr.t) (d : Term.t) : bool =
+    match upper_bound_of_single_atom ~ranges i with
+    | None -> false
+    | Some ub ->
+      (* The bound holds when [max(i) + 1 = d] after polynomial normalisation.
+         For a single-variable [i] with range [0, ub], [max(i) = ub] so the
+         condition reduces to [ub + 1 = d]. Common case: the loop
+         [for (v = 0; v < d; v++)] gives Range.upper_bound = d - 1. *)
+      let lhs = Expr.( + ) (Expr.from_nexp ~globals ub) (Expr.of_int 1) in
+      Expr.compare lhs (Expr.of_list [d]) = 0
+end
+
 module Make(L:Logger.Logger) : sig
   val size_params : Expr.t -> Term.t list
   val size_params_all : Expr.t list -> Term.t list
   val dims : Term.t list -> Term.t list option
   val accesses : Term.t list -> Expr.t -> Expr.t list
-  val from_exp : Term.t list -> Expr.t -> t option
-  val rewrite_kernel : Aligned.Kernel.t -> Aligned.Kernel.t
+  val from_exp :
+    ?elide_provable_bounds:bool ->
+    ?globals:Variable.Set.t ->
+    ?ranges:Range.t Variable.Map.t ->
+    Term.t list -> Expr.t -> t option
+  val rewrite_kernel :
+    ?elide_provable_bounds:bool -> Aligned.Kernel.t -> Aligned.Kernel.t
 end = struct
 
   let size_params = size_params
@@ -346,26 +398,42 @@ end = struct
   let dims = dims
   let accesses = accesses
 
-  let from_exp (ds : Term.t list) (expr : Expr.t) : t option =
+  let from_exp
+      ?(elide_provable_bounds = false)
+      ?(globals = Variable.Set.empty)
+      ?(ranges = Variable.Map.empty)
+      (ds : Term.t list) (expr : Expr.t) : t option =
     L.info (fun () -> "Dims = \n" ^ list_to_string Term.to_string ds);
     L.info (fun () -> "Expr = \n" ^ Expr.to_string expr);
     let is = accesses ds expr in
     L.info (fun () -> "Indices = \n" ^ list_to_string Expr.to_string is);
-    let conditions ds is = match ds, is with
-    | ds, _ :: is -> List.map2 (fun d i ->
-        let open Exp in
-        b_and (n_le (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Term.to_nexp d))
-      ) ds is
-    | _ -> failwith "unreachable?"
+    let inner_is = match is with
+      | _ :: rest -> rest
+      | [] -> failwith "unreachable?"
+    in
+    let conditions =
+      List.combine ds inner_is
+      |> List.filter_map (fun (d, i) ->
+        if elide_provable_bounds
+           && Static_bound.holds ~globals ~ranges i d
+        then begin
+          L.info (fun () ->
+            Printf.sprintf "Elided bound: 0 <= %s < %s"
+              (Expr.to_string i) (Term.to_string d));
+          None
+        end else
+          let open Exp in
+          Some (b_and (n_le (Num 0) (Expr.to_nexp i))
+                  (n_lt (Expr.to_nexp i) (Term.to_nexp d))))
     in
     L.info (fun () ->
-      let conds = conditions ds is |> list_to_string Exp.b_to_string in
+      let conds = conditions |> list_to_string Exp.b_to_string in
       if conds <> "true" then "Unchecked conditions = \n" ^ conds
       else "Conditions = true");
     Some {
       indices = List.map Expr.to_nexp is;
       dims = List.map Term.to_nexp ds;
-      conditions = conditions ds is
+      conditions
     }
 
   (* Throwing out conditions for now. eventually will use t as a sort of rewrite template *)
@@ -384,7 +452,11 @@ end = struct
       | Seq (u, v) -> Fun.compose (get_accesses_unsync u) (get_accesses_unsync v)
     in get_accesses_unsync unsync Variable.Map.empty
 
-  let rewrite_unsync ~(globals : Variable.Set.t) (unsync : Unsynced.t) : Unsynced.t =
+  let rewrite_unsync
+      ~(elide_provable_bounds : bool)
+      ~(globals : Variable.Set.t)
+      ~(ranges : Range.t Variable.Map.t)
+      (unsync : Unsynced.t) : Unsynced.t =
     let ( let* ) = Option.bind in
     let open Unsynced in
     (* Three sub-phases of [rewrite_unsync], measured separately so the
@@ -409,38 +481,61 @@ end = struct
         in
         singletons |> size_params_all |> dims))
     in
-    let rec rewrite_unsync : Unsynced.t -> Unsynced.t = function
+    let rec rewrite_unsync
+        (ranges : Range.t Variable.Map.t) : Unsynced.t -> Unsynced.t = function
       | Access ({ array; index = [a]; _ } as acc) ->
         (match (
           let a = Expr.from_nexp ~globals a in
           let* dim = Variable.Map.find_opt array dims in
           let* rewritten =
-            Phase_timer.measure "delin/from-exp" (fun () -> from_exp dim a)
+            Phase_timer.measure "delin/from-exp" (fun () ->
+              from_exp ~elide_provable_bounds ~globals ~ranges dim a)
           in
           Some rewritten.indices
         ) with
         | Some indices -> Access { acc with index = indices }
         | None -> Access acc)
       | Access _ as code -> code
-      | Cond (p, b) -> Cond (p, rewrite_unsync b)
-      | Loop (r, b) -> Loop (r, rewrite_unsync b)
-      | Seq (a, b) -> Seq (rewrite_unsync a, rewrite_unsync b)
+      | Cond (p, b) -> Cond (p, rewrite_unsync ranges b)
+      | Loop (r, b) ->
+        Loop (r, rewrite_unsync (Variable.Map.add r.var r ranges) b)
+      | Seq (a, b) -> Seq (rewrite_unsync ranges a, rewrite_unsync ranges b)
       | code -> code
     in
-    Phase_timer.measure "delin/rewrite" (fun () -> rewrite_unsync unsync)
+    Phase_timer.measure "delin/rewrite" (fun () -> rewrite_unsync ranges unsync)
 
-  let rec rewrite_aligned ~(globals : Variable.Set.t): Aligned.Code.t -> Aligned.Code.t =
+  let rec rewrite_aligned
+      ~(elide_provable_bounds : bool)
+      ~(globals : Variable.Set.t)
+      ~(ranges : Range.t Variable.Map.t)
+      : Aligned.Code.t -> Aligned.Code.t =
     let open Aligned.Code in
-    (* TODO rewrite: get dimensionality *)
     function
-    | Sync c -> Sync (rewrite_unsync ~globals c)
-    | Loop ({ range = { var = x; _ }; body; _ } as loop) ->
-      Loop { loop with body = rewrite_aligned ~globals:(Variable.Set.add x globals) body }
-    | Seq (a, b) -> Seq (rewrite_aligned ~globals a, rewrite_aligned ~globals b)
+    | Sync c -> Sync (rewrite_unsync ~elide_provable_bounds ~globals ~ranges c)
+    | Loop ({ range; body; _ } as loop) ->
+      let x = range.var in
+      Loop { loop with body =
+        rewrite_aligned
+          ~elide_provable_bounds
+          ~globals:(Variable.Set.add x globals)
+          ~ranges:(Variable.Map.add x range ranges)
+          body }
+    | Seq (a, b) ->
+      Seq
+        ( rewrite_aligned ~elide_provable_bounds ~globals ~ranges a,
+          rewrite_aligned ~elide_provable_bounds ~globals ~ranges b )
 
-  let rewrite_kernel (kernel : Aligned.Kernel.t) : Aligned.Kernel.t =
+  let rewrite_kernel
+      ?(elide_provable_bounds = false) (kernel : Aligned.Kernel.t)
+      : Aligned.Kernel.t =
     let globals = Params.to_set kernel.global_variables in
-    { kernel with code = rewrite_aligned ~globals kernel.code }
+    { kernel with
+      code =
+        rewrite_aligned
+          ~elide_provable_bounds
+          ~globals
+          ~ranges:Variable.Map.empty
+          kernel.code }
   (* currently this thinks blockIdx is global *)
 end
 

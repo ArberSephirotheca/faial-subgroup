@@ -1326,6 +1326,7 @@ let main =
       ~ignore_asserts
       ~log_delinearize:false
       ~assume_delin:true
+      ~delin_elide_bounds:false
       ~assumes:extra_assumes
       ~assume_dims:false
       ~assume_launch:true

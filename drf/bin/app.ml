@@ -96,6 +96,7 @@ type t = {
   ignore_asserts : bool;
   log_delinearize : bool;
   assume_delin : bool;
+  delin_elide_bounds : bool;
   (* Per-kernel pre-condition list, keyed by [Kernel.name]. Genie's
      internal model treats assumptions as kernel-scoped: a variable
      declared in two kernels is a different variable in each, so an
@@ -192,6 +193,7 @@ let to_string (app : t) : string =
    ignore_asserts;
    log_delinearize;
    assume_delin;
+   delin_elide_bounds;
    assumes;
    assume_dims;
    assume_launch;
@@ -215,6 +217,7 @@ let to_string (app : t) : string =
       ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
       ^ "\nlog_delinearize = " ^ bool log_delinearize ^ "\n"
       ^ "\nassume_delin = " ^ bool assume_delin
+      ^ "\ndelin_elide_bounds = " ^ bool delin_elide_bounds
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
       ^ "\nassume_launch = " ^ bool assume_launch
@@ -234,7 +237,8 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize
-    ~assume_delin ~assumes ~assume_dims ~assume_launch ~check_pre_sat
+    ~assume_delin ~delin_elide_bounds ~assumes ~assume_dims ~assume_launch
+    ~check_pre_sat
     ~memory_model ~cbor ~stop_at : t =
   let parsed =
     Phase_timer.measure "inference" (fun () ->
@@ -316,6 +320,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ignore_asserts;
     log_delinearize;
     assume_delin;
+    delin_elide_bounds;
     assumes;
     assume_dims;
     assume_launch;
@@ -412,11 +417,20 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned
        ~show:a.show_align Aligned.print_kernels
   (* 6. delinearize accesses (no-op when --assume-delin is off, but the
-     boundary still emits a "delin" entry — 0 in that case). *)
+     boundary still emits a "delin" entry — 0 in that case).
+     When --delin-elide-bounds is set, use the [Default] logger so the
+     per-elision trace lines are visible on stderr. *)
   |> (if a.assume_delin
-      then Streamutil.map (if a.log_delinearize
-          then Delinearize.Silent.rewrite_kernel
-          else Delinearize.Warnings.rewrite_kernel)
+      then
+        let rewrite k =
+          if a.delin_elide_bounds then
+            Delinearize.Default.rewrite_kernel ~elide_provable_bounds:true k
+          else if a.log_delinearize then
+            Delinearize.Silent.rewrite_kernel k
+          else
+            Delinearize.Warnings.rewrite_kernel k
+        in
+        Streamutil.map rewrite
       else Fun.id)
   |> Phase_timer.boundary "delin"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Delin

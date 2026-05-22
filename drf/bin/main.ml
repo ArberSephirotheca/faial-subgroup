@@ -314,6 +314,17 @@ let main =
     Arg.(value & flag & info [ "ignore-asserts" ] ~doc:"Ignore asserts.")
   and+ log_delinearize =
     Arg.(value & flag & info [ "log-delinearize" ] ~doc:"Log delinearization info.")
+  and+ delin_elide_bounds =
+    Arg.(
+      value & flag
+      & info [ "delin-elide-bounds" ]
+          ~doc:
+            "Drop the per-axis bound [0 <= i_k < d_k] from delinearised \
+             accesses when it is statically provable from the enclosing \
+             loop's [Range.t]. Conservative: when the predicate cannot \
+             prove a bound, that bound is emitted as before. Implies \
+             verbose delinearisation logging on stderr so each elided \
+             bound is reported.")
   and+ assume_delin =
     Arg.(
       value & flag
@@ -464,6 +475,7 @@ let main =
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assume_delin
+        ~delin_elide_bounds
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at
