@@ -95,7 +95,8 @@ type t = {
   macros : string list;
   ignore_asserts : bool;
   assume_delin : bool;
-  delin_elide_bounds : bool;
+  delin_elide : bool;
+  delin_no_bounds : bool;
   (* Per-kernel pre-condition list, keyed by [Kernel.name]. Genie's
      internal model treats assumptions as kernel-scoped: a variable
      declared in two kernels is a different variable in each, so an
@@ -191,7 +192,8 @@ let to_string (app : t) : string =
    only_true_data_races;
    ignore_asserts;
    assume_delin;
-   delin_elide_bounds;
+   delin_elide;
+   delin_no_bounds;
    assumes;
    assume_dims;
    assume_launch;
@@ -214,7 +216,8 @@ let to_string (app : t) : string =
       ^ bool show_symbexp ^ "\nmacros = " ^ list_string macros
       ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
       ^ "\nassume_delin = " ^ bool assume_delin
-      ^ "\ndelin_elide_bounds = " ^ bool delin_elide_bounds
+      ^ "\ndelin_elide = " ^ bool delin_elide
+      ^ "\ndelin_no_bounds = " ^ bool delin_no_bounds
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
       ^ "\nassume_launch = " ^ bool assume_launch
@@ -234,8 +237,8 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
-    ~assume_delin ~delin_elide_bounds ~assumes ~assume_dims ~assume_launch
-    ~check_pre_sat
+    ~assume_delin ~delin_elide ~delin_no_bounds ~assumes ~assume_dims
+    ~assume_launch ~check_pre_sat
     ~memory_model ~cbor ~stop_at : t =
   let parsed =
     Phase_timer.measure "inference" (fun () ->
@@ -316,7 +319,8 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     macros;
     ignore_asserts;
     assume_delin;
-    delin_elide_bounds;
+    delin_elide;
+    delin_no_bounds;
     assumes;
     assume_dims;
     assume_launch;
@@ -414,16 +418,24 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
        ~show:a.show_align Aligned.print_kernels
   (* 6. delinearize accesses (no-op when --assume-delin is off, but the
      boundary still emits a "delin" entry — 0 in that case). The
-     rewriter discards [t.conditions], so today's choice between
-     [Default] (RejectAll) and [Maslov_elide] has no observable effect
-     on the SMT formula; the flag is a placeholder for a future pass
-     that wires conditions into the analysis as [Unsynced.Assert]s. *)
+     rewriter wraps each delinearized access in [Unsynced.Assert] nodes
+     for the per-axis bounds the strategy emits; [inline_asserts]
+     downstream lifts them into a [Cond] gate. The strategy picks
+     which bounds those are:
+       default ([Make(AllBounds)]) — every bound, unconditionally
+       [--delin-elide] ([Make(Maslov)]) — only bounds Maslov can't
+         prove statically (logically same content, smaller formula)
+       [--delin-no-bounds] ([Make(RejectAll)]) — no bounds at all
+         (matches the pre-Phase-B behaviour where conditions were
+         computed and discarded). *)
   |> (if a.assume_delin
       then
         let rewrite =
-          if a.delin_elide_bounds
+          if a.delin_no_bounds
+          then Delinearize.Default.rewrite_kernel
+          else if a.delin_elide
           then Delinearize.Maslov_elide.rewrite_kernel
-          else Delinearize.Default.rewrite_kernel
+          else Delinearize.All.rewrite_kernel
         in
         Streamutil.map rewrite
       else Fun.id)

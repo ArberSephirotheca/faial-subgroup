@@ -312,17 +312,28 @@ let main =
              possible dimensions.")
   and+ ignore_asserts =
     Arg.(value & flag & info [ "ignore-asserts" ] ~doc:"Ignore asserts.")
-  and+ delin_elide_bounds =
+  and+ delin_elide =
     Arg.(
       value & flag
-      & info [ "delin-elide-bounds" ]
+      & info [ "delin-elide" ]
           ~doc:
             "Drop the per-axis bound [0 <= i_k < d_k] from delinearised \
              accesses when it is statically provable from the enclosing \
              loop's [Range.t]. Conservative: when the predicate cannot \
-             prove a bound, that bound is emitted as before. Implies \
-             verbose delinearisation logging on stderr so each elided \
-             bound is reported.")
+             prove a bound, that bound is emitted as an [Unsynced.Assert] \
+             (which downstream becomes a [Cond] gate on the analysis). \
+             Mutually exclusive with [--delin-no-bounds].")
+  and+ delin_no_bounds =
+    Arg.(
+      value & flag
+      & info [ "delin-no-bounds" ]
+          ~doc:
+            "Skip the per-axis bound assumptions entirely. Delinearisation \
+             still rewrites the access, but no [Unsynced.Assert] nodes \
+             are emitted for the bounds. Race analysis runs without the \
+             assumption that inner indices stay in their inferred axes; \
+             this matches the pre-Phase-B behaviour where bounds were \
+             computed and discarded. Mutually exclusive with [--delin-elide].")
   and+ assume_delin =
     Arg.(
       value & flag
@@ -473,7 +484,7 @@ let main =
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
-        ~delin_elide_bounds
+        ~delin_elide ~delin_no_bounds
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at

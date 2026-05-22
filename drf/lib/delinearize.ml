@@ -527,9 +527,20 @@ end = struct
             Phase_timer.measure "delin/from-exp"
               (fun () -> from_exp ~scope dim a)
           in
-          Some rewritten.indices
+          Some (rewritten.indices, rewritten.conditions)
         ) with
-        | Some indices -> Access { acc with index = indices }
+        | Some (indices, conditions) ->
+          (* Wrap the rewritten access in one [Assert] per emitted bound.
+             [Unsynced.Assert] is semantically [assume] in this IR
+             (downstream [inline_asserts] lifts it into a [Cond] gate),
+             so race analysis only considers thread states where the
+             bound holds. With [RejectAll] [conditions] is empty and
+             no [Assert]s are added. *)
+          let access = Unsynced.Access { acc with index = indices } in
+          List.fold_right
+            (fun cond body -> Unsynced.Seq (Assert cond, body))
+            conditions
+            access
         | None -> Access acc)
       | Access _ as code -> code
       | Cond (p, b) -> Cond (p, walk scope b)

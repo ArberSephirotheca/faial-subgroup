@@ -1325,7 +1325,8 @@ let main =
       ~all_dims:true
       ~ignore_asserts
       ~assume_delin:true
-      ~delin_elide_bounds:false
+      ~delin_elide:false
+      ~delin_no_bounds:false
       ~assumes:extra_assumes
       ~assume_dims:false
       ~assume_launch:true
