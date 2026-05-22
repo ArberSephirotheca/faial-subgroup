@@ -312,8 +312,6 @@ let main =
              possible dimensions.")
   and+ ignore_asserts =
     Arg.(value & flag & info [ "ignore-asserts" ] ~doc:"Ignore asserts.")
-  and+ log_delinearize =
-    Arg.(value & flag & info [ "log-delinearize" ] ~doc:"Log delinearization info.")
   and+ delin_elide_bounds =
     Arg.(
       value & flag
@@ -474,7 +472,7 @@ let main =
         ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~archs
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
-        ~cu_to_json ~all_dims ~ignore_asserts ~log_delinearize ~assume_delin
+        ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
         ~delin_elide_bounds
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }

@@ -1324,7 +1324,6 @@ let main =
       ~cu_to_json
       ~all_dims:true
       ~ignore_asserts
-      ~log_delinearize:false
       ~assume_delin:true
       ~delin_elide_bounds:false
       ~assumes:extra_assumes

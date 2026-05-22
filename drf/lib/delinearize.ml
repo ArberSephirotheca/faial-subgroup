@@ -340,29 +340,86 @@ let accesses (dims : Term.t list) (t : Expr.t): Expr.t list =
   t |> loop (List.rev dims)
   |> List.rev
 
-(* Statically decide [0 <= i < d] for an inner-axis index [i] and dimension
-   [d]. Returns [true] only when the bound can be proved without recourse to a
-   solver; conservative on every pattern it doesn't recognise.
+(* A [BoundGenerator] decides, per delinearised access, which inner-axis
+   bounds [0 <= i_k < d_k] make it into [t.conditions]. The two type
+   members are independent:
 
-   The [ranges] argument maps each loop induction variable to a lazy [ub + 1]
-   [Expr.t] in normalised polynomial form. The thunk is built once at the
-   enclosing loop's entry point, capturing the [globals] in scope there, and
-   reused across every emit-site inside the loop body. This avoids
-   re-normalising the same [upper_bound] nexp once per access. Variables
-   whose [Range.t] does not have lower bound 0 are omitted from the map
-   entirely; for them [holds] returns [false] without further work. *)
-module Static_bound : sig
-  val holds :
-    ranges:Expr.t Lazy.t Variable.Map.t ->
-    Expr.t -> Term.t -> bool
+   - [scope] carries lexical-scope information (e.g., loop-induction
+     ranges). It is threaded through the rewriter recursion and extended
+     at each [Loop] entry via [add_range]. Lifetime: spans the whole
+     rewrite, scoped by the surrounding [Loop]s.
 
-  (* Build the lazy [ub + 1] cache entry for a loop with the given
-     [upper_bound] under the [globals] in scope at the loop's entry. *)
-  val cache_entry :
-    globals:Variable.Set.t -> Exp.nexp -> Expr.t Lazy.t
-end = struct
+   - [t] is the per-access accumulator built at the access site via
+     [create scope], grown by [add_bound], and drained by [get_bounds].
+     Lifetime: one [from_exp] call. The rewriter does not thread it
+     across accesses.
+
+   Three implementations live in this file: [RejectAll] emits nothing
+   (matches the rewriter's current behaviour of discarding [t.conditions]),
+   [AllBounds] emits the standard [0 <= i < d] conjunction for every
+   axis, [Maslov] emits only the bounds it cannot prove statically. *)
+module type BoundGenerator = sig
+  type scope
+  val initial_scope : scope
+  val add_range :
+    globals:Variable.Set.t -> Range.t -> scope -> scope
+
+  type t
+  val create : scope -> t
+  val add_bound : t -> Expr.t -> Term.t -> t
+  val get_bounds : t -> Exp.bexp list
+end
+
+(* Build the standard [0 <= i] /\ [i < d] conjunction from an inner-axis
+   index expression and its dimension. *)
+let make_bound (i : Expr.t) (d : Term.t) : Exp.bexp =
+  let open Exp in
+  b_and (n_le (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Term.to_nexp d))
+
+module RejectAll : BoundGenerator = struct
+  type scope = unit
+  let initial_scope = ()
+  let add_range ~globals:_ _ () = ()
+
+  type t = unit
+  let create () = ()
+  let add_bound () _ _ = ()
+  let get_bounds () = []
+end
+
+module AllBounds : BoundGenerator = struct
+  type scope = unit
+  let initial_scope = ()
+  let add_range ~globals:_ _ () = ()
+
+  type t = Exp.bexp list
+  let create () = []
+  let add_bound bs i d = make_bound i d :: bs
+  let get_bounds bs = bs
+end
+
+(* Maslov-style elision: keep only the bounds that cannot be proved from
+   the enclosing loops' [Range.t]s. The provability check recognises one
+   pattern: [i] is a single induction variable [v] whose loop has
+   [lower_bound = Num 0] and whose [upper_bound + 1] normalises to [d]
+   under the [globals] in scope at the loop's entry. *)
+module Maslov : BoundGenerator = struct
+  type scope = Expr.t Lazy.t Variable.Map.t
+  let initial_scope = Variable.Map.empty
+
+  (* Lazy [ub + 1] in [Expr.t] form. Built once per loop entry, capturing
+     the [globals] in scope there, then reused across every emit-site
+     inside the loop body. *)
   let cache_entry ~globals (upper_bound : Exp.nexp) : Expr.t Lazy.t =
     lazy (Expr.( + ) (Expr.from_nexp ~globals upper_bound) (Expr.of_int 1))
+
+  let add_range ~globals (r : Range.t) (s : scope) : scope =
+    match r.lower_bound with
+    | Exp.Num 0 -> Variable.Map.add r.var (cache_entry ~globals r.upper_bound) s
+    | _ -> s
+
+  type t = { ranges : scope; bounds : Exp.bexp list }
+  let create ranges = { ranges; bounds = [] }
 
   (* [Some v] iff [i] is a single bare induction variable [v] with
      coefficient 1: one polynomial term, one factor with exponent 1, and
@@ -379,8 +436,7 @@ end = struct
     in
     Atom.as_induction_var a
 
-  let holds ~(ranges : Expr.t Lazy.t Variable.Map.t)
-      (i : Expr.t) (d : Term.t) : bool =
+  let provable ~(ranges : scope) (i : Expr.t) (d : Term.t) : bool =
     if Variable.Map.is_empty ranges then false
     else
       let ( let* ) = Option.bind in
@@ -390,83 +446,53 @@ end = struct
         Some (Expr.compare (Lazy.force lhs) (Expr.of_list [d]) = 0)
       in
       Option.value outcome ~default:false
+
+  let add_bound (s : t) (i : Expr.t) (d : Term.t) : t =
+    if provable ~ranges:s.ranges i d then s
+    else { s with bounds = make_bound i d :: s.bounds }
+
+  let get_bounds s = s.bounds
 end
 
-module Make(L:Logger.Logger) : sig
-  val size_params : Expr.t -> Term.t list
-  val size_params_all : Expr.t list -> Term.t list
-  val dims : Term.t list -> Term.t list option
-  val accesses : Term.t list -> Expr.t -> Expr.t list
-  val from_exp :
-    ?elide_provable_bounds:bool ->
-    ?ranges:Expr.t Lazy.t Variable.Map.t ->
-    Term.t list -> Expr.t -> t option
-  val rewrite_kernel :
-    ?elide_provable_bounds:bool -> Aligned.Kernel.t -> Aligned.Kernel.t
+(* The rewriter, parameterised over a bound-generation strategy. *)
+module Make(G : BoundGenerator) : sig
+  val from_exp : scope:G.scope -> Term.t list -> Expr.t -> t option
+  val rewrite_kernel : Aligned.Kernel.t -> Aligned.Kernel.t
 end = struct
-
-  let size_params = size_params
-  let size_params_all = size_params_all
-  let dims = dims
-  let accesses = accesses
-
-  let from_exp
-      ?(elide_provable_bounds = false)
-      ?(ranges = Variable.Map.empty)
-      (ds : Term.t list) (expr : Expr.t) : t option =
-    L.info (fun () -> "Dims = \n" ^ list_to_string Term.to_string ds);
-    L.info (fun () -> "Expr = \n" ^ Expr.to_string expr);
+  let from_exp ~(scope : G.scope) (ds : Term.t list) (expr : Expr.t)
+      : t option =
     let is = accesses ds expr in
-    L.info (fun () -> "Indices = \n" ^ list_to_string Expr.to_string is);
     let inner_is = match is with
       | _ :: rest -> rest
-      | [] -> failwith "unreachable?"
+      | [] -> failwith "from_exp: empty indices list"
     in
-    let conditions =
-      List.combine ds inner_is
-      |> List.filter_map (fun (d, i) ->
-        if elide_provable_bounds
-           && Static_bound.holds ~ranges i d
-        then begin
-          L.info (fun () ->
-            Printf.sprintf "Elided bound: 0 <= %s < %s"
-              (Expr.to_string i) (Term.to_string d));
-          None
-        end else
-          let open Exp in
-          Some (b_and (n_le (Num 0) (Expr.to_nexp i))
-                  (n_lt (Expr.to_nexp i) (Term.to_nexp d))))
+    (* [fold_right] so that bounds end up in axis order in [get_bounds],
+       since [add_bound] in the standard implementations prepends. *)
+    let final =
+      List.fold_right
+        (fun (d, i) acc -> G.add_bound acc i d)
+        (List.combine ds inner_is)
+        (G.create scope)
     in
-    L.info (fun () ->
-      let conds = conditions |> list_to_string Exp.b_to_string in
-      if conds <> "true" then "Unchecked conditions = \n" ^ conds
-      else "Conditions = true");
     Some {
       indices = List.map Expr.to_nexp is;
       dims = List.map Term.to_nexp ds;
-      conditions
+      conditions = G.get_bounds final;
     }
-
-  (* Throwing out conditions for now. eventually will use t as a sort of rewrite template *)
-
-  (* TODO: this should simply not rewrite if there is a failure *)
 
   let get_accesses (unsync : Unsynced.t) : Exp.nexp list list Variable.Map.t =
     let open Unsynced in
-    let rec get_accesses_unsync = function
+    let rec walk = function
       | Skip | Assert _ -> Fun.id
-      | Access {array; index; _} -> 
-        L.info (fun () -> Printf.sprintf "array %s has %d dimensions" array.name (List.length index));
-        Variable.Map.add_to_list array index
-      | Cond (_, u) -> get_accesses_unsync u
-      | Loop (_, u) -> get_accesses_unsync u
-      | Seq (u, v) -> Fun.compose (get_accesses_unsync u) (get_accesses_unsync v)
-    in get_accesses_unsync unsync Variable.Map.empty
+      | Access {array; index; _} -> Variable.Map.add_to_list array index
+      | Cond (_, u) -> walk u
+      | Loop (_, u) -> walk u
+      | Seq (u, v) -> Fun.compose (walk u) (walk v)
+    in walk unsync Variable.Map.empty
 
   let rewrite_unsync
-      ~(elide_provable_bounds : bool)
       ~(globals : Variable.Set.t)
-      ~(ranges : Expr.t Lazy.t Variable.Map.t)
+      ~(scope : G.scope)
       (unsync : Unsynced.t) : Unsynced.t =
     let ( let* ) = Option.bind in
     let open Unsynced in
@@ -492,84 +518,50 @@ end = struct
         in
         singletons |> size_params_all |> dims))
     in
-    let extend_ranges
-        (r : Range.t) (ranges : Expr.t Lazy.t Variable.Map.t)
-        : Expr.t Lazy.t Variable.Map.t =
-      match r.lower_bound with
-      | Exp.Num 0 ->
-        Variable.Map.add r.var
-          (Static_bound.cache_entry ~globals r.upper_bound)
-          ranges
-      | _ -> ranges
-    in
-    let rec rewrite_unsync
-        (ranges : Expr.t Lazy.t Variable.Map.t)
-        : Unsynced.t -> Unsynced.t = function
+    let rec walk (scope : G.scope) : Unsynced.t -> Unsynced.t = function
       | Access ({ array; index = [a]; _ } as acc) ->
         (match (
           let a = Expr.from_nexp ~globals a in
           let* dim = Variable.Map.find_opt array dims in
           let* rewritten =
-            Phase_timer.measure "delin/from-exp" (fun () ->
-              from_exp ~elide_provable_bounds ~ranges dim a)
+            Phase_timer.measure "delin/from-exp"
+              (fun () -> from_exp ~scope dim a)
           in
           Some rewritten.indices
         ) with
         | Some indices -> Access { acc with index = indices }
         | None -> Access acc)
       | Access _ as code -> code
-      | Cond (p, b) -> Cond (p, rewrite_unsync ranges b)
-      | Loop (r, b) -> Loop (r, rewrite_unsync (extend_ranges r ranges) b)
-      | Seq (a, b) -> Seq (rewrite_unsync ranges a, rewrite_unsync ranges b)
+      | Cond (p, b) -> Cond (p, walk scope b)
+      | Loop (r, b) -> Loop (r, walk (G.add_range ~globals r scope) b)
+      | Seq (a, b) -> Seq (walk scope a, walk scope b)
       | code -> code
     in
-    Phase_timer.measure "delin/rewrite" (fun () -> rewrite_unsync ranges unsync)
+    Phase_timer.measure "delin/rewrite" (fun () -> walk scope unsync)
 
   let rec rewrite_aligned
-      ~(elide_provable_bounds : bool)
       ~(globals : Variable.Set.t)
-      ~(ranges : Expr.t Lazy.t Variable.Map.t)
+      ~(scope : G.scope)
       : Aligned.Code.t -> Aligned.Code.t =
     let open Aligned.Code in
     function
-    | Sync c -> Sync (rewrite_unsync ~elide_provable_bounds ~globals ~ranges c)
+    | Sync c -> Sync (rewrite_unsync ~globals ~scope c)
     | Loop ({ range; body; _ } as loop) ->
       let globals' = Variable.Set.add range.var globals in
-      let ranges' =
-        match range.lower_bound with
-        | Exp.Num 0 ->
-          Variable.Map.add range.var
-            (Static_bound.cache_entry ~globals:globals' range.upper_bound)
-            ranges
-        | _ -> ranges
-      in
+      let scope' = G.add_range ~globals:globals' range scope in
       Loop { loop with body =
-        rewrite_aligned
-          ~elide_provable_bounds
-          ~globals:globals'
-          ~ranges:ranges'
-          body }
+        rewrite_aligned ~globals:globals' ~scope:scope' body }
     | Seq (a, b) ->
       Seq
-        ( rewrite_aligned ~elide_provable_bounds ~globals ~ranges a,
-          rewrite_aligned ~elide_provable_bounds ~globals ~ranges b )
+        ( rewrite_aligned ~globals ~scope a,
+          rewrite_aligned ~globals ~scope b )
 
-  let rewrite_kernel
-      ?(elide_provable_bounds = false) (kernel : Aligned.Kernel.t)
-      : Aligned.Kernel.t =
+  let rewrite_kernel (kernel : Aligned.Kernel.t) : Aligned.Kernel.t =
     let globals = Params.to_set kernel.global_variables in
-    { kernel with
-      code =
-        rewrite_aligned
-          ~elide_provable_bounds
-          ~globals
-          ~ranges:Variable.Map.empty
-          kernel.code }
-  (* currently this thinks blockIdx is global *)
+    { kernel with code =
+        rewrite_aligned ~globals ~scope:G.initial_scope kernel.code }
 end
 
-module Silent = Make(Logger.Silent)
-module Warnings = Make(Logger.Warnings)
-module Default = Make(Logger.Default)
-
-(* add function mapping aligned.code to proto *)
+module Default = Make(RejectAll)
+module All = Make(AllBounds)
+module Maslov_elide = Make(Maslov)

@@ -68,13 +68,15 @@ let dim_examples : (string * nexp * nexp list) list =
   |> List.map (fun (l, b, a) -> (l, b, List.map normalize a))
 
 (* Stage 3: end-to-end on a single access expression. Composes Expr.from_nexp,
-   size_params, dims, from_exp; matches the current [from_exp] behaviour
-   (inner-index bounds only). *)
+   size_params, dims, from_exp; uses the [AllBounds] generator so [t.conditions]
+   contains the full per-axis bound list. *)
 let delin ~globals (e : nexp) : Delinearize.t option =
   let expr = Delinearize.Expr.from_nexp ~globals e in
   match Delinearize.size_params expr |> Delinearize.dims with
   | None -> None
-  | Some d -> Delinearize.Silent.from_exp d expr
+  | Some d ->
+    Delinearize.All.from_exp
+      ~scope:Delinearize.AllBounds.initial_scope d expr
 
 let positive_examples : (string * nexp * Delinearize.t) list =
   let open Build in
@@ -197,35 +199,45 @@ let kernel_tests =
   "rewrite_kernel" >:: fun _ ->
   kernels
   |> List.iter (fun (msg, before, after) ->
-      let got = Delinearize.Silent.rewrite_kernel before in
+      let got = Delinearize.Default.rewrite_kernel before in
       assert_equal
         ~msg
         ~printer:Aligned.Kernel.to_string
         after got)
 
-(* Static_bound predicate: white-box tests that exercise the recognised
-   patterns directly. The [ranges] map holds a lazy [ub + 1] [Expr.t] for
-   each loop variable, built once at the loop's entry point under the
-   [globals] in scope there; tests construct it directly via
-   [Static_bound.cache_entry] so [holds] sees the same shape it would in
-   production. Variables whose loop has a non-zero lower bound are simply
-   omitted from the map (matching the production code's [extend_ranges]
-   filter). *)
-let ranges_of (items : (string * nexp * nexp) list)
-    : Delinearize.Expr.t Lazy.t Variable.Map.t =
-  items
-  |> List.filter_map (fun (n, lb, ub) ->
-      match lb with
-      | Num 0 ->
-        Some
-          ( Variable.from_name n,
-            Delinearize.Static_bound.cache_entry ~globals ub )
-      | _ -> None)
-  |> List.to_seq
-  |> Variable.Map.of_seq
+(* Maslov elision: white-box tests for [Maslov.add_bound] / [get_bounds]
+   on individual [(i, d)] pairs, then end-to-end tests comparing
+   [AllBounds.from_exp] and [Maslov_elide.from_exp] on the same input. *)
 
-let static_bound_tests =
-  "Static_bound.holds" >:: fun _ ->
+(* Build a [Maslov] scope from a fixture list of [(varname, lb, ub)]
+   triples. Loops with non-zero lower bound are omitted (the Maslov
+   strategy ignores them in [add_range], so the fixture matches). *)
+let maslov_scope_of (items : (string * nexp * nexp) list)
+    : Delinearize.Maslov.scope =
+  items
+  |> List.fold_left (fun scope (n, lb, ub) ->
+      let r : Range.t = {
+        var = Variable.from_name n;
+        ty = C_type.int;
+        dir = Range.Increase;
+        lower_bound = lb;
+        upper_bound = ub;
+        step = Range.Step.Plus (Num 1);
+      } in
+      Delinearize.Maslov.add_range ~globals r scope)
+    Delinearize.Maslov.initial_scope
+
+(* Did [Maslov.add_bound] elide the (i, d) pair? Equivalent to
+   [provable]: feeding one bound, the accumulator stays empty iff the
+   bound was proved statically. *)
+let maslov_provable scope (i : Delinearize.Expr.t) (d : Delinearize.Term.t)
+    : bool =
+  let acc = Delinearize.Maslov.create scope in
+  let acc' = Delinearize.Maslov.add_bound acc i d in
+  Delinearize.Maslov.get_bounds acc' = []
+
+let maslov_tests =
+  "Maslov.add_bound" >:: fun _ ->
   let open Build in
   let expr e = Delinearize.Expr.from_nexp ~globals e in
   let term e =
@@ -235,95 +247,94 @@ let static_bound_tests =
     | [t] -> t
     | _ -> failwith "test fixture: expected single-term dim"
   in
-  let check ?(msg = "") ~ranges expected i d =
-    let got = Delinearize.Static_bound.holds ~ranges i d in
+  let check ?(msg = "") ~scope expected i d =
+    let got = maslov_provable scope i d in
     assert_equal ~msg ~printer:string_of_bool expected got
   in
-  (* y in [0, N-1], dim N: holds *)
+  (* y in [0, N-1], dim N: provable, bound elided. *)
   check
     ~msg:"loop range matches dim"
-    ~ranges:(ranges_of [("y", Num 0, vN + Num (-1))])
+    ~scope:(maslov_scope_of [("y", Num 0, vN + Num (-1))])
     true (expr y) (term vN);
-  (* No range information: cannot prove *)
+  (* No range information: bound kept. *)
   check
-    ~msg:"empty ranges -> false"
-    ~ranges:Variable.Map.empty
+    ~msg:"empty scope -> bound kept"
+    ~scope:Delinearize.Maslov.initial_scope
     false (expr y) (term vN);
-  (* y in [0, N] (one too large): cannot prove *)
+  (* y in [0, N] (one too large): not provable. *)
   check
-    ~msg:"loose upper bound -> false"
-    ~ranges:(ranges_of [("y", Num 0, vN)])
+    ~msg:"loose upper bound -> bound kept"
+    ~scope:(maslov_scope_of [("y", Num 0, vN)])
     false (expr y) (term vN);
-  (* y in [1, N-1] (lower bound > 0 not recognised): conservative false *)
+  (* y in [1, N-1] (non-zero lower bound is not recognised). *)
   check
-    ~msg:"non-zero lower bound -> false"
-    ~ranges:(ranges_of [("y", Num 1, vN + Num (-1))])
+    ~msg:"non-zero lower bound -> bound kept"
+    ~scope:(maslov_scope_of [("y", Num 1, vN + Num (-1))])
     false (expr y) (term vN);
-  (* Constant index: not the single-atom pattern, falls through *)
+  (* Constant index: not the single-atom pattern. *)
   check
-    ~msg:"constant index -> false"
-    ~ranges:Variable.Map.empty
+    ~msg:"constant index -> bound kept"
+    ~scope:Delinearize.Maslov.initial_scope
     false (expr (Num 3)) (term vN);
-  (* Sum of two atoms: not the single-atom pattern *)
+  (* Sum of two atoms: not the single-atom pattern. *)
   check
-    ~msg:"two-atom index -> false"
-    ~ranges:(ranges_of [("y", Num 0, vN + Num (-1)); ("z", Num 0, vN + Num (-1))])
+    ~msg:"two-atom index -> bound kept"
+    ~scope:(maslov_scope_of [("y", Num 0, vN + Num (-1));
+                             ("z", Num 0, vN + Num (-1))])
     false (expr (y + z)) (term vN);
-  (* Numeric range: y in [0, 9], dim 10 *)
+  (* Numeric range: y in [0, 9], dim 10. *)
   check
     ~msg:"numeric range matches numeric dim"
-    ~ranges:(ranges_of [("y", Num 0, Num 9)])
+    ~scope:(maslov_scope_of [("y", Num 0, Num 9)])
     true (expr y) (term (Num 10))
 
-(* End-to-end via [from_exp]: with the elision flag, [t.conditions] drops
-   bounds that [Static_bound] can prove; without the flag, all bounds emit. *)
-let delin_with
-    ~elide_provable_bounds
-    ~ranges
-    (e : nexp) : Delinearize.t option =
+(* End-to-end via [from_exp]: [Maslov_elide] drops bounds [Maslov.add_bound]
+   can prove; [All] keeps every bound. *)
+let cond_count = function
+  | None -> -1
+  | Some (t : Delinearize.t) -> List.length t.conditions
+
+let delin_all (e : nexp) : Delinearize.t option =
   let expr = Delinearize.Expr.from_nexp ~globals e in
   match Delinearize.size_params expr |> Delinearize.dims with
   | None -> None
   | Some d ->
-    Delinearize.Silent.from_exp
-      ~elide_provable_bounds ~ranges d expr
+    Delinearize.All.from_exp
+      ~scope:Delinearize.AllBounds.initial_scope d expr
+
+let delin_maslov ~scope (e : nexp) : Delinearize.t option =
+  let expr = Delinearize.Expr.from_nexp ~globals e in
+  match Delinearize.size_params expr |> Delinearize.dims with
+  | None -> None
+  | Some d -> Delinearize.Maslov_elide.from_exp ~scope d expr
 
 let elision_tests =
   "from_exp elision" >:: fun _ ->
   let open Build in
-  let cond_count r =
-    match r with
-    | None -> -1
-    | Some (t : Delinearize.t) -> List.length t.conditions
+  let case ~msg ~scope expr expected_all expected_maslov =
+    let n_all = delin_all expr |> cond_count in
+    let n_mas = delin_maslov ~scope expr |> cond_count in
+    assert_equal ~msg:(msg ^ " (AllBounds)") ~printer:string_of_int
+      expected_all n_all;
+    assert_equal ~msg:(msg ^ " (Maslov)") ~printer:string_of_int
+      expected_maslov n_mas
   in
-  let case ~msg ~ranges expr expected_off expected_on =
-    let off =
-      delin_with ~elide_provable_bounds:false ~ranges expr |> cond_count
-    in
-    let on =
-      delin_with ~elide_provable_bounds:true ~ranges expr |> cond_count
-    in
-    assert_equal ~msg:(msg ^ " (flag off)") ~printer:string_of_int
-      expected_off off;
-    assert_equal ~msg:(msg ^ " (flag on)") ~printer:string_of_int
-      expected_on on
-  in
-  (* Single inner-axis bound, loop range matches: elidable. *)
+  (* Single inner-axis bound, loop range matches: elidable under Maslov. *)
   case
     ~msg:"numdim with loop range"
-    ~ranges:(ranges_of [("y", Num 0, vN + Num (-1))])
+    ~scope:(maslov_scope_of [("y", Num 0, vN + Num (-1))])
     (vN * x + y)
     1 0;
-  (* No range info available: bound stays. *)
+  (* No range info: bound stays under both. *)
   case
-    ~msg:"numdim no range"
-    ~ranges:Variable.Map.empty
+    ~msg:"numdim no scope"
+    ~scope:Delinearize.Maslov.initial_scope
     (vN * x + y)
     1 1;
-  (* Two axes, one elidable, the other not (z has no range). *)
+  (* Two axes, only [y] bounded: AllBounds emits 2, Maslov elides [y]. *)
   case
     ~msg:"3dim, only y bounded"
-    ~ranges:(ranges_of [("y", Num 0, vM + Num (-1))])
+    ~scope:(maslov_scope_of [("y", Num 0, vM + Num (-1))])
     (vM * vN * x + vN * y + z)
     2 1
 
@@ -333,7 +344,7 @@ let tests =
     stage2_tests;
     stage3_tests;
     kernel_tests;
-    static_bound_tests;
+    maslov_tests;
     elision_tests;
   ]
 
