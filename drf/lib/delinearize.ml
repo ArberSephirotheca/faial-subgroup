@@ -7,44 +7,184 @@ let option_to_string (f : 'a -> string): 'a option -> string = function
 | None -> "none"
 | Some x -> f x
 
+module Atom : sig
+  type t
+  val compare : t -> t -> int
+  val to_string : t -> string
+  val to_nexp : t -> Exp.nexp
+  val from_nexp : globals:Variable.Set.t -> Exp.nexp -> t
+
+  val induction : string -> t
+  val parameter : string -> t
+
+  val is_induction : t -> bool
+  val is_parameter : t -> bool
+
+  module Map : Map.S with type key = t
+end = struct
+  type t =
+    | Induction of Exp.nexp
+    | Parameter of Exp.nexp
+
+  let induction s = Induction (Exp.Var (Variable.from_name s))
+  let parameter s = Parameter (Exp.Var (Variable.from_name s))
+
+  let to_nexp : t -> Exp.nexp = function
+    | Induction n | Parameter n -> n
+
+  let is_induction = function Induction _ -> true | Parameter _ -> false
+  let is_parameter = function Parameter _ -> true | Induction _ -> false
+
+  let compare x y = match Exp.n_compare (to_nexp x) (to_nexp y) with
+    | 0 -> compare (is_parameter x) (is_parameter y)
+    | n -> n
+
+  let to_string = function
+    | Parameter n -> Exp.n_to_string n ^ " (global)"
+    | Induction n -> Exp.n_to_string n
+
+  let from_nexp ~globals (value : Exp.nexp) : t =
+    let thread_global =
+      let free = Exp.n_free_names value Variable.Set.empty in
+      Variable.Set.diff free globals |> Variable.Set.is_empty
+    in
+    if thread_global then Parameter value else Induction value
+
+
+  module OT = struct
+    type nonrec t = t
+    let compare = compare
+  end
+
+  module Map = Map.Make (OT)
+end
+
+module TermInner = struct
+  type t = int Atom.Map.t
+
+  let compare = Atom.Map.compare Int.compare
+
+  let normalize = Atom.Map.filter (fun _ v -> v != 0)
+  let ( ||> ) (x, y) f = f x y
+  let ( * ) (t1: t) (t2: t): t = (t1, t2)
+    ||> Atom.Map.merge (fun _ v1 v2 -> match v1, v2 with
+      | Some v1, Some v2 -> Some (v1 + v2)
+      | Some v, None | None, Some v -> Some v
+      | None, None -> None
+    )
+    |> normalize
+  let fold f acc t = Atom.Map.fold f t acc
+  let to_list = Atom.Map.bindings
+  let nfactors t = t
+    |> Atom.Map.to_list
+    |> List.length
+    let is_const t = nfactors t = 0
+
+  module OT = struct
+    type nonrec t = t
+    let compare = compare
+  end
+
+  module Map = Map.Make (OT)
+end
+
+module Term : sig
+  type t = int * TermInner.t
+  val compare : t -> t -> int
+  val to_string : t -> string
+  val parameter : string -> t
+  val induction : string -> t
+  val ( * ) : t -> t -> t
+
+  val try_div : t -> t -> t option
+
+  val coeff : t -> int
+  val factors : t -> (Atom.t * int) list
+  val of_factors : ?coeff:int -> (Atom.t * int) list -> t
+
+  val fold : (Atom.t -> int -> 'a -> 'a) -> 'a -> t -> 'a
+  val filter : (Atom.t -> int -> bool) -> t -> t
+
+  val has_induction : t -> bool
+  val has_parameter : t -> bool
+  val is_const : t -> bool
+  val nfactors: t -> int
+  val to_nexp : t -> Exp.nexp
+end = struct
+  type t = int * TermInner.t
+  let compare (c1, t1) (c2, t2) = match c1 - c2 with
+    | 0 -> TermInner.compare t1 t2
+    | x -> x
+  let to_string (c, t) =
+    let ctor = match c with
+      | 1 -> "Term.of_factors"
+      | n -> Printf.sprintf "Term.of_factors ~coeff:%d" n
+    in
+    if Atom.Map.is_empty t
+    then Printf.sprintf "%s []" ctor
+    else
+      Atom.Map.bindings t
+      |> List.map (fun (a, i) -> (Atom.to_string a, i))
+      |> List.map (function
+      | k, v -> Printf.sprintf "%s, %d" k v)
+      |> String.concat "; "
+      |> Printf.sprintf "%s [%s]" ctor
+  let parameter s = (1, Atom.Map.singleton (Atom.parameter s) 1)
+  let induction s = (1, Atom.Map.singleton (Atom.induction s) 1)
+
+  let ( * ) (c1, t1) (c2, t2) = (c1 * c2, TermInner.( * ) t1 t2)
+  let coeff (c, _) = c
+  let fold f acc (_, t) = TermInner.fold f acc t
+  let filter f (c, t) = c, Atom.Map.filter f t
+  let factors (_, t): (Atom.t * int) list = TermInner.to_list t
+  let of_factors ?(coeff = 1) factors = coeff, Atom.Map.of_list factors
+
+  let is_const (_, t) = TermInner.is_const t
+  let nfactors (_, t) = TermInner.nfactors t
+  let has_induction t = t
+    |> factors
+    |> List.exists (fun (v, _) -> Atom.is_induction v)
+  let has_parameter t = t
+    |> factors
+    |> List.exists (fun (v, _) -> Atom.is_parameter v)
+
+  let rec factor_to_nexp ((factor, exp): Atom.t * int): Exp.nexp = match exp with
+    | 0 -> failwith "exponent shouldn't be 0"
+    | 1 -> Atom.to_nexp factor
+    | n ->
+      Binary
+        ( N_binary.Mult Signedness.Signed,
+          factor_to_nexp (factor, n-1),
+          Atom.to_nexp factor )
+
+  let to_nexp ((coeff, factors): t): Exp.nexp = match coeff, TermInner.to_list factors with
+    | 0, _ -> failwith "coefficient shouldn't be 0"
+    | _, [] -> Num coeff
+    | 1, x :: xs ->
+      xs
+      |> List.fold_left
+           (fun r x ->
+             Exp.Binary (N_binary.Mult Signedness.Signed, r, factor_to_nexp x))
+           (factor_to_nexp x)
+    | n, xs ->
+      xs
+      |> List.fold_left
+           (fun r x ->
+             Exp.Binary (N_binary.Mult Signedness.Signed, r, factor_to_nexp x))
+           (Exp.Num n)
+
+
+  let try_div ((c1, f1) : t) ((c2, f2) : t) : t option =
+  match c1 mod c2 with
+  | 0 -> let d = TermInner.(f1 * (Atom.Map.map (~-) f2))
+    in if (Atom.Map.exists (fun _ e -> e < 0) d)
+      then None
+      else Some (c1 / c2, d)
+  | _ -> None
+end
+
 module Expr : sig
   type t
-  module Atom : sig (* make wrapper around nexp, handle arbitrary expressions. rename to atom *)
-    type t
-    val compare : t -> t -> int
-    val to_string : t -> string
-    val to_nexp : t -> Exp.nexp
-    val from_nexp : globals:Variable.Set.t -> Exp.nexp -> t
-
-    val induction : string -> t (* should take nexp *)
-    val parameter : string -> t
-
-    val is_induction : t -> bool
-    val is_parameter : t -> bool
-  end
-  module Term : sig
-    type t
-    val compare : t -> t -> int
-    val to_string : t -> string
-    val parameter : string -> t
-    val induction : string -> t
-    val ( * ) : t -> t -> t
-
-    val try_div : t -> t -> t option
-
-    val coeff : t -> int
-    val factors : t -> (Atom.t * int) list
-    val of_factors : ?coeff:int -> (Atom.t * int) list -> t
-
-    val fold : (Atom.t -> int -> 'a -> 'a) -> 'a -> t -> 'a
-    val filter : (Atom.t -> int -> bool) -> t -> t
-
-    val has_induction : t -> bool
-    val has_parameter : t -> bool
-    val is_const : t -> bool
-    val nfactors: t -> int
-    val to_nexp : t -> Exp.nexp
-  end
   val to_string : t -> string
   val parameter : string -> t
   val induction : string -> t
@@ -64,145 +204,6 @@ module Expr : sig
   val from_nexp : globals:Variable.Set.t -> Exp.nexp -> t
   val to_nexp : t -> Exp.nexp
 end = struct
-  module Atom = struct
-    type t =
-      | Induction of Exp.nexp
-      | Parameter of Exp.nexp
-
-    let induction s = Induction (Exp.Var (Variable.from_name s))
-    let parameter s = Parameter (Exp.Var (Variable.from_name s))
-
-    let to_nexp : t -> Exp.nexp = function
-      | Induction n | Parameter n -> n
-
-    let is_induction = function Induction _ -> true | Parameter _ -> false
-    let is_parameter = function Parameter _ -> true | Induction _ -> false
-
-    let compare x y = match Exp.n_compare (to_nexp x) (to_nexp y) with
-      | 0 -> compare (is_parameter x) (is_parameter y)
-      | n -> n
-
-    let to_string = function
-      | Parameter n -> Exp.n_to_string n ^ " (global)"
-      | Induction n -> Exp.n_to_string n
-
-    let from_nexp ~globals (value : Exp.nexp) : t =
-      let thread_global =
-        let free = Exp.n_free_names value Variable.Set.empty in
-        Variable.Set.diff free globals |> Variable.Set.is_empty
-      in
-      if thread_global then Parameter value else Induction value
-
-
-    module OT = struct
-      type nonrec t = t
-      let compare = compare
-    end
-
-    module Map = Map.Make (OT)
-  end
-  module TermInner = struct
-    type t = int Atom.Map.t
-
-    let compare = Atom.Map.compare Int.compare
-
-    let normalize = Atom.Map.filter (fun _ v -> v != 0)
-    let ( ||> ) (x, y) f = f x y
-    let ( * ) (t1: t) (t2: t): t = (t1, t2)
-      ||> Atom.Map.merge (fun _ v1 v2 -> match v1, v2 with
-        | Some v1, Some v2 -> Some (v1 + v2)
-        | Some v, None | None, Some v -> Some v
-        | None, None -> None
-      )
-      |> normalize
-    let fold f acc t = Atom.Map.fold f t acc
-    let to_list = Atom.Map.bindings
-    let nfactors t = t
-      |> Atom.Map.to_list
-      |> List.length
-      let is_const t = nfactors t = 0
-
-    module OT = struct
-      type nonrec t = t
-      let compare = compare
-    end
-
-    module Map = Map.Make (OT)
-  end
-
-  module Term = struct
-    type t = int * TermInner.t
-    let compare (c1, t1) (c2, t2) = match c1 - c2 with
-      | 0 -> TermInner.compare t1 t2
-      | x -> x
-    let to_string (c, t) =
-      let ctor = match c with
-        | 1 -> "Term.of_factors"
-        | n -> Printf.sprintf "Term.of_factors ~coeff:%d" n
-      in
-      if Atom.Map.is_empty t
-      then Printf.sprintf "%s []" ctor
-      else
-        Atom.Map.bindings t
-        |> List.map (fun (a, i) -> (Atom.to_string a, i))
-        |> List.map (function
-        | k, v -> Printf.sprintf "%s, %d" k v)
-        |> String.concat "; "
-        |> Printf.sprintf "%s [%s]" ctor
-    let parameter s = (1, Atom.Map.singleton (Atom.parameter s) 1)
-    let induction s = (1, Atom.Map.singleton (Atom.induction s) 1)
-
-    let ( * ) (c1, t1) (c2, t2) = (c1 * c2, TermInner.( * ) t1 t2)
-    let coeff (c, _) = c
-    let fold f acc (_, t) = TermInner.fold f acc t
-    let filter f (c, t) = c, Atom.Map.filter f t
-    let factors (_, t): (Atom.t * int) list = TermInner.to_list t
-    let of_factors ?(coeff = 1) factors = coeff, Atom.Map.of_list factors
-
-    let is_const (_, t) = TermInner.is_const t
-    let nfactors (_, t) = TermInner.nfactors t
-    let has_induction t = t
-      |> factors
-      |> List.exists (fun (v, _) -> Atom.is_induction v)
-    let has_parameter t = t
-      |> factors
-      |> List.exists (fun (v, _) -> Atom.is_parameter v)
-
-    let rec factor_to_nexp ((factor, exp): Atom.t * int): Exp.nexp = match exp with
-      | 0 -> failwith "exponent shouldn't be 0"
-      | 1 -> Atom.to_nexp factor
-      | n ->
-        Binary
-          ( N_binary.Mult Signedness.Signed,
-            factor_to_nexp (factor, n-1),
-            Atom.to_nexp factor )
-
-    let to_nexp ((coeff, factors): t): Exp.nexp = match coeff, TermInner.to_list factors with
-      | 0, _ -> failwith "coefficient shouldn't be 0"
-      | _, [] -> Num coeff
-      | 1, x :: xs ->
-        xs
-        |> List.fold_left
-             (fun r x ->
-               Exp.Binary (N_binary.Mult Signedness.Signed, r, factor_to_nexp x))
-             (factor_to_nexp x)
-      | n, xs ->
-        xs
-        |> List.fold_left
-             (fun r x ->
-               Exp.Binary (N_binary.Mult Signedness.Signed, r, factor_to_nexp x))
-             (Exp.Num n)
-
-
-    let try_div ((c1, f1) : t) ((c2, f2) : t) : t option = 
-    match c1 mod c2 with
-    | 0 -> let d = TermInner.(f1 * (Atom.Map.map (~-) f2))
-      in if (Atom.Map.exists (fun _ e -> e < 0) d)
-        then None
-        else Some (c1 / c2, d)
-    | _ -> None
-  end
-
   type t = int TermInner.Map.t
 
   let compare = TermInner.Map.compare Int.compare
@@ -285,9 +286,6 @@ end = struct
       ) (Term.to_nexp x)
 end
 
-module Term = Expr.Term
-module Atom = Expr.Atom
-
 type t = {
   indices: Exp.nexp list;
   dims: Exp.nexp list;
@@ -356,7 +354,7 @@ end = struct
     let conditions ds is = match ds, is with
     | ds, _ :: is -> List.map2 (fun d i ->
         let open Exp in
-        b_and (n_le (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Expr.Term.to_nexp d))
+        b_and (n_le (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Term.to_nexp d))
       ) ds is
     | _ -> failwith "unreachable?"
     in
@@ -366,7 +364,7 @@ end = struct
       else "Conditions = true");
     Some {
       indices = List.map Expr.to_nexp is;
-      dims = List.map Expr.Term.to_nexp ds;
+      dims = List.map Term.to_nexp ds;
       conditions = conditions ds is
     }
 

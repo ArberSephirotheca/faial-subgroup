@@ -160,7 +160,7 @@ let stage1_tests =
         exp
         |> Delinearize.Expr.from_nexp ~globals
         |> Delinearize.size_params
-        |> List.map Delinearize.Expr.Term.to_nexp
+        |> List.map Delinearize.Term.to_nexp
       in
       assert_equal
         ~msg
@@ -176,7 +176,7 @@ let stage2_tests =
         |> Delinearize.Expr.from_nexp ~globals
         |> Delinearize.size_params
         |> Delinearize.dims
-        |> Option.map (List.map Delinearize.Expr.Term.to_nexp)
+        |> Option.map (List.map Delinearize.Term.to_nexp)
       in
       assert_equal
         ~msg
