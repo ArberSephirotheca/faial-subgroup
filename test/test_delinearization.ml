@@ -204,20 +204,23 @@ let kernel_tests =
         after got)
 
 (* Static_bound predicate: white-box tests that exercise the recognised
-   patterns directly. *)
-let make_range (name : string) (lb : nexp) (ub : nexp) : Range.t =
-  {
-    var = Variable.from_name name;
-    ty = C_type.int;
-    dir = Range.Increase;
-    lower_bound = lb;
-    upper_bound = ub;
-    step = Range.Step.Plus (Num 1);
-  }
-
-let ranges_of (items : (string * nexp * nexp) list) : Range.t Variable.Map.t =
+   patterns directly. The [ranges] map holds a lazy [ub + 1] [Expr.t] for
+   each loop variable, built once at the loop's entry point under the
+   [globals] in scope there; tests construct it directly via
+   [Static_bound.cache_entry] so [holds] sees the same shape it would in
+   production. Variables whose loop has a non-zero lower bound are simply
+   omitted from the map (matching the production code's [extend_ranges]
+   filter). *)
+let ranges_of (items : (string * nexp * nexp) list)
+    : Delinearize.Expr.t Lazy.t Variable.Map.t =
   items
-  |> List.map (fun (n, lb, ub) -> (Variable.from_name n, make_range n lb ub))
+  |> List.filter_map (fun (n, lb, ub) ->
+      match lb with
+      | Num 0 ->
+        Some
+          ( Variable.from_name n,
+            Delinearize.Static_bound.cache_entry ~globals ub )
+      | _ -> None)
   |> List.to_seq
   |> Variable.Map.of_seq
 
@@ -233,7 +236,7 @@ let static_bound_tests =
     | _ -> failwith "test fixture: expected single-term dim"
   in
   let check ?(msg = "") ~ranges expected i d =
-    let got = Delinearize.Static_bound.holds ~globals ~ranges i d in
+    let got = Delinearize.Static_bound.holds ~ranges i d in
     assert_equal ~msg ~printer:string_of_bool expected got
   in
   (* y in [0, N-1], dim N: holds *)
@@ -283,7 +286,7 @@ let delin_with
   | None -> None
   | Some d ->
     Delinearize.Silent.from_exp
-      ~elide_provable_bounds ~globals ~ranges d expr
+      ~elide_provable_bounds ~ranges d expr
 
 let elision_tests =
   "from_exp elision" >:: fun _ ->

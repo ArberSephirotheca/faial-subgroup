@@ -342,41 +342,54 @@ let accesses (dims : Term.t list) (t : Expr.t): Expr.t list =
 
 (* Statically decide [0 <= i < d] for an inner-axis index [i] and dimension
    [d]. Returns [true] only when the bound can be proved without recourse to a
-   solver; conservative on every pattern it doesn't recognise. *)
+   solver; conservative on every pattern it doesn't recognise.
+
+   The [ranges] argument maps each loop induction variable to a lazy [ub + 1]
+   [Expr.t] in normalised polynomial form. The thunk is built once at the
+   enclosing loop's entry point, capturing the [globals] in scope there, and
+   reused across every emit-site inside the loop body. This avoids
+   re-normalising the same [upper_bound] nexp once per access. Variables
+   whose [Range.t] does not have lower bound 0 are omitted from the map
+   entirely; for them [holds] returns [false] without further work. *)
 module Static_bound : sig
   val holds :
-    globals:Variable.Set.t ->
-    ranges:Range.t Variable.Map.t ->
+    ranges:Expr.t Lazy.t Variable.Map.t ->
     Expr.t -> Term.t -> bool
-end = struct
-  (* When [i] is a single induction variable [v] whose range has lower bound
-     0, return its inclusive upper bound; [None] otherwise. *)
-  let upper_bound_of_single_atom
-      ~(ranges : Range.t Variable.Map.t) (i : Expr.t) : Exp.nexp option =
-    match Expr.to_list i with
-    | [t] when Term.coeff t = 1 ->
-      (match Term.factors t with
-       | [(a, 1)] ->
-         (match Atom.as_induction_var a with
-          | Some v ->
-            (match Variable.Map.find_opt v ranges with
-             | Some { Range.lower_bound = Exp.Num 0; upper_bound; _ } ->
-               Some upper_bound
-             | _ -> None)
-          | None -> None)
-       | _ -> None)
-    | _ -> None
 
-  let holds ~globals ~ranges (i : Expr.t) (d : Term.t) : bool =
-    match upper_bound_of_single_atom ~ranges i with
-    | None -> false
-    | Some ub ->
-      (* The bound holds when [max(i) + 1 = d] after polynomial normalisation.
-         For a single-variable [i] with range [0, ub], [max(i) = ub] so the
-         condition reduces to [ub + 1 = d]. Common case: the loop
-         [for (v = 0; v < d; v++)] gives Range.upper_bound = d - 1. *)
-      let lhs = Expr.( + ) (Expr.from_nexp ~globals ub) (Expr.of_int 1) in
-      Expr.compare lhs (Expr.of_list [d]) = 0
+  (* Build the lazy [ub + 1] cache entry for a loop with the given
+     [upper_bound] under the [globals] in scope at the loop's entry. *)
+  val cache_entry :
+    globals:Variable.Set.t -> Exp.nexp -> Expr.t Lazy.t
+end = struct
+  let cache_entry ~globals (upper_bound : Exp.nexp) : Expr.t Lazy.t =
+    lazy (Expr.( + ) (Expr.from_nexp ~globals upper_bound) (Expr.of_int 1))
+
+  (* [Some v] iff [i] is a single bare induction variable [v] with
+     coefficient 1: one polynomial term, one factor with exponent 1, and
+     that factor classifies as [Atom.Induction (Var v)]. *)
+  let as_single_induction_var (i : Expr.t) : Variable.t option =
+    let ( let* ) = Option.bind in
+    let* t = match Expr.to_list i with
+      | [t] when Term.coeff t = 1 -> Some t
+      | _ -> None
+    in
+    let* a = match Term.factors t with
+      | [(a, 1)] -> Some a
+      | _ -> None
+    in
+    Atom.as_induction_var a
+
+  let holds ~(ranges : Expr.t Lazy.t Variable.Map.t)
+      (i : Expr.t) (d : Term.t) : bool =
+    if Variable.Map.is_empty ranges then false
+    else
+      let ( let* ) = Option.bind in
+      let outcome =
+        let* v = as_single_induction_var i in
+        let* lhs = Variable.Map.find_opt v ranges in
+        Some (Expr.compare (Lazy.force lhs) (Expr.of_list [d]) = 0)
+      in
+      Option.value outcome ~default:false
 end
 
 module Make(L:Logger.Logger) : sig
@@ -386,8 +399,7 @@ module Make(L:Logger.Logger) : sig
   val accesses : Term.t list -> Expr.t -> Expr.t list
   val from_exp :
     ?elide_provable_bounds:bool ->
-    ?globals:Variable.Set.t ->
-    ?ranges:Range.t Variable.Map.t ->
+    ?ranges:Expr.t Lazy.t Variable.Map.t ->
     Term.t list -> Expr.t -> t option
   val rewrite_kernel :
     ?elide_provable_bounds:bool -> Aligned.Kernel.t -> Aligned.Kernel.t
@@ -400,7 +412,6 @@ end = struct
 
   let from_exp
       ?(elide_provable_bounds = false)
-      ?(globals = Variable.Set.empty)
       ?(ranges = Variable.Map.empty)
       (ds : Term.t list) (expr : Expr.t) : t option =
     L.info (fun () -> "Dims = \n" ^ list_to_string Term.to_string ds);
@@ -415,7 +426,7 @@ end = struct
       List.combine ds inner_is
       |> List.filter_map (fun (d, i) ->
         if elide_provable_bounds
-           && Static_bound.holds ~globals ~ranges i d
+           && Static_bound.holds ~ranges i d
         then begin
           L.info (fun () ->
             Printf.sprintf "Elided bound: 0 <= %s < %s"
@@ -455,7 +466,7 @@ end = struct
   let rewrite_unsync
       ~(elide_provable_bounds : bool)
       ~(globals : Variable.Set.t)
-      ~(ranges : Range.t Variable.Map.t)
+      ~(ranges : Expr.t Lazy.t Variable.Map.t)
       (unsync : Unsynced.t) : Unsynced.t =
     let ( let* ) = Option.bind in
     let open Unsynced in
@@ -481,15 +492,26 @@ end = struct
         in
         singletons |> size_params_all |> dims))
     in
+    let extend_ranges
+        (r : Range.t) (ranges : Expr.t Lazy.t Variable.Map.t)
+        : Expr.t Lazy.t Variable.Map.t =
+      match r.lower_bound with
+      | Exp.Num 0 ->
+        Variable.Map.add r.var
+          (Static_bound.cache_entry ~globals r.upper_bound)
+          ranges
+      | _ -> ranges
+    in
     let rec rewrite_unsync
-        (ranges : Range.t Variable.Map.t) : Unsynced.t -> Unsynced.t = function
+        (ranges : Expr.t Lazy.t Variable.Map.t)
+        : Unsynced.t -> Unsynced.t = function
       | Access ({ array; index = [a]; _ } as acc) ->
         (match (
           let a = Expr.from_nexp ~globals a in
           let* dim = Variable.Map.find_opt array dims in
           let* rewritten =
             Phase_timer.measure "delin/from-exp" (fun () ->
-              from_exp ~elide_provable_bounds ~globals ~ranges dim a)
+              from_exp ~elide_provable_bounds ~ranges dim a)
           in
           Some rewritten.indices
         ) with
@@ -497,8 +519,7 @@ end = struct
         | None -> Access acc)
       | Access _ as code -> code
       | Cond (p, b) -> Cond (p, rewrite_unsync ranges b)
-      | Loop (r, b) ->
-        Loop (r, rewrite_unsync (Variable.Map.add r.var r ranges) b)
+      | Loop (r, b) -> Loop (r, rewrite_unsync (extend_ranges r ranges) b)
       | Seq (a, b) -> Seq (rewrite_unsync ranges a, rewrite_unsync ranges b)
       | code -> code
     in
@@ -507,18 +528,26 @@ end = struct
   let rec rewrite_aligned
       ~(elide_provable_bounds : bool)
       ~(globals : Variable.Set.t)
-      ~(ranges : Range.t Variable.Map.t)
+      ~(ranges : Expr.t Lazy.t Variable.Map.t)
       : Aligned.Code.t -> Aligned.Code.t =
     let open Aligned.Code in
     function
     | Sync c -> Sync (rewrite_unsync ~elide_provable_bounds ~globals ~ranges c)
     | Loop ({ range; body; _ } as loop) ->
-      let x = range.var in
+      let globals' = Variable.Set.add range.var globals in
+      let ranges' =
+        match range.lower_bound with
+        | Exp.Num 0 ->
+          Variable.Map.add range.var
+            (Static_bound.cache_entry ~globals:globals' range.upper_bound)
+            ranges
+        | _ -> ranges
+      in
       Loop { loop with body =
         rewrite_aligned
           ~elide_provable_bounds
-          ~globals:(Variable.Set.add x globals)
-          ~ranges:(Variable.Map.add x range ranges)
+          ~globals:globals'
+          ~ranges:ranges'
           body }
     | Seq (a, b) ->
       Seq

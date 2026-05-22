@@ -417,18 +417,20 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned
        ~show:a.show_align Aligned.print_kernels
   (* 6. delinearize accesses (no-op when --assume-delin is off, but the
-     boundary still emits a "delin" entry — 0 in that case).
-     When --delin-elide-bounds is set, use the [Default] logger so the
-     per-elision trace lines are visible on stderr. *)
+     boundary still emits a "delin" entry — 0 in that case). The
+     [Default] logger is reserved for [--log-delinearize], because its
+     [L.info] traces are per-access stderr writes; routing the elision
+     path through it dominated phase timings (the [from_exp] /
+     [get_accesses] [L.info] lines fire on every access). *)
   |> (if a.assume_delin
       then
         let rewrite k =
-          if a.delin_elide_bounds then
-            Delinearize.Default.rewrite_kernel ~elide_provable_bounds:true k
-          else if a.log_delinearize then
-            Delinearize.Silent.rewrite_kernel k
+          if a.log_delinearize then
+            Delinearize.Default.rewrite_kernel
+              ~elide_provable_bounds:a.delin_elide_bounds k
           else
-            Delinearize.Warnings.rewrite_kernel k
+            Delinearize.Warnings.rewrite_kernel
+              ~elide_provable_bounds:a.delin_elide_bounds k
         in
         Streamutil.map rewrite
       else Fun.id)
