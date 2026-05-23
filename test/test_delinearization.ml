@@ -75,6 +75,8 @@ let delin ~globals (e : nexp) : Delinearize.t option =
   Delinearize.All.from_exp
     ~globals
     ~scope:Delinearize.AllBounds.initial_scope
+    ~loop_scope:[]
+    ~check:Delinearize.trivially_true_oracle
     ~size_params
     expr
 
@@ -199,7 +201,10 @@ let kernel_tests =
   "rewrite_kernel" >:: fun _ ->
   kernels
   |> List.iter (fun (msg, before, after) ->
-      let got = Delinearize.Default.rewrite_kernel before in
+      let got =
+        Delinearize.Default.rewrite_kernel
+          ~check:Delinearize.trivially_true_oracle before
+      in
       assert_equal
         ~msg
         ~printer:Aligned.Kernel.to_string
@@ -293,6 +298,8 @@ let delin_all (e : nexp) : Delinearize.t option =
   Delinearize.All.from_exp
     ~globals
     ~scope:Delinearize.AllBounds.initial_scope
+    ~loop_scope:[]
+    ~check:Delinearize.trivially_true_oracle
     ~size_params
     expr
 
@@ -302,6 +309,8 @@ let delin_maslov ~scope (e : nexp) : Delinearize.t option =
   Delinearize.Maslov_elide.from_exp
     ~globals
     ~scope
+    ~loop_scope:[]
+    ~check:Delinearize.trivially_true_oracle
     ~size_params
     expr
 

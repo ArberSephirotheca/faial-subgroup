@@ -672,16 +672,32 @@ module Maslov : BoundGenerator = struct
 end
 
 (* The rewriter, parameterised over a bound-generation strategy. *)
+(* The bound-check oracle threaded through the rewriter. Given the
+   enclosing loop-scope conjuncts and a candidate bound, returns true
+   iff [kernel.pre /\ runtime /\ scope ==> bound]. A constant-true
+   oracle bypasses the check (preserves the pre-existing
+   assume-bounds behaviour); the Z3-backed oracle from
+   [Bound_check.entails] makes the bounds proof obligations the
+   rewriter discharges before committing to delinearisation. *)
+type bound_oracle = scope:Exp.bexp list -> bound:Exp.bexp -> bool
+
+let trivially_true_oracle : bound_oracle =
+  fun ~scope:_ ~bound:_ -> true
+
 module Make (A : DelinAlgorithm) (G : BoundGenerator) : sig
   val from_exp :
     globals:Variable.Set.t ->
     scope:G.scope ->
+    loop_scope:Exp.bexp list ->
+    check:bound_oracle ->
     size_params:Term.t list ->
     Expr.t ->
     t option
-  val rewrite_kernel : Aligned.Kernel.t -> Aligned.Kernel.t
+  val rewrite_kernel :
+    check:bound_oracle -> Aligned.Kernel.t -> Aligned.Kernel.t
 end = struct
   let from_exp ~(globals : Variable.Set.t) ~(scope : G.scope)
+      ~(loop_scope : Exp.bexp list) ~(check : bound_oracle)
       ~(size_params : Term.t list) (expr : Expr.t) : t option =
     let ( let* ) = Option.bind in
     let* (tactic, _) = Seq.uncons (A.candidates ~globals ~size_params expr) in
@@ -700,11 +716,20 @@ end = struct
           (List.combine idx.dims inner_is)
           (G.create scope)
       in
-      Some {
-        indices = List.map Expr.to_nexp idx.indices;
-        dims = List.map Expr.to_nexp idx.dims;
-        conditions = idx.conditions @ G.get_bounds final;
-      }
+      let bounds = G.get_bounds final in
+      (* All bounds must be discharged by the oracle. The oracle is
+         conservative on UNKNOWN (treats as not-entailed), so a
+         timeout falls back to the linear form rather than admitting
+         an unproven assumption. *)
+      if List.for_all (fun b -> check ~scope:loop_scope ~bound:b) bounds
+      then
+        Some {
+          indices = List.map Expr.to_nexp idx.indices;
+          dims = List.map Expr.to_nexp idx.dims;
+          conditions = idx.conditions @ bounds;
+        }
+      else
+        None
     (* Piecewise emission lands in a later chunk. *)
     | Tactic.Try _ -> None
 
@@ -721,6 +746,8 @@ end = struct
   let rewrite_unsync
       ~(globals : Variable.Set.t)
       ~(scope : G.scope)
+      ~(loop_scope : Exp.bexp list)
+      ~(check : bound_oracle)
       (unsync : Unsynced.t) : Unsynced.t =
     let ( let* ) = Option.bind in
     let open Unsynced in
@@ -745,24 +772,25 @@ end = struct
         ) (Some [])
         |> Option.map size_params_all))
     in
-    let rec walk (scope : G.scope) : Unsynced.t -> Unsynced.t = function
+    let rec walk (scope : G.scope) (loop_scope : Exp.bexp list)
+        : Unsynced.t -> Unsynced.t = function
       | Access ({ array; index = [a]; _ } as acc) ->
         (match (
           let a = Expr.from_nexp ~globals a in
           let* size_params = Variable.Map.find_opt array size_params_map in
           let* rewritten =
             Phase_timer.measure "delin/from-exp"
-              (fun () -> from_exp ~globals ~scope ~size_params a)
+              (fun () -> from_exp ~globals ~scope ~loop_scope ~check
+                ~size_params a)
           in
           Some (rewritten.indices, rewritten.conditions)
         ) with
         | Some (indices, conditions) ->
           (* Wrap the rewritten access in one [Assert] per emitted bound.
              [Unsynced.Assert] is semantically [assume] in this IR
-             (downstream [inline_asserts] lifts it into a [Cond] gate),
-             so race analysis only considers thread states where the
-             bound holds. With [RejectAll] [conditions] is empty and
-             no [Assert]s are added. *)
+             (downstream [inline_asserts] lifts it into a [Cond] gate).
+             Bounds reach here only if the oracle discharged them, so
+             the assume is sound by construction. *)
           let access = Unsynced.Access { acc with index = indices } in
           List.fold_right
             (fun cond body -> Unsynced.Seq (Assert cond, body))
@@ -770,34 +798,45 @@ end = struct
             access
         | None -> Access acc)
       | Access _ as code -> code
-      | Cond (p, b) -> Cond (p, walk scope b)
-      | Loop (r, b) -> Loop (r, walk (G.add_range ~globals r scope) b)
-      | Seq (a, b) -> Seq (walk scope a, walk scope b)
+      | Cond (p, b) -> Cond (p, walk scope loop_scope b)
+      | Loop (r, b) ->
+        let scope' = G.add_range ~globals r scope in
+        let loop_scope' = Range.to_cond r :: loop_scope in
+        Loop (r, walk scope' loop_scope' b)
+      | Seq (a, b) ->
+        Seq (walk scope loop_scope a, walk scope loop_scope b)
       | code -> code
     in
-    Phase_timer.measure "delin/rewrite" (fun () -> walk scope unsync)
+    Phase_timer.measure "delin/rewrite"
+      (fun () -> walk scope loop_scope unsync)
 
   let rec rewrite_aligned
       ~(globals : Variable.Set.t)
       ~(scope : G.scope)
+      ~(loop_scope : Exp.bexp list)
+      ~(check : bound_oracle)
       : Aligned.Code.t -> Aligned.Code.t =
     let open Aligned.Code in
     function
-    | Sync c -> Sync (rewrite_unsync ~globals ~scope c)
+    | Sync c -> Sync (rewrite_unsync ~globals ~scope ~loop_scope ~check c)
     | Loop ({ range; body; _ } as loop) ->
       let globals' = Variable.Set.add range.var globals in
       let scope' = G.add_range ~globals:globals' range scope in
+      let loop_scope' = Range.to_cond range :: loop_scope in
       Loop { loop with body =
-        rewrite_aligned ~globals:globals' ~scope:scope' body }
+        rewrite_aligned ~globals:globals' ~scope:scope'
+          ~loop_scope:loop_scope' ~check body }
     | Seq (a, b) ->
       Seq
-        ( rewrite_aligned ~globals ~scope a,
-          rewrite_aligned ~globals ~scope b )
+        ( rewrite_aligned ~globals ~scope ~loop_scope ~check a,
+          rewrite_aligned ~globals ~scope ~loop_scope ~check b )
 
-  let rewrite_kernel (kernel : Aligned.Kernel.t) : Aligned.Kernel.t =
+  let rewrite_kernel ~(check : bound_oracle) (kernel : Aligned.Kernel.t)
+      : Aligned.Kernel.t =
     let globals = Params.to_set kernel.global_variables in
     { kernel with code =
-        rewrite_aligned ~globals ~scope:G.initial_scope kernel.code }
+        rewrite_aligned ~globals ~scope:G.initial_scope ~loop_scope:[]
+          ~check kernel.code }
 end
 
 module Default = Make (Greedy) (RejectAll)

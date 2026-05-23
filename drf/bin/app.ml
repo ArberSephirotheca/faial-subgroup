@@ -98,6 +98,7 @@ type t = {
   delin_elide : bool;
   delin_no_bounds : bool;
   ics15 : bool;
+  no_check_delin : bool;
   (* Per-kernel pre-condition list, keyed by [Kernel.name]. Genie's
      internal model treats assumptions as kernel-scoped: a variable
      declared in two kernels is a different variable in each, so an
@@ -196,6 +197,7 @@ let to_string (app : t) : string =
    delin_elide;
    delin_no_bounds;
    ics15;
+   no_check_delin;
    assumes;
    assume_dims;
    assume_launch;
@@ -221,6 +223,7 @@ let to_string (app : t) : string =
       ^ "\ndelin_elide = " ^ bool delin_elide
       ^ "\ndelin_no_bounds = " ^ bool delin_no_bounds
       ^ "\nics15 = " ^ bool ics15
+      ^ "\nno_check_delin = " ^ bool no_check_delin
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
       ^ "\nassume_launch = " ^ bool assume_launch
@@ -240,7 +243,8 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
-    ~assume_delin ~delin_elide ~delin_no_bounds ~ics15 ~assumes ~assume_dims
+    ~assume_delin ~delin_elide ~delin_no_bounds ~ics15 ~no_check_delin
+    ~assumes ~assume_dims
     ~assume_launch ~check_pre_sat
     ~memory_model ~cbor ~stop_at : t =
   let parsed =
@@ -325,6 +329,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     delin_elide;
     delin_no_bounds;
     ics15;
+    no_check_delin;
     assumes;
     assume_dims;
     assume_launch;
@@ -441,7 +446,18 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
         let module A = (val algo) in
         let module G = (val bg) in
         let module M = Delinearize.Make (A) (G) in
-        Streamutil.map M.rewrite_kernel
+        let rewrite kernel =
+          if a.no_check_delin
+          then M.rewrite_kernel
+            ~check:Delinearize.trivially_true_oracle kernel
+          else
+            Bound_check.with_slot ~timeout:0 kernel (fun slot ->
+              let check ~scope ~bound =
+                Bound_check.entails slot ~scope ~bound
+              in
+              M.rewrite_kernel ~check kernel)
+        in
+        Streamutil.map rewrite
       else Fun.id)
   |> Phase_timer.boundary "delin"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Delin

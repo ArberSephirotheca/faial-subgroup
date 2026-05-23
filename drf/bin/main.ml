@@ -346,6 +346,19 @@ let main =
              non-static polynomial division) instead of the default \
              greedy try_div driver. Orthogonal to the bound-emission \
              flags.")
+  and+ no_check_delin =
+    Arg.(
+      value & flag
+      & info [ "no-check-delin" ]
+          ~doc:
+            "Skip the Z3 entailment check on delin-emitted bounds. \
+             Default behaviour is to verify each bound against \
+             [kernel.pre /\\ runtime /\\ loop_scope] before emitting \
+             it as an [Assert]; bounds the verifier cannot prove are \
+             dropped and the access is left in its 1D linear form. \
+             With [--no-check-delin] bounds are emitted unchecked \
+             (assume semantics), which restores the pre-fix behaviour \
+             but admits silently vacuous bounds that can hide races.")
   and+ assume_delin =
     Arg.(
       value & flag
@@ -496,7 +509,7 @@ let main =
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
-        ~delin_elide ~delin_no_bounds ~ics15
+        ~delin_elide ~delin_no_bounds ~ics15 ~no_check_delin
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at
