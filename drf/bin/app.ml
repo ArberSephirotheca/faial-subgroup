@@ -96,7 +96,6 @@ type t = {
   ignore_asserts : bool;
   assume_delin : bool;
   delin_elide : bool;
-  delin_no_bounds : bool;
   ics15 : bool;
   no_check_delin : bool;
   (* Per-kernel pre-condition list, keyed by [Kernel.name]. Genie's
@@ -195,7 +194,6 @@ let to_string (app : t) : string =
    ignore_asserts;
    assume_delin;
    delin_elide;
-   delin_no_bounds;
    ics15;
    no_check_delin;
    assumes;
@@ -221,7 +219,6 @@ let to_string (app : t) : string =
       ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
       ^ "\nassume_delin = " ^ bool assume_delin
       ^ "\ndelin_elide = " ^ bool delin_elide
-      ^ "\ndelin_no_bounds = " ^ bool delin_no_bounds
       ^ "\nics15 = " ^ bool ics15
       ^ "\nno_check_delin = " ^ bool no_check_delin
       ^ "\nignore_asserts = " ^ bool ignore_asserts
@@ -243,7 +240,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
-    ~assume_delin ~delin_elide ~delin_no_bounds ~ics15 ~no_check_delin
+    ~assume_delin ~delin_elide ~ics15 ~no_check_delin
     ~assumes ~assume_dims
     ~assume_launch ~check_pre_sat
     ~memory_model ~cbor ~stop_at : t =
@@ -327,7 +324,6 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ignore_asserts;
     assume_delin;
     delin_elide;
-    delin_no_bounds;
     ics15;
     no_check_delin;
     assumes;
@@ -439,8 +435,7 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
           else (module Delinearize.Greedy)
         in
         let bg : (module Delinearize.BoundGenerator) =
-          if a.delin_no_bounds then (module Delinearize.RejectAll)
-          else if a.delin_elide then (module Delinearize.Maslov)
+          if a.delin_elide then (module Delinearize.Maslov)
           else (module Delinearize.AllBounds)
         in
         let module A = (val algo) in

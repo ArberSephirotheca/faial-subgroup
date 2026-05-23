@@ -145,14 +145,21 @@ let kernels : (string * Aligned.Kernel.t * Aligned.Kernel.t) list =
     };
     body;
   } in
+  let assert_seq (conds : bexp list) (body : Unsynced.t) : Unsynced.t =
+    List.fold_right
+      (fun c b -> Unsynced.Seq (Assert c, b)) conds body
+  in
+  let access_3dim =
+    assert_seq [bound y m; bound z n] (acc aA [x; y; z])
+  in
   [
     "trivial", [], Sync Skip, Sync Skip;
     "3dim+param", ["m"; "n"; "M"; "N"],
       Sync (acc aA [m * n * x + n * y + z]),
-      Sync (acc aA [x; y; z]);
+      Sync access_3dim;
     "3dim+loop", ["M"; "N"],
       loop "m" (loop "n" (Sync (acc aA [m * n * x + n * y + z]))),
-      loop "m" (loop "n" (Sync (acc aA [x; y; z])));
+      loop "m" (loop "n" (Sync access_3dim));
   ]
   |> List.map make_kernel
 
@@ -202,7 +209,7 @@ let kernel_tests =
   kernels
   |> List.iter (fun (msg, before, after) ->
       let got =
-        Delinearize.Default.rewrite_kernel
+        Delinearize.All.rewrite_kernel
           ~check:Delinearize.trivially_true_oracle before
       in
       assert_equal

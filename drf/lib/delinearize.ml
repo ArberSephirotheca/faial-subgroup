@@ -295,15 +295,12 @@ end = struct
 end
 
 type t = {
-  indices: Exp.nexp list;
-  dims: Exp.nexp list;
-  conditions: Exp.bexp list;
+  indices : Exp.nexp list;
+  dims : Exp.nexp list;
+  conditions : Exp.bexp list;
 }
 
-
-
-let to_string: t -> string = function
-| { indices; dims; conditions } ->
+let to_string ({ indices; dims; conditions } : t) : string =
   Printf.sprintf "{ indices = %s; dims = %s; conditions = %s }"
     (list_to_string Exp.n_to_string indices)
     (list_to_string Exp.n_to_string dims)
@@ -471,70 +468,108 @@ end
    linearised form via [Index.reconstruct] and comparing against the
    input. Assumes alpha_1 = 0 (Algorithm 3's documented constraint). *)
 module ICS15 : DelinAlgorithm = struct
-  let try_permutation (perm : Atom.t list) (expr : Expr.t) : Index.t option =
+  let bucket_sig (atoms : Atom.t list) : TermInner.t =
+    atoms |> List.map (fun a -> (a, 1)) |> Atom.Map.of_list
+
+  let bucket_lookup
+      (buckets : Expr.t TermInner.Map.t) (atoms : Atom.t list) : Expr.t =
+    TermInner.Map.find_opt (bucket_sig atoms) buckets
+    |> Option.value ~default:Expr.zero
+
+  let scale (n : int) (e : Expr.t) : Expr.t =
+    if n = 0 then Expr.zero
+    else if n = 1 then e
+    else Expr.( * ) (Expr.of_int n) e
+
+  (* For each k in 2..d-1, the integer scalar that satisfies
+     [bucket(perm \ {p_k}) = alpha_k * f0]; bails out on non-integer
+     quotients. Returned list is [alpha_1; ..; alpha_{d-1}] with
+     [alpha_1] pinned to 0 (the documented constraint for the
+     subscript-recovery step). *)
+  let derive_alphas
+      ~(perm : Atom.t list)
+      ~(buckets : Expr.t TermInner.Map.t)
+      ~(f0 : Expr.t)
+      : int list option =
+    let ( let* ) = Option.bind in
     let d = List.length perm + 1 in
+    let rec go k acc =
+      if k > d - 1 then Some (List.rev acc)
+      else
+        let perm_without_pk =
+          List.filteri (fun i _ -> i + 1 <> k) perm
+        in
+        let* a =
+          try_scalar_quotient (bucket_lookup buckets perm_without_pk) f0
+        in
+        go (k + 1) (a :: acc)
+    in
+    let* tail = go 2 [] in
+    Some (0 :: tail)
+
+  (* Returns d subscripts [f_1; ..; f_d] with [f_1 = f0 = bucket(perm)]
+     as the outermost (the coefficient of the highest-degree parameter
+     monomial). Each later subscript is recovered as
+     [bucket(perm with the first j elements dropped) - contribution],
+     where [contribution] sums each prior [f_i] scaled by
+     [alpha_{i+1} * .. * alpha_j]. *)
+  let derive_fs
+      ~(perm : Atom.t list)
+      ~(buckets : Expr.t TermInner.Map.t)
+      ~(alphas : int list)
+      ~(f0 : Expr.t)
+      : Expr.t list =
+    let d = List.length perm + 1 in
+    let alpha k = List.nth alphas (k - 1) in
+    let alpha_prod ~from ~upto =
+      let rec go m acc =
+        if m > upto then acc else go (m + 1) (acc * alpha m)
+      in
+      go from 1
+    in
+    let contribution (prev_fs : Expr.t list) (j : int) : Expr.t =
+      List.fold_left
+        (fun (sum, i) f_i ->
+          let next =
+            if i = 0 then sum
+            else
+              Expr.( + ) sum
+                (scale (alpha_prod ~from:(i + 1) ~upto:j) f_i)
+          in
+          (next, i + 1))
+        (Expr.zero, 0)
+        prev_fs
+      |> fst
+    in
+    let rec go j prev_fs_rev =
+      if j > d - 1 then List.rev prev_fs_rev
+      else
+        let tail = List.filteri (fun idx _ -> idx + 1 > j) perm in
+        let bucket = bucket_lookup buckets tail in
+        let prev_fs = List.rev prev_fs_rev in
+        let f_j = Expr.( - ) bucket (contribution prev_fs j) in
+        go (j + 1) (f_j :: prev_fs_rev)
+    in
+    go 1 [f0]
+
+  let build_dims (perm : Atom.t list) (alphas : int list) : Expr.t list =
+    List.mapi (fun i p ->
+      let a = List.nth alphas i in
+      let p_expr = Expr.of_atom p in
+      if a = 0 then p_expr
+      else Expr.( + ) p_expr (Expr.of_int a))
+      perm
+
+  let try_permutation (perm : Atom.t list) (expr : Expr.t) : Index.t option =
     let buckets = group_by_parameters ~candidates:perm expr in
-    let sig_of atoms =
-      atoms |> List.map (fun a -> (a, 1)) |> Atom.Map.of_list
-    in
-    let lookup s =
-      TermInner.Map.find_opt s buckets |> Option.value ~default:Expr.zero
-    in
-    let f0 = lookup (sig_of perm) in
+    let f0 = bucket_lookup buckets perm in
+    let d = List.length perm + 1 in
     if d > 1 && Expr.compare f0 Expr.zero = 0 then None
     else
       let ( let* ) = Option.bind in
-      let rec derive_alphas k acc =
-        if k > d - 1 then Some (List.rev acc)
-        else
-          let perm_without_pk =
-            List.filteri (fun i _ -> i + 1 <> k) perm
-          in
-          let g = lookup (sig_of perm_without_pk) in
-          match try_scalar_quotient g f0 with
-          | None -> None
-          | Some a -> derive_alphas (k + 1) (a :: acc)
-      in
-      let* tail_alphas = derive_alphas 2 [] in
-      let alphas = 0 :: tail_alphas in
-      let alpha k = List.nth alphas (k - 1) in
-      let scale n e =
-        if n = 0 then Expr.zero
-        else if n = 1 then e
-        else Expr.( * ) (Expr.of_int n) e
-      in
-      let rec derive_fs j prev_fs_rev =
-        if j > d - 1 then Some (List.rev prev_fs_rev)
-        else
-          let tail = List.filteri (fun idx _ -> idx + 1 > j) perm in
-          let bucket = lookup (sig_of tail) in
-          let prev_fs = List.rev prev_fs_rev in
-          let rec alpha_prod m =
-            if m > j then 1 else (alpha m) * alpha_prod (m + 1)
-          in
-          let contribution =
-            List.fold_left
-              (fun (sum, i) f_i ->
-                if i = 0 then (sum, i + 1)
-                else
-                  let p = alpha_prod (i + 1) in
-                  (Expr.( + ) sum (scale p f_i), i + 1))
-              (Expr.zero, 0)
-              prev_fs
-            |> fst
-          in
-          let f_j = Expr.( - ) bucket contribution in
-          derive_fs (j + 1) (f_j :: prev_fs_rev)
-      in
-      let* fs = derive_fs 1 [f0] in
-      let dims =
-        List.mapi (fun i p ->
-          let a = alpha (i + 1) in
-          let p_expr = Expr.of_atom p in
-          if a = 0 then p_expr
-          else Expr.( + ) p_expr (Expr.of_int a))
-          perm
-      in
+      let* alphas = derive_alphas ~perm ~buckets ~f0 in
+      let fs = derive_fs ~perm ~buckets ~alphas ~f0 in
+      let dims = build_dims perm alphas in
       let idx : Index.t = { indices = fs; dims; conditions = [] } in
       if Expr.compare (Index.reconstruct idx) expr = 0 then Some idx
       else None
@@ -571,10 +606,9 @@ end
      Lifetime: one [from_exp] call. The rewriter does not thread it
      across accesses.
 
-   Three implementations live in this file: [RejectAll] emits nothing
-   (matches the rewriter's current behaviour of discarding [t.conditions]),
-   [AllBounds] emits the standard [0 <= i < d] conjunction for every
-   axis, [Maslov] emits only the bounds it cannot prove statically. *)
+   Two implementations live in this file: [AllBounds] emits the standard
+   [0 <= i < d] conjunction for every axis; [Maslov] emits only the bounds
+   it cannot prove statically. *)
 module type BoundGenerator = sig
   type scope
   val initial_scope : scope
@@ -592,17 +626,6 @@ end
 let make_bound (i : Expr.t) (d : Expr.t) : Exp.bexp =
   let open Exp in
   b_and (n_le (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Expr.to_nexp d))
-
-module RejectAll : BoundGenerator = struct
-  type scope = unit
-  let initial_scope = ()
-  let add_range ~globals:_ _ () = ()
-
-  type t = unit
-  let create () = ()
-  let add_bound () _ _ = ()
-  let get_bounds () = []
-end
 
 module AllBounds : BoundGenerator = struct
   type scope = unit
@@ -716,21 +739,16 @@ end = struct
           (List.combine idx.dims inner_is)
           (G.create scope)
       in
-      let bounds = G.get_bounds final in
-      (* All bounds must be discharged by the oracle. The oracle is
-         conservative on UNKNOWN (treats as not-entailed), so a
-         timeout falls back to the linear form rather than admitting
-         an unproven assumption. *)
-      if List.for_all (fun b -> check ~scope:loop_scope ~bound:b) bounds
+      let all_bounds = idx.conditions @ G.get_bounds final in
+      if List.for_all (fun b -> check ~scope:loop_scope ~bound:b) all_bounds
       then
         Some {
           indices = List.map Expr.to_nexp idx.indices;
           dims = List.map Expr.to_nexp idx.dims;
-          conditions = idx.conditions @ bounds;
+          conditions = all_bounds;
         }
       else
         None
-    (* Piecewise emission lands in a later chunk. *)
     | Tactic.Try _ -> None
 
   let get_accesses (unsync : Unsynced.t) : Exp.nexp list list Variable.Map.t =
@@ -743,28 +761,71 @@ end = struct
       | Seq (u, v) -> Fun.compose (walk u) (walk v)
     in walk unsync Variable.Map.empty
 
+  (* Walk the code computing, per array, whether every access site
+     produces a successful [from_exp] result in its own scope. An array
+     is "viable" iff every access to it delinearises cleanly. This
+     enforces the per-array shape-unification invariant the verifier
+     assumes ([Flatacc.Code.dim] uses one index-length value for the
+     entire array, so mixed-arity per-array IR breaks the alias check).
+     Arrays that already have multi-index accesses are skipped (no
+     entry in [size_params_map]) so they remain non-viable. *)
+  let viable_arrays
+      ~(globals : Variable.Set.t)
+      ~(scope : G.scope)
+      ~(loop_scope : Exp.bexp list)
+      ~(check : bound_oracle)
+      ~(size_params_map : Term.t list Variable.Map.t)
+      (unsync : Unsynced.t) : Variable.Set.t =
+    let open Unsynced in
+    let rec walk (scope : G.scope) (loop_scope : Exp.bexp list)
+        (failed : Variable.Set.t) : Unsynced.t -> Variable.Set.t = function
+      | Access { array; index = [a]; _ }
+        when not (Variable.Set.mem array failed) ->
+        (match Variable.Map.find_opt array size_params_map with
+         | None -> Variable.Set.add array failed
+         | Some size_params ->
+           let a = Expr.from_nexp ~globals a in
+           match
+             from_exp ~globals ~scope ~loop_scope ~check ~size_params a
+           with
+           | Some _ -> failed
+           | None -> Variable.Set.add array failed)
+      | Access _ -> failed
+      | Skip | Assert _ -> failed
+      | Cond (_, b) -> walk scope loop_scope failed b
+      | Loop (r, b) ->
+        let scope' = G.add_range ~globals r scope in
+        let loop_scope' = Range.to_cond r :: loop_scope in
+        walk scope' loop_scope' failed b
+      | Seq (a, b) ->
+        walk scope loop_scope (walk scope loop_scope failed a) b
+    in
+    let failed = walk scope loop_scope Variable.Set.empty unsync in
+    Variable.Map.fold (fun arr _ viable ->
+      if Variable.Set.mem arr failed then viable
+      else Variable.Set.add arr viable)
+      size_params_map Variable.Set.empty
+
   let rewrite_unsync
       ~(globals : Variable.Set.t)
       ~(scope : G.scope)
       ~(loop_scope : Exp.bexp list)
       ~(check : bound_oracle)
       (unsync : Unsynced.t) : Unsynced.t =
-    let ( let* ) = Option.bind in
     let open Unsynced in
-    (* Three sub-phases of [rewrite_unsync], measured separately so the
-       JSON phase_times shows where delin time actually goes. They sum
-       to ~all of [rewrite_unsync] (modulo glue), which itself sums
-       across Sync blocks into the top-level "delin" boundary. *)
+    (* Sub-phases measured separately so the JSON phase_times shows
+       where delin time actually goes; they sum to ~all of
+       [rewrite_unsync] (modulo glue). *)
     let accs =
       Phase_timer.measure "delin/get-accesses" (fun () -> get_accesses unsync)
     in
     let size_params_map = Phase_timer.measure "delin/dims" (fun () ->
       accs
       |> Variable.Map.filter_map (fun _ accesses ->
-        (* Skip arrays that already have multi-index accesses; there is
-           nothing to delinearize for those. Returning [None] drops the
-           entry, so the rewriter's [find_opt] misses and leaves the
-           access unchanged. *)
+        (* Skip arrays that already have multi-index accesses; nothing
+           to delinearise. Returning [None] drops the array from
+           [size_params_map], so the array is excluded from viability
+           and its accesses pass through unchanged. *)
         accesses
         |> List.fold_left (fun acc -> function
           | [a] -> Option.map (fun xs -> Expr.from_nexp ~globals a :: xs) acc
@@ -772,31 +833,31 @@ end = struct
         ) (Some [])
         |> Option.map size_params_all))
     in
+    let viable = Phase_timer.measure "delin/viability" (fun () ->
+      viable_arrays ~globals ~scope ~loop_scope ~check ~size_params_map
+        unsync)
+    in
     let rec walk (scope : G.scope) (loop_scope : Exp.bexp list)
         : Unsynced.t -> Unsynced.t = function
-      | Access ({ array; index = [a]; _ } as acc) ->
-        (match (
-          let a = Expr.from_nexp ~globals a in
-          let* size_params = Variable.Map.find_opt array size_params_map in
-          let* rewritten =
-            Phase_timer.measure "delin/from-exp"
-              (fun () -> from_exp ~globals ~scope ~loop_scope ~check
-                ~size_params a)
-          in
-          Some (rewritten.indices, rewritten.conditions)
-        ) with
-        | Some (indices, conditions) ->
-          (* Wrap the rewritten access in one [Assert] per emitted bound.
-             [Unsynced.Assert] is semantically [assume] in this IR
-             (downstream [inline_asserts] lifts it into a [Cond] gate).
-             Bounds reach here only if the oracle discharged them, so
-             the assume is sound by construction. *)
-          let access = Unsynced.Access { acc with index = indices } in
-          List.fold_right
-            (fun cond body -> Unsynced.Seq (Assert cond, body))
-            conditions
-            access
-        | None -> Access acc)
+      | Access ({ array; index = [a]; _ } as acc)
+        when Variable.Set.mem array viable ->
+        let size_params = Variable.Map.find array size_params_map in
+        let a = Expr.from_nexp ~globals a in
+        (match
+           Phase_timer.measure "delin/from-exp" (fun () ->
+             from_exp ~globals ~scope ~loop_scope ~check ~size_params a)
+         with
+         | Some t ->
+           let body = Unsynced.Access { acc with index = t.indices } in
+           List.fold_right
+             (fun c b -> Unsynced.Seq (Assert c, b))
+             t.conditions
+             body
+         | None ->
+           (* Defensive: viable means every access succeeded in the
+              first walk. If something changed between the two walks
+              (shouldn't, [from_exp] is pure), fall through to linear. *)
+           Access acc)
       | Access _ as code -> code
       | Cond (p, b) -> Cond (p, walk scope loop_scope b)
       | Loop (r, b) ->
@@ -839,6 +900,5 @@ end = struct
           ~check kernel.code }
 end
 
-module Default = Make (Greedy) (RejectAll)
 module All = Make (Greedy) (AllBounds)
 module Maslov_elide = Make (Greedy) (Maslov)

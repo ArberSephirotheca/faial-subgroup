@@ -1326,7 +1326,6 @@ let main =
       ~ignore_asserts
       ~assume_delin:true
       ~delin_elide:false
-      ~delin_no_bounds:false
       ~ics15:false
       ~no_check_delin:false
       ~assumes:extra_assumes
