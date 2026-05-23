@@ -340,6 +340,223 @@ let accesses (dims : Term.t list) (t : Expr.t): Expr.t list =
   t |> loop (List.rev dims)
   |> List.rev
 
+module Index = struct
+  type t = {
+    indices : Expr.t list;
+    dims : Expr.t list;
+    conditions : Exp.bexp list;
+  }
+
+  let reconstruct (idx : t) : Expr.t =
+    let rec go indices dims acc =
+      match indices with
+      | [] -> acc
+      | i :: rest ->
+        let mult =
+          List.fold_left Expr.( * ) (Expr.of_int 1) dims
+        in
+        let term = Expr.( * ) i mult in
+        let dims' = match dims with [] -> [] | _ :: t -> t in
+        go rest dims' (Expr.( + ) acc term)
+    in
+    go idx.indices idx.dims Expr.zero
+end
+
+let parameter_atoms (e : Expr.t) : Atom.t list =
+  Expr.fold (fun term acc ->
+    Term.fold (fun a _ acc ->
+      if Atom.is_parameter a then a :: acc else acc
+    ) acc term
+  ) [] e
+  |> List.sort_uniq Atom.compare
+
+(* Group polynomial terms by their factor signature restricted to a
+   given candidate parameter set. Key: multiset of [candidates] atoms
+   appearing in the term. Value: induction-only polynomial summed
+   from the term parts excluding those [candidates] factors. Atoms
+   outside [candidates] (including other parameter atoms) flow to the
+   induction side, so they end up inside the bucket's polynomial
+   value rather than partitioning the key space. *)
+let group_by_parameters ~(candidates : Atom.t list) (e : Expr.t)
+    : Expr.t TermInner.Map.t =
+  let is_candidate a =
+    List.exists (fun c -> Atom.compare a c = 0) candidates
+  in
+  Expr.fold (fun term acc ->
+    let coeff = Term.coeff term in
+    let (param_sig, induct_factors) =
+      Term.fold (fun a n (p, i) ->
+        if is_candidate a then (Atom.Map.add a n p, i)
+        else (p, Atom.Map.add a n i))
+        (Atom.Map.empty, Atom.Map.empty)
+        term
+    in
+    let induct_expr = Expr.of_list [(coeff, induct_factors)] in
+    let existing =
+      TermInner.Map.find_opt param_sig acc
+      |> Option.value ~default:Expr.zero
+    in
+    TermInner.Map.add param_sig (Expr.( + ) existing induct_expr) acc
+  ) TermInner.Map.empty e
+
+(* Try to express [a] as [k * b] for an integer scalar [k]. Pick any
+   non-zero term of [b], read off the matching term of [a], compute
+   the candidate scalar, then verify the whole [a == k * b]. *)
+let try_scalar_quotient (a : Expr.t) (b : Expr.t) : int option =
+  match Expr.to_list b with
+  | [] -> None
+  | (c1, fm1) :: _ ->
+    let matching =
+      Expr.to_list a
+      |> List.find_opt (fun (_, fm) -> TermInner.compare fm fm1 = 0)
+    in
+    (match matching with
+     | None ->
+       if Expr.to_list a = [] then Some 0 else None
+     | Some (c2, _) ->
+       if c1 = 0 || c2 mod c1 <> 0 then None
+       else
+         let k = c2 / c1 in
+         let scaled =
+           Expr.to_list b
+           |> List.map (fun (c, fm) -> (k * c, fm))
+           |> Expr.of_list
+         in
+         if Expr.compare a scaled = 0 then Some k else None)
+
+let rec permutations : 'a list -> 'a list Seq.t = function
+  | [] -> Seq.return []
+  | xs ->
+    List.mapi (fun i x -> (i, x)) xs
+    |> List.to_seq
+    |> Seq.concat_map (fun (i, x) ->
+        let rest = List.filteri (fun j _ -> j <> i) xs in
+        Seq.map (fun p -> x :: p) (permutations rest))
+
+module Tactic = struct
+  type t =
+    | Use of Index.t
+    | Try of { cond : Exp.bexp; first : t; second : t }
+end
+
+module type DelinAlgorithm = sig
+  val candidates :
+    globals:Variable.Set.t ->
+    size_params:Term.t list ->
+    Expr.t ->
+    Tactic.t Seq.t
+end
+
+module Greedy : DelinAlgorithm = struct
+  let candidates ~globals:_ ~size_params expr =
+    match dims size_params with
+    | None -> Seq.empty
+    | Some ds ->
+      let is = accesses ds expr in
+      let dims_e = List.map (fun t -> Expr.of_list [t]) ds in
+      Seq.return
+        (Tactic.Use {
+          Index.indices = is;
+          dims = dims_e;
+          conditions = [];
+        })
+end
+
+(* "Optimistic Delinearization of Parametrically Sized Arrays"
+   (Grosser et al., ICS'15), section 4, sound fragment: permutation
+   search + Algorithm 2 alpha-derivation + Algorithm 3 subscript
+   recovery, restricted to candidates whose derivations are exact at
+   the polynomial-ring level. The redundancy-based consistency check
+   is skipped; final soundness is verified by reconstructing the
+   linearised form via [Index.reconstruct] and comparing against the
+   input. Assumes alpha_1 = 0 (Algorithm 3's documented constraint). *)
+module ICS15 : DelinAlgorithm = struct
+  let try_permutation (perm : Atom.t list) (expr : Expr.t) : Index.t option =
+    let d = List.length perm + 1 in
+    let buckets = group_by_parameters ~candidates:perm expr in
+    let sig_of atoms =
+      atoms |> List.map (fun a -> (a, 1)) |> Atom.Map.of_list
+    in
+    let lookup s =
+      TermInner.Map.find_opt s buckets |> Option.value ~default:Expr.zero
+    in
+    let f0 = lookup (sig_of perm) in
+    if d > 1 && Expr.compare f0 Expr.zero = 0 then None
+    else
+      let ( let* ) = Option.bind in
+      let rec derive_alphas k acc =
+        if k > d - 1 then Some (List.rev acc)
+        else
+          let perm_without_pk =
+            List.filteri (fun i _ -> i + 1 <> k) perm
+          in
+          let g = lookup (sig_of perm_without_pk) in
+          match try_scalar_quotient g f0 with
+          | None -> None
+          | Some a -> derive_alphas (k + 1) (a :: acc)
+      in
+      let* tail_alphas = derive_alphas 2 [] in
+      let alphas = 0 :: tail_alphas in
+      let alpha k = List.nth alphas (k - 1) in
+      let scale n e =
+        if n = 0 then Expr.zero
+        else if n = 1 then e
+        else Expr.( * ) (Expr.of_int n) e
+      in
+      let rec derive_fs j prev_fs_rev =
+        if j > d - 1 then Some (List.rev prev_fs_rev)
+        else
+          let tail = List.filteri (fun idx _ -> idx + 1 > j) perm in
+          let bucket = lookup (sig_of tail) in
+          let prev_fs = List.rev prev_fs_rev in
+          let rec alpha_prod m =
+            if m > j then 1 else (alpha m) * alpha_prod (m + 1)
+          in
+          let contribution =
+            List.fold_left
+              (fun (sum, i) f_i ->
+                if i = 0 then (sum, i + 1)
+                else
+                  let p = alpha_prod (i + 1) in
+                  (Expr.( + ) sum (scale p f_i), i + 1))
+              (Expr.zero, 0)
+              prev_fs
+            |> fst
+          in
+          let f_j = Expr.( - ) bucket contribution in
+          derive_fs (j + 1) (f_j :: prev_fs_rev)
+      in
+      let* fs = derive_fs 1 [f0] in
+      let dims =
+        List.mapi (fun i p ->
+          let a = alpha (i + 1) in
+          let p_expr = Expr.of_atom p in
+          if a = 0 then p_expr
+          else Expr.( + ) p_expr (Expr.of_int a))
+          perm
+      in
+      let idx : Index.t = { indices = fs; dims; conditions = [] } in
+      if Expr.compare (Index.reconstruct idx) expr = 0 then Some idx
+      else None
+
+  (* Candidate parameters must be drawn from the array-shared
+     [size_params], not from the per-access expression. Otherwise two
+     accesses to one array can pick different shapes, breaking the
+     downstream invariant that all accesses agree on dimensionality. *)
+  let params_in_size_params (sp : Term.t list) : Atom.t list =
+    sp |> List.concat_map (fun t ->
+      Term.factors t |> List.filter_map (fun (a, _) ->
+        if Atom.is_parameter a then Some a else None))
+    |> List.sort_uniq Atom.compare
+
+  let candidates ~globals:_ ~size_params expr =
+    params_in_size_params size_params
+    |> permutations
+    |> Seq.filter_map (fun perm ->
+        try_permutation perm expr
+        |> Option.map (fun idx -> Tactic.Use idx))
+end
+
 (* A [BoundGenerator] decides, per delinearised access, which inner-axis
    bounds [0 <= i_k < d_k] make it into [t.conditions]. The two type
    members are independent:
@@ -366,15 +583,15 @@ module type BoundGenerator = sig
 
   type t
   val create : scope -> t
-  val add_bound : t -> Expr.t -> Term.t -> t
+  val add_bound : t -> Expr.t -> Expr.t -> t
   val get_bounds : t -> Exp.bexp list
 end
 
 (* Build the standard [0 <= i] /\ [i < d] conjunction from an inner-axis
    index expression and its dimension. *)
-let make_bound (i : Expr.t) (d : Term.t) : Exp.bexp =
+let make_bound (i : Expr.t) (d : Expr.t) : Exp.bexp =
   let open Exp in
-  b_and (n_le (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Term.to_nexp d))
+  b_and (n_le (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Expr.to_nexp d))
 
 module RejectAll : BoundGenerator = struct
   type scope = unit
@@ -436,18 +653,18 @@ module Maslov : BoundGenerator = struct
     in
     Atom.as_induction_var a
 
-  let provable ~(ranges : scope) (i : Expr.t) (d : Term.t) : bool =
+  let provable ~(ranges : scope) (i : Expr.t) (d : Expr.t) : bool =
     if Variable.Map.is_empty ranges then false
     else
       let ( let* ) = Option.bind in
       let outcome =
         let* v = as_single_induction_var i in
         let* lhs = Variable.Map.find_opt v ranges in
-        Some (Expr.compare (Lazy.force lhs) (Expr.of_list [d]) = 0)
+        Some (Expr.compare (Lazy.force lhs) d = 0)
       in
       Option.value outcome ~default:false
 
-  let add_bound (s : t) (i : Expr.t) (d : Term.t) : t =
+  let add_bound (s : t) (i : Expr.t) (d : Expr.t) : t =
     if provable ~ranges:s.ranges i d then s
     else { s with bounds = make_bound i d :: s.bounds }
 
@@ -455,30 +672,41 @@ module Maslov : BoundGenerator = struct
 end
 
 (* The rewriter, parameterised over a bound-generation strategy. *)
-module Make(G : BoundGenerator) : sig
-  val from_exp : scope:G.scope -> Term.t list -> Expr.t -> t option
+module Make (A : DelinAlgorithm) (G : BoundGenerator) : sig
+  val from_exp :
+    globals:Variable.Set.t ->
+    scope:G.scope ->
+    size_params:Term.t list ->
+    Expr.t ->
+    t option
   val rewrite_kernel : Aligned.Kernel.t -> Aligned.Kernel.t
 end = struct
-  let from_exp ~(scope : G.scope) (ds : Term.t list) (expr : Expr.t)
-      : t option =
-    let is = accesses ds expr in
-    let inner_is = match is with
-      | _ :: rest -> rest
-      | [] -> failwith "from_exp: empty indices list"
-    in
-    (* [fold_right] so that bounds end up in axis order in [get_bounds],
-       since [add_bound] in the standard implementations prepends. *)
-    let final =
-      List.fold_right
-        (fun (d, i) acc -> G.add_bound acc i d)
-        (List.combine ds inner_is)
-        (G.create scope)
-    in
-    Some {
-      indices = List.map Expr.to_nexp is;
-      dims = List.map Term.to_nexp ds;
-      conditions = G.get_bounds final;
-    }
+  let from_exp ~(globals : Variable.Set.t) ~(scope : G.scope)
+      ~(size_params : Term.t list) (expr : Expr.t) : t option =
+    let ( let* ) = Option.bind in
+    let* (tactic, _) = Seq.uncons (A.candidates ~globals ~size_params expr) in
+    match tactic with
+    | Tactic.Use idx ->
+      let inner_is = match idx.indices with
+        | _ :: rest -> rest
+        | [] -> failwith "from_exp: empty indices list"
+      in
+      (* [fold_right] so that bounds end up in axis order in
+         [get_bounds], since [add_bound] in the standard
+         implementations prepends. *)
+      let final =
+        List.fold_right
+          (fun (d, i) acc -> G.add_bound acc i d)
+          (List.combine idx.dims inner_is)
+          (G.create scope)
+      in
+      Some {
+        indices = List.map Expr.to_nexp idx.indices;
+        dims = List.map Expr.to_nexp idx.dims;
+        conditions = idx.conditions @ G.get_bounds final;
+      }
+    (* Piecewise emission lands in a later chunk. *)
+    | Tactic.Try _ -> None
 
   let get_accesses (unsync : Unsynced.t) : Exp.nexp list list Variable.Map.t =
     let open Unsynced in
@@ -503,29 +731,28 @@ end = struct
     let accs =
       Phase_timer.measure "delin/get-accesses" (fun () -> get_accesses unsync)
     in
-    let dims = Phase_timer.measure "delin/dims" (fun () ->
+    let size_params_map = Phase_timer.measure "delin/dims" (fun () ->
       accs
       |> Variable.Map.filter_map (fun _ accesses ->
-        (* Skip arrays that already have multi-index accesses — there is
+        (* Skip arrays that already have multi-index accesses; there is
            nothing to delinearize for those. Returning [None] drops the
-           entry from the dims map, so the rewriter's [find_opt] misses
-           and leaves the access unchanged. *)
-        let* singletons = accesses
-          |> List.fold_left (fun acc -> function
-            | [a] -> Option.map (fun xs -> Expr.from_nexp ~globals a :: xs) acc
-            | _ -> None
-          ) (Some [])
-        in
-        singletons |> size_params_all |> dims))
+           entry, so the rewriter's [find_opt] misses and leaves the
+           access unchanged. *)
+        accesses
+        |> List.fold_left (fun acc -> function
+          | [a] -> Option.map (fun xs -> Expr.from_nexp ~globals a :: xs) acc
+          | _ -> None
+        ) (Some [])
+        |> Option.map size_params_all))
     in
     let rec walk (scope : G.scope) : Unsynced.t -> Unsynced.t = function
       | Access ({ array; index = [a]; _ } as acc) ->
         (match (
           let a = Expr.from_nexp ~globals a in
-          let* dim = Variable.Map.find_opt array dims in
+          let* size_params = Variable.Map.find_opt array size_params_map in
           let* rewritten =
             Phase_timer.measure "delin/from-exp"
-              (fun () -> from_exp ~scope dim a)
+              (fun () -> from_exp ~globals ~scope ~size_params a)
           in
           Some (rewritten.indices, rewritten.conditions)
         ) with
@@ -573,6 +800,6 @@ end = struct
         rewrite_aligned ~globals ~scope:G.initial_scope kernel.code }
 end
 
-module Default = Make(RejectAll)
-module All = Make(AllBounds)
-module Maslov_elide = Make(Maslov)
+module Default = Make (Greedy) (RejectAll)
+module All = Make (Greedy) (AllBounds)
+module Maslov_elide = Make (Greedy) (Maslov)

@@ -67,16 +67,16 @@ let dim_examples : (string * nexp * nexp list) list =
   ]
   |> List.map (fun (l, b, a) -> (l, b, List.map normalize a))
 
-(* Stage 3: end-to-end on a single access expression. Composes Expr.from_nexp,
-   size_params, dims, from_exp; uses the [AllBounds] generator so [t.conditions]
-   contains the full per-axis bound list. *)
+(* Stage 3: end-to-end on a single access expression. Uses [AllBounds]
+   so [t.conditions] contains the full per-axis bound list. *)
 let delin ~globals (e : nexp) : Delinearize.t option =
   let expr = Delinearize.Expr.from_nexp ~globals e in
-  match Delinearize.size_params expr |> Delinearize.dims with
-  | None -> None
-  | Some d ->
-    Delinearize.All.from_exp
-      ~scope:Delinearize.AllBounds.initial_scope d expr
+  let size_params = Delinearize.size_params expr in
+  Delinearize.All.from_exp
+    ~globals
+    ~scope:Delinearize.AllBounds.initial_scope
+    ~size_params
+    expr
 
 let positive_examples : (string * nexp * Delinearize.t) list =
   let open Build in
@@ -230,7 +230,7 @@ let maslov_scope_of (items : (string * nexp * nexp) list)
 (* Did [Maslov.add_bound] elide the (i, d) pair? Equivalent to
    [provable]: feeding one bound, the accumulator stays empty iff the
    bound was proved statically. *)
-let maslov_provable scope (i : Delinearize.Expr.t) (d : Delinearize.Term.t)
+let maslov_provable scope (i : Delinearize.Expr.t) (d : Delinearize.Expr.t)
     : bool =
   let acc = Delinearize.Maslov.create scope in
   let acc' = Delinearize.Maslov.add_bound acc i d in
@@ -240,13 +240,6 @@ let maslov_tests =
   "Maslov.add_bound" >:: fun _ ->
   let open Build in
   let expr e = Delinearize.Expr.from_nexp ~globals e in
-  let term e =
-    match
-      Delinearize.Expr.to_list (Delinearize.Expr.from_nexp ~globals e)
-    with
-    | [t] -> t
-    | _ -> failwith "test fixture: expected single-term dim"
-  in
   let check ?(msg = "") ~scope expected i d =
     let got = maslov_provable scope i d in
     assert_equal ~msg ~printer:string_of_bool expected got
@@ -255,38 +248,38 @@ let maslov_tests =
   check
     ~msg:"loop range matches dim"
     ~scope:(maslov_scope_of [("y", Num 0, vN + Num (-1))])
-    true (expr y) (term vN);
+    true (expr y) (expr vN);
   (* No range information: bound kept. *)
   check
     ~msg:"empty scope -> bound kept"
     ~scope:Delinearize.Maslov.initial_scope
-    false (expr y) (term vN);
+    false (expr y) (expr vN);
   (* y in [0, N] (one too large): not provable. *)
   check
     ~msg:"loose upper bound -> bound kept"
     ~scope:(maslov_scope_of [("y", Num 0, vN)])
-    false (expr y) (term vN);
+    false (expr y) (expr vN);
   (* y in [1, N-1] (non-zero lower bound is not recognised). *)
   check
     ~msg:"non-zero lower bound -> bound kept"
     ~scope:(maslov_scope_of [("y", Num 1, vN + Num (-1))])
-    false (expr y) (term vN);
+    false (expr y) (expr vN);
   (* Constant index: not the single-atom pattern. *)
   check
     ~msg:"constant index -> bound kept"
     ~scope:Delinearize.Maslov.initial_scope
-    false (expr (Num 3)) (term vN);
+    false (expr (Num 3)) (expr vN);
   (* Sum of two atoms: not the single-atom pattern. *)
   check
     ~msg:"two-atom index -> bound kept"
     ~scope:(maslov_scope_of [("y", Num 0, vN + Num (-1));
                              ("z", Num 0, vN + Num (-1))])
-    false (expr (y + z)) (term vN);
+    false (expr (y + z)) (expr vN);
   (* Numeric range: y in [0, 9], dim 10. *)
   check
     ~msg:"numeric range matches numeric dim"
     ~scope:(maslov_scope_of [("y", Num 0, Num 9)])
-    true (expr y) (term (Num 10))
+    true (expr y) (expr (Num 10))
 
 (* End-to-end via [from_exp]: [Maslov_elide] drops bounds [Maslov.add_bound]
    can prove; [All] keeps every bound. *)
@@ -296,17 +289,21 @@ let cond_count = function
 
 let delin_all (e : nexp) : Delinearize.t option =
   let expr = Delinearize.Expr.from_nexp ~globals e in
-  match Delinearize.size_params expr |> Delinearize.dims with
-  | None -> None
-  | Some d ->
-    Delinearize.All.from_exp
-      ~scope:Delinearize.AllBounds.initial_scope d expr
+  let size_params = Delinearize.size_params expr in
+  Delinearize.All.from_exp
+    ~globals
+    ~scope:Delinearize.AllBounds.initial_scope
+    ~size_params
+    expr
 
 let delin_maslov ~scope (e : nexp) : Delinearize.t option =
   let expr = Delinearize.Expr.from_nexp ~globals e in
-  match Delinearize.size_params expr |> Delinearize.dims with
-  | None -> None
-  | Some d -> Delinearize.Maslov_elide.from_exp ~scope d expr
+  let size_params = Delinearize.size_params expr in
+  Delinearize.Maslov_elide.from_exp
+    ~globals
+    ~scope
+    ~size_params
+    expr
 
 let elision_tests =
   "from_exp elision" >:: fun _ ->
@@ -338,6 +335,86 @@ let elision_tests =
     (vM * vN * x + vN * y + z)
     2 1
 
+let reconstruct_tests =
+  "Index.reconstruct" >:: fun _ ->
+  let open Build in
+  let check ~msg before =
+    let expr = Delinearize.Expr.from_nexp ~globals before in
+    let size_params = Delinearize.size_params expr in
+    match
+      Delinearize.Greedy.candidates ~globals ~size_params expr |> Seq.uncons
+    with
+    | Some (Delinearize.Tactic.Use idx, _) ->
+      let rebuilt = Delinearize.Index.reconstruct idx in
+      assert_equal
+        ~msg
+        ~printer:Exp.n_to_string
+        (normalize before)
+        (Delinearize.Expr.to_nexp rebuilt)
+    | Some (Delinearize.Tactic.Try _, _) ->
+      failwith "test fixture: Greedy should not produce Try"
+    | None ->
+      failwith "test fixture: Greedy returned no candidate"
+  in
+  check ~msg:"linear" x;
+  check ~msg:"affine" (x + Num 1);
+  check ~msg:"numdim" (vN * x + y);
+  check ~msg:"3dim" (vM * vN * x + vN * y + z);
+  check ~msg:"3dim+dist" (vN * (vM * x + y) + z)
+
+(* ICS15 should reconstruct shape A[?][N][M+1] from the expansion
+   x*N*(M+1) + y*(M+1) + z = N*M*x + N*x + M*y + y + z, where
+   Greedy's pairwise [try_div] fails (size_params {N*M, N, M} don't
+   form a divisibility chain). *)
+let grosser_offset_test =
+  "ICS15.candidates handles A[?][N][M+1]" >:: fun _ ->
+  let open Build in
+  let expr =
+    Delinearize.Expr.from_nexp ~globals
+      (vN * vM * x + vN * x + vM * y + y + z)
+  in
+  let size_params = Delinearize.size_params expr in
+  match
+    Delinearize.ICS15.candidates ~globals ~size_params expr
+    |> Seq.uncons
+  with
+  | None -> assert_failure "ICS15 produced no candidate"
+  | Some (Delinearize.Tactic.Try _, _) ->
+    assert_failure "ICS15 produced a Try, expected Use"
+  | Some (Delinearize.Tactic.Use idx, _) ->
+    let rebuilt = Delinearize.Index.reconstruct idx in
+    assert_equal
+      ~msg:"reconstructed polynomial"
+      ~printer:Exp.n_to_string
+      (Delinearize.Expr.to_nexp
+        (Delinearize.Expr.from_nexp ~globals
+          (vN * vM * x + vN * x + vM * y + y + z)))
+      (Delinearize.Expr.to_nexp rebuilt);
+    assert_equal
+      ~msg:"index count"
+      ~printer:string_of_int
+      3 (List.length idx.indices);
+    assert_equal
+      ~msg:"dim count"
+      ~printer:string_of_int
+      2 (List.length idx.dims)
+
+(* Greedy alone fails on the same input. *)
+let greedy_fails_on_offset_test =
+  "Greedy.candidates fails on A[?][N][M+1]" >:: fun _ ->
+  let open Build in
+  let expr =
+    Delinearize.Expr.from_nexp ~globals
+      (vN * vM * x + vN * x + vM * y + y + z)
+  in
+  let size_params = Delinearize.size_params expr in
+  match
+    Delinearize.Greedy.candidates ~globals ~size_params expr |> Seq.uncons
+  with
+  | None -> ()  (* expected *)
+  | Some _ ->
+    assert_failure "Greedy produced a candidate; expected Seq.empty"
+
 let tests =
   "delinearization" >::: [
     stage1_tests;
@@ -346,6 +423,9 @@ let tests =
     kernel_tests;
     maslov_tests;
     elision_tests;
+    reconstruct_tests;
+    grosser_offset_test;
+    greedy_fails_on_offset_test;
   ]
 
 let _ = run_test_tt_main tests

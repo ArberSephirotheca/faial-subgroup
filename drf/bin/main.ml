@@ -334,6 +334,18 @@ let main =
              assumption that inner indices stay in their inferred axes; \
              this matches the pre-Phase-B behaviour where bounds were \
              computed and discarded. Mutually exclusive with [--delin-elide].")
+  and+ ics15 =
+    Arg.(
+      value & flag
+      & info [ "ics15" ]
+          ~doc:
+            "Use the ICS15 polynomial driver (Grosser et al., \
+             'Optimistic Delinearization of Parametrically Sized \
+             Arrays', sound fragment: permutation search + \
+             alpha-derivation, rejecting any candidate that requires a \
+             non-static polynomial division) instead of the default \
+             greedy try_div driver. Orthogonal to the bound-emission \
+             flags.")
   and+ assume_delin =
     Arg.(
       value & flag
@@ -484,7 +496,7 @@ let main =
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
-        ~delin_elide ~delin_no_bounds
+        ~delin_elide ~delin_no_bounds ~ics15
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at

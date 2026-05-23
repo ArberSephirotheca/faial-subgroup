@@ -97,6 +97,7 @@ type t = {
   assume_delin : bool;
   delin_elide : bool;
   delin_no_bounds : bool;
+  ics15 : bool;
   (* Per-kernel pre-condition list, keyed by [Kernel.name]. Genie's
      internal model treats assumptions as kernel-scoped: a variable
      declared in two kernels is a different variable in each, so an
@@ -194,6 +195,7 @@ let to_string (app : t) : string =
    assume_delin;
    delin_elide;
    delin_no_bounds;
+   ics15;
    assumes;
    assume_dims;
    assume_launch;
@@ -218,6 +220,7 @@ let to_string (app : t) : string =
       ^ "\nassume_delin = " ^ bool assume_delin
       ^ "\ndelin_elide = " ^ bool delin_elide
       ^ "\ndelin_no_bounds = " ^ bool delin_no_bounds
+      ^ "\nics15 = " ^ bool ics15
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
       ^ "\nassume_launch = " ^ bool assume_launch
@@ -237,7 +240,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
-    ~assume_delin ~delin_elide ~delin_no_bounds ~assumes ~assume_dims
+    ~assume_delin ~delin_elide ~delin_no_bounds ~ics15 ~assumes ~assume_dims
     ~assume_launch ~check_pre_sat
     ~memory_model ~cbor ~stop_at : t =
   let parsed =
@@ -321,6 +324,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     assume_delin;
     delin_elide;
     delin_no_bounds;
+    ics15;
     assumes;
     assume_dims;
     assume_launch;
@@ -420,24 +424,24 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
      boundary still emits a "delin" entry — 0 in that case). The
      rewriter wraps each delinearized access in [Unsynced.Assert] nodes
      for the per-axis bounds the strategy emits; [inline_asserts]
-     downstream lifts them into a [Cond] gate. The strategy picks
-     which bounds those are:
-       default ([Make(AllBounds)]) — every bound, unconditionally
-       [--delin-elide] ([Make(Maslov)]) — only bounds Maslov can't
-         prove statically (logically same content, smaller formula)
-       [--delin-no-bounds] ([Make(RejectAll)]) — no bounds at all
-         (matches the pre-Phase-B behaviour where conditions were
-         computed and discarded). *)
+     downstream lifts them into a [Cond] gate. Two orthogonal axes:
+     polynomial driver ([Greedy] | [ICS15]) and bound-emission strategy
+     ([AllBounds] | [Maslov] | [RejectAll]). *)
   |> (if a.assume_delin
       then
-        let rewrite =
-          if a.delin_no_bounds
-          then Delinearize.Default.rewrite_kernel
-          else if a.delin_elide
-          then Delinearize.Maslov_elide.rewrite_kernel
-          else Delinearize.All.rewrite_kernel
+        let algo : (module Delinearize.DelinAlgorithm) =
+          if a.ics15 then (module Delinearize.ICS15)
+          else (module Delinearize.Greedy)
         in
-        Streamutil.map rewrite
+        let bg : (module Delinearize.BoundGenerator) =
+          if a.delin_no_bounds then (module Delinearize.RejectAll)
+          else if a.delin_elide then (module Delinearize.Maslov)
+          else (module Delinearize.AllBounds)
+        in
+        let module A = (val algo) in
+        let module G = (val bg) in
+        let module M = Delinearize.Make (A) (G) in
+        Streamutil.map M.rewrite_kernel
       else Fun.id)
   |> Phase_timer.boundary "delin"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Delin

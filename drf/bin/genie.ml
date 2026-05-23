@@ -1327,6 +1327,7 @@ let main =
       ~assume_delin:true
       ~delin_elide:false
       ~delin_no_bounds:false
+      ~ics15:false
       ~assumes:extra_assumes
       ~assume_dims:false
       ~assume_launch:true
