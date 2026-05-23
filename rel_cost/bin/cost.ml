@@ -80,13 +80,14 @@ module Solver = struct
     strategy : Analysis_strategy.t;
     metric : Metric.t;
     compact : bool;
+    delin_bc : bool;
   }
 
   let make ~kernels ~use_maxima ~use_absynth ~use_cofloco ~use_koat ~absynth_exe
       ~cofloco_exe ~koat_exe ~show_code ~maxima_exe ~show_ra ~skip_simpl_ra
       ~skip_distinct_vars ~asympt ~config ~ignore_absent ~only_reads
       ~only_writes ~block_dim ~grid_dim ~params ~approx_ifs ~strategy ~metric
-      ~compact ~show_map ~goal : t =
+      ~compact ~show_map ~goal ~delin_bc : t =
     let kernels =
       if skip_distinct_vars then kernels
       else List.map Protocols.Kernel.vars_distinct kernels
@@ -118,6 +119,7 @@ module Solver = struct
       compact;
       show_map;
       goal;
+      delin_bc;
     }
 
   let get_cost (app : t) ((r, metrics) : Ra.Stmt.t * Ra_compiler.Stats.t) :
@@ -155,8 +157,8 @@ module Solver = struct
       else Ra_compiler.UniformCond.Exact
     in
     let* r, metric =
-      Ra_compiler.Default.from_kernel ~unif_cond ~strategy:a.strategy a.metric
-        a.config k
+      Ra_compiler.Default.from_kernel ~unif_cond ~strategy:a.strategy
+        ~delin_bc:a.delin_bc a.metric a.config k
     in
     Ok ((if a.skip_simpl_ra then r else Ra.Stmt.simplify r), metric)
 
@@ -313,15 +315,16 @@ let run ?(use_maxima = false) ?(use_absynth = false) ?(use_cofloco = false)
     ?(use_koat = false) ?(absynth_exe = "absynth") ?(cofloco_exe = "cofloco")
     ?(koat_exe = "koat2") ?(show_code = false) ?(maxima_exe = "maxima")
     ?(show_ra = false) ?(show_map = false) ?(skip_simpl_ra = true)
-    ~skip_distinct_vars ~asympt ~only_cost ~config ~output_json ~ignore_absent
-    ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~approx_ifs ~strategy
-    ~metric ~compact ~goal (kernels : Protocols.Kernel.t list) : unit =
+    ?(delin_bc = false) ~skip_distinct_vars ~asympt ~only_cost ~config
+    ~output_json ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim
+    ~params ~approx_ifs ~strategy ~metric ~compact ~goal
+    (kernels : Protocols.Kernel.t list) : unit =
   let app : Solver.t =
     Solver.make ~use_maxima ~maxima_exe ~use_absynth ~absynth_exe ~use_cofloco
       ~cofloco_exe ~use_koat ~koat_exe ~show_code ~show_ra ~asympt
       ~skip_simpl_ra ~skip_distinct_vars ~config ~kernels ~ignore_absent
       ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~approx_ifs
-      ~strategy ~metric ~compact ~show_map ~goal
+      ~strategy ~metric ~compact ~show_map ~goal ~delin_bc
   in
   if output_json then JUI.run app else TUI.run ~only_cost app
 
@@ -334,7 +337,8 @@ let pico (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
     (only_reads : bool) (only_writes : bool) (params : (string * int) list)
     (approx_ifs : bool) (strategy : Analysis_strategy.t) (metric : Metric.t)
     (compact : bool) (ignore_parsing_errors : bool) (show_map : bool)
-    (bank_count : int) (threads_per_warp : int) (goal : Goal.t) =
+    (bank_count : int) (threads_per_warp : int) (goal : Goal.t)
+    (delin_bc : bool) =
   let parsed =
     Protocol_parser.Silent.to_proto
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
@@ -349,7 +353,7 @@ let pico (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
     ~skip_distinct_vars ~absynth_exe ~maxima_exe ~cofloco_exe ~koat_exe
     ~skip_simpl_ra ~config ~only_cost ~asympt ~output_json ~ignore_absent
     ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~approx_ifs ~strategy
-    ~metric ~compact ~show_map ~goal parsed.kernels
+    ~metric ~compact ~show_map ~goal ~delin_bc parsed.kernels
 
 (* Command-line interface *)
 
@@ -550,6 +554,16 @@ let goal =
     & opt (enum [ ("total", Goal.Total); ("approx", Goal.Approx) ]) Goal.Total
     & info [ "goal"; "G" ] ~doc)
 
+let delin_bc =
+  let doc =
+    "Enable the delin-based BC preprocessing (per-axis stride analysis \
+     producing Exact costs without per-thread simulation when possible). \
+     Off by default; with the flag, the BankConflicts metric runs the \
+     delin path and falls back to simulation only when no exact rule \
+     applies."
+  in
+  Arg.(value & flag & info [ "bc-delin" ] ~doc)
+
 let pico_t =
   Term.(
     const pico $ get_fname $ block_dim $ grid_dim $ use_maxima $ use_absynth
@@ -557,7 +571,7 @@ let pico_t =
     $ koat_exe $ maxima_exe $ skip_simpl_ra $ skip_distinct_vars $ only_cost
     $ ignore_absent $ asympt $ output_json $ only_reads $ only_writes $ params
     $ approx_ifs $ strategy $ metric $ compact $ ignore_parsing_errors
-    $ show_map $ bank_count $ warp_size $ goal)
+    $ show_map $ bank_count $ warp_size $ goal $ delin_bc)
 
 let info =
   let doc = "Static analysis of performance cost of GPU programs" in

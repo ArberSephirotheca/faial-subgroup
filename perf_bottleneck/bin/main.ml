@@ -81,11 +81,13 @@ module Solver = struct
     col_filter : int option;
     metric : Metric.t;
     verbose : bool;
+    delin_bc : bool;
   }
 
   let make ~kernels ~skip_zero ~skip_distinct_vars ~config ~ignore_absent
       ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate
-      ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric ~verbose : t =
+      ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric ~verbose
+      ~delin_bc : t =
     let kernels =
       if skip_distinct_vars then kernels
       else List.map Kernel.vars_distinct kernels
@@ -107,6 +109,7 @@ module Solver = struct
       col_filter;
       metric;
       verbose;
+      delin_bc;
     }
 
   let sliced_cost (a : t) (k : Kernel.t) : Hotspot.t list =
@@ -142,7 +145,8 @@ module Solver = struct
         in
         let analysis_time_secs, r_cost =
           time_analysis (fun () ->
-              Bank.index_cost ~verbose:a.verbose a.config a.metric bank)
+              Bank.index_cost ~verbose:a.verbose ~delin_bc:a.delin_bc
+                a.config a.metric bank)
         in
         let _ = a.skip_zero in
         let divergence = Divergence_analysis.from_bank bank in
@@ -413,14 +417,15 @@ module TheoremExporter = struct
       results
 end
 
-let run ?(skip_zero = true) ~skip_distinct_vars ~config ~output_json
-    ~export_theorems ~ignore_absent ~only_reads ~only_writes ~block_dim
-    ~grid_dim ~params ~simulate ~memory_filter ~erase_ctx ~line_filter
-    ~col_filter ~metric ~verbose (kernels : Kernel.t list) : unit =
+let run ?(skip_zero = true) ?(delin_bc = false) ~skip_distinct_vars ~config
+    ~output_json ~export_theorems ~ignore_absent ~only_reads ~only_writes
+    ~block_dim ~grid_dim ~params ~simulate ~memory_filter ~erase_ctx
+    ~line_filter ~col_filter ~metric ~verbose (kernels : Kernel.t list) : unit =
   let app : Solver.t =
     Solver.make ~skip_zero ~skip_distinct_vars ~config ~kernels ~ignore_absent
       ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~simulate
       ~memory_filter ~erase_ctx ~line_filter ~col_filter ~metric ~verbose
+      ~delin_bc
   in
   if export_theorems then TheoremExporter.export_theorems app;
   if output_json then JUI.run app else TUI.run app
@@ -431,7 +436,7 @@ let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
     (only_writes : bool) (params : (string * int) list) (simulate : bool)
     (memory_filter : MemoryFilter.t) (erase_ctx : bool)
     (line_filter : int option) (col_filter : int option) (metric : Metric.t)
-    (verbose : bool) =
+    (verbose : bool) (delin_bc : bool) =
   let parsed = Protocol_parser.Silent.to_proto ~block_dim ~grid_dim fname in
   let block_dim = parsed.options.block_dim in
   let grid_dim = parsed.options.grid_dim in
@@ -439,7 +444,7 @@ let main (fname : string) (block_dim : Dim3.t option) (grid_dim : Dim3.t option)
   run ~skip_zero:(not show_all) ~skip_distinct_vars ~config ~output_json
     ~export_theorems ~ignore_absent ~only_reads ~only_writes ~block_dim
     ~grid_dim ~params ~simulate ~memory_filter ~erase_ctx ~line_filter
-    ~col_filter ~metric ~verbose parsed.kernels
+    ~col_filter ~metric ~verbose ~delin_bc parsed.kernels
 
 (* Command-line interface *)
 
@@ -564,12 +569,19 @@ let verbose =
   let doc = "Enable verbose output for analysis." in
   Arg.(value & flag & info [ "v"; "verbose" ] ~doc)
 
+let delin_bc =
+  let doc =
+    "Enable the delin-based BC preprocessing (per-axis stride analysis \
+     producing Exact costs without per-thread simulation when possible)."
+  in
+  Arg.(value & flag & info [ "bc-delin" ] ~doc)
+
 let main_t =
   Term.(
     const main $ get_fname $ block_dim $ grid_dim $ show_all
     $ skip_distinct_vars $ ignore_absent $ output_json $ export_theorems
     $ only_reads $ only_writes $ params $ simulate $ memory_type $ erase_ctx
-    $ line_filter $ col_filter $ metric $ verbose)
+    $ line_filter $ col_filter $ metric $ verbose $ delin_bc)
 
 let info =
   let doc = "Static analysis of bank-conflicts for GPU programs" in

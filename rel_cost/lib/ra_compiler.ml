@@ -260,7 +260,8 @@ module Make (LOG : Logger.Logger) = struct
   end
 
   let from_kernel ?(unif_cond = UniformCond.Exact)
-      ?(strategy = Analysis_strategy.OverApproximation) (m : Metric.t)
+      ?(strategy = Analysis_strategy.OverApproximation)
+      ?(delin_bc = false) (m : Metric.t)
       (cfg : Config.t) (k : Kernel.t) : (Ra.Stmt.t * Stats.t, string) Result.t =
     let ( let* ) = Result.bind in
     let if_ : Exp.bexp -> Ra.Stmt.t -> Ra.Stmt.t -> Ra.Stmt.t =
@@ -270,7 +271,7 @@ module Make (LOG : Logger.Logger) = struct
     in
     let lin = L.linearize cfg k.arrays in
     let params = k.global_variables in
-    let idx_analysis = M.run m cfg ~strategy in
+    let idx_analysis = M.run ~delin_bc m cfg ~strategy in
     let uniform_loop =
       Uniform_range.uniform (to_optimize strategy) params cfg.block_dim
     in

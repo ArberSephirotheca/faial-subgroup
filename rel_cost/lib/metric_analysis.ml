@@ -220,16 +220,66 @@ module Make (L : Logger.Logger) = struct
         ^ Exp.b_to_string ctx.divergence);
       vec)
 
-  let run_bc (ctx : t) : IndexCost.t =
+  let bc_simulate (vec : Vectorized.t) (index : Exp.nexp) : Cost.t =
+    match Vectorized.bank_conflicts index vec with
+    | Ok cost -> cost
+    | Error msg ->
+      L.info (fun () ->
+        "BC: could not simulate cost " ^ Exp.n_to_string index ^ ": " ^ msg);
+      Vectorized.max_cost Metric.BankConflicts vec
+
+  (* Delin-driven preprocessor. Falls through to [NeedsSimulation] until
+     [Bc_axis.classify_index] is wired with real per-axis logic. *)
+  let bc_preprocess (ctx : t) : Bc_axis.bc_outcome =
+    let stripped = bc_remove_offset ctx in
+    match stripped with
+    | Num 0 -> Bc_axis.Exact (Cost.from_int ~value:0 ~exact:true ())
+    | _ ->
+      (* Mirror [BC.from_nexp]'s locals-with-tids union: a thread coord
+         is induction-side in delin's classification (not a parameter),
+         so it must be excluded from the [globals] passed to
+         [Expr.from_nexp]. *)
+      let local_scope =
+        Variable.Set.union ctx.locals Variable.tid_set
+      in
+      let globals =
+        Variable.Set.diff
+          (Exp.n_free_names stripped Variable.Set.empty)
+          local_scope
+      in
+      let expr = Delin.Expr.from_nexp ~globals stripped in
+      let size_params = Delin.size_params expr in
+      match
+        Delin.Greedy.candidates ~globals ~size_params expr |> Seq.uncons
+      with
+      | None -> Bc_axis.NeedsSimulation stripped
+      | Some (idx, _) ->
+        let vec = to_vectorized ctx in
+        let classes =
+          Bc_axis.classify_index ~config:ctx.config ~locals:ctx.locals idx
+        in
+        Bc_axis.decide
+          ~config:ctx.config
+          ~tid_count:(Vectorized.tid_count vec)
+          ~reduced:stripped classes
+
+  let run_bc ~(delin_bc : bool) (ctx : t) : IndexCost.t =
     let vec = to_vectorized ctx in
-    let index = bc_remove_offset ctx in
-    (match Vectorized.bank_conflicts index vec with
-      | Ok cost -> cost
-      | Error msg ->
-          L.info (fun () ->
-            "BC: could not simulate cost " ^ Exp.n_to_string index ^ ": " ^ msg);
-          Vectorized.max_cost Metric.BankConflicts vec)
-    |> IndexCost.from_cost
+    if delin_bc then
+      match bc_preprocess ctx with
+      | Bc_axis.Exact cost ->
+        L.info (fun () ->
+          "BC: delin Exact: " ^ Exp.n_to_string ctx.index ^ " 🡆 "
+         ^ Cost.to_string cost);
+        IndexCost.from_cost cost
+      | Bc_axis.NeedsSimulation index ->
+        L.info (fun () ->
+          "BC: delin NeedsSimulation: " ^ Exp.n_to_string ctx.index ^ " 🡆 "
+         ^ Exp.n_to_string index);
+        bc_simulate vec index |> IndexCost.from_cost
+    else
+      let index = bc_remove_offset ctx in
+      bc_simulate vec index |> IndexCost.from_cost
 
   let run_ua (ctx : t) : IndexCost.t =
     let vec = to_vectorized ctx in
@@ -312,11 +362,11 @@ module Make (L : Logger.Logger) = struct
   let run_count (_ctx : t) : IndexCost.t =
     IndexCost.from_cost (Cost.from_int ~value:1 ~exact:true ())
 
-  let run (m : Metric.t) (config : Config.t) ~verbose ~strategy ~locals ~index
-      ~divergence : IndexCost.t =
+  let run ?(delin_bc = false) (m : Metric.t) (config : Config.t) ~verbose
+      ~strategy ~locals ~index ~divergence : IndexCost.t =
     let run =
       match m with
-      | BankConflicts -> run_bc
+      | BankConflicts -> run_bc ~delin_bc
       | UncoalescedAccesses -> run_ua
       | UncoalescedAccessesSat -> run_ua_sat ~verbose
       | CountAccesses -> run_count

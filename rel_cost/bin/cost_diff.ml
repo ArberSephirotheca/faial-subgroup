@@ -33,12 +33,13 @@ module Solver = struct
     strategy : Analysis_strategy.t;
     metric : Metric.t;
     compact : bool;
+    delin_bc : bool;
   }
 
   let make ~kernels1 ~kernels2 ~use_maxima ~show_code ~maxima_exe ~show_ra
       ~skip_simpl_ra ~config ~ignore_absent ~only_reads ~only_writes ~block_dim
-      ~grid_dim ~params ~approx_ifs ~strategy ~metric ~compact ~show_map () : t
-      =
+      ~grid_dim ~params ~approx_ifs ~strategy ~metric ~compact ~show_map
+      ~delin_bc () : t =
     {
       kernels1;
       kernels2;
@@ -59,6 +60,7 @@ module Solver = struct
       metric;
       compact;
       show_map;
+      delin_bc;
     }
 
   type cost = { amount : string; analysis_duration : float }
@@ -92,8 +94,8 @@ module Solver = struct
       else Ra_compiler.UniformCond.Exact
     in
     let* r, _ =
-      Ra_compiler.Default.from_kernel ~unif_cond ~strategy:a.strategy a.metric
-        a.config k
+      Ra_compiler.Default.from_kernel ~unif_cond ~strategy:a.strategy
+        ~delin_bc:a.delin_bc a.metric a.config k
     in
     Ok (if a.skip_simpl_ra then r else Ra.Stmt.simplify r)
 
@@ -211,15 +213,15 @@ module JUI = struct
 end
 
 let run ?(use_maxima = false) ?(show_code = false) ?(maxima_exe = "maxima")
-    ?(show_ra = false) ?(show_map = false) ?(skip_simpl_ra = true) ~only_cost
-    ~config ~output_json ~ignore_absent ~only_reads ~only_writes ~block_dim
-    ~grid_dim ~params ~approx_ifs ~strategy ~metric ~compact ~kernels1 ~kernels2
-    () : unit =
+    ?(show_ra = false) ?(show_map = false) ?(skip_simpl_ra = true)
+    ?(delin_bc = false) ~only_cost ~config ~output_json ~ignore_absent
+    ~only_reads ~only_writes ~block_dim ~grid_dim ~params ~approx_ifs ~strategy
+    ~metric ~compact ~kernels1 ~kernels2 () : unit =
   let app : Solver.t =
     Solver.make ~use_maxima ~maxima_exe ~show_code ~show_ra ~skip_simpl_ra
       ~config ~ignore_absent ~only_reads ~only_writes ~block_dim ~grid_dim
-      ~params ~approx_ifs ~strategy ~metric ~compact ~show_map ~kernels1
-      ~kernels2 ()
+      ~params ~approx_ifs ~strategy ~metric ~compact ~show_map ~delin_bc
+      ~kernels1 ~kernels2 ()
   in
   if output_json then JUI.run app else TUI.run ~only_cost app
 
@@ -230,7 +232,7 @@ let pico (fname1 : string) (fname2 : string) (block_dim : Dim3.t option)
     (only_reads : bool) (only_writes : bool) (params : (string * int) list)
     (approx_ifs : bool) (strategy : Analysis_strategy.t) (metric : Metric.t)
     (compact : bool) (ignore_parsing_errors : bool) (show_map : bool)
-    (bank_count : int) (threads_per_warp : int) =
+    (bank_count : int) (threads_per_warp : int) (delin_bc : bool) =
   let parse fname =
     let parsed =
       Protocol_parser.Silent.to_proto
@@ -249,7 +251,7 @@ let pico (fname1 : string) (fname2 : string) (block_dim : Dim3.t option)
   run ~use_maxima ~show_code ~show_ra ~maxima_exe ~skip_simpl_ra ~config
     ~only_cost ~output_json ~ignore_absent ~only_reads ~only_writes ~block_dim
     ~grid_dim ~params ~approx_ifs ~strategy ~metric ~compact ~show_map
-    ~kernels1:(parse fname1) ~kernels2:(parse fname2) ()
+    ~delin_bc ~kernels1:(parse fname1) ~kernels2:(parse fname2) ()
 
 (* Command-line interface *)
 
@@ -409,13 +411,20 @@ let warp_size =
   in
   Arg.value (Arg.opt Arg.int default info)
 
+let delin_bc =
+  let doc =
+    "Enable the delin-based BC preprocessing (per-axis stride analysis \
+     producing Exact costs without per-thread simulation when possible)."
+  in
+  Arg.(value & flag & info [ "bc-delin" ] ~doc)
+
 let pico_t =
   Term.(
     const pico $ fname1 $ fname2 $ block_dim $ grid_dim $ use_maxima $ show_ra
     $ show_code $ maxima_exe $ skip_simpl_ra $ only_cost $ ignore_absent
     $ output_json $ only_reads $ only_writes $ params $ approx_ifs $ strategy
     $ metric $ compact $ ignore_parsing_errors $ show_map $ bank_count
-    $ warp_size)
+    $ warp_size $ delin_bc)
 
 let info =
   let doc = "The cost between two GPU kernels" in

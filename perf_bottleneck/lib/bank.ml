@@ -261,12 +261,14 @@ module Code = struct
     module M = Metric_analysis.Make (L)
     module L = Linearize_index.Make (L)
 
-    let index_cost ?(verbose = true) ~local_variables (config : Config.t)
-        (m : Metric.t) (a : t) : Metric_analysis.IndexCost.t =
+    let index_cost ?(verbose = true) ?(delin_bc = false) ~local_variables
+        (config : Config.t) (m : Metric.t) (a : t)
+        : Metric_analysis.IndexCost.t =
       let index = index a in
       let locals = locals ~init:local_variables a in
       let divergence = to_bexp a in
-      M.run m config ~verbose ~strategy:Analysis_strategy.OverApproximation
+      M.run ~delin_bc m config ~verbose
+        ~strategy:Analysis_strategy.OverApproximation
         ~locals ~index ~divergence
 
     let from_proto (arrays : Memory.t Variable.Map.t) (cfg : Config.t) :
@@ -376,9 +378,10 @@ let normalize (k : t) : t = { k with code = Code.normalize k.code }
 let to_bexp (k : t) : Exp.bexp = Code.to_bexp k.code
 let index (k : t) : Exp.nexp = Code.index k.code
 
-let index_cost ?(verbose = false) (params : Config.t) (m : Metric.t) (k : t) :
-    Metric_analysis.IndexCost.t =
-  Code.index_cost ~verbose ~local_variables:k.local_variables params m k.code
+let index_cost ?(verbose = false) ?(delin_bc = false) (params : Config.t)
+    (m : Metric.t) (k : t) : Metric_analysis.IndexCost.t =
+  Code.index_cost ~verbose ~delin_bc ~local_variables:k.local_variables params
+    m k.code
 
 let trim_decls (k : t) : t = { k with code = Code.trim_decls k.code }
 
