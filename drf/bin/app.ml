@@ -430,9 +430,9 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
      ([AllBounds] | [Maslov] | [RejectAll]). *)
   |> (if a.assume_delin
       then
-        let algo : (module Delinearize.DelinAlgorithm) =
-          if a.ics15 then (module Delinearize.ICS15)
-          else (module Delinearize.Greedy)
+        let algo : (module Delin.DelinAlgorithm) =
+          if a.ics15 then (module Delin.ICS15)
+          else (module Delin.Greedy)
         in
         let bg : (module Delinearize.BoundGenerator) =
           if a.delin_elide then (module Delinearize.Maslov)
