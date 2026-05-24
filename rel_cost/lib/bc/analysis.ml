@@ -7,13 +7,14 @@ open Protocols
    under a single toggle.
 
    This is the only BC module that's a functor over [Logger]; the
-   four log lines for the BC pipeline land here so the
-   contribution modules stay pure and individually testable. *)
+   log lines for the BC pipeline land here so the contribution
+   modules stay pure and individually testable. *)
 
 (* Modular-oracle solver timeout in milliseconds. Z3 BV queries on
-   [stride mod n] are typically instant against a small preload; a
-   short timeout keeps a pathological [kernel.pre] from stalling the
-   analysis. *)
+   per-stride [gcd(σ, n) = g] and the whole-index [warp_injective]
+   pairwise-distinctness check are typically instant against a small
+   preload; a short timeout keeps a pathological [kernel.pre] from
+   stalling the analysis. *)
 let oracle_timeout = 1000
 
 module Make (L : Logger.Logger) = struct
@@ -63,31 +64,47 @@ module Make (L : Logger.Logger) = struct
       Rules.decide ~config:ctx.config
         ~tid_count:(Vectorized.tid_count vec) d
 
+  (* Whole-index injectivity short-circuit: when the per-axis rules
+     return [NeedsSimulation], try to prove pairwise distinctness of
+     bank IDs across the enabled warp tids. A successful proof gives
+     [Exact 0] without simulation. Soundness witness:
+     [f_pairwise_distinct_enabled]. *)
+  let try_warp_injective (oracle : Oracle.t) (ctx : Analysis_ctx.t)
+      (index : Exp.nexp) : bool =
+    Oracle.warp_injective oracle ~config:ctx.config
+      ~divergence:ctx.divergence ~index
+
   (* Toggle dispatch. When [delin_bc] is false (default), runs the
      baseline pipeline (normalize → simulate) verbatim. When true,
      runs the delin pipeline (normalize → delinearize → rules) with
-     a simulation fallback for [NeedsSimulation] outcomes. *)
+     the warp-injectivity oracle as a post-pass on the
+     [NeedsSimulation] path before falling through to simulation. *)
   let run_bc ~(delin_bc : bool) (ctx : Analysis_ctx.t) : Index_cost.t =
     let vec = to_vectorized ctx in
     if delin_bc then
-      let with_oracle f =
-        if ctx.pre = Exp.Bool true then f None
-        else
-          Oracle.with_slot ~timeout:oracle_timeout ctx.pre
-            (fun o -> f (Some o))
-      in
-      let outcome = with_oracle (fun oracle -> bc_preprocess ?oracle ctx) in
-      match outcome with
-      | Rules.Exact cost ->
-        L.info (fun () ->
-          "BC: delin Exact: " ^ Exp.n_to_string ctx.index ^ " 🡆 "
-         ^ Cost.to_string cost);
-        Index_cost.from_cost cost
-      | Rules.NeedsSimulation index ->
-        L.info (fun () ->
-          "BC: delin NeedsSimulation: " ^ Exp.n_to_string ctx.index ^ " 🡆 "
-         ^ Exp.n_to_string index);
-        simulate vec index |> Index_cost.from_cost
+      Oracle.with_slot ~timeout:oracle_timeout ctx.pre (fun oracle ->
+        let outcome = bc_preprocess ~oracle ctx in
+        match outcome with
+        | Rules.Exact cost ->
+          L.info (fun () ->
+            "BC: delin Exact: " ^ Exp.n_to_string ctx.index ^ " 🡆 "
+           ^ Cost.to_string cost);
+          Index_cost.from_cost cost
+        | Rules.NeedsSimulation index ->
+          if try_warp_injective oracle ctx index then begin
+            let cost = Cost.from_int ~value:0 ~exact:true () in
+            L.info (fun () ->
+              "BC: warp-injective Exact: "
+              ^ Exp.n_to_string ctx.index ^ " 🡆 "
+              ^ Cost.to_string cost);
+            Index_cost.from_cost cost
+          end else begin
+            L.info (fun () ->
+              "BC: delin NeedsSimulation: "
+              ^ Exp.n_to_string ctx.index ^ " 🡆 "
+              ^ Exp.n_to_string index);
+            simulate vec index |> Index_cost.from_cost
+          end)
     else
       let stripped = strip ctx in
       simulate vec stripped |> Index_cost.from_cost

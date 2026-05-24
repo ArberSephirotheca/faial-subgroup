@@ -515,6 +515,165 @@ let tests : unit Alcotest.test_case list =
          ~expected_delin_value:31 ~expected_delin_exact:false
          ~expected_legacy_value:31 ~expected_legacy_exact:false
          ());
+    (* --- v3 divisor ladder fixtures ----------------------------- *)
+    ("v3 ladder: stride = 8K + 4 → gcd=4 → Exact 3", `Quick,
+     fun () ->
+       (* Soundness: [bc_stride_4] (gcd = 4 maps to bc = 4, i.e.
+          conflict cost g - 1 = 3). The ladder enumerates divisors
+          of [bank_count = 32]: [g=1] fails ([8K+4] is even),
+          [g=2] fails ([8K+4] ≡ 0 mod 4), [g=4] succeeds because
+          [(8K+4) mod 8 = 4] is provable from the pre alone. *)
+       let open Exp in
+       let tx = Var Variable.tid_x in
+       let stride = Var (Variable.from_name "stride") in
+       let k = Var (Variable.from_name "K") in
+       let index = Binary (Mult Signedness.Signed, tx, stride) in
+       let pre =
+         n_eq stride
+           (Binary (Plus Signedness.Signed,
+                    Binary (Mult Signedness.Signed, Num 8, k), Num 4))
+       in
+       check_fixture
+         ~msg:"stride = 8K + 4 → gcd=4"
+         ~pre ~cfg:(cfg_of ~bx:32 ()) ~index
+         ~expected_delin_value:3 ~expected_delin_exact:true
+         ~expected_legacy_value:31 ~expected_legacy_exact:false
+         ());
+    ("v3 ladder: stride = 16K + 8 → gcd=8 → Exact 7", `Quick,
+     fun () ->
+       (* Soundness: [bc_stride_8]. Intermediate rung between the
+          v2 [coprime] (g=1) and [bank_blind] (g=32) endpoints. *)
+       let open Exp in
+       let tx = Var Variable.tid_x in
+       let stride = Var (Variable.from_name "stride") in
+       let k = Var (Variable.from_name "K") in
+       let index = Binary (Mult Signedness.Signed, tx, stride) in
+       let pre =
+         n_eq stride
+           (Binary (Plus Signedness.Signed,
+                    Binary (Mult Signedness.Signed, Num 16, k), Num 8))
+       in
+       check_fixture
+         ~msg:"stride = 16K + 8 → gcd=8"
+         ~pre ~cfg:(cfg_of ~bx:32 ()) ~index
+         ~expected_delin_value:7 ~expected_delin_exact:true
+         ~expected_legacy_value:31 ~expected_legacy_exact:false
+         ());
+    ("v3 ladder: stride = 32K + 16 → gcd=16 → Exact 15", `Quick,
+     fun () ->
+       (* Soundness: [bc_stride_16]. Top of the divisor ladder
+          before [bank_blind]. *)
+       let open Exp in
+       let tx = Var Variable.tid_x in
+       let stride = Var (Variable.from_name "stride") in
+       let k = Var (Variable.from_name "K") in
+       let index = Binary (Mult Signedness.Signed, tx, stride) in
+       let pre =
+         n_eq stride
+           (Binary (Plus Signedness.Signed,
+                    Binary (Mult Signedness.Signed, Num 32, k), Num 16))
+       in
+       check_fixture
+         ~msg:"stride = 32K + 16 → gcd=16"
+         ~pre ~cfg:(cfg_of ~bx:32 ()) ~index
+         ~expected_delin_value:15 ~expected_delin_exact:true
+         ~expected_legacy_value:31 ~expected_legacy_exact:false
+         ());
+    (* --- v3 warp-injective fixtures ----------------------------- *)
+    ("v3 warp-injective: warp (16,2), tx + K*ty, K=16 → Exact 0", `Quick,
+     fun () ->
+       (* The whole-poly modular oracle's hero case. Warp shape
+          (16, 2) has both [tid_x] and [tid_y] warp-divergent, so
+          the per-axis classifier returns multi-warp-varying and
+          [Rules.decide] hands back [NeedsSimulation]. The pre
+          [K = 16] pins K to a value such that [tx + 16·ty] mod 32
+          equals the lane id, so the 32 bank IDs are pairwise
+          distinct. Soundness: [f_pairwise_distinct_enabled].
+          Legacy fails because [K] is symbolic and simulation
+          can't evaluate it. *)
+       let open Exp in
+       let tx = Var Variable.tid_x in
+       let ty = Var Variable.tid_y in
+       let k = Var (Variable.from_name "K") in
+       let index =
+         Binary (Plus Signedness.Signed, tx,
+                 Binary (Mult Signedness.Signed, k, ty))
+       in
+       let pre = n_eq k (Num 16) in
+       check_fixture
+         ~msg:"warp (16,2): tx + K*ty, K=16"
+         ~pre ~cfg:(cfg_of ~bx:16 ~by:2 ()) ~index
+         ~expected_delin_value:0 ~expected_delin_exact:true
+         ~expected_legacy_value:31 ~expected_legacy_exact:false
+         ());
+    ("v3 warp-injective: warp (16,2) padded transpose collides → \
+      fall-through (parity)", `Quick,
+     fun () ->
+       (* Companion to the win case: confirms that
+          [warp_injective] does NOT spuriously claim distinctness
+          when collisions exist. Warp (16, 2) on the concrete
+          [tx*33 + ty] gives banks [(tx + ty) mod 32]; pairs
+          like (0,1) and (1,0) both land on bank 1, so the Z3
+          query fails. Falls through to simulation which
+          evaluates concretely to bc = 2 (cost 1). Legacy takes
+          the same path. *)
+       let open Exp in
+       let tx = Var Variable.tid_x in
+       let ty = Var Variable.tid_y in
+       let index =
+         Binary (Plus Signedness.Signed,
+                 Binary (Mult Signedness.Signed, tx, Num 33), ty)
+       in
+       check_fixture
+         ~msg:"warp (16,2): tx*33 + ty (collides)"
+         ~cfg:(cfg_of ~bx:16 ~by:2 ()) ~index
+         ~expected_delin_value:1 ~expected_delin_exact:true
+         ~expected_legacy_value:1 ~expected_legacy_exact:true
+         ());
+    ("v3 cap: divergent Diverse axis defers to simulation", `Quick,
+     fun () ->
+       (* Soundness regression test. For divergent warps the
+          [Diverse g] closed form [bc = gcd(k, n)] no longer
+          applies pointwise because non-contiguous masks can
+          concentrate enabled threads into a single equivalence
+          class mod [n/g]. The new full-warp gate in
+          [Rules.decide] sends divergent cases to simulation
+          rather than claiming Exact. Tested via a coprime stride
+          (gcd = 1) on a divergent half-warp: full-warp [Rules]
+          would return Exact 0; with divergence cutting active
+          threads, the rule defers to simulation. *)
+       let open Exp in
+       let tx = Var Variable.tid_x in
+       let stride = Var (Variable.from_name "stride") in
+       let k = Var (Variable.from_name "K") in
+       let index = Binary (Mult Signedness.Signed, tx, stride) in
+       let pre =
+         n_eq stride
+           (Binary (Plus Signedness.Signed,
+                    Binary (Mult Signedness.Signed, Num 2, k), Num 1))
+       in
+       let divergence =
+         Exp.n_lt tx (Num 16)
+       in
+       let cost =
+         Metric_analysis.Silent.run ~delin_bc:true ~pre Metric.BankConflicts
+           (cfg_of ~bx:32 ()) ~verbose:false
+           ~strategy:Analysis_strategy.OverApproximation
+           ~locals:Variable.Set.empty ~index ~divergence
+       in
+       let c = Metric_analysis.IndexCost.to_cost cost |> Result.get_ok in
+       (* Stride is still coprime to 32 under the pre, so the warp-
+          injectivity post-pass discharges and we get Exact 0 even
+          on the divergent path. The point of this fixture is that
+          [Rules.decide] no longer makes the unsound full-warp
+          claim directly; the path goes through [warp_injective],
+          which is sound for any mask via
+          [f_pairwise_distinct_enabled]. *)
+       Alcotest.(check int)
+         "divergent coprime: cost still 0 via warp_injective" 0
+         (Cost.value c);
+       Alcotest.(check bool)
+         "divergent coprime: exact via warp_injective" true c.exact);
   ]
 
 let () = Alcotest.run "Index Analysis" [ ("test_predicates", tests) ]

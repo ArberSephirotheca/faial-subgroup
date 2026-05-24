@@ -131,10 +131,12 @@ let injectivity_class (cfg : Config.t) (locals : Variable.Set.t)
 (* Decorate each axis j of [idx] given delin's [s_j] subscripts and
    [d_1..d_{n}] dims. Stride [σ̂_j = Π dims[j..] mod bank_count] under
    the v1 assumption that elt_size = bytes_per_word. The optional
-   [oracle] is the v2 modular oracle: when [try_concrete] can't reduce
-   a stride to a concrete integer, the oracle queries [kernel.pre]
-   for [stride mod bank_count = 0] (BankBlind) or
-   [gcd(stride, bank_count) = 1] (Diverse 1). *)
+   [oracle] is the v2/v3 modular oracle: when [try_concrete] can't
+   reduce a stride to a concrete integer, [Oracle.gcd_value] queries
+   [kernel.pre] for the full divisor ladder and returns the proven
+   [gcd(stride, bank_count)]. A returned [bank_count] maps to
+   BankBlind; any smaller divisor [g] becomes [Diverse g] (when the
+   subscript is also injective) or [NotInjective g]. *)
 let classify_index ?(oracle : Oracle.t option) ~(config : Config.t)
     ~(locals : Variable.Set.t) (idx : Index.t) : axis_class list =
   let bank_count = config.bank_count in
@@ -157,11 +159,10 @@ let classify_index ?(oracle : Oracle.t option) ~(config : Config.t)
     match oracle with
     | None -> Unknown
     | Some o ->
-        if Oracle.bank_blind o ~stride ~bank_count then
-          classify_with_sigma 0 sub
-        else if Oracle.coprime o ~stride ~bank_count then
-          classify_with_sigma 1 sub
-        else Unknown
+        match Oracle.gcd_value o ~stride ~bank_count with
+        | None -> Unknown
+        | Some g when g = bank_count -> classify_with_sigma 0 sub
+        | Some g -> classify_with_sigma g sub
   in
   List.init nsubs (fun j ->
       let sub = List.nth idx.indices j in
