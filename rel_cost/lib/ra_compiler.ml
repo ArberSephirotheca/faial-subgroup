@@ -271,7 +271,7 @@ module Make (LOG : Logger.Logger) = struct
     in
     let lin = L.linearize cfg k.arrays in
     let params = k.global_variables in
-    let idx_analysis = M.run ~delin_bc m cfg ~strategy in
+    let idx_analysis = M.run ~delin_bc ~pre:k.pre m cfg ~strategy in
     let uniform_loop =
       Uniform_range.uniform (to_optimize strategy) params cfg.block_dim
     in

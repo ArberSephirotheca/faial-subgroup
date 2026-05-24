@@ -267,7 +267,11 @@ module Code = struct
       let index = index a in
       let locals = locals ~init:local_variables a in
       let divergence = to_bexp a in
-      M.run ~delin_bc m config ~verbose
+      (* [a]'s outermost [Cond] wraps [kernel.pre] (see [from_proto]
+         line 410), and [to_bexp] above already conjoins everything
+         along the path; reuse it as the oracle's preload. *)
+      let pre = divergence in
+      M.run ~delin_bc ~pre m config ~verbose
         ~strategy:Analysis_strategy.OverApproximation
         ~locals ~index ~divergence
 

@@ -1,3 +1,4 @@
 (library
   (name delin)
+  (wrapped false)
   (libraries stage0 protocols))

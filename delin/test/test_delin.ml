@@ -17,7 +17,7 @@ end
 let globals = Variable.Set.of_list (["M"; "N"] |> List.map Variable.from_name)
 
 let normalize (e : nexp) : nexp =
-  e |> Delin.Expr.from_nexp ~globals |> Delin.Expr.to_nexp
+  e |> Expr.from_nexp ~globals |> Expr.to_nexp
 
 let string_of_list (f : 'a -> string) (l : 'a list) : string =
   l |> List.map f |> String.concat "; " |> Printf.sprintf "[%s]"
@@ -66,9 +66,9 @@ let stage1_tests =
   |> List.iter (fun (msg, exp, params) ->
       let got =
         exp
-        |> Delin.Expr.from_nexp ~globals
-        |> Delin.size_params
-        |> List.map Delin.Term.to_nexp
+        |> Expr.from_nexp ~globals
+        |> Polynomial.size_params
+        |> List.map Term.to_nexp
       in
       assert_equal
         ~msg
@@ -81,10 +81,10 @@ let stage2_tests =
   |> List.iter (fun (msg, exp, expected) ->
       let got =
         exp
-        |> Delin.Expr.from_nexp ~globals
-        |> Delin.size_params
-        |> Delin.dims
-        |> Option.map (List.map Delin.Term.to_nexp)
+        |> Expr.from_nexp ~globals
+        |> Polynomial.size_params
+        |> Polynomial.dims
+        |> Option.map (List.map Term.to_nexp)
       in
       assert_equal
         ~msg
@@ -95,18 +95,18 @@ let reconstruct_tests =
   "Index.reconstruct" >:: fun _ ->
   let open Build in
   let check ~msg before =
-    let expr = Delin.Expr.from_nexp ~globals before in
-    let size_params = Delin.size_params expr in
+    let expr = Expr.from_nexp ~globals before in
+    let size_params = Polynomial.size_params expr in
     match
-      Delin.Greedy.candidates ~globals ~size_params expr |> Seq.uncons
+      Greedy.candidates ~globals ~size_params expr |> Seq.uncons
     with
     | Some (idx, _) ->
-      let rebuilt = Delin.Index.reconstruct idx in
+      let rebuilt = Index.reconstruct idx in
       assert_equal
         ~msg
         ~printer:Exp.n_to_string
         (normalize before)
-        (Delin.Expr.to_nexp rebuilt)
+        (Expr.to_nexp rebuilt)
     | None ->
       failwith "test fixture: Greedy returned no candidate"
   in
@@ -124,24 +124,24 @@ let grosser_offset_test =
   "ICS15.candidates handles A[?][N][M+1]" >:: fun _ ->
   let open Build in
   let expr =
-    Delin.Expr.from_nexp ~globals
+    Expr.from_nexp ~globals
       (vN * vM * x + vN * x + vM * y + y + z)
   in
-  let size_params = Delin.size_params expr in
+  let size_params = Polynomial.size_params expr in
   match
-    Delin.ICS15.candidates ~globals ~size_params expr
+    Ics15.candidates ~globals ~size_params expr
     |> Seq.uncons
   with
   | None -> assert_failure "ICS15 produced no candidate"
   | Some (idx, _) ->
-    let rebuilt = Delin.Index.reconstruct idx in
+    let rebuilt = Index.reconstruct idx in
     assert_equal
       ~msg:"reconstructed polynomial"
       ~printer:Exp.n_to_string
-      (Delin.Expr.to_nexp
-        (Delin.Expr.from_nexp ~globals
+      (Expr.to_nexp
+        (Expr.from_nexp ~globals
           (vN * vM * x + vN * x + vM * y + y + z)))
-      (Delin.Expr.to_nexp rebuilt);
+      (Expr.to_nexp rebuilt);
     assert_equal
       ~msg:"index count"
       ~printer:string_of_int
@@ -156,12 +156,12 @@ let greedy_fails_on_offset_test =
   "Greedy.candidates fails on A[?][N][M+1]" >:: fun _ ->
   let open Build in
   let expr =
-    Delin.Expr.from_nexp ~globals
+    Expr.from_nexp ~globals
       (vN * vM * x + vN * x + vM * y + y + z)
   in
-  let size_params = Delin.size_params expr in
+  let size_params = Polynomial.size_params expr in
   match
-    Delin.Greedy.candidates ~globals ~size_params expr |> Seq.uncons
+    Greedy.candidates ~globals ~size_params expr |> Seq.uncons
   with
   | None -> ()  (* expected *)
   | Some _ ->

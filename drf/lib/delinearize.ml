@@ -1,6 +1,9 @@
-open Stage0
 open Protocols
-open Delin
+(* [delin] is unwrapped, so [Atom], [Term], [Expr], [Index], [Greedy],
+   [Ics15], [Algorithm], [Polynomial] are top-level modules available
+   here without an [open]. [Stage0] stays qualified ([Stage0.Index]
+   would shadow delin's [Index] if we opened it). *)
+module Phase_timer = Stage0.Phase_timer
 
 let list_to_string (f : 'a -> string) (l : 'a list): string =
   "[" ^ (l |> List.map f |> String.concat "; ") ^ "]"
@@ -133,7 +136,7 @@ type bound_oracle = scope:Exp.bexp list -> bound:Exp.bexp -> bool
 let trivially_true_oracle : bound_oracle =
   fun ~scope:_ ~bound:_ -> true
 
-module Make (A : DelinAlgorithm) (G : BoundGenerator) : sig
+module Make (A : Algorithm.S) (G : BoundGenerator) : sig
   val from_exp :
     globals:Variable.Set.t ->
     scope:G.scope ->
@@ -150,7 +153,7 @@ end = struct
       ~(size_params : Term.t list) (expr : Expr.t) : t option =
     let ( let* ) = Option.bind in
     let* (idx, _) = Seq.uncons (A.candidates ~globals ~size_params expr) in
-    let inner_is = match idx.Index.indices with
+    let inner_is = match (idx : Index.t).indices with
       | _ :: rest -> rest
       | [] -> failwith "from_exp: empty indices list"
     in
@@ -254,7 +257,7 @@ end = struct
           | [a] -> Option.map (fun xs -> Expr.from_nexp ~globals a :: xs) acc
           | _ -> None
         ) (Some [])
-        |> Option.map size_params_all))
+        |> Option.map Polynomial.size_params_all))
     in
     let viable = Phase_timer.measure "delin/viability" (fun () ->
       viable_arrays ~globals ~scope ~loop_scope ~check ~size_params_map

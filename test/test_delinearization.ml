@@ -21,7 +21,7 @@ end
 let globals = Variable.Set.of_list (["M"; "N"] |> List.map Variable.from_name)
 
 let normalize (e : nexp) : nexp =
-  e |> Delin.Expr.from_nexp ~globals |> Delin.Expr.to_nexp
+  e |> Expr.from_nexp ~globals |> Expr.to_nexp
 
 let bound (i : nexp) (d : nexp) : bexp =
   b_and (n_le (Num 0) i) (n_lt i d)
@@ -33,8 +33,8 @@ let string_of_option (f : 'a -> string) : 'a option -> string = function
 (* Stage 3: end-to-end on a single access expression. Uses [AllBounds]
    so [t.conditions] contains the full per-axis bound list. *)
 let delin ~globals (e : nexp) : Delinearize.t option =
-  let expr = Delin.Expr.from_nexp ~globals e in
-  let size_params = Delin.size_params expr in
+  let expr = Expr.from_nexp ~globals e in
+  let size_params = Polynomial.size_params expr in
   Delinearize.All.from_exp
     ~globals
     ~scope:Delinearize.AllBounds.initial_scope
@@ -174,7 +174,7 @@ let maslov_scope_of (items : (string * nexp * nexp) list)
 (* Did [Maslov.add_bound] elide the (i, d) pair? Equivalent to
    [provable]: feeding one bound, the accumulator stays empty iff the
    bound was proved statically. *)
-let maslov_provable scope (i : Delin.Expr.t) (d : Delin.Expr.t)
+let maslov_provable scope (i : Expr.t) (d : Expr.t)
     : bool =
   let acc = Delinearize.Maslov.create scope in
   let acc' = Delinearize.Maslov.add_bound acc i d in
@@ -183,7 +183,7 @@ let maslov_provable scope (i : Delin.Expr.t) (d : Delin.Expr.t)
 let maslov_tests =
   "Maslov.add_bound" >:: fun _ ->
   let open Build in
-  let expr e = Delin.Expr.from_nexp ~globals e in
+  let expr e = Expr.from_nexp ~globals e in
   let check ?(msg = "") ~scope expected i d =
     let got = maslov_provable scope i d in
     assert_equal ~msg ~printer:string_of_bool expected got
@@ -232,8 +232,8 @@ let cond_count = function
   | Some (t : Delinearize.t) -> List.length t.conditions
 
 let delin_all (e : nexp) : Delinearize.t option =
-  let expr = Delin.Expr.from_nexp ~globals e in
-  let size_params = Delin.size_params expr in
+  let expr = Expr.from_nexp ~globals e in
+  let size_params = Polynomial.size_params expr in
   Delinearize.All.from_exp
     ~globals
     ~scope:Delinearize.AllBounds.initial_scope
@@ -243,8 +243,8 @@ let delin_all (e : nexp) : Delinearize.t option =
     expr
 
 let delin_maslov ~scope (e : nexp) : Delinearize.t option =
-  let expr = Delin.Expr.from_nexp ~globals e in
-  let size_params = Delin.size_params expr in
+  let expr = Expr.from_nexp ~globals e in
+  let size_params = Polynomial.size_params expr in
   Delinearize.Maslov_elide.from_exp
     ~globals
     ~scope

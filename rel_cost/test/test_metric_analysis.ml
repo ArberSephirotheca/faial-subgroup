@@ -103,16 +103,17 @@ let test_ua () : unit =
     ~given:(n_mult (n_plus (Num 1) x) y)
     ~expected:(n_mult (n_plus (Num 1) x) y)
 
-(* --- Bc_axis (delin-based BC preprocessing) tests ----------------- *)
+(* --- Bc.Axis (delin-based BC preprocessing) tests ----------------- *)
 
 (* Run [bc_preprocess]-style logic from the outside: invoke [Make.run]
    with [delin_bc:true] and read the value back. [exact:true] in the
    returned [IndexCost.t] signals the [Exact] branch fired; [exact:false]
    signals a simulation fallback (or [max_cost] under simulation
    failure). *)
-let run_bc_delin ~cfg ?(locals = Variable.Set.empty) (index : Exp.nexp)
+let run_bc_delin ?(pre = Exp.Bool true) ~cfg
+    ?(locals = Variable.Set.empty) (index : Exp.nexp)
     : Metric_analysis.IndexCost.t =
-  Metric_analysis.Silent.run ~delin_bc:true Metric.BankConflicts cfg
+  Metric_analysis.Silent.run ~delin_bc:true ~pre Metric.BankConflicts cfg
     ~verbose:false
     ~strategy:Analysis_strategy.OverApproximation
     ~locals ~index ~divergence:(Bool true)
@@ -123,63 +124,66 @@ let run_bc_legacy ~cfg ?(locals = Variable.Set.empty) (index : Exp.nexp)
     ~strategy:Analysis_strategy.OverApproximation
     ~locals ~index ~divergence:(Bool true)
 
-(* Direct unit tests against [Bc_axis] internals, exercising each of
-   the five decision branches with hand-built [Index.t] values. *)
-let test_bc_axis_decide () : unit =
+(* Direct unit tests against [Bc.Rules.decide], exercising each of
+   the five decision branches with hand-built [Bc.Delinearize.t]
+   values. *)
+let test_bc_rules_decide () : unit =
   let cfg32 = cfg in
+  let mk reduced axes : Bc.Delinearize.t = { reduced; axes } in
   (* Rule 1: all axes Uniform → Exact 0 *)
   let r =
-    Bc_axis.decide ~config:cfg32 ~tid_count:32 ~reduced:(Exp.Num 0)
-      [ Bc_axis.Uniform ]
+    Bc.Rules.decide ~config:cfg32 ~tid_count:32
+      (mk (Exp.Num 0) [ Bc.Delinearize.Uniform ])
   in
   (match r with
-   | Bc_axis.Exact c -> Alcotest.(check int) "all-uniform" 0 (Cost.value c)
-   | Bc_axis.NeedsSimulation _ -> Alcotest.fail "expected Exact for all-uniform");
+   | Bc.Rules.Exact c -> Alcotest.(check int) "all-uniform" 0 (Cost.value c)
+   | Bc.Rules.NeedsSimulation _ -> Alcotest.fail "expected Exact for all-uniform");
   (* Rule 2: single warp-varying BankBlind axis → Exact (n-1) *)
   let r =
-    Bc_axis.decide ~config:cfg32 ~tid_count:32 ~reduced:(Exp.Num 0)
-      [ Bc_axis.BankBlind; Bc_axis.Uniform ]
+    Bc.Rules.decide ~config:cfg32 ~tid_count:32
+      (mk (Exp.Num 0) [ Bc.Delinearize.BankBlind; Bc.Delinearize.Uniform ])
   in
   (match r with
-   | Bc_axis.Exact c -> Alcotest.(check int) "single bank-blind" 31 (Cost.value c)
-   | Bc_axis.NeedsSimulation _ -> Alcotest.fail "expected Exact for bank-blind");
+   | Bc.Rules.Exact c -> Alcotest.(check int) "single bank-blind" 31 (Cost.value c)
+   | Bc.Rules.NeedsSimulation _ -> Alcotest.fail "expected Exact for bank-blind");
   (* Rule 3a: single warp-varying Diverse axis g=1 → Exact 0 *)
   let r =
-    Bc_axis.decide ~config:cfg32 ~tid_count:32 ~reduced:(Exp.Num 0)
-      [ Bc_axis.Diverse 1 ]
+    Bc.Rules.decide ~config:cfg32 ~tid_count:32
+      (mk (Exp.Num 0) [ Bc.Delinearize.Diverse 1 ])
   in
   (match r with
-   | Bc_axis.Exact c ->
+   | Bc.Rules.Exact c ->
        Alcotest.(check int) "diverse g=1 conflict-free" 0 (Cost.value c)
-   | Bc_axis.NeedsSimulation _ ->
+   | Bc.Rules.NeedsSimulation _ ->
        Alcotest.fail "expected Exact for diverse g=1");
   (* Rule 3b: single warp-varying Diverse axis g=2 → Exact 1 (2-way) *)
   let r =
-    Bc_axis.decide ~config:cfg32 ~tid_count:32 ~reduced:(Exp.Num 0)
-      [ Bc_axis.Diverse 2 ]
+    Bc.Rules.decide ~config:cfg32 ~tid_count:32
+      (mk (Exp.Num 0) [ Bc.Delinearize.Diverse 2 ])
   in
   (match r with
-   | Bc_axis.Exact c -> Alcotest.(check int) "diverse g=2" 1 (Cost.value c)
-   | Bc_axis.NeedsSimulation _ ->
+   | Bc.Rules.Exact c -> Alcotest.(check int) "diverse g=2" 1 (Cost.value c)
+   | Bc.Rules.NeedsSimulation _ ->
        Alcotest.fail "expected Exact for diverse g=2");
   (* Rule 4: multiple warp-varying axes → NeedsSimulation *)
   let r =
-    Bc_axis.decide ~config:cfg32 ~tid_count:32 ~reduced:(Exp.Num 42)
-      [ Bc_axis.Diverse 1; Bc_axis.Diverse 1 ]
+    Bc.Rules.decide ~config:cfg32 ~tid_count:32
+      (mk (Exp.Num 42)
+         [ Bc.Delinearize.Diverse 1; Bc.Delinearize.Diverse 1 ])
   in
   (match r with
-   | Bc_axis.NeedsSimulation e ->
+   | Bc.Rules.NeedsSimulation e ->
        Alcotest.(check int) "multi-warp-varying" 42
          (match e with Num n -> n | _ -> Alcotest.fail "expected Num 42")
-   | Bc_axis.Exact _ -> Alcotest.fail "expected NeedsSimulation");
+   | Bc.Rules.Exact _ -> Alcotest.fail "expected NeedsSimulation");
   (* Rule 5: any Unknown → NeedsSimulation *)
   let r =
-    Bc_axis.decide ~config:cfg32 ~tid_count:32 ~reduced:(Exp.Num 7)
-      [ Bc_axis.Unknown ]
+    Bc.Rules.decide ~config:cfg32 ~tid_count:32
+      (mk (Exp.Num 7) [ Bc.Delinearize.Unknown ])
   in
   match r with
-  | Bc_axis.NeedsSimulation _ -> ()
-  | Bc_axis.Exact _ -> Alcotest.fail "expected NeedsSimulation for Unknown"
+  | Bc.Rules.NeedsSimulation _ -> ()
+  | Bc.Rules.Exact _ -> Alcotest.fail "expected NeedsSimulation for Unknown"
 
 (* End-to-end via [Make.run] with the toggle: confirms that the delin
    path produces the same cost values as the legacy path for the
@@ -217,10 +221,10 @@ let test_bc_delin_e2e () : unit =
    true cost. The "precision win" is either a lower exact value than
    the legacy approximation, or the same value tagged exact rather
    than approximate. *)
-let check_fixture ~msg ~cfg ~index ~expected_delin_value
-    ~expected_delin_exact ~expected_legacy_value ~expected_legacy_exact () :
-    unit =
-  let delin = run_bc_delin ~cfg index in
+let check_fixture ?(pre = Exp.Bool true) ~msg ~cfg ~index
+    ~expected_delin_value ~expected_delin_exact ~expected_legacy_value
+    ~expected_legacy_exact () : unit =
+  let delin = run_bc_delin ~pre ~cfg index in
   let legacy = run_bc_legacy ~cfg index in
   let delin_cost = Metric_analysis.IndexCost.to_cost delin |> Result.get_ok in
   let legacy_cost = Metric_analysis.IndexCost.to_cost legacy |> Result.get_ok in
@@ -312,7 +316,7 @@ let test_precision_eight_way () : unit =
    simulation's [tid_x = id mod block_dim.x] wraps within the warp,
    so a bare [Var tid_x] subscript is not warp-injective. The
    exact-cost formulas assume injectivity; without the
-   [tid_is_warp_injective] guard in [Bc_axis.injectivity_class] this
+   [tid_is_warp_injective] guard in [Bc.Axis.injectivity_class] this
    case would return [Exact 15] when the true cost is 7. With the
    guard the axis classifies as [NotInjective] and the path falls
    through to simulation, matching the legacy fallback. *)
@@ -425,7 +429,7 @@ let tests : unit Alcotest.test_case list =
   [
     ("bc", `Quick, test_bc);
     ("ua", `Quick, test_ua);
-    ("bc_axis_decide", `Quick, test_bc_axis_decide);
+    ("bc_rules_decide", `Quick, test_bc_rules_decide);
     ("bc_delin_e2e", `Quick, test_bc_delin_e2e);
     ("precision: exact-flag upgrade on bank-blind axis", `Quick,
      test_precision_exact_flag);
@@ -443,6 +447,74 @@ let tests : unit Alcotest.test_case list =
      `Quick, test_padding_parametric_transpose);
     ("+1 padding: parametric tile[H][bx+1] non-transpose", `Quick,
      test_padding_parametric_non_transpose);
+    ("v2 oracle: stride = K * 32 → bank-blind → Exact 31", `Quick,
+     fun () ->
+       (* Models the canonical [extern __shared__] case with the
+          host computing [stride = K * blockDim.x]. Under
+          --assume-launch, [Synthesise_launches] lifts the binding
+          into the wrapper as [decl stride = K * blockDim.x], and
+          [Ra_compiler]'s upstream [subst_block_dim] replaces
+          [blockDim.x] with the cfg value [32] before the analysis
+          runs. So by the time [bc_preprocess] sees [kernel.pre],
+          the binding has reduced to [stride == K * 32]. Test mirrors
+          this post-subst shape. The v2 oracle proves
+          [stride mod 32 = 0] (BV unfolds [K*32], formula UNSAT),
+          so the outer axis classifies as BankBlind. Single
+          warp-varying bank-blind axis → Exact 31. Legacy errors on
+          the symbolic stride and falls back to max_cost. *)
+       let open Exp in
+       let tx = Var Variable.tid_x in
+       let stride = Var (Variable.from_name "stride") in
+       let k = Var (Variable.from_name "K") in
+       let index = Binary (Mult Signedness.Signed, tx, stride) in
+       let pre =
+         n_eq stride (Binary (Mult Signedness.Signed, k, Num 32))
+       in
+       check_fixture
+         ~msg:"stride = K * 32 → bank-blind"
+         ~pre ~cfg:(cfg_of ~bx:32 ()) ~index
+         ~expected_delin_value:31 ~expected_delin_exact:true
+         ~expected_legacy_value:31 ~expected_legacy_exact:false
+         ());
+    ("v2 oracle: stride = 2*K+1 → coprime → Exact 0", `Quick,
+     fun () ->
+       (* Coprime-with-32 host expression (anything odd works).
+          The oracle's coprime query for bank_count = 32 reduces
+          to a single mod-2 check, which UNSAT-discharges given
+          [stride == 2*K + 1]. Single warp-varying diverse-with-
+          g=1 axis → Exact 0. *)
+       let open Exp in
+       let tx = Var Variable.tid_x in
+       let stride = Var (Variable.from_name "stride") in
+       let k = Var (Variable.from_name "K") in
+       let index = Binary (Mult Signedness.Signed, tx, stride) in
+       let pre =
+         n_eq stride
+           (Binary (Plus Signedness.Signed,
+                    Binary (Mult Signedness.Signed, Num 2, k), Num 1))
+       in
+       check_fixture
+         ~msg:"stride = 2K + 1 → coprime"
+         ~pre ~cfg:(cfg_of ~bx:32 ()) ~index
+         ~expected_delin_value:0 ~expected_delin_exact:true
+         ~expected_legacy_value:31 ~expected_legacy_exact:false
+         ());
+    ("v2 oracle: no useful pre → NeedsSimulation (parity)", `Quick,
+     fun () ->
+       (* When [kernel.pre] is trivial (no equation for the
+          stride), neither bank_blind nor coprime can fire, so
+          the axis stays Unknown and we fall back to simulation.
+          Same outcome as legacy: 31 approx. *)
+       let open Exp in
+       let tx = Var Variable.tid_x in
+       let stride = Var (Variable.from_name "stride") in
+       let index = Binary (Mult Signedness.Signed, tx, stride) in
+       check_fixture
+         ~msg:"no pre → Unknown"
+         ~pre:(Bool true) ~cfg:(cfg_of ~bx:32 ()) ~index
+         ~expected_delin_value:31 ~expected_delin_exact:false
+         ~expected_legacy_value:31 ~expected_legacy_exact:false
+         ());
   ]
 
 let () = Alcotest.run "Index Analysis" [ ("test_predicates", tests) ]
