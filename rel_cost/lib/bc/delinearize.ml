@@ -88,14 +88,21 @@ let tid_is_warp_injective (cfg : Config.t) (v : Variable.t) : bool =
     cfg.block_dim.x * cfg.block_dim.y = 1 && cfg.block_dim.z >= n
   else false
 
-(* Three injectivity patterns from rel-cost-delin.md:
-   - bare warp-divergent atom [Var tid]
-   - [tid + uniform_polynomial]: exactly one warp-varying term, that
-     term is a bare warp-divergent tid
-   - [c * tid] where [gcd(|c|, bank_count / g_stride) = 1]: the
-     coprime-stride generator is injective modulo the bank cycle, so
-     the [bank_count / g_stride] distinct banks each take exactly one
-     [s_j] value. *)
+(* Three injectivity patterns, each backed by a Rocq theorem
+   establishing the subscript pattern's bank-conflict cost on a
+   full warp:
+   - bare warp-injective atom [Var tid]: [bc_tid_eq_1] (the
+     [gcd(1, bank_count) = 1] specialisation of
+     [bc_mul_tid_eq_gcd]);
+   - [tid + uniform_polynomial]: [bc_tid_add_uniform_eq_1] (the
+     additive-offset variant, also a [k = 1] specialisation);
+   - [c * tid] with [gcd(|c|, bank_count / g_stride) = 1]:
+     [bc_mul_tid_outer_eq_g], chained via
+     [gcd_mul_coprime_residual] (the number-theoretic identity
+     that the combined stride [sigma_hat * c] still has gcd
+     [g_stride] with [bank_count] when [c] is coprime to
+     [bank_count / g_stride]). Here [g_stride] is the
+     outer-stride gcd passed in by [classify_index]. *)
 let injectivity_class (cfg : Config.t) (locals : Variable.Set.t)
     ~(g_stride : int) (sub : Expr.t) : [ `Injective | `Unknown ] =
   let bank_count = cfg.bank_count in

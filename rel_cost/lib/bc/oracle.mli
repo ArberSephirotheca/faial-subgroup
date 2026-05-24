@@ -24,11 +24,19 @@ val gcd_value :
   t -> stride:Exp.nexp -> bank_count:int -> int option
 
 (* Whole-index modular injectivity query: true iff [kernel.pre]
-   entails [Distinct (e[t1] mod bank_count, ..., e[tn] mod bank_count)]
-   over the enabled warp tids. Soundness:
-   [f_pairwise_distinct_enabled]; pairwise-distinct bank IDs on the
-   enabled-tid sublist gives [f <= 1], i.e. conflict cost 0. Returns
-   true trivially when the enabled set is empty or singleton. *)
+   entails [Distinct (e[t1] mod bank_count, ..., e[tn] mod
+   bank_count)] over the conservatively-filtered enabled warp
+   tids. Soundness: [f_pairwise_distinct_supset]. Our Z3
+   [Distinct] establishes [NoDup (List.map Bank.id L)] (third
+   premise); since [Bank.id] is a function, distinct images force
+   distinct preimages, giving [NoDup L], which transfers to
+   [NoDup (filter_enabled vb vn)] (second premise) because
+   [filter_enabled] is a positional sublist of L. The first
+   premise [List.incl (filter_enabled vb vn) L] holds because our
+   filter only excludes lanes whose divergence reduces to concrete
+   [Bool false], so the actually-enabled lanes are a subset.
+   Conclusion [f vb vn <= 1] (conflict cost 0). Returns true
+   trivially when the enabled superset is empty or singleton. *)
 val warp_injective :
   t ->
   config:Config.t ->

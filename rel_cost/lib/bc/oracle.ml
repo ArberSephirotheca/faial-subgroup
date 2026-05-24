@@ -105,11 +105,17 @@ let subst_tids ~(tx : int) ~(ty : int) ~(tz : int) (e : nexp) : nexp =
   |> Constfold.n_opt
 
 (* Whole-index modular injectivity query. Soundness:
-   [f_pairwise_distinct_enabled]; pairwise-distinct bank IDs on the
-   enabled-tid sublist gives [f <= 1], i.e. conflict cost 0. The
-   premise of the lemma is stated on [filter_enabled vb vn]; here
-   [divergence] gates whether the lane contributes, mirroring
-   [BMap.t] selection on the Rocq side. *)
+   [f_pairwise_distinct_supset]. The Z3 [Distinct] over bank IDs
+   establishes [NoDup (List.map Bank.id L)] (third premise); since
+   [Bank.id] is a function, distinct images force distinct
+   preimages, so [NoDup L] follows, which transfers to [NoDup
+   (filter_enabled vb vn)] (second premise) because
+   [filter_enabled] is a positional sublist of L. The first
+   premise [List.incl (filter_enabled vb vn) L] holds because our
+   conservative filter (only excluding lanes whose divergence
+   reduces to concrete [Bool false] via [Constfold.b_opt]) keeps
+   every actually-enabled lane. Conclusion [f vb vn <= 1]
+   (conflict cost 0). *)
 let warp_injective (t : t) ~(config : Config.t) ~(divergence : bexp)
     ~(index : nexp) : bool =
   let n = config.bank_count in
