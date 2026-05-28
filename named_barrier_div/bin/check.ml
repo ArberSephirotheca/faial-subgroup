@@ -127,6 +127,6 @@ let main_t : unit Term.t =
 
 let info =
   let doc = "Check for named-barrier divergence" in
-  Cmd.info "faial-nbd" ~version:"%%VERSION%%" ~doc
+  Cmd.info "faial-nbd" ~version:Build_info.commit ~doc
 
 let () = Cmd.v info main_t |> Cmd.eval |> exit

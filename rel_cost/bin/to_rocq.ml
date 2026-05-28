@@ -306,6 +306,6 @@ let info =
     "Translate a CUDA kernel into a Coq ProtoLet definition for the \
      faial-cost-rocq formalism."
   in
-  Cmd.info "faial-to-rocq" ~version:"%%VERSION%%" ~doc
+  Cmd.info "faial-to-rocq" ~version:Build_info.commit ~doc
 
 let () = Cmd.v info pico_t |> Cmd.eval |> exit

@@ -428,6 +428,6 @@ let pico_t =
 
 let info =
   let doc = "The cost between two GPU kernels" in
-  Cmd.info "faial-cost-diff" ~version:"%%VERSION%%" ~doc
+  Cmd.info "faial-cost-diff" ~version:Build_info.commit ~doc
 
 let () = Cmd.v info pico_t |> Cmd.eval |> exit

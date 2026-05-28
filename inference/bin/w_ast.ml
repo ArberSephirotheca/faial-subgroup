@@ -29,6 +29,6 @@ let main_t = Term.(const main $ get_fname)
 
 let info =
   let doc = "Print the WGSL-AST" in
-  Cmd.info "wgsl-ast" ~version:"%%VERSION%%" ~doc
+  Cmd.info "wgsl-ast" ~version:Build_info.commit ~doc
 
 let () = Cmd.v info main_t |> Cmd.eval |> exit

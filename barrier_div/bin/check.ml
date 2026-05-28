@@ -569,6 +569,6 @@ let main_t : unit Term.t =
 
 let info =
   let doc = "Check for barrier divergence errors" in
-  Cmd.info "faial-sync" ~version:"%%VERSION%%" ~doc
+  Cmd.info "faial-sync" ~version:Build_info.commit ~doc
 
 let () = Cmd.v info main_t |> Cmd.eval |> exit

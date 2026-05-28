@@ -243,6 +243,6 @@ let main_t =
 
 let info =
   let doc = "Print the C-AST" in
-  Cmd.info "c-ast" ~version:"%%VERSION%%" ~doc
+  Cmd.info "c-ast" ~version:Build_info.commit ~doc
 
 let () = Cmd.v info main_t |> Cmd.eval |> exit

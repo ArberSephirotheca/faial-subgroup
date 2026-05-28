@@ -143,6 +143,6 @@ let main_t = Term.(const main $ get_fname $ metric)
 
 let info =
   let doc = "Dynamic performance analysis for GPU programs" in
-  Cmd.info "faial-bc-dyn" ~version:"%%VERSION%%" ~doc
+  Cmd.info "faial-bc-dyn" ~version:Build_info.commit ~doc
 
 let () = Cmd.v info main_t |> Cmd.eval |> exit

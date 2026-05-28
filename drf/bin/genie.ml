@@ -1146,6 +1146,7 @@ let report_json (app : App.t) (v : verdict) : unit =
      `List (Sys.argv |> Array.to_list |> List.map (fun x -> `String x)));
     ("executable_name", `String Sys.executable_name);
     ("z3_version", `String Z3.Version.to_string);
+    ("commit", `String Build_info.commit);
   ]
   |> Yojson.Basic.to_string
   |> print_endline

@@ -1,3 +1,16 @@
 (library
   (name stage0)
   (libraries yojson ocplib-endian unix ANSITerminal str fpath))
+
+; Regenerate [build_info.ml] on every build so the baked-in commit
+; hash tracks HEAD. [(universe)] forces the action to re-run each time;
+; dune still digests the output, so an unchanged commit produces
+; identical bytes and triggers no downstream recompilation.
+(rule
+ (target build_info.ml)
+ (deps
+  (universe)
+  (file gen_build_info.sh))
+ (action
+  (with-stdout-to build_info.ml
+   (run sh gen_build_info.sh))))

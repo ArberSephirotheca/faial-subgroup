@@ -359,6 +359,7 @@ module JUI = struct
           `List (Sys.argv |> Array.to_list |> List.map (fun x -> `String x)) );
         ("executable_name", `String Sys.executable_name);
         ("z3_version", `String Z3.Version.to_string);
+        ("commit", `String Build_info.commit);
       ]
 
   let run (s : Solver.t) : unit = s |> to_json |> to_string |> print_endline
@@ -585,6 +586,6 @@ let main_t =
 
 let info =
   let doc = "Static analysis of bank-conflicts for GPU programs" in
-  Cmd.info "faial-bc" ~version:"%%VERSION%%" ~doc
+  Cmd.info "faial-bc" ~version:Build_info.commit ~doc
 
 let () = Cmd.v info main_t |> Cmd.eval |> exit

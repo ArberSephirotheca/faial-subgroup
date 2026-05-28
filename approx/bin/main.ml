@@ -53,6 +53,6 @@ let main_t = Term.(const main $ get_fname $ ignore_parsing_errors $ per_access)
 
 let info =
   let doc = "Data-dependency analysis for GPU programs" in
-  Cmd.info "data-dep" ~version:"%%VERSION%%" ~doc
+  Cmd.info "data-dep" ~version:Build_info.commit ~doc
 
 let () = Cmd.v info main_t |> Cmd.eval |> exit

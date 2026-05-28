@@ -575,6 +575,6 @@ let pico_t =
 
 let info =
   let doc = "Static analysis of performance cost of GPU programs" in
-  Cmd.info "faial-cost" ~version:"%%VERSION%%" ~doc
+  Cmd.info "faial-cost" ~version:Build_info.commit ~doc
 
 let () = Cmd.v info pico_t |> Cmd.eval |> exit
