@@ -26,6 +26,21 @@ let string_of_option (f : 'a -> string) : 'a option -> string = function
   | None -> "None"
   | Some x -> "Some " ^ f x
 
+let string_of_index (i : Index.t) : string =
+  let exprs es =
+    string_of_list (fun e -> Exp.n_to_string (Expr.to_nexp e)) es
+  in
+  Printf.sprintf "{indices=%s; dims=%s}" (exprs i.indices) (exprs i.dims)
+
+let expr_list_eq (a : Expr.t list) (b : Expr.t list) : bool =
+  List.length a = List.length b
+  && List.for_all2 (fun x y -> Expr.compare x y = 0) a b
+
+let index_eq (i1 : Index.t) (i2 : Index.t) : bool =
+  expr_list_eq i1.indices i2.indices
+  && expr_list_eq i1.dims i2.dims
+  && i1.conditions = i2.conditions
+
 (* Stage 1: per-access size_params extracts the parameter-only portion of
    every term that mixes an induction variable with a parameter. *)
 let size_param_examples : (string * nexp * nexp list) list =
@@ -167,6 +182,60 @@ let greedy_fails_on_offset_test =
   | Some _ ->
     assert_failure "Greedy produced a candidate; expected Seq.empty"
 
+(* The optimized ICS15 driver must yield the same first candidate as
+   the reference on every input: same Some/None, and when both produce
+   a candidate the same indices and dims. [expect] pins the outcome
+   only where it is certain (delinearizable shapes; degenerate shapes
+   with no candidate); elsewhere it just demands the two drivers agree.
+   When both produce a candidate we also confirm the optimized one
+   actually reconstructs the input, so a shared regression to "both
+   None" or "both wrong" cannot pass unnoticed. *)
+let ics15_differential_tests =
+  "Ics15 vs Ics15_opt agree" >:: fun _ ->
+  let open Build in
+  let head s = s |> Seq.uncons |> Option.map fst in
+  let check ?(expect = `Any) ~msg before =
+    let expr = Expr.from_nexp ~globals before in
+    let size_params = Polynomial.size_params expr in
+    let ref_idx = head (Ics15.candidates ~globals ~size_params expr) in
+    let opt_idx = head (Ics15_opt.candidates ~globals ~size_params expr) in
+    (match ref_idx, opt_idx with
+     | None, None ->
+       assert_bool (msg ^ ": expected a candidate, got none") (expect <> `Some)
+     | Some r, Some o ->
+       assert_bool (msg ^ ": expected no candidate") (expect <> `None);
+       assert_bool
+         (Printf.sprintf "%s: drivers disagree\n  ref=%s\n  opt=%s" msg
+            (string_of_index r) (string_of_index o))
+         (index_eq r o);
+       assert_equal ~msg:(msg ^ ": opt reconstructs input")
+         ~printer:Exp.n_to_string
+         (normalize before)
+         (Expr.to_nexp (Index.reconstruct o))
+     | _ ->
+       assert_failure
+         (Printf.sprintf "%s: only one driver produced a candidate (ref=%s opt=%s)"
+            msg
+            (string_of_option string_of_index ref_idx)
+            (string_of_option string_of_index opt_idx)))
+  in
+  check ~msg:"constant" ~expect:`Some (Num 1);
+  check ~msg:"linear" ~expect:`Some x;
+  check ~msg:"affine" ~expect:`Some (x + Num 1);
+  check ~msg:"constdim" ~expect:`Some (Num 10 * x + y);
+  check ~msg:"numdim" ~expect:`Some (vN * x + y);
+  check ~msg:"numdim_scaled" ~expect:`Some (Num 10 * vN * x + y);
+  check ~msg:"3dim" (vM * vN * x + vN * y + z);
+  check ~msg:"3dim+dist" (vN * (vM * x + y) + z);
+  check ~msg:"grosser_offset" ~expect:`Some
+    (vN * vM * x + vN * x + vM * y + y + z);
+  (* f0 = bucket(all candidates) vanishes: no N*M monomial, so no
+     permutation reconstructs. Exercises the (B) early exit. *)
+  check ~msg:"f0_zero" ~expect:`None (vN * x + vM * y + z);
+  (* Both N and M have an undefined quotient, so neither can leave the
+     other off position 0. Exercises the (C) two-bad short circuit. *)
+  check ~msg:"two_bad" ~expect:`None (vN * vM * x + vN * y + vM * z)
+
 let tests =
   "delin" >::: [
     stage1_tests;
@@ -174,6 +243,7 @@ let tests =
     reconstruct_tests;
     grosser_offset_test;
     greedy_fails_on_offset_test;
+    ics15_differential_tests;
   ]
 
 let _ = run_test_tt_main tests

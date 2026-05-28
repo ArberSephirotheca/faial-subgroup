@@ -1,3 +1,15 @@
 (tests
  (names test_delin)
+ (modules test_delin)
  (libraries protocols delin oUnit))
+
+; Slow differential benchmark for the ICS15 drivers. Not attached to
+; @runtest, so `dune test` stays fast; run with `dune build @slow`.
+(executable
+ (name bench_ics15)
+ (modules bench_ics15)
+ (libraries protocols delin))
+
+(rule
+ (alias slow)
+ (action (run ./bench_ics15.exe)))

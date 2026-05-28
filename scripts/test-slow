@@ -1,0 +1,9 @@
+#!/bin/bash
+# Run the slow test/bench suite (the @slow alias), kept out of the
+# default `dune test` so correctness runs stay fast. Prints the dune
+# exit code on the last line and propagates it.
+root="$(cd "$(dirname "$0")/.." && pwd)"
+dune build --root="$root" @slow "$@"
+rc=$?
+echo "exit=$rc"
+exit $rc

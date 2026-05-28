@@ -322,18 +322,22 @@ let main =
              loop's [Range.t]. Conservative: when the predicate cannot \
              prove a bound, that bound is emitted as an [Unsynced.Assert] \
              (which downstream becomes a [Cond] gate on the analysis).")
-  and+ ics15 =
+  and+ delin_algo =
     Arg.(
-      value & flag
-      & info [ "ics15" ]
+      value
+      & opt (enum App.Delin_algo.enum) App.Delin_algo.default
+      & info [ "delin-algo" ] ~docv:"ALGO"
           ~doc:
-            "Use the ICS15 polynomial driver (Grosser et al., \
-             'Optimistic Delinearization of Parametrically Sized \
-             Arrays', sound fragment: permutation search + \
-             alpha-derivation, rejecting any candidate that requires a \
-             non-static polynomial division) instead of the default \
-             greedy try_div driver. Orthogonal to the bound-emission \
-             flags.")
+            "Polynomial delinearization driver for [--assume-delin]: \
+             $(b,greedy) is the pairwise try_div driver; $(b,ics15) is \
+             the reference ICS15 permutation-search implementation \
+             (Grosser et al., 'Optimistic Delinearization of \
+             Parametrically Sized Arrays', sound fragment: permutation \
+             search + alpha-derivation, rejecting any candidate that \
+             requires a non-static polynomial division); $(b,ics15-opt) \
+             is the optimized ICS15 driver, which yields the same \
+             candidates as $(b,ics15) with a pruned search. Defaults to \
+             $(b,ics15-opt). Orthogonal to the bound-emission flags.")
   and+ no_check_delin =
     Arg.(
       value & flag
@@ -497,7 +501,7 @@ let main =
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
-        ~delin_elide ~ics15 ~no_check_delin
+        ~delin_elide ~delin_algo ~no_check_delin
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at

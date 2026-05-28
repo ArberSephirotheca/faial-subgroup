@@ -1327,7 +1327,7 @@ let main =
       ~ignore_asserts
       ~assume_delin:true
       ~delin_elide:false
-      ~ics15:false
+      ~delin_algo:App.Delin_algo.Ics15_opt
       ~no_check_delin:false
       ~assumes:extra_assumes
       ~assume_dims:false

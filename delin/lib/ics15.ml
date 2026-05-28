@@ -5,20 +5,16 @@
    the polynomial-ring level. The redundancy-based consistency check
    is skipped; final soundness is verified by reconstructing the
    linearised form via [Index.reconstruct] and comparing against the
-   input. Assumes alpha_1 = 0 (Algorithm 3's documented constraint). *)
+   input. Assumes alpha_1 = 0 (Algorithm 3's documented constraint).
 
-let bucket_sig (atoms : Atom.t list) : Term_inner.t =
-  atoms |> List.map (fun a -> (a, 1)) |> Atom.Map.of_list
+   This is the reference implementation: it follows the paper step by
+   step (group buckets per permutation, derive alphas by filtering one
+   atom at a time, recover subscripts with list indexing). [Ics15_opt]
+   is the performance-tuned variant and is checked against this module
+   by the differential tests. The shared, algorithm-agnostic helpers
+   live in [Ics15_common]. *)
 
-let bucket_lookup
-    (buckets : Expr.t Term_inner.Map.t) (atoms : Atom.t list) : Expr.t =
-  Term_inner.Map.find_opt (bucket_sig atoms) buckets
-  |> Option.value ~default:Expr.zero
-
-let scale (n : int) (e : Expr.t) : Expr.t =
-  if n = 0 then Expr.zero
-  else if n = 1 then e
-  else Expr.( * ) (Expr.of_int n) e
+open Ics15_common
 
 (* For each k in 2..d-1, the integer scalar that satisfies
    [bucket(perm \ {p_k}) = alpha_k * f0]; bails out on non-integer
@@ -92,14 +88,6 @@ let derive_fs
   in
   go 1 [f0]
 
-let build_dims (perm : Atom.t list) (alphas : int list) : Expr.t list =
-  List.mapi (fun i p ->
-    let a = List.nth alphas i in
-    let p_expr = Expr.of_atom p in
-    if a = 0 then p_expr
-    else Expr.( + ) p_expr (Expr.of_int a))
-    perm
-
 let try_permutation (perm : Atom.t list) (expr : Expr.t) : Index.t option =
   let buckets = Polynomial.group_by_parameters ~candidates:perm expr in
   let f0 = bucket_lookup buckets perm in
@@ -113,16 +101,6 @@ let try_permutation (perm : Atom.t list) (expr : Expr.t) : Index.t option =
     let idx : Index.t = { indices = fs; dims; conditions = [] } in
     if Expr.compare (Index.reconstruct idx) expr = 0 then Some idx
     else None
-
-(* Candidate parameters must be drawn from the array-shared
-   [size_params], not from the per-access expression. Otherwise two
-   accesses to one array can pick different shapes, breaking the
-   downstream invariant that all accesses agree on dimensionality. *)
-let params_in_size_params (sp : Term.t list) : Atom.t list =
-  sp |> List.concat_map (fun t ->
-    Term.factors t |> List.filter_map (fun (a, _) ->
-      if Atom.is_parameter a then Some a else None))
-  |> List.sort_uniq Atom.compare
 
 let candidates ~globals:_ ~size_params expr =
   params_in_size_params size_params

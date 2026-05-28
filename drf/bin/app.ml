@@ -49,6 +49,28 @@ end
    further work. *)
 exception Stop_at_stage
 
+(* Which polynomial delinearization driver [--assume-delin] uses.
+   [Greedy] is the pairwise-division driver; [Ics15] is the reference
+   permutation-search implementation; [Ics15_opt] is its optimized
+   equivalent (same results, faster search). Orthogonal to the
+   bound-emission strategy. *)
+module Delin_algo = struct
+  type t =
+    | Greedy
+    | Ics15
+    | Ics15_opt
+
+  let default = Ics15_opt
+
+  let to_string = function
+    | Greedy -> "greedy"
+    | Ics15 -> "ics15"
+    | Ics15_opt -> "ics15-opt"
+
+  (* Name/value pairs for [Cmdliner.Arg.enum]. *)
+  let enum = [ ("greedy", Greedy); ("ics15", Ics15); ("ics15-opt", Ics15_opt) ]
+end
+
 type t = {
   filename : string;
   kernels : Kernel.t list;
@@ -96,7 +118,7 @@ type t = {
   ignore_asserts : bool;
   assume_delin : bool;
   delin_elide : bool;
-  ics15 : bool;
+  delin_algo : Delin_algo.t;
   no_check_delin : bool;
   (* Per-kernel pre-condition list, keyed by [Kernel.name]. Genie's
      internal model treats assumptions as kernel-scoped: a variable
@@ -194,7 +216,7 @@ let to_string (app : t) : string =
    ignore_asserts;
    assume_delin;
    delin_elide;
-   ics15;
+   delin_algo;
    no_check_delin;
    assumes;
    assume_dims;
@@ -219,7 +241,7 @@ let to_string (app : t) : string =
       ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
       ^ "\nassume_delin = " ^ bool assume_delin
       ^ "\ndelin_elide = " ^ bool delin_elide
-      ^ "\nics15 = " ^ bool ics15
+      ^ "\ndelin_algo = " ^ Delin_algo.to_string delin_algo
       ^ "\nno_check_delin = " ^ bool no_check_delin
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
@@ -240,7 +262,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
-    ~assume_delin ~delin_elide ~ics15 ~no_check_delin
+    ~assume_delin ~delin_elide ~delin_algo ~no_check_delin
     ~assumes ~assume_dims
     ~assume_launch ~check_pre_sat
     ~memory_model ~cbor ~stop_at : t =
@@ -324,7 +346,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ignore_asserts;
     assume_delin;
     delin_elide;
-    ics15;
+    delin_algo;
     no_check_delin;
     assumes;
     assume_dims;
@@ -426,13 +448,15 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
      rewriter wraps each delinearized access in [Unsynced.Assert] nodes
      for the per-axis bounds the strategy emits; [inline_asserts]
      downstream lifts them into a [Cond] gate. Two orthogonal axes:
-     polynomial driver ([Greedy] | [ICS15]) and bound-emission strategy
-     ([AllBounds] | [Maslov] | [RejectAll]). *)
+     polynomial driver ([Greedy] | [Ics15] | [Ics15_opt]) and
+     bound-emission strategy ([AllBounds] | [Maslov] | [RejectAll]). *)
   |> (if a.assume_delin
       then
         let algo : (module Algorithm.S) =
-          if a.ics15 then (module Ics15)
-          else (module Greedy)
+          match a.delin_algo with
+          | Delin_algo.Greedy -> (module Greedy)
+          | Delin_algo.Ics15 -> (module Ics15)
+          | Delin_algo.Ics15_opt -> (module Ics15_opt)
         in
         let bg : (module Delinearize.BoundGenerator) =
           if a.delin_elide then (module Delinearize.Maslov)
