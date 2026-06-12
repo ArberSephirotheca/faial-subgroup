@@ -2,6 +2,14 @@ open Stage0
 open Protocols
 open Drf
 open Inference
+module SM = Subgroup_matrix
+module Subgroup_solver = Drf.Subgroup_solver
+module Subgroup_uniformity = Drf.Subgroup_uniformity
+module Subgroup_memory = Drf.Subgroup_memory
+
+type kernel =
+  | Legacy_kernel of Protocols.Kernel.t
+  | Subgroup_kernel of Subgroup_source.subgroup_kernel
 
 (* The pipeline stages [--stop-at] can target. Mirrors the order in
    [translate]: each stage prints what's left after its own
@@ -54,7 +62,7 @@ module Delin_algo = Delinearize.Algo
 
 type t = {
   filename : string;
-  kernels : Kernel.t list;
+  kernels : kernel list;
   timeout : int option;
   show_proofs : bool;
   show_proto : bool;
@@ -81,6 +89,7 @@ type t = {
   only_kernel : string option;
   only_array : string option;
   only_true_data_races : bool;
+  subgroup_size : int option;
   thread_idx_1 : Dim3.t option;
   thread_idx_2 : Dim3.t option;
   block_idx_1 : Dim3.t option;
@@ -146,6 +155,8 @@ let add_assumes_for (k : Protocols.Kernel.t) (extras : Exp.bexp list)
     (app : t) : t =
   set_assumes_for k (assumes_of k app @ extras) app
 
+type parsed = { options : Gv_parser.t; kernels : kernel list }
+
 let to_string (app : t) : string =
   let opt_s (o : string option) : string = Option.value ~default:"null" o in
   let opt : 'a. ('a -> string) -> 'a option -> string =
@@ -194,6 +205,7 @@ let to_string (app : t) : string =
    only_kernel;
    macros;
    only_true_data_races;
+   subgroup_size;
    ignore_asserts;
    assume_delin;
    rewrite_delin;
@@ -209,6 +221,7 @@ let to_string (app : t) : string =
   } ->
       let only_kernel = Option.value ~default:"(null)" only_kernel in
       let kernels = List.length kernels |> string_of_int in
+      let subgroup_size = subgroup_size |> Option.map string_of_int |> opt_s in
       "filename: " ^ filename ^ "\nonly_kernel: " ^ only_kernel
       ^ "\nblock_dim: " ^ opt dim3 block_dim ^ "\ngrid_dim: "
       ^ opt dim3 grid_dim ^ "\nkernels: " ^ kernels ^ "\ntimeout: "
@@ -221,6 +234,7 @@ let to_string (app : t) : string =
       ^ "\nshow_flat_acc: " ^ bool show_flat_acc ^ "\nshow_symbexp: "
       ^ bool show_symbexp ^ "\nmacros = " ^ list_string macros
       ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
+      ^ "\nsubgroup_size = " ^ subgroup_size
       ^ "\nassume_delin = " ^ bool assume_delin
       ^ "\nrewrite_delin = " ^ bool rewrite_delin
       ^ "\ndelin_elide = " ^ bool delin_elide
@@ -239,29 +253,175 @@ let to_string (app : t) : string =
               List.map (fun b -> k ^ ":" ^ Exp.b_to_string b) bs))
       ^ "\n"
 
+let checked_source_options ~block_dim ~grid_dim (filename : string) :
+    Gv_parser.t =
+  let options : Gv_parser.t =
+    match Gv_parser.parse filename with
+    | Some gv ->
+        Logger.Colors.info
+          ("Found GPUVerify args in source file: " ^ Gv_parser.to_string gv);
+        gv
+    | None -> Gv_parser.make ()
+  in
+  {
+    options with
+    block_dim = (match block_dim with Some b -> b | None -> options.block_dim);
+    grid_dim = (match grid_dim with Some g -> g | None -> options.grid_dim);
+  }
+
+let parse_cuda_program ~abort_on_parsing_failure ~block_dim ~grid_dim ~includes
+    ~macros ~cu_to_json ~ignore_asserts:_ ~launch_params ~cbor
+    (filename : string) :
+    Gv_parser.t * D_lang.Program.t =
+  let json =
+    Cu_to_json.cu_to_json
+      ~ignore_fail:(not abort_on_parsing_failure)
+      ~on_error:(fun _ -> exit 2)
+      ~includes ~macros ~exe:cu_to_json ~launch_params ~cbor filename
+  in
+  let options = checked_source_options ~block_dim ~grid_dim filename in
+  match C_lang.Program.parse json with
+  | Ok program -> (options, D_lang.rewrite_program program)
+  | Error error ->
+      Rjson.print_error error;
+      exit 2
+
+let subgroup_target_config (subgroup_size : int) : SM.Target_config.t =
+  match SM.Target_config.subgroup_size subgroup_size with
+  | Ok size -> SM.Target_config.cuda_x_contiguous size
+  | Error error ->
+      Logger.Colors.error (SM.Target_config.error_to_string error);
+      exit 2
+
+let split_context_and_kernel (name : string) (program : D_lang.Program.t) :
+    D_lang.Def.t list * D_lang.Kernel.t =
+  let context_rev, target =
+    List.fold_left
+      (fun (context_rev, target) def ->
+        match def with
+        | D_lang.Def.Kernel kernel when String.equal kernel.name name ->
+            (context_rev, Some kernel)
+        | D_lang.Def.Kernel _ -> (context_rev, target)
+        | D_lang.Def.Declaration _ | Typedef _ | Enum _ ->
+            (def :: context_rev, target))
+      ([], None) program
+  in
+  match target with
+  | Some kernel -> (List.rev context_rev, kernel)
+  | None ->
+      Logger.Colors.error ("kernel '" ^ name ^ "' not found!");
+      exit (-1)
+
+let route_program ?target_config ~(only_kernel : string option)
+    (program : D_lang.Program.t) :
+    (Subgroup_source.routed_kernel list, Subgroup_source.error) result =
+  match only_kernel with
+  | Some name ->
+      let context_defs, kernel = split_context_and_kernel name program in
+      Subgroup_source.route_kernel ?target_config ~context_defs kernel
+      |> Result.map (fun kernel -> [ kernel ])
+  | None -> Subgroup_source.route_program ?target_config program
+
+let compile_legacy_kernels ~(inline_calls : bool) ~(ignore_asserts : bool)
+    (kernels : Imp.Kernel.t list) : kernel list =
+  let kernels =
+    if ignore_asserts then List.map Imp.Kernel.remove_global_asserts kernels
+    else kernels
+  in
+  kernels
+  |> Imp.Compiler.compile_all ~inline_calls
+  |> List.filter Protocols.Kernel.is_global
+  |> List.map (fun kernel -> Legacy_kernel kernel)
+
+let kernels_of_routed ~(inline_calls : bool) ~(ignore_asserts : bool)
+    (kernel : Subgroup_source.routed_kernel) : kernel list =
+  match kernel with
+  | Subgroup_source.Legacy_imp kernel ->
+      compile_legacy_kernels ~inline_calls ~ignore_asserts [ kernel ]
+  | Subgroup_source.Subgroup_matrix kernel -> [ Subgroup_kernel kernel ]
+
+let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
+    ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json ~ignore_asserts
+    ~assume_launch ~cbor ~only_kernel ~(subgroup_size : int) : parsed =
+  if String.ends_with ~suffix:".wgsl" filename then (
+    Logger.Colors.error
+      "--subgroup-size is only supported for CUDA subgroup/matrix analysis.";
+    exit 2);
+  let options, program =
+    parse_cuda_program
+      ~abort_on_parsing_failure:(not ignore_parsing_errors)
+      ~block_dim ~grid_dim ~includes ~macros ~cu_to_json ~ignore_asserts
+      ~launch_params:assume_launch ~cbor
+      filename
+  in
+  let target_config = subgroup_target_config subgroup_size in
+  match route_program ~target_config ~only_kernel program with
+  | Error error ->
+      Logger.Colors.error (Subgroup_source.error_to_string error);
+      exit 2
+  | Ok routed ->
+      {
+        options;
+        kernels =
+          routed
+          |> List.map (kernels_of_routed ~inline_calls ~ignore_asserts)
+          |> List.concat;
+      }
+
 let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc ~show_symbexp
     ~logic ~solve_tactic ~ge_index ~le_index ~eq_index ~only_array ~only_kernel
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
-    ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
-    ~assume_delin ~rewrite_delin ~delin_elide ~delin_algo
-    ~delin_check_vacuosity ~assumes ~assume_dims
-    ~assume_launch ~check_pre_sat
-    ~memory_model ~cbor ~stop_at : t =
+    ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
+    ~rewrite_delin ~delin_elide ~delin_algo ~delin_check_vacuosity ~assumes
+    ~assume_dims ~assume_launch ~check_pre_sat ~memory_model ~cbor ~stop_at
+    ~subgroup_size : t =
   let parsed =
-    Phase_timer.measure "inference" (fun () ->
-      Protocol_parser.Silent.to_proto
-        ~abort_on_parsing_failure:(not ignore_parsing_errors)
-        ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
-        ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor
-        filename)
+    match subgroup_size with
+    | None ->
+        let parsed =
+          Phase_timer.measure "inference" (fun () ->
+            Protocol_parser.Silent.to_proto
+              ~abort_on_parsing_failure:(not ignore_parsing_errors)
+              ~includes ~block_dim ~grid_dim ~inline_calls ~macros
+              ~cu_to_json ~ignore_asserts ~assume_launch
+              ~launch_params:assume_launch ~cbor filename)
+        in
+        {
+          options = parsed.options;
+          kernels = List.map (fun kernel -> Legacy_kernel kernel) parsed.kernels;
+        }
+    | Some subgroup_size ->
+        parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
+          ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json
+          ~ignore_asserts ~assume_launch ~cbor ~only_kernel ~subgroup_size
   in
   (* Uniquify duplicate kernel names so that the user-facing flag
      [--assume "K:BEXP"], the [--list-kernels] output, the per-kernel
      [assumes] map, and the genie verdict JSON all address each
      kernel by a distinct identifier. *)
-  let kernels = parsed.kernels |> Protocols.Kernel.uniquify_names in
+  let uniquify_mixed_kernels (kernels : kernel list) : kernel list =
+    let legacy =
+      kernels
+      |> List.filter_map (function
+        | Legacy_kernel kernel -> Some kernel
+        | Subgroup_kernel _ -> None)
+      |> Protocols.Kernel.uniquify_names
+    in
+    let rec rebuild legacy kernels =
+      match (legacy, kernels) with
+      | _, [] -> []
+      | kernel :: legacy, Legacy_kernel _ :: kernels ->
+          Legacy_kernel kernel :: rebuild legacy kernels
+      | legacy, Subgroup_kernel kernel :: kernels ->
+          Subgroup_kernel kernel :: rebuild legacy kernels
+      | [], Legacy_kernel _ :: _ ->
+          failwith "internal error: missing uniquified legacy kernel"
+    in
+    rebuild legacy kernels
+  in
+  let kernels = uniquify_mixed_kernels parsed.kernels in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
   let grid_dim = if all_dims then None else Some parsed.options.grid_dim in
   (* [assumes] entries are [(kernel_name option, bexp)]. A [None]
@@ -280,7 +440,9 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
       fvs
   in
   let assumes : (string * Exp.bexp list) list =
-    List.map (fun (k : Protocols.Kernel.t) ->
+    List.filter_map (function
+      | Subgroup_kernel _ -> None
+      | Legacy_kernel (k : Protocols.Kernel.t) ->
       let kn = Protocols.Kernel.name k in
       let entries =
         List.filter_map (fun (prefix, b) ->
@@ -292,7 +454,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
             if n = kn then Some b else None)
           assumes
       in
-      (kn, entries))
+      Some (kn, entries))
       kernels
   in
   {
@@ -325,6 +487,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     params;
     only_kernel;
     only_true_data_races;
+    subgroup_size;
     macros;
     ignore_asserts;
     assume_delin;
@@ -452,11 +615,14 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Flat_acc
        ~show:a.show_flat_acc Flatacc.print_kernels
 
-let only_kernel (a : t) (ks : Protocols.Kernel.t list) : Protocols.Kernel.t list
-    =
+let kernel_name : kernel -> string = function
+  | Legacy_kernel kernel -> Protocols.Kernel.name kernel
+  | Subgroup_kernel kernel -> kernel.matrix_kernel.name
+
+let only_kernel (a : t) (ks : kernel list) : kernel list =
   match a.only_kernel with
   | Some name ->
-      let ks = ks |> List.filter (fun k -> Protocols.Kernel.name k = name) in
+      let ks = ks |> List.filter (fun k -> String.equal (kernel_name k) name) in
       if ks = [] then (
         Logger.Colors.error (fun () -> "kernel '" ^ name ^ "' not found!");
         exit (-1))
@@ -464,7 +630,7 @@ let only_kernel (a : t) (ks : Protocols.Kernel.t list) : Protocols.Kernel.t list
   | None -> ks
 
 let run (a : t) : Analysis.t list =
-  let check_kernel arch (kernel : Protocols.Kernel.t) : Analysis.t =
+  let check_legacy_kernel arch (kernel : Protocols.Kernel.t) : Analysis.legacy =
     let report =
       kernel |> translate arch a |> Symbexp.translate ~memory_model:a.memory_model arch
       |> Symbexp.add_rel_index (N_rel.Le Signedness.Signed) a.le_index
@@ -488,31 +654,75 @@ let run (a : t) : Analysis.t list =
     in
     Analysis.{ kernel; report; vacuous = None }
   in
-  a.kernels |> only_kernel a
-  |> List.map (fun kernel ->
-      let vacuous : Exp.bexp option =
-        if not a.check_pre_sat then None
-        else match a.archs with
-          | arch :: _ ->
-            let prepared = prepare_pre arch a kernel in
-            if Phase_timer.measure "pre-sat"
-                 (fun () -> Gen_z3.is_unsat ~timeout:a.timeout
-                              ~logic:a.logic prepared.pre)
-            then Some prepared.pre else None
-          | [] -> None
+  let check_subgroup_kernel (subgroup : Subgroup_source.subgroup_kernel) :
+      Analysis.subgroup =
+    let kernel = subgroup.matrix_kernel in
+    let config =
+      Subgroup_solver.solver_config ?timeout_ms:a.timeout ?logic:a.logic ()
+    in
+    let memory =
+      let globals = subgroup.memory_globals in
+      kernel
+      |> Subgroup_memory.obligations ~globals ?block_dim:a.block_dim
+           ~site_controls:subgroup.site_controls
+           ~ordinary_memory_effects:subgroup.ordinary_memory_effects
+      |> Subgroup_solver.solve_obligation_result ~config ~globals
+           ?block_dim:a.block_dim ~target_config:kernel.target_config
+           ~kernel_name:kernel.name
+    in
+    let uniformity =
+      let site_controls =
+        List.map
+          (fun (control : Subgroup_source.site_control) ->
+            ( control.site_id,
+              Subgroup_uniformity.control_with_uniform_vars
+                ~conditions:control.conditions
+                ~uniform_vars:control.uniform_vars ))
+          subgroup.site_controls
       in
-      match vacuous with
-      | Some _ ->
-        Analysis.{ kernel; report = []; vacuous }
-      | None ->
+      match
+        Subgroup_uniformity.check_kernel ~site_controls
+          ~uniform_vars:subgroup.uniform_vars kernel
+      with
+      | Ok result -> result
+      | Error error ->
+          Logger.Colors.error
+            ("subgroup uniformity configuration error: "
+            ^ Subgroup_uniformity.error_to_string error);
+          exit 2
+    in
+    Analysis.{ kernel; memory; uniformity }
+  in
+  a.kernels |> only_kernel a
+  |> List.map (function
+    | Subgroup_kernel kernel -> Analysis.Subgroup (check_subgroup_kernel kernel)
+    | Legacy_kernel kernel ->
+        let vacuous : Exp.bexp option =
+          if not a.check_pre_sat then None
+          else
+            match a.archs with
+            | arch :: _ ->
+                let prepared = prepare_pre arch a kernel in
+                if
+                  Phase_timer.measure "pre-sat" (fun () ->
+                    Gen_z3.is_unsat ~timeout:a.timeout ~logic:a.logic
+                      prepared.pre)
+                then Some prepared.pre
+                else None
+            | [] -> None
+        in
+        match vacuous with
+        | Some _ -> Analysis.Legacy { kernel; report = []; vacuous }
+        | None -> (
         let rec check_until (archs : Architecture.t list) : Analysis.t =
           match archs with
-          | [] -> Analysis.{ kernel; report = []; vacuous = None }
-          | [ arch ] -> check_kernel arch kernel
+          | [] -> Analysis.Legacy { kernel; report = []; vacuous = None }
+          | [ arch ] -> Analysis.Legacy (check_legacy_kernel arch kernel)
           | arch :: archs ->
-              let a = check_kernel arch kernel in
-              if Analysis.is_safe a then check_until archs else a
+              let legacy = check_legacy_kernel arch kernel in
+              if Analysis.legacy_is_safe legacy then check_until archs
+              else Analysis.Legacy legacy
         in
         try check_until a.archs
         with Stop_at_stage ->
-          Analysis.{ kernel; report = []; vacuous = None })
+          Analysis.Legacy { kernel; report = []; vacuous = None }))

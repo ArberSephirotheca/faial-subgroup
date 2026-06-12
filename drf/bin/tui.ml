@@ -181,119 +181,126 @@ end
 
 let print_box : PrintBox.t -> unit = PrintBox_text.output stdout
 
-let render (output : Analysis.t list) : unit =
-  let render_one (solution : Analysis.t) : int =
-      let kernel_name =
-        let open Analysis in
-        solution.kernel.name
-      in
-      let errors =
-        solution.report
-        |> List.filter_map (fun s ->
-            let open Solution in
-            match s.outcome with
-            | Drf | Drf_with_core _ -> None
-            | Unknown -> Some (Either.Left s.proof)
-            | Racy w -> Some (Either.Right (s.proof, w)))
-      in
-      let print_errors errs =
-        errs
-        |> List.iteri (fun i (w : Witness.t) ->
-            let is_cd = Variable.Set.cardinal w.control_approx > 0 in
-            let is_dd = Variable.Set.cardinal w.data_approx > 0 in
-            let is_exact = (not is_cd) && not is_dd in
-            let lbl =
-              " ("
-              ^ (if is_cd then "CD" else "CI")
-              ^ (if is_dd then "DD" else "DI")
-              ^ ")"
-            in
-            T.print_string
-              [ T.Bold; T.Foreground T.Blue ]
-              ("\n~~~~ Data-race " ^ string_of_int (i + 1) ^ lbl ^ " ~~~~\n\n");
-            let t1, t2 = w.tasks in
-            let locs =
-              match (Access.location t1.access, Access.location t2.access) with
-              | x1, x2 when x1 = x2 -> [ x1 ]
-              | x1, x2 when x2 < x1 -> [ x2; x1 ]
-              | x1, x2 -> [ x1; x2 ]
-            in
-            (match locs with
-            | [ x ] -> Tui_helper.LocationUI.print x
-            | [ x1; x2 ] -> Tui_helper.LocationUI.print2 x1 x2
-            | _ -> failwith "??");
-            print_endline "";
-            T.print_string [ T.Bold ] "Globals\n";
-            w |> GlobalState.from_witness |> GlobalState.to_print_box
-            |> print_box;
-            T.print_string [ T.Bold ] "\n\nLocals\n";
-            w |> LocalState.from_witness |> LocalState.to_print_box |> print_box;
-            if is_exact then
-              T.print_string
-                [ T.Bold; T.Underlined; T.Foreground T.Red ]
-                "\nTrue alarm detected!\n"
-            else ();
-            if is_dd then
-              T.print_string
-                [ T.Bold; T.Underlined; T.Foreground T.Yellow ]
-                "\n\
-                 WARNING: potential alarm, index depends on input, see \
-                 variables with (D).\n"
-            else ();
-            if is_cd then
-              T.print_string
-                [ T.Bold; T.Underlined; T.Foreground T.Yellow ]
-                "\n\
-                 WARNING: potential alarm, control-flow depends on input, see \
-                 variables with (C).\n"
-            else ();
-            print_endline "";
-            T.print_string [ T.Underlined ]
-              ("(proof #" ^ string_of_int w.proof_id ^ ")\n"))
-      in
-      let unk, errs = Common.either_split errors in
-      let errs = List.split errs |> snd in
-      let err_count = List.length errs in
-      match Analysis.verdict solution with
-      | Analysis.Verdict.Vacuous ->
-          T.print_string
-            [ T.Bold; T.Foreground T.Yellow ]
-            ("Kernel '" ^ kernel_name
-             ^ "' is vacuous (precondition is unsatisfiable; race pipeline skipped).\n");
-          (match solution.Analysis.vacuous with
-           | Some pre ->
-               T.print_string [ T.Bold ] "Precondition:\n";
-               print_string (Indent.to_string (Exp.b_to_s pre));
-               print_endline ""
-           | None -> ());
-          1
-      | Analysis.Verdict.Drf ->
-          T.print_string
-            [ T.Bold; T.Foreground T.Green ]
-            ("Kernel '" ^ kernel_name ^ "' is DRF!\n");
-          0
-      | Analysis.Verdict.Timeout ->
-          let n = List.length unk |> string_of_int in
-          T.print_string
-            [ T.Bold; T.Foreground T.Yellow ]
-            ("Kernel '" ^ kernel_name ^ "' timed out on " ^ n
-             ^ " proof query"
-             ^ (if n = "1" then "" else "s")
-             ^ "; verdict is inconclusive. Try increasing the timeout.\n");
-          1
-      | Analysis.Verdict.Racy ->
-          let err_count_s = string_of_int err_count in
-          let dr = "data-race" ^ if err_count = 1 then "" else "s" in
-          T.print_string
-            [ T.Bold; T.Foreground T.Red ]
-            ("Kernel '" ^ kernel_name ^ "' has " ^ err_count_s ^ " " ^ dr ^ ".\n");
-          print_errors errs;
-          if List.length unk > 0 then
-            T.print_string [ T.Foreground T.Red ]
-              "A portion of the kernel was not analyzable. Try to increasing \
-               the timeout.\n"
-          else ();
-          1
+let render_legacy (solution : Analysis.legacy) : bool =
+  let kernel_name = solution.kernel.name in
+  let errors =
+    solution.report
+    |> List.filter_map (fun s ->
+        let open Solution in
+        match s.outcome with
+        | Drf | Drf_with_core _ -> None
+        | Unknown -> Some (Either.Left s.proof)
+        | Racy w -> Some (Either.Right (s.proof, w)))
   in
-  let total = List.fold_left (fun acc s -> acc + render_one s) 0 output in
-  if total > 0 then exit 1 else ()
+  let print_errors errs =
+    errs
+    |> List.iteri (fun i (w : Witness.t) ->
+        let is_cd = Variable.Set.cardinal w.control_approx > 0 in
+        let is_dd = Variable.Set.cardinal w.data_approx > 0 in
+        let is_exact = (not is_cd) && not is_dd in
+        let lbl =
+          " ("
+          ^ (if is_cd then "CD" else "CI")
+          ^ (if is_dd then "DD" else "DI")
+          ^ ")"
+        in
+        T.print_string
+          [ T.Bold; T.Foreground T.Blue ]
+          ("\n~~~~ Data-race " ^ string_of_int (i + 1) ^ lbl ^ " ~~~~\n\n");
+        let t1, t2 = w.tasks in
+        let locs =
+          match (Access.location t1.access, Access.location t2.access) with
+          | x1, x2 when x1 = x2 -> [ x1 ]
+          | x1, x2 when x2 < x1 -> [ x2; x1 ]
+          | x1, x2 -> [ x1; x2 ]
+        in
+        (match locs with
+        | [ x ] -> Tui_helper.LocationUI.print x
+        | [ x1; x2 ] -> Tui_helper.LocationUI.print2 x1 x2
+        | _ -> failwith "??");
+        print_endline "";
+        T.print_string [ T.Bold ] "Globals\n";
+        w |> GlobalState.from_witness |> GlobalState.to_print_box |> print_box;
+        T.print_string [ T.Bold ] "\n\nLocals\n";
+        w |> LocalState.from_witness |> LocalState.to_print_box |> print_box;
+        if is_exact then
+          T.print_string
+            [ T.Bold; T.Underlined; T.Foreground T.Red ]
+            "\nTrue alarm detected!\n"
+        else ();
+        if is_dd then
+          T.print_string
+            [ T.Bold; T.Underlined; T.Foreground T.Yellow ]
+            "\n\
+             WARNING: potential alarm, index depends on input, see variables \
+             with (D).\n"
+        else ();
+        if is_cd then
+          T.print_string
+            [ T.Bold; T.Underlined; T.Foreground T.Yellow ]
+            "\n\
+             WARNING: potential alarm, control-flow depends on input, see \
+             variables with (C).\n"
+        else ();
+        print_endline "";
+        T.print_string [ T.Underlined ]
+          ("(proof #" ^ string_of_int w.proof_id ^ ")\n"))
+  in
+  let unk, errs = Common.either_split errors in
+  let errs = List.split errs |> snd in
+  let err_count = List.length errs in
+  match Analysis.legacy_verdict solution with
+  | Analysis.Verdict.Vacuous ->
+      T.print_string
+        [ T.Bold; T.Foreground T.Yellow ]
+        ("Kernel '" ^ kernel_name
+       ^ "' is vacuous (precondition is unsatisfiable; race pipeline skipped).\n");
+      (match solution.Analysis.vacuous with
+      | Some pre ->
+          T.print_string [ T.Bold ] "Precondition:\n";
+          print_string (Indent.to_string (Exp.b_to_s pre));
+          print_endline ""
+      | None -> ());
+      true
+  | Analysis.Verdict.Drf ->
+      T.print_string
+        [ T.Bold; T.Foreground T.Green ]
+        ("Kernel '" ^ kernel_name ^ "' is DRF!\n");
+      false
+  | Analysis.Verdict.Timeout ->
+      let n = List.length unk |> string_of_int in
+      T.print_string
+        [ T.Bold; T.Foreground T.Yellow ]
+        ("Kernel '" ^ kernel_name ^ "' timed out on " ^ n ^ " proof query"
+       ^ (if n = "1" then "" else "s")
+       ^ "; verdict is inconclusive. Try increasing the timeout.\n");
+      true
+  | Analysis.Verdict.Racy ->
+      let err_count_s = string_of_int err_count in
+      let dr = "data-race" ^ if err_count = 1 then "" else "s" in
+      T.print_string
+        [ T.Bold; T.Foreground T.Red ]
+        ("Kernel '" ^ kernel_name ^ "' has " ^ err_count_s ^ " " ^ dr ^ ".\n");
+      print_errors errs;
+      if List.length unk > 0 then
+        T.print_string [ T.Foreground T.Red ]
+          "A portion of the kernel was not analyzable. Try to increasing the \
+           timeout.\n"
+      else ();
+      true
+
+let render_subgroup (solution : Analysis.subgroup) : bool =
+  Drf.Subgroup_solver.summary_lines ~uniformity:solution.uniformity
+    solution.memory
+  |> List.iter print_endline;
+  not (Analysis.subgroup_is_safe solution)
+
+let render (output : Analysis.t list) : unit =
+  let total = ref 0 in
+  output
+  |> List.iter (function
+    | Analysis.Legacy solution ->
+        if render_legacy solution then total := !total + 1
+    | Analysis.Subgroup solution ->
+        if render_subgroup solution then total := !total + 1);
+  if !total > 0 then exit 1 else ()

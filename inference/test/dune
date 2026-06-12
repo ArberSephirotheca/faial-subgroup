@@ -2,8 +2,15 @@
  (names
     test_dlang
     test_host_translate
+    test_subgroup_matrix
+    test_subgroup_source
     test_queries
     test_wgsl
  )
  (libraries stage0 protocols inference alcotest)
 )
+
+(executable
+ (name emit_subgroup_artifact)
+ (modules emit_subgroup_artifact)
+ (libraries stage0 protocols inference))

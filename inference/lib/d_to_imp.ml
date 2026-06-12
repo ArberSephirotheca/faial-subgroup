@@ -14,6 +14,8 @@ open Exp
 
 type d_error = string StackTrace.t
 
+exception Unsupported_source of string
+
 let error_to_buffer (e : d_error) : Buffer.t =
   let b = Buffer.create 512 in
   StackTrace.iter (Buffer.add_string b) e;
@@ -58,6 +60,32 @@ module TypeAlias = struct
 end
 
 module Make (L : Logger) = struct
+  let unsupported_wmma_call (kind : D_lang.Wmma_call.kind)
+      (expr : D_lang.Expr.t) : 'a =
+    let op = D_lang.Wmma_call.to_string kind in
+    raise
+      (Unsupported_source
+         ("CUDA WMMA call '" ^ op
+        ^ "' requires the subgroup/matrix representation; legacy Imp lowering \
+           is intentionally unsupported for " ^ D_lang.Expr.to_string expr))
+
+  let unsupported_subgroup_call (op : string) (expr : D_lang.Expr.t) : 'a =
+    raise
+      (Unsupported_source
+         ("CUDA subgroup call '" ^ op
+        ^ "' requires the subgroup/matrix representation; legacy Imp lowering \
+           is intentionally unsupported for " ^ D_lang.Expr.to_string expr))
+
+  let unsupported_conditional_pointer_alias ~(kind : string)
+      (target : D_lang.Expr.t) (expr : D_lang.Expr.t) : 'a =
+    raise
+      (Unsupported_source
+         ("CUDA conditional pointer alias " ^ kind ^ " for '"
+         ^ D_lang.Expr.to_string target
+         ^ "' requires source-parameter-aware alias resolution; legacy Imp \
+            lowering cannot guess memory identity for "
+         ^ D_lang.Expr.to_string expr))
+
   let parse_bin ?(sign = Signedness.Signed) (op : string)
       (l : Imp.Infer_exp.t) (r : Infer_exp.t) : Infer_exp.t =
     match op with
@@ -89,6 +117,11 @@ module Make (L : Logger) = struct
           ^ Infer_exp.to_string r ^ ")"
         in
         Unknown lbl
+
+  let call_name : D_lang.Expr.t -> string option = function
+    | Ident { name; kind = Function; _ } | UnresolvedLookupExpr { name; _ } ->
+        Some (Variable.name name)
+    | _ -> None
 
   let rec infer_expr (e : D_lang.Expr.t) : Infer_exp.t =
     match e with
@@ -188,8 +221,18 @@ module Make (L : Logger) = struct
     | UnaryOperator u when u.opcode = "!" ->
         let b = infer_expr u.child in
         BExp (BNot b)
-    | RecoveryExpr _ | CXXConstructExpr _ | MemberExpr _ | CallExpr _
-    | UnaryOperator _ | CXXOperatorCallExpr _ | UnresolvedLookupExpr _ ->
+    | CallExpr { func; args; _ } as e -> (
+        match D_lang.Wmma_call.classify func args with
+        | Some kind -> unsupported_wmma_call kind e
+        | None -> (
+            match infer_source_dependency_call func args with
+            | Some e -> e
+            | None ->
+                let lbl = D_lang.Expr.to_string e in
+                L.warning (fun () -> "parse_exp: rewriting to unknown: " ^ lbl);
+                Unknown lbl))
+    | RecoveryExpr _ | CXXConstructExpr _ | MemberExpr _ | UnaryOperator _
+    | CXXOperatorCallExpr _ | UnresolvedLookupExpr _ ->
         let lbl = D_lang.Expr.to_string e in
         L.warning (fun () -> "parse_exp: rewriting to unknown: " ^ lbl);
         Unknown lbl
@@ -197,6 +240,51 @@ module Make (L : Logger) = struct
         failwith
           ("WARNING: parse_nexp: unsupported expression " ^ D_lang.Expr.name e
          ^ " : " ^ D_lang.Expr.to_string e)
+
+  and infer_source_dependency_call (func : D_lang.Expr.t)
+      (args : D_lang.Expr.t list) : Infer_exp.t option =
+    match (call_name func, args) with
+    | Some "divUp", [ n1; n2 ] ->
+        let n1 = infer_expr n1 in
+        let n2 = infer_expr n2 in
+        let n2_minus_1 : Infer_exp.n =
+          Binary (Minus Signedness.Signed, n2, NExp (Num 1))
+        in
+        let n1_plus_n2_minus_1 : Infer_exp.n =
+          Binary (Plus Signedness.Signed, n1, NExp n2_minus_1)
+        in
+        Some
+          (NExp
+             (Binary
+                (Div Signedness.Signed, NExp n1_plus_n2_minus_1, n2)))
+    | Some "__other_int", [ n ] ->
+        let n = infer_expr n in
+        Some (NExp (Other n))
+    | Some "__uniform_int", [ n ] ->
+        let n = infer_expr n in
+        Some (BExp (Infer_exp.thread_equal n))
+    | Some "__distinct_int", [ n ] ->
+        let n = infer_expr n in
+        Some (BExp (Infer_exp.thread_distinct n))
+    | Some "__is_pow2", [ n ] ->
+        let n = infer_expr n in
+        Some (BExp (Pred ("pow2", [ n ])))
+    | Some ("min" | "fminf"), [ n1; n2 ] ->
+        let n1 = infer_expr n1 in
+        let n2 = infer_expr n2 in
+        Some
+          (NExp (NIf (BExp (NRel (Lt Signedness.Signed, n1, n2)), n1, n2)))
+    | Some ("max" | "fmaxf"), [ n1; n2 ] ->
+        let n1 = infer_expr n1 in
+        let n2 = infer_expr n2 in
+        Some
+          (NExp (NIf (BExp (NRel (Gt Signedness.Signed, n1, n2)), n1, n2)))
+    | Some (("__half2float" | "__float2half_rn") as op), [ value ]
+    | Some (("warp_sum" | "warp_max") as op), [ value ] ->
+        Some (NExp (NCall (op, [ infer_expr value ])))
+    | Some (("__shfl_sync" | "__shfl_down_sync") as op), [ _mask; value; _ ] ->
+        Some (NExp (NCall (op, [ infer_expr value ])))
+    | _ -> None
 
   let to_nexp (e : D_lang.Expr.t) : Exp.nexp Infer_exp.state =
     Infer_exp.to_nexp (infer_expr e)
@@ -336,11 +424,43 @@ module Make (L : Logger) = struct
         in
         Some { l with offset }
     | CXXOperatorCallExpr _ -> None
-    | BinaryOperator ({ lhs = l; _ } as b) ->
-        let* l = infer_load_expr target l in
-        let offset : D_lang.Expr.t = BinaryOperator { b with lhs = l.offset } in
-        Some { l with offset }
+    | BinaryOperator ({ lhs; rhs; opcode; ty } as b)
+      when opcode = "+" || opcode = "-" -> (
+        match infer_load_expr target lhs with
+        | Some l ->
+            let offset : D_lang.Expr.t =
+              BinaryOperator { b with lhs = l.offset }
+            in
+            Some { l with offset }
+        | None when opcode = "+" ->
+            let* r = infer_load_expr target rhs in
+            let offset : D_lang.Expr.t =
+              BinaryOperator { opcode; lhs; rhs = r.offset; ty }
+            in
+            Some { r with offset }
+        | None -> None)
     | _ -> None
+
+  let rec contains_conditional_pointer_alias_expr (exp : D_lang.Expr.t) : bool =
+    match exp with
+    | ConditionalOperator _ -> true
+    | BinaryOperator { lhs; rhs; _ }
+    | CXXOperatorCallExpr { args = [ lhs; rhs ]; _ } ->
+        contains_conditional_pointer_alias_expr lhs
+        || contains_conditional_pointer_alias_expr rhs
+    | UnaryOperator { child; _ } ->
+        contains_conditional_pointer_alias_expr child
+    | CallExpr { func; args; _ } ->
+        contains_conditional_pointer_alias_expr func
+        || List.exists contains_conditional_pointer_alias_expr args
+    | CXXConstructExpr { args; _ } ->
+        List.exists contains_conditional_pointer_alias_expr args
+    | MemberExpr { base; _ } -> contains_conditional_pointer_alias_expr base
+    | SizeOfExpr _ | CXXNewExpr _ | CXXDeleteExpr _ | RecoveryExpr _
+    | CharacterLiteral _ | CXXBoolLiteralExpr _ | FloatingLiteral _
+    | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _
+    | CXXOperatorCallExpr _ ->
+        false
 
   let asserts : Variable.Set.t =
     Variable.Set.of_list
@@ -395,21 +515,38 @@ module Make (L : Logger) = struct
     let infer_call ?(result = None) (func : D_lang.Expr.t)
         (args : D_lang.Expr.t list) : Infer_stmt.t =
       let arg_count = List.length args in
-      match Context.lookup_sig func arg_count ctx with
-      | Some s when List.length s.params = arg_count ->
-          let open Imp.Infer_stmt in
-          Call
-            {
-              result;
-              kernel = s.kernel;
-              ty = s.ty;
-              args = List.map infer_arg args;
-            }
-      (* Either no signature found, or the matched signature has a
-         different param count — happens with variadic-template /
-         pack-expansion specialisations whose ty-string aliases a
-         stored entry. Skip rather than abort the whole analysis. *)
-      | Some _ | None -> Skip
+      match D_lang.Wmma_call.classify func args with
+      | Some kind ->
+          unsupported_wmma_call kind
+            (D_lang.Expr.CallExpr { func; args; ty = J_type.void })
+      | None -> (
+          match (call_name func, args) with
+          | Some "__syncwarp", _ ->
+              unsupported_subgroup_call "__syncwarp"
+                (D_lang.Expr.CallExpr { func; args; ty = J_type.void })
+          | _ -> (
+              match (result, infer_source_dependency_call func args) with
+              | Some (var, ty), Some data -> Infer_stmt.Assign { var; data; ty }
+              | _ -> (
+                  match Context.lookup_sig func arg_count ctx with
+                  | Some s ->
+                      if List.length s.params <> arg_count then
+                        let e : D_lang.Expr.t =
+                          CallExpr { func; args; ty = J_type.unknown }
+                        in
+                        failwith
+                          ("infer_call: CallExpr args mismatch: "
+                         ^ D_lang.Expr.to_string e)
+                      else
+                        let open Imp.Infer_stmt in
+                        Call
+                          {
+                            result;
+                            kernel = s.kernel;
+                            ty = s.ty;
+                            args = List.map infer_arg args;
+                          }
+                  | None -> Skip)))
     in
 
     let rec infer : D_lang.Stmt.t -> Imp.Infer_stmt.t = function
@@ -463,7 +600,6 @@ module Make (L : Logger) = struct
           Imp.Infer_stmt.If (infer_expr cond, infer then_stmt, infer else_stmt)
       (* Support for location aliasing that declares a new variable *)
       | DeclStmt [ d ] -> (
-          let ( let* ) = Option.bind in
           (* Detect non-standard declarations: *)
           let s =
             match d with
@@ -483,7 +619,7 @@ module Make (L : Logger) = struct
             | { ty; init = Some (IExpr rhs); _ }
               when J_type.matches
                      (fun x -> C_type.is_pointer x || C_type.is_auto x)
-                     ty ->
+                     ty -> (
                 let d_ty =
                   d.ty
                   |> J_type.to_c_type ~default:C_type.int
@@ -492,8 +628,13 @@ module Make (L : Logger) = struct
                 let lhs : D_lang.Expr.t =
                   Ident (Decl_expr.from_name ~ty:d_ty d.var)
                 in
-                let* a = infer_load_expr lhs rhs in
-                Some (infer_location_alias a)
+                let alias = infer_load_expr lhs rhs in
+                match (alias, contains_conditional_pointer_alias_expr rhs) with
+                | Some a, _ -> Some (infer_location_alias a)
+                | None, true ->
+                    unsupported_conditional_pointer_alias ~kind:"initializer"
+                      lhs rhs
+                | None, false -> None)
             (* Otherwise, nothing found *)
             | _ -> None
           in
@@ -507,10 +648,13 @@ module Make (L : Logger) = struct
       | DeclStmt [] -> Skip
       | SExpr
           (BinaryOperator { opcode = "="; lhs = Ident { ty; _ } as lhs; rhs; _ })
-        when J_type.matches C_type.is_pointer ty ->
-          infer_load_expr lhs rhs
-          |> Option.map infer_location_alias
-          |> Option.value ~default:Infer_stmt.Skip
+        when J_type.matches C_type.is_pointer ty -> (
+          match infer_load_expr lhs rhs with
+          | Some alias -> infer_location_alias alias
+          | None ->
+              if contains_conditional_pointer_alias_expr rhs then
+                unsupported_conditional_pointer_alias ~kind:"assignment" lhs rhs
+              else Infer_stmt.Skip)
       | SExpr
           (BinaryOperator
              { opcode = "="; lhs = Ident { name = var; _ }; rhs; ty; _ }) ->

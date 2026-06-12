@@ -980,6 +980,37 @@ module SignatureDB = struct
       StringMap.empty p
 end
 
+module Wmma_call = struct
+  type kind =
+    | Fill_fragment
+    | Load_matrix_sync
+    | Mma_sync
+    | Store_matrix_sync
+
+  let to_string : kind -> string = function
+    | Fill_fragment -> "fill_fragment"
+    | Load_matrix_sync -> "load_matrix_sync"
+    | Mma_sync -> "mma_sync"
+    | Store_matrix_sync -> "store_matrix_sync"
+
+  let kind_of_name : string -> kind option = function
+    | "fill_fragment" -> Some Fill_fragment
+    | "load_matrix_sync" -> Some Load_matrix_sync
+    | "mma_sync" -> Some Mma_sync
+    | "store_matrix_sync" -> Some Store_matrix_sync
+    | _ -> None
+
+  let func_name : Expr.t -> string option = function
+    | Ident { name; kind = Function; _ } | UnresolvedLookupExpr { name; _ } ->
+        Some (Variable.name name)
+    | _ -> None
+
+  let classify (func : Expr.t) (_args : Expr.t list) : kind option =
+    match Option.bind (func_name func) kind_of_name with
+    | Some kind -> Some kind
+    | _ -> None
+end
+
 (* ------------------------------------- *)
 
 let ( @ ) = Common.append_tr
