@@ -2,11 +2,100 @@ open Stage0
 open Protocols
 open Inference
 open D_lang
+open Protocols
+open Stage0
 
 let stmt : Stmt.t Alcotest.testable =
   let pp fmt stmt = Format.fprintf fmt "%s" (Stmt.to_string stmt) in
   let equal = ( = ) in
   Alcotest.testable pp equal
+
+let wmma_kind : Wmma_call.kind option Alcotest.testable =
+  let pp fmt = function
+    | Some kind -> Format.fprintf fmt "Some %s" (Wmma_call.to_string kind)
+    | None -> Format.fprintf fmt "None"
+  in
+  Alcotest.testable pp ( = )
+
+let ty (name : string) : J_type.t = J_type.from_string name
+
+let ident ?(kind = Decl_expr.Kind.Var) ?(ty = J_type.int) (name : string) :
+    Expr.t =
+  Ident { name = Variable.from_name name; ty; kind }
+
+let call_expr (name : string) (args : Expr.t list) : Expr.t =
+  CallExpr
+    {
+      func = ident ~kind:Decl_expr.Kind.Function ~ty:J_type.void name;
+      args;
+      ty = J_type.void;
+    }
+
+let var (name : string) : Variable.t = Variable.from_name name
+
+let ty_var ?(ty = J_type.int) (name : string) : Ty_variable.t =
+  Ty_variable.make ~name:(var name) ~ty
+
+let decl ?(ty = J_type.int) (name : string) (expr : Expr.t) : Decl.t =
+  Decl.from_expr (ty_var ~ty name) expr
+
+let kernel ?(attribute = D_lang.KernelAttr.Default) ?(params = [])
+    ?(type_params = []) ?(ty = "void ()") (name : string) (code : Stmt.t) :
+    D_lang.Kernel.t =
+  { ty; name; code; type_params; params; attribute }
+
+let parse_single_kernel (defs : D_lang.Program.t) : Imp.Kernel.t =
+  match D_to_imp.Silent.parse_program defs with
+  | [ k ] -> k
+  | kernels ->
+      Alcotest.failf "expected one parsed kernel, got %d" (List.length kernels)
+
+let parse_code (code : Stmt.t) : Imp.Kernel.t =
+  parse_single_kernel [ D_lang.Def.Kernel (kernel "dependency_probe" code) ]
+
+let assign_data (name : string) (code : Imp.Stmt.t) : Exp.nexp list =
+  Imp.Stmt.find_all_map
+    (function
+      | Imp.Stmt.Assign { var; data; _ } when Variable.name var = name ->
+          Some data
+      | _ -> None)
+    code
+  |> List.of_seq
+
+let expect_one_assign (name : string) (code : Imp.Stmt.t) : Exp.nexp =
+  match assign_data name code with
+  | [ data ] -> data
+  | data ->
+      Alcotest.failf "expected one assignment to %s, got %d" name
+        (List.length data)
+
+let location_aliases (code : Imp.Stmt.t) : Imp.Alias.t list =
+  Imp.Stmt.find_all_map
+    (function Imp.Stmt.LocationAlias alias -> Some alias | _ -> None)
+    code
+  |> List.of_seq
+
+let expect_one_location_alias (code : Imp.Stmt.t) : Imp.Alias.t =
+  match location_aliases code with
+  | [ alias ] -> alias
+  | aliases ->
+      Alcotest.failf "expected one location alias, got %d" (List.length aliases)
+
+let wmma_fragment_type : J_type.t =
+  ty
+    "nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, float, \
+     nvcuda::wmma::row_major>"
+
+let pointer_ty : J_type.t = ty "float *"
+
+let pointer_offset (base : string) (offset : string) : Expr.t =
+  Expr.BinaryOperator
+    {
+      lhs = ident ~ty:pointer_ty base;
+      opcode = "+";
+      rhs = ident offset;
+      ty = pointer_ty;
+    }
 
 let test_last_and_skip_last () : unit =
   let open Stmt in
@@ -348,6 +437,293 @@ let test_nested_scalar_assignment_in_expression () : unit =
       Alcotest.failf
         "expected [idx %% 6] as the value expression; got: %s"
         (D_lang.Expr.to_string other)
+let test_wmma_call_classification () : unit =
+  let frag = ident ~ty:wmma_fragment_type "frag" in
+  let ptr = ident ~ty:(ty "float *") "ptr" in
+  let load_call =
+    match
+      call_expr "load_matrix_sync" [ frag; ptr; Expr.IntegerLiteral 16 ]
+    with
+    | CallExpr { func; args; _ } -> Wmma_call.classify func args
+    | _ -> None
+  in
+  let non_wmma_call =
+    match
+      call_expr "plain_helper" [ ident "dst"; ident "src"; IntegerLiteral 16 ]
+    with
+    | CallExpr { func; args; _ } -> Wmma_call.classify func args
+    | _ -> None
+  in
+  Alcotest.check wmma_kind "classifies WMMA load" (Some Load_matrix_sync)
+    load_call;
+  Alcotest.check wmma_kind "does not classify unrelated helper" None
+    non_wmma_call
+
+let test_wmma_call_rejected_before_imp_lowering () : unit =
+  let frag = ident ~ty:wmma_fragment_type "frag" in
+  let code =
+    Stmt.SExpr
+      (call_expr "load_matrix_sync" [ frag; ident ~ty:(ty "float *") "ptr" ])
+  in
+  let kernel : D_lang.Kernel.t =
+    {
+      ty = "void ()";
+      name = "wmma_probe";
+      code;
+      type_params = [];
+      params = [];
+      attribute = D_lang.KernelAttr.Default;
+    }
+  in
+  let program = [ D_lang.Def.Kernel kernel ] in
+  match D_to_imp.Silent.parse_program program with
+  | _ -> Alcotest.fail "WMMA call unexpectedly lowered to Imp"
+  | exception D_to_imp.Unsupported_source msg ->
+      Alcotest.(check bool)
+        "message names the rejected WMMA operation" true
+        (Common.contains ~substring:"load_matrix_sync" msg)
+
+let test_source_dependency_helper_summary () : unit =
+  let code =
+    Stmt.DeclStmt [ decl "total" (call_expr "warp_sum" [ ident "cur_p" ]) ]
+  in
+  let kernel = parse_code code in
+  match expect_one_assign "total" kernel.code with
+  | Exp.NCall ("warp_sum", Exp.Var arg) ->
+      Alcotest.(check string)
+        "summary keeps operand dependency" "cur_p" (Variable.name arg)
+  | data ->
+      Alcotest.failf "expected warp_sum dependency summary, got %s"
+        (Exp.n_to_string data)
+
+let test_fmaxf_dependency_lowering () : unit =
+  let code =
+    Stmt.DeclStmt
+      [ decl "maxed" (call_expr "fmaxf" [ ident "lhs"; ident "rhs" ]) ]
+  in
+  let kernel = parse_code code in
+  match expect_one_assign "maxed" kernel.code with
+  | Exp.NIf
+      ( Exp.NRel (N_rel.Gt, Exp.Var lhs, Exp.Var rhs),
+        Exp.Var accept,
+        Exp.Var reject ) ->
+      Alcotest.(check string)
+        "lhs participates in comparison" "lhs" (Variable.name lhs);
+      Alcotest.(check string)
+        "rhs participates in comparison" "rhs" (Variable.name rhs);
+      Alcotest.(check string)
+        "then branch preserves lhs" "lhs" (Variable.name accept);
+      Alcotest.(check string)
+        "else branch preserves rhs" "rhs" (Variable.name reject)
+  | data ->
+      Alcotest.failf "expected fmaxf dependency expression, got %s"
+        (Exp.n_to_string data)
+
+let test_loop_and_global_constant_dependencies () : unit =
+  let body =
+    Stmt.WriteAccessStmt
+      {
+        target =
+          make_subscript ~name:(var "dst")
+            ~index:[ ident "i" ]
+            ~ty:J_type.int ~location:Location.empty;
+        source = ident "tid";
+        payload = None;
+      }
+  in
+  let inc =
+    Stmt.SExpr
+      (Expr.BinaryOperator
+         {
+           lhs = ident "i";
+           opcode = "=";
+           rhs =
+             Expr.BinaryOperator
+               {
+                 lhs = ident "i";
+                 opcode = "+";
+                 rhs = ident "WG_SIZE";
+                 ty = J_type.int;
+               };
+           ty = J_type.int;
+         })
+  in
+  let loop =
+    Stmt.ForStmt
+      {
+        init = Some (ForInit.Decls [ decl "i" (ident "tid") ]);
+        cond =
+          Some
+            (Expr.BinaryOperator
+               {
+                 lhs = ident "i";
+                 opcode = "<";
+                 rhs = ident "Q_TILE";
+                 ty = J_type.bool;
+               });
+        inc;
+        body;
+      }
+  in
+  let const_q_tile =
+    D_lang.Def.Declaration
+      (decl ~ty:(ty "const int") "Q_TILE" (Expr.IntegerLiteral 16))
+  in
+  let kernel =
+    parse_single_kernel
+      [ const_q_tile; D_lang.Def.Kernel (kernel "loop_probe" loop) ]
+  in
+  let decls =
+    Imp.Stmt.find_all_map
+      (function
+        | Imp.Stmt.Decl { var; init = Some init; _ }
+          when Variable.name var = "Q_TILE" ->
+            Some init
+        | _ -> None)
+      kernel.code
+    |> List.of_seq
+  in
+  let ranges =
+    Imp.Stmt.find_all_map
+      (function Imp.Stmt.For (range, _) -> Some range | _ -> None)
+      kernel.code
+    |> List.of_seq
+  in
+  Alcotest.(check int)
+    "global const preamble is preserved" 1 (List.length decls);
+  Alcotest.(check string)
+    "const value is preserved" "16"
+    (List.hd decls |> Exp.n_to_string);
+  match ranges with
+  | [ range ] ->
+      Alcotest.(check string) "loop variable" "i" (Variable.name range.var);
+      Alcotest.(check string)
+        "loop lower bound keeps scalar init" "tid"
+        (Exp.n_to_string range.lower_bound);
+      Alcotest.(check string)
+        "loop upper bound keeps symbolic constant" "Q_TILE - 1"
+        (Exp.n_to_string range.upper_bound);
+      Alcotest.(check string)
+        "loop step keeps symbolic constant" "WG_SIZE"
+        (match range.step with
+        | Range.Step.Plus step -> Exp.n_to_string step
+        | Range.Step.Mult step -> Exp.n_to_string step)
+  | ranges ->
+      Alcotest.failf "expected one inferred loop range, got %d"
+        (List.length ranges)
+
+let test_pointer_alias_declaration_preserves_base_plus_offset () : unit =
+  let code =
+    Stmt.DeclStmt
+      [ decl ~ty:pointer_ty "tile_base" (pointer_offset "tile" "base") ]
+  in
+  let alias =
+    parse_code code |> fun kernel -> expect_one_location_alias kernel.code
+  in
+  Alcotest.(check string) "alias source" "tile" (Variable.name alias.source);
+  Alcotest.(check string)
+    "alias target" "tile_base"
+    (Variable.name alias.target);
+  Alcotest.(check string)
+    "alias offset keeps source expression" "0 + base"
+    (Exp.n_to_string alias.offset)
+
+let test_pointer_alias_assignment_preserves_base_plus_offset () : unit =
+  let code =
+    Stmt.SExpr
+      (Expr.BinaryOperator
+         {
+           lhs = ident ~ty:pointer_ty "z";
+           opcode = "=";
+           rhs = pointer_offset "y" "i";
+           ty = pointer_ty;
+         })
+  in
+  let alias =
+    parse_code code |> fun kernel -> expect_one_location_alias kernel.code
+  in
+  Alcotest.(check string) "alias source" "y" (Variable.name alias.source);
+  Alcotest.(check string) "alias target" "z" (Variable.name alias.target);
+  Alcotest.(check string)
+    "alias offset keeps assignment expression" "0 + i"
+    (Exp.n_to_string alias.offset)
+
+let test_conditional_pointer_alias_rejected_precisely () : unit =
+  let conditional_alias =
+    Expr.ConditionalOperator
+      {
+        cond = ident "KV_OVERLAP";
+        then_expr = ident ~ty:pointer_ty "K";
+        else_expr = ident ~ty:pointer_ty "V";
+        ty = pointer_ty;
+      }
+  in
+  let code = Stmt.DeclStmt [ decl ~ty:pointer_ty "V_base" conditional_alias ] in
+  match parse_code code with
+  | _ -> Alcotest.fail "conditional pointer alias unexpectedly lowered to Imp"
+  | exception D_to_imp.Unsupported_source msg ->
+      Alcotest.(check bool)
+        "message names conditional alias" true
+        (Common.contains ~substring:"conditional pointer alias initializer" msg);
+      Alcotest.(check bool)
+        "message names target" true
+        (Common.contains ~substring:"V_base" msg)
+
+let test_restrict_pointer_parameter_remains_array_parameter () : unit =
+  let restrict_param =
+    C_lang.Param.make
+      ~ty_var:(ty_var ~ty:(ty "const float *__restrict") "Q")
+      ~is_used:true ~is_shared:false
+  in
+  let kernel =
+    parse_single_kernel
+      [
+        D_lang.Def.Kernel
+          (kernel ~params:[ restrict_param ] "restrict_probe" Stmt.Skip);
+      ]
+  in
+  match kernel.parameters with
+  | [ (name, Imp.Kernel.Parameter.Type.Array memory) ] ->
+      Alcotest.(check string) "parameter name" "Q" (Variable.name name);
+      Alcotest.(check bool)
+        "parameter is global memory" true (Memory.is_global memory);
+      Alcotest.(check (list string))
+        "element type keeps const qualifier" [ "const"; "float" ]
+        memory.data_type
+  | params ->
+      Alcotest.failf "expected one array parameter, got %s"
+        (Imp.Kernel.ParameterList.to_string params)
+
+let test_wmma_unsupported_boundary_preserves_matrix_pointer_argument () : unit =
+  let frag = ident ~ty:wmma_fragment_type "frag" in
+  let pointer = pointer_offset "tile_base" "d" in
+  let code =
+    Stmt.SExpr
+      (call_expr "load_matrix_sync" [ frag; pointer; Expr.IntegerLiteral 16 ])
+  in
+  match
+    D_to_imp.Silent.parse_program
+      [ D_lang.Def.Kernel (kernel "matrix_pointer_probe" code) ]
+  with
+  | _ -> Alcotest.fail "WMMA call unexpectedly lowered to Imp"
+  | exception D_to_imp.Unsupported_source msg ->
+      Alcotest.(check bool)
+        "message names the rejected WMMA operation" true
+        (Common.contains ~substring:"load_matrix_sync" msg);
+      Alcotest.(check bool)
+        "message preserves matrix pointer argument" true
+        (Common.contains ~substring:"tile_base + d" msg)
+
+let test_syncwarp_rejected_before_imp_lowering () : unit =
+  let code = Stmt.SExpr (call_expr "__syncwarp" []) in
+  match
+    D_to_imp.Silent.parse_program [ D_lang.Def.Kernel (kernel "syncwarp" code) ]
+  with
+  | _ -> Alcotest.fail "__syncwarp unexpectedly lowered through legacy Imp"
+  | exception D_to_imp.Unsupported_source msg ->
+      Alcotest.(check bool)
+        "message names the rejected subgroup operation" true
+        (Common.contains ~substring:"__syncwarp" msg)
 
 let subscript (base : C_lang.Expr.t) (idx : C_lang.Expr.t) : C_lang.Expr.t =
   ArraySubscriptExpr
@@ -446,6 +822,35 @@ let tests : unit Alcotest.test_case list =
     ( "short-circuit [x && a[i]]: RHS read guarded by x",
       `Quick,
       test_and_rhs_read_is_guarded );
+    ("WMMA call classification", `Quick, test_wmma_call_classification);
+    ( "WMMA call rejected before Imp lowering",
+      `Quick,
+      test_wmma_call_rejected_before_imp_lowering );
+    ( "source dependency helper summary",
+      `Quick,
+      test_source_dependency_helper_summary );
+    ("fmaxf dependency lowering", `Quick, test_fmaxf_dependency_lowering);
+    ( "loop and global constant dependencies",
+      `Quick,
+      test_loop_and_global_constant_dependencies );
+    ( "pointer alias declaration preserves base-plus-offset",
+      `Quick,
+      test_pointer_alias_declaration_preserves_base_plus_offset );
+    ( "pointer alias assignment preserves base-plus-offset",
+      `Quick,
+      test_pointer_alias_assignment_preserves_base_plus_offset );
+    ( "conditional pointer alias rejected precisely",
+      `Quick,
+      test_conditional_pointer_alias_rejected_precisely );
+    ( "restrict pointer parameter remains array parameter",
+      `Quick,
+      test_restrict_pointer_parameter_remains_array_parameter );
+    ( "WMMA unsupported boundary preserves matrix pointer argument",
+      `Quick,
+      test_wmma_unsupported_boundary_preserves_matrix_pointer_argument );
+    ( "syncwarp rejected before Imp lowering",
+      `Quick,
+      test_syncwarp_rejected_before_imp_lowering );
   ]
 
 let () = Alcotest.run "D_lang" [ ("dlang", tests) ]

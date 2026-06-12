@@ -96,6 +96,22 @@ let conv_tactic =
   in
   Arg.conv (parse, print)
 
+let conv_subgroup_size =
+  let parse s =
+    match int_of_string_opt s with
+    | None -> Error (`Msg ("Invalid subgroup size: " ^ s))
+    | Some value -> (
+        match Inference.Subgroup_matrix.Target_config.subgroup_size value with
+        | Ok _ -> Ok value
+        | Error error ->
+            Error
+              (`Msg
+                 (Inference.Subgroup_matrix.Target_config.error_to_string error))
+        )
+  in
+  let print ppf value = Format.fprintf ppf "%d" value in
+  Arg.conv (parse, print)
+
 let main =
   let doc = "Verify if CUDA file is free from data races." in
   let info = Cmd.info "faial-drf" ~doc in
@@ -174,6 +190,14 @@ let main =
       value
       & opt (some (conv_dim3 Dim3.one)) None
       & info [ "b"; "block-dim"; "blockDim" ] ~docv:"DIM3" ~doc)
+  and+ subgroup_size =
+    Arg.(
+      value
+      & opt (some conv_subgroup_size) None
+      & info [ "subgroup-size" ] ~docv:"N"
+          ~doc:
+            "Use explicit CUDA x-contiguous subgroup configuration for \
+             subgroup/matrix analysis.")
   and+ grid_dim =
     let d = Gv_parser.default_grid_dim |> Dim3.to_string in
     let doc =
@@ -529,16 +553,20 @@ let main =
         ~delin_weak_in_range
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
-        ~cbor ~stop_at
+        ~cbor ~stop_at ~subgroup_size
     in
     let ui = if output_json then Jui.render else Tui.render in
     let run () =
       if list_kernels then
         app.kernels
         |> List.iter (fun k ->
-          if show_signature
-          then print_endline (Protocols.Kernel.signature_string k)
-          else print_endline (Protocols.Kernel.name k))
+          match k with
+          | App.Legacy_kernel kernel ->
+              if show_signature
+              then print_endline (Protocols.Kernel.signature_string kernel)
+              else print_endline (Protocols.Kernel.name kernel)
+          | App.Subgroup_kernel kernel ->
+              print_endline kernel.matrix_kernel.name)
       else if Option.is_some stop_at then
         (* Run the pipeline for its printing side effects (each
            [show_or_stop] dumps the IR at its stage when matched), but

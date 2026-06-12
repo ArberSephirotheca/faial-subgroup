@@ -3,60 +3,99 @@ open Protocols
 open Drf
 open Solve_drf
 
+let render_legacy (analysis : Analysis.legacy) : Yojson.Basic.t =
+  let kernel_name = analysis.kernel.name in
+  let solutions = analysis.report in
+  let unknowns, errors =
+    solutions
+    |> List.filter_map (fun s ->
+        let open Solution in
+        match s.outcome with
+        | Drf | Drf_with_core _ -> None
+        | Unknown -> Some (Either.Left s.proof)
+        | Racy w -> Some (Either.Right (s.proof, w)))
+    |> Common.either_split
+  in
+  let logics : Yojson.Basic.t list =
+    solutions
+    |> List.map (fun s ->
+        let open Solution in
+        Option.value ~default:"DEFAULT" s.logic)
+    |> Common.StringSet.of_list |> Common.StringSet.to_list
+    |> List.sort String.compare
+    |> List.map (fun x -> `String x)
+  in
+  let approx_analysis (w : Witness.t) =
+    let dd = if Variable.Set.cardinal w.data_approx > 0 then "DD" else "DI" in
+    let cd =
+      if Variable.Set.cardinal w.control_approx > 0 then "CD" else "CI"
+    in
+    cd ^ dd
+  in
+  `Assoc
+    [
+      ("kernel_name", `String kernel_name);
+      ("status", `String (Analysis.Verdict.to_string (Analysis.legacy_verdict analysis)));
+      ("unknowns", `List (List.map Symbexp.Proof.to_json unknowns));
+      ("logics", `List logics);
+      ( "errors",
+        `List
+          (List.map
+             (fun (p, w) ->
+               `Assoc
+                 [
+                   ("summary", Symbexp.Proof.to_json p);
+                   ("counter_example", Witness.to_json w);
+                   ("approx_analysis", `String (approx_analysis w));
+                 ])
+             errors) );
+    ]
+
+let subgroup_counts_to_json (counts : Drf.Subgroup_solver.Counts.t) :
+    Yojson.Basic.t =
+  `Assoc
+    [
+      ("total", `Int counts.total);
+      ("racy", `Int counts.racy);
+      ("unknown", `Int counts.unknown);
+      ("timeout", `Int counts.timeout);
+      ("unsupported", `Int counts.unsupported);
+      ("pre_solver_unsat", `Int counts.pre_solver_unsat);
+    ]
+
+let render_subgroup (analysis : Analysis.subgroup) : Yojson.Basic.t =
+  let module Solver = Drf.Subgroup_solver in
+  let module Uniformity = Drf.Subgroup_uniformity in
+  let memory_verdict = Solver.memory_verdict analysis.memory in
+  let subgroup_verdict = Uniformity.function_verdict analysis.uniformity in
+  let full_verdict = Analysis.subgroup_full_verdict analysis in
+  `Assoc
+    [
+      ("kernel_name", `String analysis.kernel.name);
+      ( "target_config",
+        `String
+          (Inference.Subgroup_matrix.Target_config.to_string
+             analysis.kernel.target_config) );
+      ("status", `String (Uniformity.full_verdict_to_string full_verdict));
+      ("mem_drf", `String (Solver.memory_verdict_to_string memory_verdict));
+      ( "subgroup_uniformity",
+        `String (Uniformity.verdict_to_string subgroup_verdict) );
+      ("drf_full", `String (Uniformity.full_verdict_to_string full_verdict));
+      ( "memory_checks",
+        subgroup_counts_to_json (Solver.memory_counts analysis.memory) );
+      ( "evidence",
+        `List
+          (List.map
+             (fun line -> `String line)
+             (Solver.memory_evidence_lines analysis.memory)) );
+    ]
+
 let render (output : Analysis.t list) : unit =
   let kernels =
     output
-    |> List.map (fun analysis ->
-        let open Analysis in
-        let kernel_name = analysis.kernel.name in
-        let solutions = analysis.report in
-        let unknowns, errors =
-          solutions
-          |> List.filter_map (fun s ->
-              let open Solution in
-              match s.outcome with
-              | Drf | Drf_with_core _ -> None
-              | Unknown -> Some (Either.Left s.proof)
-              | Racy w -> Some (Either.Right (s.proof, w)))
-          |> Common.either_split
-        in
-        let logics : Yojson.Basic.t list =
-          solutions
-          |> List.map (fun s ->
-              let open Solution in
-              Option.value ~default:"DEFAULT" s.logic)
-          |> Common.StringSet.of_list |> Common.StringSet.to_list
-          |> List.sort String.compare
-          |> List.map (fun x -> `String x)
-        in
-        let approx_analysis (w : Witness.t) =
-          let dd =
-            if Variable.Set.cardinal w.data_approx > 0 then "DD" else "DI"
-          in
-          let cd =
-            if Variable.Set.cardinal w.control_approx > 0 then "CD" else "CI"
-          in
-          cd ^ dd
-        in
-        `Assoc
-          [
-            ("kernel_name", `String kernel_name);
-            ("status",
-             `String (Verdict.to_string (Analysis.verdict analysis)));
-            ("unknowns", `List (List.map Symbexp.Proof.to_json unknowns));
-            ("logics", `List logics);
-            ( "errors",
-              `List
-                (List.map
-                   (fun (p, w) ->
-                     `Assoc
-                       [
-                         ("summary", Symbexp.Proof.to_json p);
-                         ("counter_example", Witness.to_json w);
-                         ("approx_analysis", `String (approx_analysis w));
-                       ])
-                   errors) );
-          ])
+    |> List.map (function
+      | Analysis.Legacy analysis -> render_legacy analysis
+      | Analysis.Subgroup analysis -> render_subgroup analysis)
   in
   `Assoc
     [
