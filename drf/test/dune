@@ -1,7 +1,7 @@
 (tests
   (names
    test_memory_event
-   test_subgroup_memory
+   test_subgroup_obligation
    test_subgroup_uniformity
    test_subgroup_solver)
   (libraries stage0 protocols inference drf alcotest))

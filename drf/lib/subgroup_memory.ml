@@ -1,1 +1,0 @@
-include Memory_event.Subgroup_obligation

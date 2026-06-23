@@ -1,6 +1,6 @@
 open Stage0
 open Protocols
-module Memory = Subgroup_memory
+module Memory = Memory_event.Subgroup_obligation
 module SM = Inference.Subgroup_matrix
 module Uniformity = Subgroup_uniformity
 module Solver = Z3.Solver

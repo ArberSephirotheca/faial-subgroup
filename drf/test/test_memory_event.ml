@@ -2,7 +2,6 @@ open Stage0
 open Protocols
 module Flatacc = Drf.Flatacc
 module Memory_event = Drf.Memory_event
-module Subgroup_memory = Drf.Subgroup_memory
 module Subgroup_event = Drf.Memory_event.Subgroup_event
 module Subgroup_obligation = Drf.Memory_event.Subgroup_obligation
 module Symbexp = Drf.Symbexp
@@ -486,7 +485,7 @@ let test_subgroup_event_rejects_ordinary_target_config_mismatch () : unit =
         ~needle:"target configuration mismatch"
         (Subgroup_event.error_to_string error)
 
-let test_subgroup_obligations_match_subgroup_memory_api () : unit =
+let test_subgroup_obligations_match_direct_owner_api () : unit =
   let memory_globals = Variable.Set.singleton (var "params") in
   let site_controls =
     [
@@ -515,15 +514,14 @@ let test_subgroup_obligations_match_subgroup_memory_api () : unit =
       unified
     |> expect_subgroup_obligation_ok
   in
-  let subgroup_memory_obligations =
-    Subgroup_memory.obligations ~globals:memory_globals ~block_dim
+  let direct_owner_obligations =
+    Subgroup_obligation.obligations ~globals:memory_globals ~block_dim
       ~site_controls ~ordinary_memory_effects:[ ordinary ] kernel.matrix_kernel
     |> expect_subgroup_obligation_ok
   in
   Alcotest.(check (list string))
-    "unified obligations match Subgroup_memory API"
-    (List.map Subgroup_obligation.obligation_to_string
-       subgroup_memory_obligations)
+    "unified obligations match direct owner API"
+    (List.map Subgroup_obligation.obligation_to_string direct_owner_obligations)
     (List.map Subgroup_obligation.obligation_to_string unified_obligations)
 
 let tests : unit Alcotest.test_case list =
@@ -564,9 +562,9 @@ let tests : unit Alcotest.test_case list =
     ( "subgroup event ordinary config mismatch",
       `Quick,
       test_subgroup_event_rejects_ordinary_target_config_mismatch );
-    ( "subgroup obligations match subgroup memory API",
+    ( "subgroup obligations match direct owner API",
       `Quick,
-      test_subgroup_obligations_match_subgroup_memory_api );
+      test_subgroup_obligations_match_direct_owner_api );
   ]
 
 let () = Alcotest.run "Memory_event" [ ("memory_event", tests) ]
