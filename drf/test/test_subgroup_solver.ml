@@ -1,6 +1,6 @@
 open Protocols
 module SM = Inference.Subgroup_matrix
-module Memory = Drf.Subgroup_memory
+module Memory = Drf.Memory_event.Subgroup_obligation
 module Solver = Drf.Subgroup_solver
 module Uniformity = Drf.Subgroup_uniformity
 

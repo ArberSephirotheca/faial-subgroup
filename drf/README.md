@@ -20,7 +20,7 @@ Code specific to the DRF analysis.
   already-split workgroup phase/location, then re-emits `Symbexp.Proof.t`
   obligations for parity tests. It also maps existing subgroup/matrix carrier
   records into unified event artifacts and owns the subgroup-aware
-  event-to-obligation builder used by `subgroup_memory.ml`.
+  event-to-obligation builder exposed as `Memory_event.Subgroup_obligation`.
 - lib/gensmtlib2.ml: Step 7. boolean expressions into smtlib2 (Faial v1.0 only)
 
 ## Ordinary Memory-Event Boundary
@@ -60,11 +60,10 @@ move the event input earlier than `Flatacc`.
   solver-facing metadata and error taxonomy. Missing explicit subgroup target
   configuration and ordinary-effect target-config mismatches fail at the
   event-adapter boundary instead of assuming a lane mapping.
-- `lib/subgroup_memory.ml` is now a compatibility wrapper over
-  `Memory_event.Subgroup_obligation`. The public subgroup analyzer route calls
-  `Memory_event.Subgroup_obligation` directly when solving subgroup/matrix
-  kernels, while the compatibility wrapper remains available for existing
-  tests and solver-facing type aliases.
+- `Memory_event.Subgroup_obligation` is the direct owner of subgroup/matrix
+  memory obligations. The public subgroup analyzer route and solver-facing
+  aliases call it directly when solving subgroup/matrix kernels; there is no
+  active compatibility wrapper in the DRF library.
 - The unified subgroup memory builder models matrix load/store effects and
   ordinary source memory effects reported by `Inference.Subgroup_source`.
   Ordinary effects are converted into subgroup-aware memory obligations with
@@ -156,12 +155,11 @@ move the event input earlier than `Flatacc`.
 
 ## Solver Taxonomy And Evidence
 
-- `lib/subgroup_solver.ml` consumes obligations whose types are owned by
-  `Memory_event.Subgroup_obligation` and re-exported by
-  `lib/subgroup_memory.ml`; it records deterministic per-obligation evidence
-  for the user-facing CLI. The evidence preserves the obligation id, workgroup
-  phase, array, subgroup phases, symbolic goal, solver configuration, and Z3
-  version.
+- `lib/subgroup_solver.ml` consumes obligations whose types are owned directly
+  by `Memory_event.Subgroup_obligation`; it records deterministic
+  per-obligation evidence for the user-facing CLI. The evidence preserves the
+  obligation id, workgroup phase, array, subgroup phases, symbolic goal, solver
+  configuration, and Z3 version.
 - Solver classifications remain distinct: `solver=unsat(drf)`,
   `solver=sat(racy)`, `solver=unknown(reason=...)`,
   `solver=timeout(reason=...)`, `unsupported(reason=...)`, and the reserved
@@ -186,8 +184,8 @@ move the event input earlier than `Flatacc`.
 ## Structural Pre-Solver Discharges
 
 - `lib/subgroup_solver.ml` runs structural pre-solver checks before Z3 only for
-  individual `Subgroup_memory` obligations. A matching rule emits
-  `pre_solver=unsat(reason=...)`; it does not certify a kernel by name.
+  individual `Memory_event.Subgroup_obligation` obligations. A matching rule
+  emits `pre_solver=unsat(reason=...)`; it does not certify a kernel by name.
 - The contradictory path-condition filter discharges an obligation only when
   the projected left and right guards contain syntactic complements, such as a
   checked global condition `p <= 0` on one side and `p > 0` on the other, or

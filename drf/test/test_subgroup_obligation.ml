@@ -1,7 +1,7 @@
 open Protocols
 module SM = Inference.Subgroup_matrix
 module Source = Inference.Subgroup_source
-module Memory = Drf.Subgroup_memory
+module Memory = Drf.Memory_event.Subgroup_obligation
 
 let var (name : string) : Variable.t = Variable.from_name name
 
@@ -880,4 +880,4 @@ let tests : unit Alcotest.test_case list =
       test_valid_cross_subgroup_pair_remains_visible );
   ]
 
-let () = Alcotest.run "Subgroup_memory" [ ("subgroup_memory", tests) ]
+let () = Alcotest.run "Subgroup_obligation" [ ("subgroup_obligation", tests) ]
