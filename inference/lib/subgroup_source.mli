@@ -2,10 +2,10 @@ type error =
   | Missing_subgroup_config of { kernel : string }
   | Unsupported_expression of { context : string; expr : string }
   | Unsupported_matrix_call of { op : string; reason : string; expr : string }
-  | Legacy_imp_error of string
+  | Ordinary_imp_error of string
 
 type routed_kernel =
-  | Legacy_imp of Imp.Kernel.t
+  | Ordinary_imp of Imp.Kernel.t
   | Subgroup_matrix of subgroup_kernel
 
 and ordinary_memory_kind = Ordinary_read | Ordinary_write | Ordinary_atomic

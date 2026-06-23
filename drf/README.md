@@ -15,14 +15,57 @@ Code specific to the DRF analysis.
 - lib/locsplit.ml: Step 4. phase-split into location split (one phase-split per array)
 - lib/flatacc.ml: Step 5. location-split into flat-acc: flattens control-flow flow into lists of conditional accesses
 - lib/symbexp.ml: Step 6. flat-acc into boolean expressions
+- lib/memory_event.ml: Internal DRF memory-event boundary. It adapts
+  `Flatacc.Kernel.t` values into ordinary memory events for one
+  already-split workgroup phase/location, then re-emits `Symbexp.Proof.t`
+  obligations for parity tests. It also maps existing subgroup/matrix carrier
+  records into unified event artifacts and owns the subgroup-aware
+  event-to-obligation builder used by `subgroup_memory.ml`.
 - lib/gensmtlib2.ml: Step 7. boolean expressions into smtlib2 (Faial v1.0 only)
+
+## Ordinary Memory-Event Boundary
+
+`lib/memory_event.ml` is the first internal boundary for unifying ordinary and
+subgroup/matrix memory obligations. For ordinary kernels, it consumes
+`Flatacc.Kernel.t`, which means all original source lowering, workgroup phase
+splitting, location splitting, and flat-access generation have already run.
+The adapter records ordinary memory events with access id, phase id, access
+mode, source guard, runtime condition, and source location from the access
+array variable. It then builds the same ordinary proof shape as
+`Symbexp.Proof.from_flat`: projected task choices, access-id ordering,
+index equality, non-negative index constraints, mode-conflict rules, runtime
+guards, preconditions, and access summaries.
+
+This boundary now owns ordinary public proof construction for non-subgroup kernels:
+`App.run` routes flat-access streams through `Memory_event.translate`, and
+`--unreachable` routes through `Memory_event.sanity_check`. Downstream
+`Symbexp` proof decoration, CLI text/JSON output, and solver behavior still
+use the existing workgroup-oriented entry points. At this seam, workgroup
+barriers are represented by the existing phase separation rather than by
+stable barrier-site event records; tasks that need barrier-site identity must
+move the event input earlier than `Flatacc`.
 
 ## Subgroup/Matrix Extension Boundary
 
-- lib/subgroup_memory.ml consumes the first-class
-  `Inference.Subgroup_matrix` carrier. It is separate from the legacy
-  workgroup-only `Imp` path.
-- The current OCaml subgroup memory path models matrix load/store effects and
+- `lib/memory_event.ml` exposes an internal `Subgroup_event` adapter from
+  `Inference.Subgroup_source.subgroup_kernel` into unified event artifacts.
+  The adapter carries the explicit target configuration, memory globals,
+  uniform variables, source-order ordinals, site-control conditions,
+  memory-control conditions, workgroup phase, subgroup phase, matrix site id,
+  and matrix footprint metadata. Matrix load/store memory events keep their
+  original rectangular footprint and indexed access; ordinary source memory
+  effects keep their source/runtime conditions and recorded phase.
+- `Subgroup_event` remains the unified event stream. `Subgroup_obligation`
+  consumes that stream to build subgroup-aware memory obligations, preserving
+  solver-facing metadata and error taxonomy. Missing explicit subgroup target
+  configuration and ordinary-effect target-config mismatches fail at the
+  event-adapter boundary instead of assuming a lane mapping.
+- `lib/subgroup_memory.ml` is now a compatibility wrapper over
+  `Memory_event.Subgroup_obligation`. The public subgroup analyzer route calls
+  `Memory_event.Subgroup_obligation` directly when solving subgroup/matrix
+  kernels, while the compatibility wrapper remains available for existing
+  tests and solver-facing type aliases.
+- The unified subgroup memory builder models matrix load/store effects and
   ordinary source memory effects reported by `Inference.Subgroup_source`.
   Ordinary effects are converted into subgroup-aware memory obligations with
   their recorded access mode, base/index expression, source guard,
@@ -113,10 +156,12 @@ Code specific to the DRF analysis.
 
 ## Solver Taxonomy And Evidence
 
-- `lib/subgroup_solver.ml` consumes `lib/subgroup_memory.ml` obligations and
-  records deterministic per-obligation evidence before any user-facing CLI
-  integration. The evidence preserves the obligation id, workgroup phase,
-  array, subgroup phases, symbolic goal, solver configuration, and Z3 version.
+- `lib/subgroup_solver.ml` consumes obligations whose types are owned by
+  `Memory_event.Subgroup_obligation` and re-exported by
+  `lib/subgroup_memory.ml`; it records deterministic per-obligation evidence
+  for the user-facing CLI. The evidence preserves the obligation id, workgroup
+  phase, array, subgroup phases, symbolic goal, solver configuration, and Z3
+  version.
 - Solver classifications remain distinct: `solver=unsat(drf)`,
   `solver=sat(racy)`, `solver=unknown(reason=...)`,
   `solver=timeout(reason=...)`, `unsupported(reason=...)`, and the reserved
@@ -195,8 +240,12 @@ Code specific to the DRF analysis.
 
 - `faial-drf --subgroup-size=N` enables the explicit CUDA
   x-contiguous subgroup/matrix route for CUDA kernels whose source contains
-  subgroup or WMMA operations. Without this option, the legacy non-WMMA
-  source-to-`Imp` path remains the default.
+  subgroup or WMMA operations. The public route now builds subgroup/matrix
+  memory obligations through `Memory_event.Subgroup_obligation` before handing
+  them to `Subgroup_solver`. Without this option, the ordinary non-WMMA
+  source-to-`Imp` path remains the default, but CUDA subgroup/matrix source is
+  rejected by `Subgroup_source` before ordinary `Imp` lowering so it cannot
+  silently fall back to workgroup-only semantics.
 - `--subgroup-size` validates `N` as a positive subgroup size and records the
   target as `cuda-like(threadIdx.x-contiguous(size=N))`. The model still does
   not infer warp size or lane mapping from the source.
@@ -285,7 +334,7 @@ are discharged by obligation-local structural proofs before Z3. The result is
 still not arbitrary CUDA, arbitrary Flash Attention support, or full Rust/OCaml
 structured memory artifact parity.
 
-Legacy non-WMMA behavior remains separate from that focused extension
+Ordinary non-WMMA behavior remains separate from that focused extension
 boundary. The W515 regression evidence reran `opam exec -- make`,
 `PATH="$PWD/bin:$PATH" opam exec -- dune runtest`, a no-`--subgroup-size`
 `drf-saxpy.cu` DRF smoke, and no-`--subgroup-size` racy smokes for

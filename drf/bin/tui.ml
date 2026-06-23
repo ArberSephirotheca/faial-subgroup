@@ -181,7 +181,7 @@ end
 
 let print_box : PrintBox.t -> unit = PrintBox_text.output stdout
 
-let render_legacy (solution : Analysis.legacy) : bool =
+let render_ordinary (solution : Analysis.ordinary) : bool =
   let kernel_name = solution.kernel.name in
   let errors =
     solution.report
@@ -249,7 +249,7 @@ let render_legacy (solution : Analysis.legacy) : bool =
   let unk, errs = Common.either_split errors in
   let errs = List.split errs |> snd in
   let err_count = List.length errs in
-  match Analysis.legacy_verdict solution with
+  match Analysis.ordinary_verdict solution with
   | Analysis.Verdict.Vacuous ->
       T.print_string
         [ T.Bold; T.Foreground T.Yellow ]
@@ -299,8 +299,8 @@ let render (output : Analysis.t list) : unit =
   let total = ref 0 in
   output
   |> List.iter (function
-    | Analysis.Legacy solution ->
-        if render_legacy solution then total := !total + 1
+    | Analysis.Ordinary solution ->
+        if render_ordinary solution then total := !total + 1
     | Analysis.Subgroup solution ->
         if render_subgroup solution then total := !total + 1);
   if !total > 0 then exit 1 else ()

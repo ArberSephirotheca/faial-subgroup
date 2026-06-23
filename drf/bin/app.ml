@@ -5,10 +5,10 @@ open Inference
 module SM = Subgroup_matrix
 module Subgroup_solver = Drf.Subgroup_solver
 module Subgroup_uniformity = Drf.Subgroup_uniformity
-module Subgroup_memory = Drf.Subgroup_memory
+module Subgroup_obligation = Drf.Memory_event.Subgroup_obligation
 
 type kernel =
-  | Legacy_kernel of Protocols.Kernel.t
+  | Ordinary_kernel of Protocols.Kernel.t
   | Subgroup_kernel of Subgroup_source.subgroup_kernel
 
 (* The pipeline stages [--stop-at] can target. Mirrors the order in
@@ -322,7 +322,7 @@ let route_program ?target_config ~(only_kernel : string option)
       |> Result.map (fun kernel -> [ kernel ])
   | None -> Subgroup_source.route_program ?target_config program
 
-let compile_legacy_kernels ~(inline_calls : bool) ~(ignore_asserts : bool)
+let compile_ordinary_kernels ~(inline_calls : bool) ~(ignore_asserts : bool)
     (kernels : Imp.Kernel.t list) : kernel list =
   let kernels =
     if ignore_asserts then List.map Imp.Kernel.remove_global_asserts kernels
@@ -331,13 +331,23 @@ let compile_legacy_kernels ~(inline_calls : bool) ~(ignore_asserts : bool)
   kernels
   |> Imp.Compiler.compile_all ~inline_calls
   |> List.filter Protocols.Kernel.is_global
-  |> List.map (fun kernel -> Legacy_kernel kernel)
+  |> List.map (fun kernel -> Ordinary_kernel kernel)
+
+let compile_ordinary_program ~(inline_calls : bool) ~(ignore_asserts : bool)
+    (program : D_lang.Program.t) : kernel list =
+  let kernels =
+    try D_to_imp.Silent.parse_program program
+    with D_to_imp.Unsupported_source msg ->
+      Logger.Colors.error msg;
+      exit 2
+  in
+  compile_ordinary_kernels ~inline_calls ~ignore_asserts kernels
 
 let kernels_of_routed ~(inline_calls : bool) ~(ignore_asserts : bool)
     (kernel : Subgroup_source.routed_kernel) : kernel list =
   match kernel with
-  | Subgroup_source.Legacy_imp kernel ->
-      compile_legacy_kernels ~inline_calls ~ignore_asserts [ kernel ]
+  | Subgroup_source.Ordinary_imp kernel ->
+      compile_ordinary_kernels ~inline_calls ~ignore_asserts [ kernel ]
   | Subgroup_source.Subgroup_matrix kernel -> [ Subgroup_kernel kernel ]
 
 let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
@@ -368,6 +378,62 @@ let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
           |> List.concat;
       }
 
+let subgroup_kernel_without_config (only_kernel : string option)
+    (program : D_lang.Program.t) : string option =
+  let context_defs =
+    List.filter
+      (function
+        | D_lang.Def.Kernel _ -> false
+        | Declaration _ | Typedef _ | Enum _ -> true)
+      program
+  in
+  program
+  |> List.find_map (function
+    | D_lang.Def.Kernel kernel
+      when Option.fold ~none:true
+             ~some:(fun name -> String.equal name kernel.name)
+             only_kernel -> (
+        match Subgroup_source.route_kernel ~context_defs kernel with
+        | Error (Subgroup_source.Missing_subgroup_config _) -> Some kernel.name
+        | Ok _ | Error _ -> None)
+    | D_lang.Def.Kernel _ | Declaration _ | Typedef _ | Enum _ -> None)
+
+let parse_without_subgroup_config ~filename ~block_dim ~grid_dim ~includes
+    ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json ~ignore_asserts
+    ~assume_launch ~cbor ~only_kernel : parsed =
+  if String.ends_with ~suffix:".wgsl" filename then
+    let parsed =
+      Protocol_parser.Silent.to_proto
+        ~abort_on_parsing_failure:(not ignore_parsing_errors)
+        ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
+        ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor
+        filename
+    in
+    {
+      options = parsed.options;
+      kernels = List.map (fun kernel -> Ordinary_kernel kernel) parsed.kernels;
+    }
+  else
+    let options, program =
+      parse_cuda_program
+        ~abort_on_parsing_failure:(not ignore_parsing_errors)
+        ~block_dim ~grid_dim ~includes ~macros ~cu_to_json ~ignore_asserts
+        ~launch_params:assume_launch ~cbor
+        filename
+    in
+    begin match subgroup_kernel_without_config only_kernel program with
+    | None -> ()
+    | Some kernel ->
+        Logger.Colors.error
+          (Subgroup_source.error_to_string
+             (Subgroup_source.Missing_subgroup_config { kernel }));
+        exit 2
+    end;
+    {
+      options;
+      kernels = compile_ordinary_program ~inline_calls ~ignore_asserts program;
+    }
+
 let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc ~show_symbexp
     ~logic ~solve_tactic ~ge_index ~le_index ~eq_index ~only_array ~only_kernel
@@ -380,18 +446,9 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
   let parsed =
     match subgroup_size with
     | None ->
-        let parsed =
-          Phase_timer.measure "inference" (fun () ->
-            Protocol_parser.Silent.to_proto
-              ~abort_on_parsing_failure:(not ignore_parsing_errors)
-              ~includes ~block_dim ~grid_dim ~inline_calls ~macros
-              ~cu_to_json ~ignore_asserts ~assume_launch
-              ~launch_params:assume_launch ~cbor filename)
-        in
-        {
-          options = parsed.options;
-          kernels = List.map (fun kernel -> Legacy_kernel kernel) parsed.kernels;
-        }
+        parse_without_subgroup_config ~filename ~block_dim ~grid_dim ~includes
+          ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json
+          ~ignore_asserts ~assume_launch ~cbor ~only_kernel
     | Some subgroup_size ->
         parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
           ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json
@@ -405,18 +462,18 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     let legacy =
       kernels
       |> List.filter_map (function
-        | Legacy_kernel kernel -> Some kernel
+        | Ordinary_kernel kernel -> Some kernel
         | Subgroup_kernel _ -> None)
       |> Protocols.Kernel.uniquify_names
     in
     let rec rebuild legacy kernels =
       match (legacy, kernels) with
       | _, [] -> []
-      | kernel :: legacy, Legacy_kernel _ :: kernels ->
-          Legacy_kernel kernel :: rebuild legacy kernels
+      | kernel :: legacy, Ordinary_kernel _ :: kernels ->
+          Ordinary_kernel kernel :: rebuild legacy kernels
       | legacy, Subgroup_kernel kernel :: kernels ->
           Subgroup_kernel kernel :: rebuild legacy kernels
-      | [], Legacy_kernel _ :: _ ->
+      | [], Ordinary_kernel _ :: _ ->
           failwith "internal error: missing uniquified legacy kernel"
     in
     rebuild legacy kernels
@@ -442,7 +499,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
   let assumes : (string * Exp.bexp list) list =
     List.filter_map (function
       | Subgroup_kernel _ -> None
-      | Legacy_kernel (k : Protocols.Kernel.t) ->
+      | Ordinary_kernel (k : Protocols.Kernel.t) ->
       let kn = Protocols.Kernel.name k in
       let entries =
         List.filter_map (fun (prefix, b) ->
@@ -616,7 +673,7 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
        ~show:a.show_flat_acc Flatacc.print_kernels
 
 let kernel_name : kernel -> string = function
-  | Legacy_kernel kernel -> Protocols.Kernel.name kernel
+  | Ordinary_kernel kernel -> Protocols.Kernel.name kernel
   | Subgroup_kernel kernel -> kernel.matrix_kernel.name
 
 let only_kernel (a : t) (ks : kernel list) : kernel list =
@@ -630,11 +687,13 @@ let only_kernel (a : t) (ks : kernel list) : kernel list =
   | None -> ks
 
 let run (a : t) : Analysis.t list =
-  let check_legacy_kernel arch (kernel : Protocols.Kernel.t) : Analysis.legacy =
+  let check_ordinary_kernel arch (kernel : Protocols.Kernel.t) :
+      Analysis.ordinary =
     let report =
-      kernel |> translate arch a |> Symbexp.translate ~memory_model:a.memory_model arch
-      |> Symbexp.add_rel_index (N_rel.Le Signedness.Signed) a.le_index
-      |> Symbexp.add_rel_index (N_rel.Ge Signedness.Signed) a.ge_index
+      kernel |> translate arch a
+      |> Memory_event.translate arch
+      |> Symbexp.add_rel_index N_rel.Le a.le_index
+      |> Symbexp.add_rel_index N_rel.Ge a.ge_index
       |> Symbexp.add_rel_index N_rel.Eq a.eq_index
       |> Symbexp.add ~tid:a.thread_idx_1 ~bid:a.block_idx_1
       |> Symbexp.add ~tid:a.thread_idx_2 ~bid:a.block_idx_2
@@ -663,7 +722,7 @@ let run (a : t) : Analysis.t list =
     let memory =
       let globals = subgroup.memory_globals in
       kernel
-      |> Subgroup_memory.obligations ~globals ?block_dim:a.block_dim
+      |> Subgroup_obligation.obligations ~globals ?block_dim:a.block_dim
            ~site_controls:subgroup.site_controls
            ~ordinary_memory_effects:subgroup.ordinary_memory_effects
       |> Subgroup_solver.solve_obligation_result ~config ~globals
@@ -696,7 +755,7 @@ let run (a : t) : Analysis.t list =
   a.kernels |> only_kernel a
   |> List.map (function
     | Subgroup_kernel kernel -> Analysis.Subgroup (check_subgroup_kernel kernel)
-    | Legacy_kernel kernel ->
+    | Ordinary_kernel kernel ->
         let vacuous : Exp.bexp option =
           if not a.check_pre_sat then None
           else
@@ -712,17 +771,17 @@ let run (a : t) : Analysis.t list =
             | [] -> None
         in
         match vacuous with
-        | Some _ -> Analysis.Legacy { kernel; report = []; vacuous }
+        | Some _ -> Analysis.Ordinary { kernel; report = []; vacuous }
         | None -> (
         let rec check_until (archs : Architecture.t list) : Analysis.t =
           match archs with
-          | [] -> Analysis.Legacy { kernel; report = []; vacuous = None }
-          | [ arch ] -> Analysis.Legacy (check_legacy_kernel arch kernel)
+          | [] -> Analysis.Ordinary { kernel; report = []; vacuous = None }
+          | [ arch ] -> Analysis.Ordinary (check_ordinary_kernel arch kernel)
           | arch :: archs ->
-              let legacy = check_legacy_kernel arch kernel in
-              if Analysis.legacy_is_safe legacy then check_until archs
-              else Analysis.Legacy legacy
+              let ordinary = check_ordinary_kernel arch kernel in
+              if Analysis.ordinary_is_safe ordinary then check_until archs
+              else Analysis.Ordinary ordinary
         in
         try check_until a.archs
         with Stop_at_stage ->
-          Analysis.Legacy { kernel; report = []; vacuous = None }))
+          Analysis.Ordinary { kernel; report = []; vacuous = None }))

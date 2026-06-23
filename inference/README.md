@@ -64,12 +64,12 @@ The inference boundary recognizes the focused CUDA WMMA call names
 `fill_fragment`, `load_matrix_sync`, `mma_sync`, and `store_matrix_sync`.
 These calls route through the first-class `Subgroup_matrix` carrier when an
 explicit subgroup target configuration is supplied. They must not be translated
-as ordinary legacy calls, scalar memory accesses, or workgroup
+as ordinary calls, scalar memory accesses, or workgroup
 synchronization points, because that would allow the workgroup DRF pipeline to
-report a false legacy verdict for matrix collective code.
+report a false workgroup-only verdict for matrix collective code.
 
 This is source-surface support only. Unsupported WMMA forms should fail
-explicitly rather than falling back to guessed legacy semantics.
+explicitly rather than falling back to guessed workgroup-only semantics.
 
 ### CUDA Dependency Preservation
 
@@ -87,7 +87,7 @@ constant dependencies that feed later subgroup/matrix analysis:
 
 Subgroup-only operations also route through the subgroup/matrix carrier when
 the required target configuration is present. For example, `__syncwarp` is not
-treated as a workgroup barrier or a no-op in legacy `Imp` lowering.
+treated as a workgroup barrier or a no-op in ordinary `Imp` lowering.
 
 ### CUDA Pointer Alias Boundary
 
@@ -98,9 +98,9 @@ subgroup/matrix work needs:
   such as `tile_base = tile + base` and `z = y + i`, lower to `LocationAlias`
   entries before later memory accesses are scoped;
 - `__restrict__`-qualified pointer parameters are still recognized as pointer
-  array parameters by the legacy `Imp` intake, but the current workgroup DRF
+  array parameters by the ordinary `Imp` intake, but the current workgroup DRF
   path does not attach a no-alias semantic guarantee to that qualifier;
-- WMMA calls are still rejected before legacy `Imp` lowering, and the
+- WMMA calls are still rejected before ordinary `Imp` lowering, and the
   unsupported boundary keeps the call text, including matrix pointer arguments
   such as `tile_base + d`, available in diagnostics.
 
@@ -136,10 +136,10 @@ scalar `ptr[0]` fallback.
 ### Source-To-Subgroup Dispatch Boundary
 
 The `Subgroup_source` module is the scoped bridge from normalized CUDA
-`D_lang` kernels into either the legacy `Imp` path or the `Subgroup_matrix`
+`D_lang` kernels into either the ordinary `Imp` path or the `Subgroup_matrix`
 carrier:
 
-- kernels without WMMA or subgroup operations still route to legacy `Imp` and
+- kernels without WMMA or subgroup operations still route to ordinary `Imp` and
   do not require subgroup configuration;
 - kernels containing `__syncwarp`, focused CUDA warp helper/shuffle calls, or
   focused WMMA calls route to `Subgroup_matrix` and require an explicit target
@@ -283,7 +283,7 @@ opam exec -- dune exec inference/test/emit_subgroup_artifact.exe -- \
 
 This artifact is not a DRF verdict and is not a user-facing CLI contract. It is
 an internal V501+ comparison boundary: unsupported source or representation
-gaps must still fail explicitly, and non-WMMA CUDA stays on the legacy `Imp`
+gaps must still fail explicitly, and non-WMMA CUDA stays on the ordinary `Imp`
 route without requiring subgroup configuration. The artifact includes
 `uniform_vars`, `site_controls`, and `ordinary_memory_effects` sections for
 subgroup-routed kernels. `site_controls` may print
