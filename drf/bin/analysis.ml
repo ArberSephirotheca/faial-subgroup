@@ -11,7 +11,7 @@ module Verdict = struct
     | Vacuous -> "vacuous"
 end
 
-type legacy = {
+type ordinary = {
   kernel : Protocols.Kernel.t;
   report : Solve_drf.Solution.t list;
   vacuous : Protocols.Exp.bexp option;
@@ -23,12 +23,12 @@ type subgroup = {
   uniformity : Subgroup_uniformity.function_result;
 }
 
-type t = Legacy of legacy | Subgroup of subgroup
+type t = Ordinary of ordinary | Subgroup of subgroup
 
-let legacy_is_safe (a : legacy) : bool =
+let ordinary_is_safe (a : ordinary) : bool =
   a.report |> List.for_all Solve_drf.Solution.is_safe
 
-let legacy_verdict (a : legacy) : Verdict.t =
+let ordinary_verdict (a : ordinary) : Verdict.t =
   match a.vacuous with
   | Some _ -> Verdict.Vacuous
   | None ->
@@ -65,5 +65,5 @@ let subgroup_is_safe (a : subgroup) : bool =
   | Subgroup_uniformity.Not_drf -> false
 
 let is_safe : t -> bool = function
-  | Legacy legacy -> legacy_is_safe legacy
+  | Ordinary ordinary -> ordinary_is_safe ordinary
   | Subgroup subgroup -> subgroup_is_safe subgroup

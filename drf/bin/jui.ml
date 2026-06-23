@@ -3,7 +3,7 @@ open Protocols
 open Drf
 open Solve_drf
 
-let render_legacy (analysis : Analysis.legacy) : Yojson.Basic.t =
+let render_ordinary (analysis : Analysis.ordinary) : Yojson.Basic.t =
   let kernel_name = analysis.kernel.name in
   let solutions = analysis.report in
   let unknowns, errors =
@@ -35,7 +35,9 @@ let render_legacy (analysis : Analysis.legacy) : Yojson.Basic.t =
   `Assoc
     [
       ("kernel_name", `String kernel_name);
-      ("status", `String (Analysis.Verdict.to_string (Analysis.legacy_verdict analysis)));
+      ( "status",
+        `String
+          (Analysis.Verdict.to_string (Analysis.ordinary_verdict analysis)) );
       ("unknowns", `List (List.map Symbexp.Proof.to_json unknowns));
       ("logics", `List logics);
       ( "errors",
@@ -94,7 +96,7 @@ let render (output : Analysis.t list) : unit =
   let kernels =
     output
     |> List.map (function
-      | Analysis.Legacy analysis -> render_legacy analysis
+      | Analysis.Ordinary analysis -> render_ordinary analysis
       | Analysis.Subgroup analysis -> render_subgroup analysis)
   in
   `Assoc

@@ -33,10 +33,12 @@ Next, feel free to access the [`tutorial/`](tutorial/) directory!
 
 # Focused subgroup/matrix DRF extension
 
-The local W509+ residual-closure campaign continues the OCaml-owned
-subgroup/matrix path for the focused `flash_attn_wmma_mirror_kernel` fixture.
-This is not arbitrary CUDA or arbitrary Flash Attention support, and it is not
-a wrapper around the Rust oracle.
+The local I501+ integration campaign keeps the original OCaml Faial memory
+logic as the base case while routing the focused subgroup/matrix memory checks
+through the unified DRF event/obligation boundary. The supported public route
+for the focused `flash_attn_wmma_mirror_kernel` fixture is still narrow: this
+is not arbitrary CUDA or arbitrary Flash Attention support, and it is not a
+wrapper around the Rust oracle.
 
 The subgroup path is enabled explicitly:
 
@@ -89,9 +91,13 @@ expose an equivalent subgroup-lowered structured artifact for this focused
 command.
 
 Ordinary shared/global source memory effects in subgroup/matrix kernels are
-now modeled as subgroup-aware memory obligations. Existing non-WMMA examples
-remain on the legacy `Imp` path, preserve legacy DRF/racy verdicts, and do not
-require `--subgroup-size`. The legacy gate for this boundary is
+now modeled as subgroup-aware memory obligations owned by
+`drf/lib/memory_event.ml`. Existing non-WMMA examples remain on the ordinary
+`Imp` path, preserve original DRF/racy verdicts, and do not require
+`--subgroup-size`. CUDA source that contains subgroup or WMMA operations must
+provide `--subgroup-size`; otherwise it is rejected before ordinary `Imp`
+lowering rather than analyzed with guessed workgroup-only semantics. The
+regression gate for this boundary is
 `opam exec -- make`, `PATH="$(pwd)/bin:$PATH" opam exec -- dune runtest`, and
 no-`--subgroup-size` smokes for both DRF and racy examples under
 `examples/drf/`.

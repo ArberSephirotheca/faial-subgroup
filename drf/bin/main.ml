@@ -561,7 +561,7 @@ let main =
         app.kernels
         |> List.iter (fun k ->
           match k with
-          | App.Legacy_kernel kernel ->
+          | App.Ordinary_kernel kernel ->
               if show_signature
               then print_endline (Protocols.Kernel.signature_string kernel)
               else print_endline (Protocols.Kernel.name kernel)

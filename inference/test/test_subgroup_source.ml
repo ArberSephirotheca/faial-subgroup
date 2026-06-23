@@ -190,7 +190,7 @@ let site_control_has_uniform_var (name : string) (control : Source.site_control)
 let variable_set_has (name : string) (vars : Variable.Set.t) : bool =
   Variable.Set.mem (var name) vars
 
-let test_non_wmma_routes_to_legacy_imp_without_subgroup_config () : unit =
+let test_non_wmma_routes_to_ordinary_imp_without_subgroup_config () : unit =
   let code =
     D_lang.Stmt.WriteAccessStmt
       {
@@ -206,9 +206,9 @@ let test_non_wmma_routes_to_legacy_imp_without_subgroup_config () : unit =
     Source.route_program [ D_lang.Def.Kernel (kernel "plain_cuda" code) ]
     |> expect_route_ok
   with
-  | [ Source.Legacy_imp kernel ] ->
-      Alcotest.(check string) "legacy kernel name" "plain_cuda" kernel.name
-  | _ -> Alcotest.fail "non-WMMA kernel did not stay on legacy Imp route"
+  | [ Source.Ordinary_imp kernel ] ->
+      Alcotest.(check string) "ordinary kernel name" "plain_cuda" kernel.name
+  | _ -> Alcotest.fail "non-WMMA kernel did not stay on ordinary Imp route"
 
 let test_missing_config_fails_only_on_subgroup_path () : unit =
   let code = D_lang.Stmt.SExpr (call_expr "__syncwarp" []) in
@@ -1711,9 +1711,9 @@ let test_extra_load_store_matrix_arguments_fail () : unit =
 
 let tests : unit Alcotest.test_case list =
   [
-    ( "non-WMMA routes to legacy Imp without subgroup config",
+    ( "non-WMMA routes to ordinary Imp without subgroup config",
       `Quick,
-      test_non_wmma_routes_to_legacy_imp_without_subgroup_config );
+      test_non_wmma_routes_to_ordinary_imp_without_subgroup_config );
     ( "missing config fails only on subgroup path",
       `Quick,
       test_missing_config_fails_only_on_subgroup_path );

@@ -7,10 +7,10 @@ type error =
   | Missing_subgroup_config of { kernel : string }
   | Unsupported_expression of { context : string; expr : string }
   | Unsupported_matrix_call of { op : string; reason : string; expr : string }
-  | Legacy_imp_error of string
+  | Ordinary_imp_error of string
 
 type routed_kernel =
-  | Legacy_imp of Imp.Kernel.t
+  | Ordinary_imp of Imp.Kernel.t
   | Subgroup_matrix of subgroup_kernel
 
 and ordinary_memory_kind = Ordinary_read | Ordinary_write | Ordinary_atomic
@@ -60,7 +60,7 @@ let error_to_string : error -> string = function
       Printf.sprintf "unsupported expression in %s: %s" context expr
   | Unsupported_matrix_call { op; reason; expr } ->
       Printf.sprintf "unsupported matrix call '%s': %s in %s" op reason expr
-  | Legacy_imp_error msg -> msg
+  | Ordinary_imp_error msg -> msg
 
 let call_name : D_lang.Expr.t -> string option = function
   | Ident { name; kind = Function; _ } | UnresolvedLookupExpr { name; _ } ->
@@ -1897,7 +1897,7 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
   | Skip | BreakStmt | GotoStmt | ReturnStmt None | ContinueStmt -> Ok state
   | ReturnStmt (Some expr) -> collect_expr state expr
 
-let legacy_imp_of_kernel (context_defs : D_lang.Def.t list)
+let ordinary_imp_of_kernel (context_defs : D_lang.Def.t list)
     (kernel : D_lang.Kernel.t) : (Imp.Kernel.t, error) result =
   try
     match
@@ -1906,10 +1906,10 @@ let legacy_imp_of_kernel (context_defs : D_lang.Def.t list)
     | [ kernel ] -> Ok kernel
     | kernels ->
         Error
-          (Legacy_imp_error
-             (Printf.sprintf "expected one legacy Imp kernel, got %d"
+          (Ordinary_imp_error
+             (Printf.sprintf "expected one ordinary Imp kernel, got %d"
                 (List.length kernels)))
-  with D_to_imp.Unsupported_source msg -> Error (Legacy_imp_error msg)
+  with D_to_imp.Unsupported_source msg -> Error (Ordinary_imp_error msg)
 
 let type_aliases_of_defs (context_defs : D_lang.Def.t list) :
     C_type.t StringMap.t =
@@ -1966,8 +1966,8 @@ let route_kernel ?(target_config = SM.Target_config.missing_cuda)
     subgroup_kernel_of_kernel context_defs target_config kernel
     |> Result.map (fun kernel -> Subgroup_matrix kernel)
   else
-    legacy_imp_of_kernel context_defs kernel
-    |> Result.map (fun kernel -> Legacy_imp kernel)
+    ordinary_imp_of_kernel context_defs kernel
+    |> Result.map (fun kernel -> Ordinary_imp kernel)
 
 let route_program ?target_config (program : D_lang.Program.t) :
     (routed_kernel list, error) result =

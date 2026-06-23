@@ -719,7 +719,7 @@ let test_syncwarp_rejected_before_imp_lowering () : unit =
   match
     D_to_imp.Silent.parse_program [ D_lang.Def.Kernel (kernel "syncwarp" code) ]
   with
-  | _ -> Alcotest.fail "__syncwarp unexpectedly lowered through legacy Imp"
+  | _ -> Alcotest.fail "__syncwarp unexpectedly lowered through ordinary Imp"
   | exception D_to_imp.Unsupported_source msg ->
       Alcotest.(check bool)
         "message names the rejected subgroup operation" true

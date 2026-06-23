@@ -66,15 +66,17 @@ module Make (L : Logger) = struct
     raise
       (Unsupported_source
          ("CUDA WMMA call '" ^ op
-        ^ "' requires the subgroup/matrix representation; legacy Imp lowering \
-           is intentionally unsupported for " ^ D_lang.Expr.to_string expr))
+        ^ "' requires the subgroup/matrix representation; ordinary Imp \
+           lowering is intentionally unsupported for "
+        ^ D_lang.Expr.to_string expr))
 
   let unsupported_subgroup_call (op : string) (expr : D_lang.Expr.t) : 'a =
     raise
       (Unsupported_source
          ("CUDA subgroup call '" ^ op
-        ^ "' requires the subgroup/matrix representation; legacy Imp lowering \
-           is intentionally unsupported for " ^ D_lang.Expr.to_string expr))
+        ^ "' requires the subgroup/matrix representation; ordinary Imp \
+           lowering is intentionally unsupported for "
+        ^ D_lang.Expr.to_string expr))
 
   let unsupported_conditional_pointer_alias ~(kind : string)
       (target : D_lang.Expr.t) (expr : D_lang.Expr.t) : 'a =
@@ -82,7 +84,7 @@ module Make (L : Logger) = struct
       (Unsupported_source
          ("CUDA conditional pointer alias " ^ kind ^ " for '"
          ^ D_lang.Expr.to_string target
-         ^ "' requires source-parameter-aware alias resolution; legacy Imp \
+         ^ "' requires source-parameter-aware alias resolution; ordinary Imp \
             lowering cannot guess memory identity for "
          ^ D_lang.Expr.to_string expr))
 
