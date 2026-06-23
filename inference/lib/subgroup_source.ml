@@ -1310,6 +1310,8 @@ let subgroup_barrier_stmt (state : collect_state) (func : D_lang.Expr.t)
 type subgroup_collective_call =
   | Warp_sum
   | Warp_max
+  | Warp_reduce_sum
+  | Warp_reduce_max
   | Shfl_sync
   | Shfl_down_sync
 
@@ -1317,6 +1319,8 @@ let subgroup_collective_call_name : subgroup_collective_call -> string =
   function
   | Warp_sum -> "warp_sum"
   | Warp_max -> "warp_max"
+  | Warp_reduce_sum -> "warp_reduce_sum"
+  | Warp_reduce_max -> "warp_reduce_max"
   | Shfl_sync -> "__shfl_sync"
   | Shfl_down_sync -> "__shfl_down_sync"
 
@@ -1325,6 +1329,8 @@ let subgroup_collective_call_of_call (func : D_lang.Expr.t)
   match (call_name func, List.length args) with
   | Some "warp_sum", 1 -> Some Warp_sum
   | Some "warp_max", 1 -> Some Warp_max
+  | Some "warp_reduce_sum", 1 -> Some Warp_reduce_sum
+  | Some "warp_reduce_max", 1 -> Some Warp_reduce_max
   | Some "__shfl_sync", 3 -> Some Shfl_sync
   | Some "__shfl_down_sync", 3 -> Some Shfl_down_sync
   | _ -> None
@@ -1357,9 +1363,11 @@ let subgroup_collective_stmt ?result (state : collect_state)
   in
   let* payload =
     match (op, args) with
-    | Warp_sum, [ value ] ->
+    | (Warp_sum | Warp_reduce_sum), [ value ] ->
         let* argument =
-          subgroup_collective_operand ~context:"warp_sum operand" value
+          subgroup_collective_operand
+            ~context:(label ^ " operand")
+            value
         in
         Ok
           (SM.Collective.Operation_payload
@@ -1369,9 +1377,11 @@ let subgroup_collective_stmt ?result (state : collect_state)
                argument;
                result;
              })
-    | Warp_max, [ value ] ->
+    | (Warp_max | Warp_reduce_max), [ value ] ->
         let* argument =
-          subgroup_collective_operand ~context:"warp_max operand" value
+          subgroup_collective_operand
+            ~context:(label ^ " operand")
+            value
         in
         Ok
           (SM.Collective.Operation_payload
@@ -1730,6 +1740,27 @@ let collect_decl (state : collect_state) (decl : D_lang.Decl.t) :
 let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
     (collect_state, error) result =
   let ( let* ) = Result.bind in
+  let is_return_stmt : D_lang.Stmt.t -> bool = function
+    | ReturnStmt _ -> true
+    | _ -> false
+  in
+  let rec early_return_continuation_guard :
+      D_lang.Stmt.t -> (Exp.bexp option, error) result = function
+    | IfStmt { cond; then_stmt; else_stmt = Skip }
+      when is_return_stmt then_stmt ->
+        let* guard =
+          bexp_of_expr ~context:"subgroup early-return condition" cond
+        in
+        Ok (Some (Exp.b_not guard))
+    | IfStmt { cond; then_stmt = Skip; else_stmt }
+      when is_return_stmt else_stmt ->
+        let* guard =
+          bexp_of_expr ~context:"subgroup early-return condition" cond
+        in
+        Ok (Some guard)
+    | Seq (_, right) -> early_return_continuation_guard right
+    | _ -> Ok None
+  in
   let collect_with_control state guard stmt =
     let control_stack = state.control_stack in
     let* state =
@@ -1775,7 +1806,12 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
         (Ok state) decls
   | Seq (left, right) ->
       let* state = collect_stmt state left in
-      collect_stmt state right
+      let* continuation_guard = early_return_continuation_guard left in
+      begin match continuation_guard with
+      | Some guard when stmt_requires_source_effect_metadata right ->
+          collect_with_control state guard right
+      | Some _ | None -> collect_stmt state right
+      end
   | IfStmt { cond; then_stmt; else_stmt } ->
       let* state = collect_expr state cond in
       let* guard =

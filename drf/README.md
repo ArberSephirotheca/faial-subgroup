@@ -86,10 +86,13 @@ move the event input earlier than `Flatacc`.
   effects are attached to the same matrix collective site. Different subgroups
   remain solver-visible.
 - Ordinary source memory effects before and after focused warp helper/shuffle
-  collectives, such as `warp_max`, `warp_sum`, `__shfl_sync`, and
-  `__shfl_down_sync`, use that same rule: helper calls do not split workgroup
-  phases and do not introduce memory effects, but they do provide subgroup
-  phase boundaries for same-subgroup ordering.
+  collectives, such as `warp_max`, `warp_sum`, `warp_reduce_max`,
+  `warp_reduce_sum`, `__shfl_sync`, and `__shfl_down_sync`, use that same
+  rule: helper calls do not split workgroup phases and do not introduce memory
+  effects, but they do provide subgroup phase boundaries for same-subgroup
+  ordering. The `warp_reduce_*` aliases summarize reviewed helper calls; they
+  do not infer subgroup size from `WARP_SIZE`, and direct width-sensitive
+  `__shfl_xor_sync` modeling remains unsupported until guarded separately.
 - Source-order ordinals are carried to the obligation boundary as evidence,
   but they are not by themselves a workgroup barrier or a cross-subgroup
   ordering rule.
