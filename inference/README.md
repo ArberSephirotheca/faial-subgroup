@@ -79,9 +79,9 @@ constant dependencies that feed later subgroup/matrix analysis:
 - scalar helper calls such as `min`, `max`, `fminf`, `fmaxf`, `divUp`, and the
   existing Faial predicate helpers are lowered to expression dependencies;
 - focused conversion and warp helper calls such as `__half2float`,
-  `__float2half_rn`, `warp_sum`, `warp_max`, `__shfl_sync`, and
-  `__shfl_down_sync` are kept as explicit dependency summaries instead of
-  being silently dropped;
+  `__float2half_rn`, `warp_sum`, `warp_max`, `warp_reduce_sum`,
+  `warp_reduce_max`, `__shfl_sync`, and `__shfl_down_sync` are kept as
+  explicit dependency summaries instead of being silently dropped;
 - global `const int` declarations and loop bounds/steps remain visible in the
   generated `Imp` preamble and loop ranges.
 
@@ -160,11 +160,15 @@ carrier:
 - `fill_fragment` and `mma_sync` become matrix collective sites without direct
   source-visible memory effects;
 - focused CUDA warp helper/shuffle calls, currently `warp_sum`, `warp_max`,
-  `__shfl_sync`, and `__shfl_down_sync`, become subgroup collective sites
-  without direct source-visible memory effects. They advance only the subgroup
-  phase, so ordinary source memory effects collected before and after those
-  calls remain in the same workgroup phase but can be ordered later only for
-  same-subgroup invocations;
+  `warp_reduce_sum`, `warp_reduce_max`, `__shfl_sync`, and
+  `__shfl_down_sync`, become subgroup collective sites without direct
+  source-visible memory effects. They advance only the subgroup phase, so
+  ordinary source memory effects collected before and after those calls remain
+  in the same workgroup phase but can be ordered later only for same-subgroup
+  invocations. The `warp_reduce_*` names are helper summaries used by
+  ggml-cuda-style source slices; they do not infer subgroup size from
+  `WARP_SIZE`. Direct `__shfl_xor_sync` width-sensitive modeling remains an
+  unsupported boundary until a guarded width/subgroup-size rule is added;
 - subgroup and WMMA sites collected from source control constructs carry the
   enclosing branch, loop, switch, case, or default condition as adjacent
   site-control metadata for the DRF uniformity checker; unsupported control

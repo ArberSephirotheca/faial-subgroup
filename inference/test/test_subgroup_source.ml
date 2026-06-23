@@ -123,6 +123,15 @@ let block_x_eq_0 () : D_lang.Expr.t =
       ty = J_type.bool;
     }
 
+let thread_x_ne_0 () : D_lang.Expr.t =
+  D_lang.Expr.BinaryOperator
+    {
+      lhs = member_expr "threadIdx" "x";
+      opcode = "!=";
+      rhs = D_lang.Expr.IntegerLiteral 0;
+      ty = J_type.bool;
+    }
+
 let bin ?(ty = J_type.int) (lhs : D_lang.Expr.t) (opcode : string)
     (rhs : D_lang.Expr.t) : D_lang.Expr.t =
   D_lang.Expr.BinaryOperator { lhs; opcode; rhs; ty }
@@ -502,6 +511,101 @@ let test_warp_helpers_advance_ordinary_memory_subgroup_phase () : unit =
                (List.length effects))
     end
   | _ -> Alcotest.fail "warp helper kernel did not route to subgroup"
+
+let test_warp_reduce_helpers_advance_ordinary_memory_subgroup_phase () : unit =
+  let code =
+    D_lang.Stmt.from_list
+      [
+        read_stmt ~target:"prev_max"
+          (subscript "row_max_shmem" [ ident "q_tile_row" ]);
+        assign "max_logit"
+          (call_expr "warp_reduce_max" [ ident "max_logit" ]);
+        assign "sum" (call_expr "warp_reduce_sum" [ ident "cur_p" ]);
+        write_stmt (subscript "row_max_shmem" [ ident "q_tile_row" ]);
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "warp_reduce_helper_ordering" code) ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] -> begin
+      let site_summary =
+        Source.kernel_site_summary subgroup.matrix_kernel |> String.concat "\n"
+      in
+      Alcotest.(check bool)
+        "records warp_reduce_max as subgroup collective" true
+        (Stage0.Common.contains ~substring:"site#0[warp_reduce_max]"
+           site_summary
+        && Stage0.Common.contains ~substring:"collective<reduce:max>"
+             site_summary);
+      Alcotest.(check bool)
+        "records warp_reduce_sum as subgroup collective" true
+        (Stage0.Common.contains ~substring:"site#1[warp_reduce_sum]"
+           site_summary
+        && Stage0.Common.contains ~substring:"collective<reduce:add>"
+             site_summary);
+      match subgroup.ordinary_memory_effects with
+      | [ read; write ] ->
+          Alcotest.(check (list int))
+            "read sees pre-helper subgroup phase" [] read.phase.subgroup;
+          Alcotest.(check (list int))
+            "write sees both helper subgroup boundaries" [ 0; 1 ]
+            write.phase.subgroup
+      | effects ->
+          Alcotest.fail
+            (Printf.sprintf "expected read/write ordinary effects, got %d"
+               (List.length effects))
+    end
+  | _ -> Alcotest.fail "warp reduce helper kernel did not route to subgroup"
+
+let test_warp_reduce_helper_requires_explicit_subgroup_config () : unit =
+  let code =
+    D_lang.Stmt.SExpr
+      (bin (ident "sum") "=" (call_expr "warp_reduce_sum" [ ident "sum" ]))
+  in
+  match
+    Source.route_program
+      [ D_lang.Def.Kernel (kernel "warp_reduce_missing_config" code) ]
+  with
+  | Error (Source.Missing_subgroup_config { kernel }) ->
+      Alcotest.(check string)
+        "subgroup kernel name" "warp_reduce_missing_config" kernel
+  | Ok _ -> Alcotest.fail "warp_reduce helper accepted missing config"
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+
+let test_early_return_guards_following_memory_effect () : unit =
+  let code =
+    D_lang.Stmt.from_list
+      [
+        assign "sum" (call_expr "warp_reduce_sum" [ ident "cur_p" ]);
+        IfStmt
+          {
+            cond = thread_x_ne_0 ();
+            then_stmt = ReturnStmt None;
+            else_stmt = Skip;
+          };
+        write_stmt (subscript "dst" [ member_expr "blockIdx" "x" ]);
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "early_return_writer" code) ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] -> begin
+      match subgroup.ordinary_memory_effects with
+      | [ write ] ->
+          let control = Source.ordinary_memory_effect_summary write in
+          Alcotest.(check bool)
+            "early return guard reaches following write" true
+            (Stage0.Common.contains ~substring:"threadIdx.x == 0" control)
+      | effects ->
+          Alcotest.fail
+            (Printf.sprintf "expected one guarded write, got %d"
+               (List.length effects))
+    end
+  | _ -> Alcotest.fail "early-return kernel did not route to subgroup"
 
 let test_ordinary_memory_effects_preserve_loop_ownership_facts () : unit =
   let code =
@@ -1735,6 +1839,15 @@ let tests : unit Alcotest.test_case list =
     ( "warp helpers advance ordinary memory subgroup phase",
       `Quick,
       test_warp_helpers_advance_ordinary_memory_subgroup_phase );
+    ( "warp reduce helpers advance ordinary memory subgroup phase",
+      `Quick,
+      test_warp_reduce_helpers_advance_ordinary_memory_subgroup_phase );
+    ( "warp reduce helper requires explicit subgroup config",
+      `Quick,
+      test_warp_reduce_helper_requires_explicit_subgroup_config );
+    ( "early return guards following memory effect",
+      `Quick,
+      test_early_return_guards_following_memory_effect );
     ( "ordinary memory effects preserve loop ownership facts",
       `Quick,
       test_ordinary_memory_effects_preserve_loop_ownership_facts );
