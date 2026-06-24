@@ -57,12 +57,14 @@ guarded solver or pre-solver concern.
 
 ## Launch Contracts
 
-`lib/launch_contract.ml` owns guarded launch/template/shape contracts for
-ordinary DRF runs whose production host launch carries facts that are not
-available when the analyzer enters a parsed CUDA kernel directly. A launch
-contract appends source preconditions to `Protocols.Kernel.pre`, adds the
-needed scalar kernel parameters as global variables, and merges required
-integer template parameters before the ordinary MAP pipeline runs.
+`lib/launch_contract_rows.ml` owns the current row catalog for guarded
+launch/template/shape contracts. `lib/launch_contract.ml` owns the validator
+and proof-context injector for ordinary DRF runs whose production host launch
+carries facts that are not available when the analyzer enters a parsed CUDA
+kernel directly. A launch contract appends source preconditions to
+`Protocols.Kernel.pre`, adds the needed scalar kernel parameters as global
+variables, and merges required integer template parameters before the
+ordinary MAP pipeline runs.
 
 The current supported contracts are the ggml-cuda GLA rows:
 
@@ -102,6 +104,8 @@ obligations, and Z3 classification are unchanged; the solver simply receives
 the same launch-side assumptions that selected the manifest row. Unsupported
 rows, missing `--kernel`, conflicting `HEAD_SIZE`, conflicting `--block-dim`,
 concrete `--grid-dim`, `--all-dims`, and subgroup/matrix kernels fail closed.
+Adding a new row should extend the row catalog and the corresponding family
+validator rather than adding solver-specific exceptions.
 
 ## Subgroup/Matrix Extension Boundary
 

@@ -27,6 +27,8 @@ let test_gla_l072_contract_shape () : unit =
   Alcotest.(check string)
     "parsed kernel" "gated_linear_attn_f32" contract.parsed_kernel;
   Alcotest.(check int) "head size" 64 contract.head_size;
+  Alcotest.(check int)
+    "catalog row count" 2 (List.length Launch_contract_rows.all);
   let block_dim = LC.block_dim contract in
   Alcotest.(check int) "blockDim.x" 64 block_dim.x;
   Alcotest.(check int) "blockDim.y" 1 block_dim.y;
@@ -62,6 +64,12 @@ let test_unknown_row_fails_closed () : unit =
   match expect_error (LC.of_row_id "L999") with
   | LC.Unknown_row "L999" -> ()
   | error -> Alcotest.fail (LC.error_to_string error)
+
+let test_catalog_and_contract_view_match () : unit =
+  let catalog_ids = List.map (fun row -> row.Launch_contract_rows.row_id)
+      Launch_contract_rows.all in
+  let contract_ids = List.map (fun row -> row.LC.row_id) LC.all in
+  Alcotest.(check (list string)) "row ids" catalog_ids contract_ids
 
 let test_conflicting_param_fails_closed () : unit =
   let contract = expect_ok (LC.of_row_id "L072") in
@@ -112,6 +120,9 @@ let tests =
     ("GLa L072 contract shape", `Quick, test_gla_l072_contract_shape);
     ("GLa L073 contract shape", `Quick, test_gla_l073_contract_shape);
     ("unknown row fails closed", `Quick, test_unknown_row_fails_closed);
+    ( "catalog and contract view match",
+      `Quick,
+      test_catalog_and_contract_view_match );
     ( "conflicting param fails closed",
       `Quick,
       test_conflicting_param_fails_closed );
