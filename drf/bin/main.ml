@@ -321,7 +321,7 @@ let main =
       & info [ "launch-contract" ] ~docv:"ROW"
           ~doc:
             "Apply a guarded launch/template/shape contract for a concrete \
-             manifest row. Currently supported rows: L072, L073.")
+             manifest row. Currently supported rows: L072, L073, L143.")
   and+ macros =
     Arg.(
       value & opt_all string []

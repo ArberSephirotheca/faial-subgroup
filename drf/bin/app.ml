@@ -535,15 +535,36 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     match launch_contract with
     | None -> parsed.kernels
     | Some contract ->
-        parsed.kernels
-        |> List.map (function
-          | Ordinary_kernel kernel ->
-              Ordinary_kernel
-                (require_ok (Launch_contract.apply_to_kernel contract kernel))
-          | Subgroup_kernel kernel ->
-              launch_contract_error
-                (Launch_contract.Subgroup_kernel_unsupported
-                   kernel.matrix_kernel.name))
+        let selected =
+          parsed.kernels
+          |> List.filter (function
+            | Ordinary_kernel kernel ->
+                String.equal (Protocols.Kernel.name kernel)
+                  contract.parsed_kernel
+            | Subgroup_kernel kernel ->
+                String.equal kernel.matrix_kernel.name contract.parsed_kernel)
+        in
+        if List.length selected = 0 then
+          let actual =
+            parsed.kernels
+            |> List.map (function
+              | Ordinary_kernel kernel -> Protocols.Kernel.name kernel
+              | Subgroup_kernel kernel -> kernel.matrix_kernel.name)
+            |> String.concat ", "
+          in
+          launch_contract_error
+            (Launch_contract.Kernel_mismatch
+               { expected = contract.parsed_kernel; actual })
+        else
+          selected
+          |> List.map (function
+            | Ordinary_kernel kernel ->
+                Ordinary_kernel
+                  (require_ok (Launch_contract.apply_to_kernel contract kernel))
+            | Subgroup_kernel kernel ->
+                launch_contract_error
+                  (Launch_contract.Subgroup_kernel_unsupported
+                     kernel.matrix_kernel.name))
   in
   let kernels = uniquify_mixed_kernels kernels in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
