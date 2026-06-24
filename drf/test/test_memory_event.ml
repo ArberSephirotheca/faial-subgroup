@@ -1,10 +1,12 @@
 open Stage0
 open Protocols
 module Flatacc = Drf.Flatacc
+module Locsplit = Drf.Locsplit
 module Memory_event = Drf.Memory_event
 module Subgroup_event = Drf.Memory_event.Subgroup_event
 module Subgroup_obligation = Drf.Memory_event.Subgroup_obligation
 module Symbexp = Drf.Symbexp
+module Unsync = Drf.Unsync
 module SM = Inference.Subgroup_matrix
 module SS = Inference.Subgroup_source
 
@@ -55,6 +57,34 @@ let sample_kernel ?(array = var "buf") ?(name = "ordinary_kernel")
     pre;
     runtime;
   }
+
+let phase_range_kernel () : Flatacc.Kernel.t =
+  let t = var "t" in
+  let dst = var "dst" in
+  let range =
+    Range.
+      {
+        var = t;
+        ty = C_type.int;
+        dir = Increase;
+        lower_bound = Exp.Var Variable.tid_x;
+        upper_bound = Exp.Num 127;
+        step = Step.plus (Exp.Num 64);
+      }
+  in
+  let kernel : Locsplit.Kernel.t =
+    {
+      name = "phase_range";
+      array_name = "dst";
+      global_variables = Params.empty;
+      local_variables = Params.empty;
+      ranges = [ range ];
+      code = Unsync.Access (Access.write dst [ Exp.Var t ] None);
+    }
+  in
+  match Flatacc.Kernel.from_loc_split Architecture.Block kernel with
+  | Some kernel -> kernel
+  | None -> Alcotest.fail "expected flat-access kernel"
 
 let proof_accesses (proof : Symbexp.Proof.t) : string list =
   List.map Symbexp.AccessSummary.to_string proof.accesses
@@ -263,6 +293,49 @@ let test_ordinary_goal_covers_projection_and_ordering_constraints () : unit =
       ("access id ordering", "$T1$id <= $T2$id");
       ("mode variable for task 1", "$T1$mode");
       ("mode variable for task 2", "$T2$mode");
+    ]
+
+let test_phase_level_range_binder_is_task_local () : unit =
+  let kernel = phase_range_kernel () in
+  let t = var "t" in
+  Alcotest.(check bool)
+    "range binder is exact local" true
+    (Variable.Set.mem t kernel.exact_local_variables);
+  Alcotest.(check bool)
+    "range binder is not approximate" false
+    (Variable.Set.mem t kernel.approx_local_variables);
+  Alcotest.(check string)
+    "phase range moved out of global pre" "true"
+    (Exp.b_to_string kernel.pre);
+  let code = Flatacc.Code.to_list kernel.code in
+  let access =
+    match code with
+    | [ access ] -> access
+    | _ -> Alcotest.fail "expected one flattened access"
+  in
+  let range_fact =
+    Exp.n_eq
+      (Exp.n_mod
+         (Exp.n_minus (Exp.Var t) (Exp.Var Variable.tid_x))
+         (Exp.Num 64))
+      (Exp.Num 0)
+  in
+  Alcotest.(check bool)
+    "range condition is access-local" true
+    (List.exists (( = ) range_fact) (Exp.b_and_split access.cond));
+  let proof =
+    Memory_event.Ordinary_obligation.from_flat Architecture.Block 10 kernel
+  in
+  let goal = Exp.b_to_string proof.goal in
+  List.iter
+    (fun (label, needle) -> expect_substring ~label ~needle goal)
+    [
+      ("task 1 range binder projected", "t$T1");
+      ("task 2 range binder projected", "t$T2");
+      ("task 1 thread base projected", "threadIdx.x$T1");
+      ("task 2 thread base projected", "threadIdx.x$T2");
+      ("task 1 index uses local t", "$T1$idx$0 == t$T1");
+      ("task 2 index uses local t", "$T2$idx$0 == t$T2");
     ]
 
 let test_read_read_ordinary_mode_conflict_remains_unsat_shape () : unit =
@@ -544,6 +617,9 @@ let tests : unit Alcotest.test_case list =
     ( "ordinary goal constraints",
       `Quick,
       test_ordinary_goal_covers_projection_and_ordering_constraints );
+    ( "phase range binder is task-local",
+      `Quick,
+      test_phase_level_range_binder_is_task_local );
     ( "read/read mode conflict shape",
       `Quick,
       test_read_read_ordinary_mode_conflict_remains_unsat_shape );

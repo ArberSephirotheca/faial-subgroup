@@ -45,6 +45,64 @@ barriers are represented by the existing phase separation rather than by
 stable barrier-site event records; tasks that need barrier-site identity must
 move the event input earlier than `Flatacc`.
 
+`lib/flatacc.ml` also owns the projection boundary for phase-level loop ranges
+produced by phase splitting. Lifted range binders are local to the checked
+thread execution, so Flatacc keeps those binders in the local-variable set and
+attaches their `Range.to_cond` facts to each flattened access guard. The
+ordinary symbolic proof then projects them as `t$T1` and `t$T2` instead of
+using one shared symbolic induction variable. This preserves source loop
+scoping; it is not a DRF proof rule by itself. Ownership reasoning for
+specific shapes such as `base + threadIdx.x + k * stride` remains a separate,
+guarded solver or pre-solver concern.
+
+## Launch Contracts
+
+`lib/launch_contract.ml` owns guarded launch/template/shape contracts for
+ordinary DRF runs whose production host launch carries facts that are not
+available when the analyzer enters a parsed CUDA kernel directly. A launch
+contract appends source preconditions to `Protocols.Kernel.pre`, adds the
+needed scalar kernel parameters as global variables, and merges required
+integer template parameters before the ordinary MAP pipeline runs.
+
+The current supported contracts are the ggml-cuda GLA rows:
+
+- `L072`: `gated_linear_attn_f32<64>`
+- `L073`: `gated_linear_attn_f32<128>`
+
+They require `--kernel gated_linear_attn_f32`. The contract supplies
+`HEAD_SIZE`, checks that any explicit `--block-dim` matches the row, keeps
+`gridDim` symbolic, and adds the row-local facts:
+
+```text
+HEAD_SIZE = 64 or 128
+blockDim.x = HEAD_SIZE
+blockDim.y = 1
+blockDim.z = 1
+C / H = HEAD_SIZE
+B > 0
+T > 0
+C > 0
+H > 0
+gridDim.x = B * H
+gridDim.y = 1
+gridDim.z = 1
+```
+
+Example:
+
+```bash
+faial-drf --launch-contract L072 --kernel gated_linear_attn_f32 \
+  --cu-to-json=./bin/cu-to-json --block-dim 64 \
+  -D__CUDACC__ path/to/gla.cu
+```
+
+This is not a solver shortcut and it does not discharge a race by row name.
+The ordinary phase split, flat access, memory-event generation, symbolic
+obligations, and Z3 classification are unchanged; the solver simply receives
+the same launch-side assumptions that selected the manifest row. Unsupported
+rows, missing `--kernel`, conflicting `HEAD_SIZE`, conflicting `--block-dim`,
+concrete `--grid-dim`, `--all-dims`, and subgroup/matrix kernels fail closed.
+
 ## Subgroup/Matrix Extension Boundary
 
 - `lib/memory_event.ml` exposes an internal `Subgroup_event` adapter from

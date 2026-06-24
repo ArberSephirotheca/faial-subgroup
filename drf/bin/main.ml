@@ -314,6 +314,14 @@ let main =
       & opt_all (pair ~sep:'=' string int) []
       & info [ "p"; "param" ] ~docv:"KEYVAL"
           ~doc:"Set the value of an integer parameter")
+  and+ launch_contract =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "launch-contract" ] ~docv:"ROW"
+          ~doc:
+            "Apply a guarded launch/template/shape contract for a concrete \
+             manifest row. Currently supported rows: L072, L073.")
   and+ macros =
     Arg.(
       value & opt_all string []
@@ -553,7 +561,7 @@ let main =
         ~delin_weak_in_range
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
-        ~cbor ~stop_at ~subgroup_size
+        ~cbor ~stop_at ~subgroup_size ~launch_contract
     in
     let ui = if output_json then Jui.render else Tui.render in
     let run () =

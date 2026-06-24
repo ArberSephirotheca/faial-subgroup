@@ -104,6 +104,7 @@ type t = {
   block_dim : Dim3.t option;
   grid_dim : Dim3.t option;
   params : (string * int) list;
+  launch_contract : Launch_contract.t option;
   macros : string list;
   ignore_asserts : bool;
   (* [assume_delin] runs delin in assume mode: the recovered axis bounds
@@ -209,6 +210,7 @@ let to_string (app : t) : string =
    block_dim;
    grid_dim;
    params = _;
+   launch_contract;
    only_kernel;
    macros;
    only_true_data_races;
@@ -230,6 +232,11 @@ let to_string (app : t) : string =
       let only_kernel = Option.value ~default:"(null)" only_kernel in
       let kernels = List.length kernels |> string_of_int in
       let subgroup_size = subgroup_size |> Option.map string_of_int |> opt_s in
+      let launch_contract =
+        launch_contract
+        |> Option.map (fun contract -> contract.Launch_contract.row_id)
+        |> opt_s
+      in
       "filename: " ^ filename ^ "\nonly_kernel: " ^ only_kernel
       ^ "\nblock_dim: " ^ opt dim3 block_dim ^ "\ngrid_dim: "
       ^ opt dim3 grid_dim ^ "\nkernels: " ^ kernels ^ "\ntimeout: "
@@ -243,6 +250,7 @@ let to_string (app : t) : string =
       ^ bool show_symbexp ^ "\nmacros = " ^ list_string macros
       ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
       ^ "\nsubgroup_size = " ^ subgroup_size
+      ^ "\nlaunch_contract = " ^ launch_contract
       ^ "\nassume_delin = " ^ bool assume_delin
       ^ "\nrewrite_delin = " ^ bool rewrite_delin
       ^ "\ndelin_elide = " ^ bool delin_elide
@@ -261,6 +269,33 @@ let to_string (app : t) : string =
           |> List.concat_map (fun (k, bs) ->
               List.map (fun b -> k ^ ":" ^ Exp.b_to_string b) bs))
       ^ "\n"
+
+let launch_contract_error (error : Launch_contract.error) : 'a =
+  Logger.Colors.error (Launch_contract.error_to_string error);
+  exit 2
+
+let require_ok (result : ('a, Launch_contract.error) result) : 'a =
+  match result with
+  | Ok value -> value
+  | Error error -> launch_contract_error error
+
+let parse_launch_contract (row_id : string option) : Launch_contract.t option =
+  row_id
+  |> Option.map (fun row_id -> require_ok (Launch_contract.of_row_id row_id))
+
+let validate_launch_contract_options ~(all_dims : bool)
+    ~(only_kernel : string option) ~(block_dim : Dim3.t option)
+    ~(grid_dim : Dim3.t option) (contract : Launch_contract.t) :
+    Dim3.t option * (string * int) list -> Dim3.t option * (string * int) list =
+ fun (_old_block_dim, params) ->
+  require_ok (Launch_contract.check_all_dims contract all_dims);
+  require_ok (Launch_contract.check_only_kernel contract only_kernel);
+  require_ok (Launch_contract.check_grid_dim contract grid_dim);
+  let block_dim =
+    require_ok (Launch_contract.check_block_dim contract block_dim)
+  in
+  let params = require_ok (Launch_contract.merge_params contract params) in
+  (block_dim, params)
 
 let checked_source_options ~block_dim ~grid_dim (filename : string) :
     Gv_parser.t =
@@ -452,7 +487,15 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~assume_delin ~rewrite_delin ~delin_elide ~delin_algo
     ~delin_check_vacuosity ~delin_weak_in_range ~assumes ~assume_dims
     ~assume_launch ~check_pre_sat
-    ~memory_model ~cbor ~stop_at ~subgroup_size : t =
+    ~memory_model ~cbor ~stop_at ~subgroup_size ~launch_contract : t =
+  let launch_contract = parse_launch_contract launch_contract in
+  let block_dim, params =
+    match launch_contract with
+    | None -> (block_dim, params)
+    | Some contract ->
+        validate_launch_contract_options ~all_dims ~only_kernel ~block_dim
+          ~grid_dim contract (block_dim, params)
+  in
   let parsed =
     match subgroup_size with
     | None ->
@@ -488,9 +531,32 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     in
     rebuild legacy kernels
   in
-  let kernels = uniquify_mixed_kernels parsed.kernels in
+  let kernels =
+    match launch_contract with
+    | None -> parsed.kernels
+    | Some contract ->
+        parsed.kernels
+        |> List.map (function
+          | Ordinary_kernel kernel ->
+              Ordinary_kernel
+                (require_ok (Launch_contract.apply_to_kernel contract kernel))
+          | Subgroup_kernel kernel ->
+              launch_contract_error
+                (Launch_contract.Subgroup_kernel_unsupported
+                   kernel.matrix_kernel.name))
+  in
+  let kernels = uniquify_mixed_kernels kernels in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
-  let grid_dim = if all_dims then None else Some parsed.options.grid_dim in
+  let block_dim =
+    match launch_contract with
+    | None -> block_dim
+    | Some contract -> Some (Launch_contract.block_dim contract)
+  in
+  let grid_dim =
+    match launch_contract with
+    | None -> if all_dims then None else Some parsed.options.grid_dim
+    | Some _ -> None
+  in
   (* [assumes] entries are [(kernel_name option, bexp)]. A [None]
      prefix means "apply to every kernel that can take this clause"
      — i.e., every kernel whose declared params plus the
@@ -552,6 +618,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     grid_dim;
     block_dim;
     params;
+    launch_contract;
     only_kernel;
     only_true_data_races;
     subgroup_size;
