@@ -3,6 +3,7 @@ open Exp
 
 type t = {
   row_id : string;
+  family : Launch_contract_rows.family;
   manifest_kernel : string;
   parsed_kernel : string;
   head_size : int;
@@ -17,9 +18,12 @@ type error =
   | All_dims_unsupported of string
   | Missing_kernel_selection of { row_id : string; expected : string }
   | Subgroup_kernel_unsupported of string
+  | Duplicate_row of string
 
 let error_to_string : error -> string = function
   | Unknown_row row_id -> "unknown launch contract row '" ^ row_id ^ "'"
+  | Duplicate_row row_id ->
+      "duplicate launch contract row '" ^ row_id ^ "'"
   | Kernel_mismatch { expected; actual } ->
       "launch contract expects parsed kernel '" ^ expected ^ "', got '" ^ actual
       ^ "'"
@@ -42,30 +46,34 @@ let error_to_string : error -> string = function
       "launch contract is currently ordinary-DRF only, got subgroup/matrix \
        kernel '" ^ kernel ^ "'"
 
-let gla ~(row_id : string) ~(head_size : int) : t =
+let of_row (row : Launch_contract_rows.t) : t =
   {
-    row_id;
-    manifest_kernel = "gated_linear_attn_f32<" ^ string_of_int head_size ^ ">";
-    parsed_kernel = "gated_linear_attn_f32";
-    head_size;
+    row_id = row.row_id;
+    family = row.family;
+    manifest_kernel = row.manifest_kernel;
+    parsed_kernel = row.parsed_kernel;
+    head_size = row.head_size;
   }
 
-let all : t list =
-  [ gla ~row_id:"L072" ~head_size:64; gla ~row_id:"L073" ~head_size:128 ]
+let all : t list = List.map of_row Launch_contract_rows.all
 
 let of_row_id (row_id : string) : (t, error) result =
-  match List.find_opt (fun c -> String.equal c.row_id row_id) all with
-  | Some contract -> Ok contract
-  | None -> Error (Unknown_row row_id)
+  match List.filter (fun c -> String.equal c.row_id row_id) all with
+  | [ contract ] -> Ok contract
+  | [] -> Error (Unknown_row row_id)
+  | _ -> Error (Duplicate_row row_id)
 
-let block_dim (contract : t) : Dim3.t = Dim3.make ~x:contract.head_size ()
+let block_dim (contract : t) : Dim3.t =
+  match contract.family with
+  | Gla -> Dim3.make ~x:contract.head_size ()
 
 let required_params (contract : t) : (string * int) list =
-  [ ("HEAD_SIZE", contract.head_size) ]
+  match contract.family with
+  | Gla -> [ ("HEAD_SIZE", contract.head_size) ]
 
 let var (name : string) : nexp = Var (Variable.from_name name)
 
-let precondition (contract : t) : bexp =
+let gla_precondition (contract : t) : bexp =
   let positive name = n_gt (var name) (Num 0) in
   b_and_ex
     [
@@ -82,6 +90,10 @@ let precondition (contract : t) : bexp =
       n_eq (Var Variable.gdim_y) (Num 1);
       n_eq (Var Variable.gdim_z) (Num 1);
     ]
+
+let precondition (contract : t) : bexp =
+  match contract.family with
+  | Gla -> gla_precondition contract
 
 let add_global_ints (names : string list) (kernel : Kernel.t) : Kernel.t =
   let globals =
