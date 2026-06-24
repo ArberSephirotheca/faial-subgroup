@@ -75,6 +75,12 @@ let strided_owner_condition ?(index_name = "elem_idx")
 let strided_access ?(index_name = "elem_idx") () : Access.t =
   Access.write (var "q_shmem") [ Exp.Var (var index_name) ] None
 
+let affine_strided_access ?(index_name = "elem_idx") ?(offset_name = "C") () :
+    Access.t =
+  Access.write (var "q_shmem")
+    [ Exp.n_minus (Exp.Var (var index_name)) (Exp.Var (var offset_name)) ]
+    None
+
 let strided_conditional_access ?index_name ?condition () :
     Memory.conditional_access =
   let index_name = Option.value index_name ~default:"elem_idx" in
@@ -91,6 +97,22 @@ let strided_conditional_access ?index_name ?condition () :
     subgroup_phase = Memory.Subgroup_phase_key.root;
   }
 
+let affine_strided_conditional_access ?index_name ?offset_name ?condition () :
+    Memory.conditional_access =
+  let index_name = Option.value index_name ~default:"elem_idx" in
+  let condition =
+    Option.value condition ~default:(strided_owner_condition ~index_name ())
+  in
+  {
+    origin = Memory.Matrix_store;
+    collective_site = None;
+    source_site = None;
+    source_order = None;
+    access = affine_strided_access ~index_name ?offset_name ();
+    condition;
+    subgroup_phase = Memory.Subgroup_phase_key.root;
+  }
+
 let strided_obligation ?(id = 20) ?left_index_name ?right_index_name
     ?left_condition ?right_condition ?(goal = Exp.Bool true) () :
     Memory.obligation =
@@ -101,6 +123,19 @@ let strided_obligation ?(id = 20) ?left_index_name ?right_index_name
   let right =
     strided_conditional_access ?index_name:right_index_name
       ?condition:right_condition ()
+  in
+  { id; phase_id = 0; array_name = "q_shmem"; left; right; goal }
+
+let affine_strided_obligation ?(id = 21) ?left_index_name ?right_index_name
+    ?left_offset_name ?right_offset_name ?left_condition ?right_condition
+    ?(goal = Exp.Bool true) () : Memory.obligation =
+  let left =
+    affine_strided_conditional_access ?index_name:left_index_name
+      ?offset_name:left_offset_name ?condition:left_condition ()
+  in
+  let right =
+    affine_strided_conditional_access ?index_name:right_index_name
+      ?offset_name:right_offset_name ?condition:right_condition ()
   in
   { id; phase_id = 0; array_name = "q_shmem"; left; right; goal }
 
@@ -785,6 +820,37 @@ let test_pre_solver_is_not_tied_to_fixture_variable_names () : unit =
   |> Solver.pre_solver_classification ~block_dim
   |> expect_one_dimensional_strided_discharge
 
+let test_pre_solver_discharges_affine_strided_owner_with_global_offset () : unit
+    =
+  let block_dim = Dim3.make ~x:64 () in
+  let globals = variable_set [ "C" ] in
+  affine_strided_obligation ()
+  |> Solver.pre_solver_classification ~globals ~block_dim
+  |> expect_one_dimensional_strided_discharge
+
+let test_pre_solver_keeps_affine_strided_owner_with_local_offset_visible () :
+    unit =
+  let block_dim = Dim3.make ~x:64 () in
+  affine_strided_obligation ()
+  |> Solver.pre_solver_classification ~block_dim
+  |> expect_pre_solver_none "affine strided owner with task-local offset"
+
+let test_pre_solver_keeps_affine_strided_owner_with_changed_offset_visible () :
+    unit =
+  let block_dim = Dim3.make ~x:64 () in
+  let globals = variable_set [ "C"; "D" ] in
+  affine_strided_obligation ~right_offset_name:"D" ()
+  |> Solver.pre_solver_classification ~globals ~block_dim
+  |> expect_pre_solver_none "affine strided owner with changed offset"
+
+let test_pre_solver_affine_strided_alpha_renaming () : unit =
+  let block_dim = Dim3.make ~x:64 () in
+  let globals = variable_set [ "C" ] in
+  affine_strided_obligation ~left_index_name:"renamed_idx"
+    ~right_index_name:"renamed_idx" ()
+  |> Solver.pre_solver_classification ~globals ~block_dim
+  |> expect_one_dimensional_strided_discharge
+
 let test_pre_solver_keeps_subgroup_row_fixed_lane_visible () : unit =
   let block_dim = Dim3.make ~x:64 () in
   subgroup_row_fixed_lane_obligation ()
@@ -1033,6 +1099,18 @@ let tests : unit Alcotest.test_case list =
     ( "alpha-renamed strided ownership",
       `Quick,
       test_pre_solver_is_not_tied_to_fixture_variable_names );
+    ( "affine strided ownership with global offset",
+      `Quick,
+      test_pre_solver_discharges_affine_strided_owner_with_global_offset );
+    ( "affine strided ownership rejects task-local offset",
+      `Quick,
+      test_pre_solver_keeps_affine_strided_owner_with_local_offset_visible );
+    ( "affine strided ownership rejects changed offset",
+      `Quick,
+      test_pre_solver_keeps_affine_strided_owner_with_changed_offset_visible );
+    ( "affine strided ownership alpha-renamed discharge",
+      `Quick,
+      test_pre_solver_affine_strided_alpha_renaming );
     ( "subgroup-row fixed-lane no-match",
       `Quick,
       test_pre_solver_keeps_subgroup_row_fixed_lane_visible );

@@ -279,6 +279,23 @@ let condition_contains_strided_thread_owner (condition : Exp.bexp)
   condition |> Exp.b_and_split
   |> List.exists (term_is_strided_owner_mod_zero ~index ~thread_index_x ~stride)
 
+type strided_owner_index_shape = {
+  owned_index : Exp.nexp;
+  shared_offset : Exp.nexp;
+}
+
+let strided_owner_index_shapes (index : Exp.nexp) :
+    strided_owner_index_shape list =
+  let shape owned_index shared_offset = { owned_index; shared_offset } in
+  match index with
+  | Exp.Var _ -> [ shape index (Exp.Num 0) ]
+  | Exp.Binary (N_binary.Plus, Exp.Var owner, offset)
+  | Exp.Binary (N_binary.Plus, offset, Exp.Var owner) ->
+      [ shape (Exp.Var owner) offset ]
+  | Exp.Binary (N_binary.Minus, Exp.Var owner, offset) ->
+      [ shape (Exp.Var owner) (Exp.n_uminus offset) ]
+  | _ -> []
+
 let projected_variable_shares_base ~(left_task : Task.t) ~(right_task : Task.t)
     (left : Variable.t) (right : Variable.t) : bool =
   match
@@ -1069,11 +1086,23 @@ let one_dimensional_strided_thread_owner_matches ?(globals = Variable.Set.empty)
   in
   List.exists2
     (fun left_index right_index ->
-      projected_index_pair_shares_base_variable left_index right_index
-      && condition_contains_strided_thread_owner left_condition
-           ~index:left_index ~thread_index_x:left_thread_x ~stride:block_dim.x
-      && condition_contains_strided_thread_owner right_condition
-           ~index:right_index ~thread_index_x:right_thread_x ~stride:block_dim.x)
+      let left_shapes = strided_owner_index_shapes left_index in
+      let right_shapes = strided_owner_index_shapes right_index in
+      List.exists
+        (fun left_shape ->
+          List.exists
+            (fun right_shape ->
+              projected_index_pair_shares_base_variable left_shape.owned_index
+                right_shape.owned_index
+              && nexp_equiv left_shape.shared_offset right_shape.shared_offset
+              && condition_contains_strided_thread_owner left_condition
+                   ~index:left_shape.owned_index ~thread_index_x:left_thread_x
+                   ~stride:block_dim.x
+              && condition_contains_strided_thread_owner right_condition
+                   ~index:right_shape.owned_index ~thread_index_x:right_thread_x
+                   ~stride:block_dim.x)
+            right_shapes)
+        left_shapes)
     left_indices right_indices
 
 let concrete_block_dim_from_goal (goal : Exp.bexp) : Dim3.t option =

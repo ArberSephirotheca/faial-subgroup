@@ -783,7 +783,8 @@ let run (a : t) : Analysis.t list =
           in
           Solve_drf.Solution.solve ~timeout:a.timeout
             ~show_proofs:a.show_proofs ~logic:a.logic
-            ~solve_tactic:a.solve_tactic ~extras:kernel_extras ps)
+            ~solve_tactic:a.solve_tactic ~extras:kernel_extras
+            ?block_dim:a.block_dim ps)
       |> Phase_timer.boundary "solve"
       |> Streamutil.to_list
     in
