@@ -1,6 +1,7 @@
 (tests
   (names
    test_memory_event
+   test_launch_contract
    test_subgroup_obligation
    test_subgroup_uniformity
    test_subgroup_solver)

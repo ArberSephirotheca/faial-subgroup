@@ -40,6 +40,7 @@ module Code = struct
 
   (* The dimention is the index count *)
   let dim (l : t) : int option = List.nth_opt l 0 |> Option.map CondAccess.dim
+  let add_cond (b : bexp) (l : t) : t = List.map (CondAccess.add_cond b) l
 
   let from_unsync : Unsynced.t -> t =
     let rec flatten (accum : t) (b : bexp) : Unsynced.t -> t = function
@@ -82,6 +83,28 @@ module Kernel = struct
       Block (Code.to_s k.code);
       Line "}";
     ]
+
+  let range_binders (ranges : Range.t list) : Variable.Set.t =
+    List.fold_left
+      (fun binders range -> Variable.Set.add (Range.var range) binders)
+      Variable.Set.empty ranges
+
+  let unsafe_range_binders (ranges : Range.t list) (vars : Variable.Set.t) :
+      Variable.Set.t =
+    let step vars =
+      List.fold_left
+        (fun vars range ->
+          let range_vars = Range.free_names range Variable.Set.empty in
+          if Variable.Set.is_empty (Variable.Set.inter range_vars vars) then
+            vars
+          else Variable.Set.add (Range.var range) vars)
+        vars ranges
+    in
+    let rec fix vars =
+      let vars' = step vars in
+      if Variable.Set.equal vars vars' then vars else fix vars'
+    in
+    fix vars
 
   let from_loc_split (arch : Architecture.t) (k : Locsplit.Kernel.t) : t option
       =
