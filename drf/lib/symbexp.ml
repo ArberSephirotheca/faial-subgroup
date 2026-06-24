@@ -438,6 +438,7 @@ let cond_access_to_bexp (locals : Variable.Set.t) (t : Task.t)
 module AccessSummary = struct
   type t = {
     access : Access.t;
+    condition : bexp;
     variables : Variable.Set.t;
     globals : Variable.Set.t;
     data_approx : Variable.Set.t;
@@ -447,7 +448,7 @@ module AccessSummary = struct
   let to_string (a : t) : string =
     "{access=" ^ Access.to_string a.access ^ ", variables=["
     ^ Variable.set_to_string a.variables
-    ^ "], data=["
+    ^ "], condition=" ^ b_to_string a.condition ^ ", data=["
     ^ Variable.set_to_string a.data_approx
     ^ "], ctrl=["
     ^ Variable.set_to_string a.control_approx
@@ -776,6 +777,7 @@ module Proof = struct
           let all_fns = Variable.Set.union data_fns ctrl_fns in
           {
             access = a.access;
+            condition = b_and k.runtime a.cond;
             variables = all_fns;
             globals = Variable.Set.diff all_fns locals;
             data_approx = Variable.Set.inter k.approx_local_variables data_fns;

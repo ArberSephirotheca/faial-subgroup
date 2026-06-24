@@ -130,6 +130,7 @@ module Ordinary_obligation = struct
         let all_fns = Variable.Set.union data_fns ctrl_fns in
         {
           Symbexp.AccessSummary.access = event.access;
+          condition = Ordinary_event.condition event;
           variables = all_fns;
           globals = Variable.Set.diff all_fns locals;
           data_approx = Variable.Set.inter phase.approx_local_variables data_fns;

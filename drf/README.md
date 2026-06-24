@@ -247,6 +247,11 @@ concrete `--grid-dim`, `--all-dims`, and subgroup/matrix kernels fail closed.
 - `lib/subgroup_solver.ml` runs structural pre-solver checks before Z3 only for
   individual `Memory_event.Subgroup_obligation` obligations. A matching rule
   emits `pre_solver=unsat(reason=...)`; it does not certify a kernel by name.
+- `lib/ordinary_solver.ml` applies the same narrow ownership discipline to the
+  ordinary Faial proof path. It runs before the ordinary Z3 call and returns
+  DRF for a proof only when every conflicting access-id pair in that proof
+  matches a reviewed structural rule. If any pair does not match, the complete
+  proof remains solver-visible.
 - The contradictory path-condition filter discharges an obligation only when
   the projected left and right guards contain syntactic complements, such as a
   checked global condition `p <= 0` on one side and `p > 0` on the other, or
@@ -254,10 +259,19 @@ concrete `--grid-dim`, `--all-dims`, and subgroup/matrix kernels fail closed.
   projected separately for `T1` and `T2` unless the caller marks them global, so
   this rule does not infer cross-thread equality for ordinary locals.
 - The one-dimensional strided thread ownership rule requires a concrete block
-  dimension with `x > 0`, `y = 1`, and `z = 1`, a shared projected index base,
-  and both projected guards containing the ownership fact
-  `(index - threadIdx.x) % blockDim.x == 0` or the equivalent checked concrete
-  stride.
+  dimension with `x > 0`, `y = 1`, and `z = 1`. The matched access index may be
+  the owned loop/index variable directly or that variable plus or minus a
+  shared offset, for example `t` or `t - C`. The two projected accesses must
+  share the same owner variable base and the same projected offset; therefore
+  `C` must be represented as a memory-global value for `t - C` to match. Both
+  projected guards must contain the ownership fact
+  `(owner - threadIdx.x) % blockDim.x == 0` or the equivalent checked concrete
+  stride. Changed offsets, task-local offsets, multidimensional blocks, and
+  missing stride facts remain solver-visible.
+- The ordinary proof path carries each access guard/range condition in
+  `Symbexp.AccessSummary` so structural rules inspect the same per-access facts
+  that Z3 receives. This is a data-carrier change only; it does not weaken the
+  ordinary symbolic goal.
 - The hierarchical subgroup row/lane-vector ownership rule is parameterized
   but guarded. It requires a one-dimensional checked block, an explicit
   subgroup/lane ownership fact, lane-vector lower and upper bounds, a shared
@@ -294,6 +308,10 @@ concrete `--grid-dim`, `--all-dims`, and subgroup/matrix kernels fail closed.
   dimensions, multidimensional blocks, or invalid stride bounds do not
   discharge. Those obligations remain solver-visible under the U513 solver
   taxonomy.
+- The GLA state-output proof shape with `i * HEAD_SIZE + threadIdx.x` and
+  separate main-output/state-output regions is not part of the
+  one-dimensional strided rule. It remains a solver-budget case unless a
+  separately reviewed tile/region ownership rule is added.
 
 ## CLI Subgroup/Matrix Integration
 

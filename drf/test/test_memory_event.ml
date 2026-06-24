@@ -3,6 +3,7 @@ open Protocols
 module Flatacc = Drf.Flatacc
 module Locsplit = Drf.Locsplit
 module Memory_event = Drf.Memory_event
+module Ordinary_solver = Drf.Ordinary_solver
 module Subgroup_event = Drf.Memory_event.Subgroup_event
 module Subgroup_obligation = Drf.Memory_event.Subgroup_obligation
 module Symbexp = Drf.Symbexp
@@ -85,6 +86,33 @@ let phase_range_kernel () : Flatacc.Kernel.t =
   match Flatacc.Kernel.from_loc_split Architecture.Block kernel with
   | Some kernel -> kernel
   | None -> Alcotest.fail "expected flat-access kernel"
+
+let owned_range_kernel ?(array = var "dst") ?(owner = var "t")
+    ?(index = Exp.Var (var "t")) ?(extra_exact = Variable.Set.empty) () :
+    Flatacc.Kernel.t =
+  {
+    name = "owned_range";
+    array_name = Variable.name array;
+    approx_local_variables = Variable.Set.empty;
+    exact_local_variables =
+      Variable.Set.add owner
+        (Variable.Set.add Variable.tid_x
+           (Variable.Set.add Variable.tid_y
+              (Variable.Set.add Variable.tid_z extra_exact)));
+    code =
+      [
+        cond_access
+          ~access:(Access.write array [ index ] None)
+          ~cond:
+            (Exp.n_eq
+               (Exp.n_mod
+                  (Exp.n_minus (Exp.Var owner) (Exp.Var Variable.tid_x))
+                  (Exp.Num 64))
+               (Exp.Num 0));
+      ];
+    pre = Exp.Bool true;
+    runtime = Exp.Bool true;
+  }
 
 let proof_accesses (proof : Symbexp.Proof.t) : string list =
   List.map Symbexp.AccessSummary.to_string proof.accesses
@@ -337,6 +365,75 @@ let test_phase_level_range_binder_is_task_local () : unit =
       ("task 1 index uses local t", "$T1$idx$0 == t$T1");
       ("task 2 index uses local t", "$T2$idx$0 == t$T2");
     ]
+
+let expect_ordinary_pre_solver_discharge ~(reason : string)
+    (classification : Ordinary_solver.classification option) : unit =
+  match classification with
+  | Some (Ordinary_solver.Pre_solver_unsat actual) ->
+      Alcotest.(check string) "reason" reason actual
+  | None -> Alcotest.fail ("expected ordinary pre-solver discharge: " ^ reason)
+
+let expect_ordinary_pre_solver_none (label : string)
+    (classification : Ordinary_solver.classification option) : unit =
+  match classification with
+  | None -> ()
+  | Some classification ->
+      Alcotest.fail
+        (label ^ " unexpectedly discharged as "
+        ^ Ordinary_solver.classification_to_string classification)
+
+let test_ordinary_pre_solver_discharges_direct_strided_owner () : unit =
+  let block_dim = Dim3.make ~x:64 () in
+  let proof =
+    owned_range_kernel ()
+    |> Memory_event.Ordinary_obligation.from_flat Architecture.Block 11
+  in
+  Ordinary_solver.pre_solver_classification ~block_dim proof
+  |> expect_ordinary_pre_solver_discharge
+       ~reason:"one-dimensional strided thread ownership"
+
+let test_ordinary_pre_solver_discharges_affine_global_offset_owner () : unit =
+  let block_dim = Dim3.make ~x:64 () in
+  let c = var "C" in
+  let t = var "t" in
+  let proof =
+    owned_range_kernel ~index:(Exp.n_minus (Exp.Var t) (Exp.Var c)) ()
+    |> Memory_event.Ordinary_obligation.from_flat Architecture.Block 12
+  in
+  Ordinary_solver.pre_solver_classification ~block_dim proof
+  |> expect_ordinary_pre_solver_discharge
+       ~reason:"one-dimensional strided thread ownership"
+
+let test_ordinary_pre_solver_keeps_affine_local_offset_visible () : unit =
+  let block_dim = Dim3.make ~x:64 () in
+  let c = var "C" in
+  let t = var "t" in
+  let proof =
+    owned_range_kernel
+      ~index:(Exp.n_minus (Exp.Var t) (Exp.Var c))
+      ~extra_exact:(Variable.Set.singleton c) ()
+    |> Memory_event.Ordinary_obligation.from_flat Architecture.Block 13
+  in
+  Ordinary_solver.pre_solver_classification ~block_dim proof
+  |> expect_ordinary_pre_solver_none "ordinary affine local offset"
+
+let test_ordinary_pre_solver_keeps_changed_owner_shape_visible () : unit =
+  let block_dim = Dim3.make ~x:64 () in
+  let proof =
+    owned_range_kernel ~index:(Exp.Var (var "other_t")) ()
+    |> Memory_event.Ordinary_obligation.from_flat Architecture.Block 14
+  in
+  Ordinary_solver.pre_solver_classification ~block_dim proof
+  |> expect_ordinary_pre_solver_none "ordinary changed owner shape"
+
+let test_ordinary_pre_solver_rejects_multidimensional_block () : unit =
+  let block_dim = Dim3.make ~x:64 ~y:2 () in
+  let proof =
+    owned_range_kernel ()
+    |> Memory_event.Ordinary_obligation.from_flat Architecture.Block 15
+  in
+  Ordinary_solver.pre_solver_classification ~block_dim proof
+  |> expect_ordinary_pre_solver_none "ordinary multidimensional block"
 
 let test_read_read_ordinary_mode_conflict_remains_unsat_shape () : unit =
   let array = var "read_only" in
@@ -620,6 +717,21 @@ let tests : unit Alcotest.test_case list =
     ( "phase range binder is task-local",
       `Quick,
       test_phase_level_range_binder_is_task_local );
+    ( "ordinary direct strided ownership discharge",
+      `Quick,
+      test_ordinary_pre_solver_discharges_direct_strided_owner );
+    ( "ordinary affine global-offset ownership discharge",
+      `Quick,
+      test_ordinary_pre_solver_discharges_affine_global_offset_owner );
+    ( "ordinary affine local-offset ownership no-match",
+      `Quick,
+      test_ordinary_pre_solver_keeps_affine_local_offset_visible );
+    ( "ordinary changed owner shape no-match",
+      `Quick,
+      test_ordinary_pre_solver_keeps_changed_owner_shape_visible );
+    ( "ordinary multidimensional ownership no-match",
+      `Quick,
+      test_ordinary_pre_solver_rejects_multidimensional_block );
     ( "read/read mode conflict shape",
       `Quick,
       test_read_read_ordinary_mode_conflict_remains_unsat_shape );
