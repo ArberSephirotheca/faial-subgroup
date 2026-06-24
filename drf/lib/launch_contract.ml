@@ -6,7 +6,8 @@ type t = {
   family : Launch_contract_rows.family;
   manifest_kernel : string;
   parsed_kernel : string;
-  head_size : int;
+  template_param : string;
+  template_value : int;
 }
 
 type error =
@@ -52,7 +53,8 @@ let of_row (row : Launch_contract_rows.t) : t =
     family = row.family;
     manifest_kernel = row.manifest_kernel;
     parsed_kernel = row.parsed_kernel;
-    head_size = row.head_size;
+    template_param = row.template_param;
+    template_value = row.template_value;
   }
 
 let all : t list = List.map of_row Launch_contract_rows.all
@@ -65,23 +67,23 @@ let of_row_id (row_id : string) : (t, error) result =
 
 let block_dim (contract : t) : Dim3.t =
   match contract.family with
-  | Gla -> Dim3.make ~x:contract.head_size ()
+  | Gla | Wkv -> Dim3.make ~x:contract.template_value ()
 
 let required_params (contract : t) : (string * int) list =
   match contract.family with
-  | Gla -> [ ("HEAD_SIZE", contract.head_size) ]
+  | Gla | Wkv -> [ (contract.template_param, contract.template_value) ]
 
 let var (name : string) : nexp = Var (Variable.from_name name)
 
-let gla_precondition (contract : t) : bexp =
+let row_shape_precondition (contract : t) : bexp =
   let positive name = n_gt (var name) (Num 0) in
   b_and_ex
     [
-      n_eq (var "HEAD_SIZE") (Num contract.head_size);
-      n_eq (Var Variable.bdim_x) (Num contract.head_size);
+      n_eq (var contract.template_param) (Num contract.template_value);
+      n_eq (Var Variable.bdim_x) (Num contract.template_value);
       n_eq (Var Variable.bdim_y) (Num 1);
       n_eq (Var Variable.bdim_z) (Num 1);
-      n_eq (n_div (var "C") (var "H")) (Num contract.head_size);
+      n_eq (n_div (var "C") (var "H")) (Num contract.template_value);
       positive "B";
       positive "T";
       positive "C";
@@ -93,7 +95,7 @@ let gla_precondition (contract : t) : bexp =
 
 let precondition (contract : t) : bexp =
   match contract.family with
-  | Gla -> gla_precondition contract
+  | Gla | Wkv -> row_shape_precondition contract
 
 let add_global_ints (names : string list) (kernel : Kernel.t) : Kernel.t =
   let globals =
@@ -113,7 +115,8 @@ let apply_to_kernel (contract : t) (kernel : Kernel.t) :
     Error (Kernel_mismatch { expected = contract.parsed_kernel; actual })
   else
     let kernel =
-      kernel |> add_global_ints [ "B"; "T"; "C"; "H"; "HEAD_SIZE" ]
+      kernel
+      |> add_global_ints [ "B"; "T"; "C"; "H"; contract.template_param ]
       |> fun kernel ->
       { kernel with pre = b_and kernel.pre (precondition contract) }
     in

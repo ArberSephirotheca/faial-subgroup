@@ -66,21 +66,25 @@ kernel directly. A launch contract appends source preconditions to
 variables, and merges required integer template parameters before the
 ordinary MAP pipeline runs.
 
-The current supported contracts are the ggml-cuda GLA rows:
+The current supported contracts are the ggml-cuda GLA rows and the first WKV
+row:
 
 - `L072`: `gated_linear_attn_f32<64>`
 - `L073`: `gated_linear_attn_f32<128>`
+- `L143`: `rwkv_wkv_f32<CUDA_WKV_BLOCK_SIZE>`
 
-They require `--kernel gated_linear_attn_f32`. The contract supplies
-`HEAD_SIZE`, checks that any explicit `--block-dim` matches the row, keeps
-`gridDim` symbolic, and adds the row-local facts:
+The GLA rows require `--kernel gated_linear_attn_f32` and supply `HEAD_SIZE`.
+The WKV row requires `--kernel rwkv_wkv_f32` and supplies `block_size = 64`
+from `CUDA_WKV_BLOCK_SIZE`. Each contract checks that any explicit
+`--block-dim` matches the row, keeps `gridDim` symbolic, and adds the
+row-local facts:
 
 ```text
-HEAD_SIZE = 64 or 128
-blockDim.x = HEAD_SIZE
+HEAD_SIZE = 64 or 128, or block_size = 64
+blockDim.x = template value
 blockDim.y = 1
 blockDim.z = 1
-C / H = HEAD_SIZE
+C / H = template value
 B > 0
 T > 0
 C > 0
@@ -106,6 +110,13 @@ rows, missing `--kernel`, conflicting `HEAD_SIZE`, conflicting `--block-dim`,
 concrete `--grid-dim`, `--all-dims`, and subgroup/matrix kernels fail closed.
 Adding a new row should extend the row catalog and the corresponding family
 validator rather than adding solver-specific exceptions.
+
+`drf/test/test_launch_contract_manifest.ml` keeps this boundary tied to the
+canonical launch manifest. It verifies that every ordinary launch-contract
+catalog row has exactly one matching manifest row, that manifest row facts and
+artifact paths agree with the row-local JSON summaries, that derived manifest
+counts match the rows, and that neighboring rows such as `L144`-`L146` remain
+unpromoted until they receive their own exact evidence.
 
 ## Subgroup/Matrix Extension Boundary
 

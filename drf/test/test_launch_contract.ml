@@ -26,9 +26,10 @@ let test_gla_l072_contract_shape () : unit =
     "manifest kernel" "gated_linear_attn_f32<64>" contract.manifest_kernel;
   Alcotest.(check string)
     "parsed kernel" "gated_linear_attn_f32" contract.parsed_kernel;
-  Alcotest.(check int) "head size" 64 contract.head_size;
+  Alcotest.(check string) "template param" "HEAD_SIZE" contract.template_param;
+  Alcotest.(check int) "template value" 64 contract.template_value;
   Alcotest.(check int)
-    "catalog row count" 2 (List.length Launch_contract_rows.all);
+    "catalog row count" 3 (List.length Launch_contract_rows.all);
   let block_dim = LC.block_dim contract in
   Alcotest.(check int) "blockDim.x" 64 block_dim.x;
   Alcotest.(check int) "blockDim.y" 1 block_dim.y;
@@ -53,12 +54,43 @@ let test_gla_l073_contract_shape () : unit =
   Alcotest.(check string) "row id" "L073" contract.row_id;
   Alcotest.(check string)
     "manifest kernel" "gated_linear_attn_f32<128>" contract.manifest_kernel;
-  Alcotest.(check int) "head size" 128 contract.head_size;
+  Alcotest.(check string) "template param" "HEAD_SIZE" contract.template_param;
+  Alcotest.(check int) "template value" 128 contract.template_value;
   let block_dim = LC.block_dim contract in
   Alcotest.(check int) "blockDim.x" 128 block_dim.x;
   check_conjunct "C/H fact"
     (n_eq (n_div (nvar "C") (nvar "H")) (Num 128))
     (LC.precondition contract)
+
+let test_wkv_l143_contract_shape () : unit =
+  let contract = expect_ok (LC.of_row_id "L143") in
+  Alcotest.(check string) "row id" "L143" contract.row_id;
+  Alcotest.(check string)
+    "manifest kernel" "rwkv_wkv_f32<CUDA_WKV_BLOCK_SIZE>"
+    contract.manifest_kernel;
+  Alcotest.(check string) "parsed kernel" "rwkv_wkv_f32"
+    contract.parsed_kernel;
+  Alcotest.(check string) "template param" "block_size"
+    contract.template_param;
+  Alcotest.(check int) "template value" 64 contract.template_value;
+  let block_dim = LC.block_dim contract in
+  Alcotest.(check int) "blockDim.x" 64 block_dim.x;
+  Alcotest.(check int) "blockDim.y" 1 block_dim.y;
+  Alcotest.(check int) "blockDim.z" 1 block_dim.z;
+  Alcotest.(check (list (pair string int)))
+    "required params"
+    [ ("block_size", 64) ]
+    (LC.required_params contract);
+  let pre = LC.precondition contract in
+  check_conjunct "block_size fact" (n_eq (nvar "block_size") (Num 64)) pre;
+  check_conjunct "C/H fact" (n_eq (n_div (nvar "C") (nvar "H")) (Num 64)) pre;
+  check_conjunct "B positive" (n_gt (nvar "B") (Num 0)) pre;
+  check_conjunct "T positive" (n_gt (nvar "T") (Num 0)) pre;
+  check_conjunct "C positive" (n_gt (nvar "C") (Num 0)) pre;
+  check_conjunct "H positive" (n_gt (nvar "H") (Num 0)) pre;
+  check_conjunct "symbolic gridDim.x"
+    (n_eq (Var Variable.gdim_x) (n_mult (nvar "B") (nvar "H")))
+    pre
 
 let test_unknown_row_fails_closed () : unit =
   match expect_error (LC.of_row_id "L999") with
@@ -119,6 +151,7 @@ let tests =
   [
     ("GLa L072 contract shape", `Quick, test_gla_l072_contract_shape);
     ("GLa L073 contract shape", `Quick, test_gla_l073_contract_shape);
+    ("WKV L143 contract shape", `Quick, test_wkv_l143_contract_shape);
     ("unknown row fails closed", `Quick, test_unknown_row_fails_closed);
     ( "catalog and contract view match",
       `Quick,
