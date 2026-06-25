@@ -6,6 +6,7 @@ type t = {
   family : Launch_contract_rows.family;
   manifest_kernel : string;
   parsed_kernel : string;
+  template_arg : string;
   template_param : string;
   template_value : int;
 }
@@ -23,8 +24,7 @@ type error =
 
 let error_to_string : error -> string = function
   | Unknown_row row_id -> "unknown launch contract row '" ^ row_id ^ "'"
-  | Duplicate_row row_id ->
-      "duplicate launch contract row '" ^ row_id ^ "'"
+  | Duplicate_row row_id -> "duplicate launch contract row '" ^ row_id ^ "'"
   | Kernel_mismatch { expected; actual } ->
       "launch contract expects parsed kernel '" ^ expected ^ "', got '" ^ actual
       ^ "'"
@@ -53,6 +53,7 @@ let of_row (row : Launch_contract_rows.t) : t =
     family = row.family;
     manifest_kernel = row.manifest_kernel;
     parsed_kernel = row.parsed_kernel;
+    template_arg = row.template_arg;
     template_param = row.template_param;
     template_value = row.template_value;
   }
@@ -67,11 +68,11 @@ let of_row_id (row_id : string) : (t, error) result =
 
 let block_dim (contract : t) : Dim3.t =
   match contract.family with
-  | Gla | Wkv -> Dim3.make ~x:contract.template_value ()
+  | Gla | Wkv | Wkv7 -> Dim3.make ~x:contract.template_value ()
 
 let required_params (contract : t) : (string * int) list =
   match contract.family with
-  | Gla | Wkv -> [ (contract.template_param, contract.template_value) ]
+  | Gla | Wkv | Wkv7 -> [ (contract.template_param, contract.template_value) ]
 
 let var (name : string) : nexp = Var (Variable.from_name name)
 
@@ -95,7 +96,7 @@ let row_shape_precondition (contract : t) : bexp =
 
 let precondition (contract : t) : bexp =
   match contract.family with
-  | Gla | Wkv -> row_shape_precondition contract
+  | Gla | Wkv | Wkv7 -> row_shape_precondition contract
 
 let add_global_ints (names : string list) (kernel : Kernel.t) : Kernel.t =
   let globals =
@@ -115,8 +116,7 @@ let apply_to_kernel (contract : t) (kernel : Kernel.t) :
     Error (Kernel_mismatch { expected = contract.parsed_kernel; actual })
   else
     let kernel =
-      kernel
-      |> add_global_ints [ "B"; "T"; "C"; "H"; contract.template_param ]
+      kernel |> add_global_ints [ "B"; "T"; "C"; "H"; contract.template_param ]
       |> fun kernel ->
       { kernel with pre = b_and kernel.pre (precondition contract) }
     in

@@ -66,21 +66,26 @@ kernel directly. A launch contract appends source preconditions to
 variables, and merges required integer template parameters before the
 ordinary MAP pipeline runs.
 
-The current supported contracts are the ggml-cuda GLA rows and the first WKV
-row:
+The current supported contracts are the ggml-cuda GLA rows, the first two
+WKV6 rows, and the first two WKV7 rows:
 
 - `L072`: `gated_linear_attn_f32<64>`
 - `L073`: `gated_linear_attn_f32<128>`
 - `L143`: `rwkv_wkv_f32<CUDA_WKV_BLOCK_SIZE>`
+- `L144`: `rwkv_wkv_f32<CUDA_WKV_BLOCK_SIZE * 2>`
+- `L145`: `rwkv_wkv7_f32<CUDA_WKV_BLOCK_SIZE>`
+- `L146`: `rwkv_wkv7_f32<CUDA_WKV_BLOCK_SIZE * 2>`
 
 The GLA rows require `--kernel gated_linear_attn_f32` and supply `HEAD_SIZE`.
-The WKV row requires `--kernel rwkv_wkv_f32` and supplies `block_size = 64`
-from `CUDA_WKV_BLOCK_SIZE`. Each contract checks that any explicit
-`--block-dim` matches the row, keeps `gridDim` symbolic, and adds the
-row-local facts:
+The WKV6 rows require `--kernel rwkv_wkv_f32`; the WKV7 rows require
+`--kernel rwkv_wkv7_f32`. They supply `block_size = 64` from
+`CUDA_WKV_BLOCK_SIZE` for `L143` and `L145`, or `block_size = 128` from
+`CUDA_WKV_BLOCK_SIZE * 2` for `L144` and `L146`. Each contract checks that
+any explicit `--block-dim` matches the row, keeps `gridDim` symbolic, and
+adds the row-local facts:
 
 ```text
-HEAD_SIZE = 64 or 128, or block_size = 64
+HEAD_SIZE = 64 or 128, or block_size = 64 or 128
 blockDim.x = template value
 blockDim.y = 1
 blockDim.z = 1
@@ -115,8 +120,10 @@ validator rather than adding solver-specific exceptions.
 canonical launch manifest. It verifies that every ordinary launch-contract
 catalog row has exactly one matching manifest row, that manifest row facts and
 artifact paths agree with the row-local JSON summaries, that derived manifest
-counts match the rows, and that neighboring rows such as `L144`-`L146` remain
-unpromoted until they receive their own exact evidence.
+counts match the rows, and that neighboring rows remain unpromoted until they
+receive their own exact evidence. It also treats the exact WKV row set
+`L143`-`L146` as the closed H505+ continuation campaign and checks that each
+launch-contract artifact key belongs only to its owning row.
 
 ## Subgroup/Matrix Extension Boundary
 
