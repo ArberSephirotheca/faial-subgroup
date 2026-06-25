@@ -125,6 +125,34 @@ receive their own exact evidence. It also treats the exact WKV row set
 `L143`-`L146` as the closed H505+ continuation campaign and checks that each
 launch-contract artifact key belongs only to its owning row.
 
+`lib/launch_contract_generator.ml` owns the pure H510 family-generation seam
+for the already accepted seed rows. It records GLA, WKV6, and WKV7 family
+facts such as parsed kernel identity, template expression, source launch
+branch selection, exact row-shape preconditions, block/grid sources, dynamic
+shared memory, required semantics, evidence-artifact key, and timeout. The
+source branch and row-shape facts are intentionally separate: wide rows record
+that the source launch is the `else` branch, while the exact launch contract
+still records concrete preconditions such as `C / H == 128` and
+`blockDim.x == 128`. H511 switches the production launch-contract catalog for
+the accepted GLA rows `L072` and `L073` to the generated GLA records. H512
+switches the accepted WKV6 rows `L143` and `L144` and WKV7 rows `L145` and
+`L146` to generated records as well, so the production catalog for the
+accepted seed set is generator-backed while the manual catalog remains the
+equivalence oracle. The generator remains admitted only for accepted seed rows
+whose generated records match the manual row facts and canonical manifest.
+This does not promote new rows or broaden GLA, WKV, WKV7, shared-memory,
+subgroup/matrix, or arbitrary ggml-cuda support.
+
+The generator also exposes a pure manifest-fact validation guard used by
+`drf/test/test_launch_contract_manifest.ml`. The guard requires explicit
+row-local facts for family classification, manifest and parsed kernel names,
+template argument and concrete value, block/grid sources, source branch,
+dynamic shared memory, evidence-artifact key, and timeout. Missing family
+facts, ambiguous family classifiers, missing branch or block/grid facts,
+missing dynamic-shared-memory facts, and missing evidence-artifact
+expectations fail closed; the generator does not infer defaults from row IDs,
+kernel names, filenames, expected output counts, or accepted seed shapes.
+
 ## Subgroup/Matrix Extension Boundary
 
 - `lib/memory_event.ml` exposes an internal `Subgroup_event` adapter from
