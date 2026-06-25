@@ -82,6 +82,23 @@ let load_manifest_summary root = Json.from_file (manifest_summary_path root)
 let manifest_rows manifest = list_field "rows" manifest
 let sorted strings = List.sort String.compare strings
 
+let string_contains haystack needle =
+  let haystack_len = String.length haystack in
+  let needle_len = String.length needle in
+  let rec matches_at offset needle_offset =
+    if needle_offset = needle_len then true
+    else
+      offset + needle_offset < haystack_len
+      && Char.equal haystack.[offset + needle_offset] needle.[needle_offset]
+      && matches_at offset (needle_offset + 1)
+  in
+  let rec search offset =
+    if needle_len = 0 then true
+    else if offset + needle_len > haystack_len then false
+    else matches_at offset 0 || search (offset + 1)
+  in
+  search 0
+
 let duplicate_values values =
   let rec loop duplicates = function
     | first :: (second :: _ as rest) when String.equal first second ->
@@ -141,22 +158,43 @@ let check_count_field ?include_null ?predicate rows manifest summary name =
     (int_assoc (field ("by_" ^ name) summary))
 
 let expected_manifest_template_arg (contract : Launch_contract.t) =
-  match contract.family with
-  | Gla -> string_of_int contract.template_value
-  | Wkv -> "CUDA_WKV_BLOCK_SIZE"
+  contract.template_arg
 
 let expected_artifact_key row_id =
   match row_id with
   | "L072" -> "g504r_launch_contract"
   | "L073" -> "h501_launch_contract"
   | "L143" -> "h502_launch_contract"
+  | "L144" -> "h506_launch_contract"
+  | "L145" -> "h507_launch_contract"
+  | "L146" -> "h508_launch_contract"
   | _ -> failf "no expected launch-contract artifact key for %s" row_id
 
 let expected_timeout row_id =
   match row_id with
   | "L072" -> 1000
-  | "L073" | "L143" -> 10000
+  | "L073" | "L143" | "L144" | "L145" | "L146" -> 10000
   | _ -> failf "no expected launch-contract timeout for %s" row_id
+
+let expected_wkv_rows =
+  [
+    ("L143", "h502_launch_contract");
+    ("L144", "h506_launch_contract");
+    ("L145", "h507_launch_contract");
+    ("L146", "h508_launch_contract");
+  ]
+
+let expected_wkv_row_ids = List.map fst expected_wkv_rows
+
+let launch_contract_artifact_owners =
+  [
+    ("g504r_launch_contract", "L072");
+    ("h501_launch_contract", "L073");
+    ("h502_launch_contract", "L143");
+    ("h506_launch_contract", "L144");
+    ("h507_launch_contract", "L145");
+    ("h508_launch_contract", "L146");
+  ]
 
 let summary_launch_contract summary =
   match field_opt "launch_contract" summary with
@@ -425,6 +463,82 @@ let test_launch_contract_rows_match_manifest () =
     "ordinary launch-contract manifest rows" contract_ids manifest_contract_ids;
   List.iter (check_launch_contract_manifest_row root manifest rows) contract_ids
 
+let test_wkv_campaign_handoff_state () =
+  let root = repo_root () in
+  let manifest = load_manifest root in
+  let rows = manifest_rows manifest in
+  let wkv_rows =
+    rows
+    |> List.filter (fun row ->
+        String.equal
+          (string_field "source_file" row)
+          "llama.cpp/ggml/src/ggml-cuda/wkv.cu")
+  in
+  Alcotest.(check (list string))
+    "WKV source rows are exactly the closed campaign rows" expected_wkv_row_ids
+    (wkv_rows |> List.map row_id |> sorted);
+  List.iter
+    (fun (row_id, artifact_key) ->
+      let row = find_row rows row_id in
+      let contract =
+        Launch_contract.of_row_id row_id |> function
+        | Ok contract -> contract
+        | Error error -> Alcotest.fail (Launch_contract.error_to_string error)
+      in
+      Alcotest.(check string)
+        (row_id ^ " manifest kernel")
+        contract.manifest_kernel
+        (string_field "kernel_or_template" row);
+      Alcotest.(check string)
+        (row_id ^ " template arg") contract.template_arg
+        (row |> field "concrete_template_args" |> string_field "value");
+      Alcotest.(check string)
+        (row_id ^ " frontend status")
+        "memory_event_obligations_generated"
+        (string_field "frontend_status" row);
+      Alcotest.(check string)
+        (row_id ^ " artifact status")
+        "ordinary_launch_contract_drf_json_verdict"
+        (string_field "artifact_status" row);
+      Alcotest.(check string)
+        (row_id ^ " DRF status") "verified"
+        (string_field "drf_status" row);
+      Alcotest.(check (option int))
+        (row_id ^ " timeout") (Some 10000)
+        (nullable_int_field "timeout_ms" row);
+      null_field "subgroup_size_if_any" row;
+      Alcotest.(check bool)
+        (row_id ^ " owns " ^ artifact_key)
+        true
+        (Option.is_some
+           (row |> field "evidence_artifact" |> field_opt artifact_key)))
+    expected_wkv_rows;
+  let attempted =
+    manifest |> field "command_metadata" |> list_field "attempted_analyzer_runs"
+  in
+  Alcotest.(check (list string))
+    "WKV command metadata rows" expected_wkv_row_ids
+    (attempted
+    |> List.map (fun entry -> string_field "row_id" entry)
+    |> List.filter (fun row_id -> List.mem row_id expected_wkv_row_ids)
+    |> sorted)
+
+let test_launch_contract_artifact_keys_are_row_local () =
+  let root = repo_root () in
+  let rows = load_manifest root |> manifest_rows in
+  List.iter
+    (fun (artifact_key, expected_owner) ->
+      let owners =
+        rows
+        |> List.filter (fun row ->
+            Option.is_some
+              (row |> field "evidence_artifact" |> field_opt artifact_key))
+        |> List.map row_id |> sorted
+      in
+      Alcotest.(check (list string))
+        (artifact_key ^ " owner") [ expected_owner ] owners)
+    launch_contract_artifact_owners
+
 let test_neighbor_rows_remain_unpromoted () =
   let root = repo_root () in
   let rows = load_manifest root |> manifest_rows in
@@ -445,8 +559,31 @@ let test_neighbor_rows_remain_unpromoted () =
         (row_id ^ " has no H502 artifact")
         false
         (Option.is_some
-           (row |> field "evidence_artifact" |> field_opt "h502_launch_contract")))
-    [ "L074"; "L144"; "L145"; "L146" ]
+           (row |> field "evidence_artifact" |> field_opt "h502_launch_contract"));
+      Alcotest.(check bool)
+        (row_id ^ " has no H507 artifact")
+        false
+        (Option.is_some
+           (row |> field "evidence_artifact" |> field_opt "h507_launch_contract"));
+      Alcotest.(check bool)
+        (row_id ^ " has no H508 artifact")
+        false
+        (Option.is_some
+           (row |> field "evidence_artifact" |> field_opt "h508_launch_contract")))
+    [ "L074" ]
+
+let test_readme_lists_current_launch_contract_rows () =
+  let root = repo_root () in
+  let readme = read_file (repo_path root "faial/drf/README.md") in
+  List.iter
+    (fun row_id ->
+      Alcotest.(check bool)
+        ("README lists " ^ row_id) true
+        (string_contains readme ("`" ^ row_id ^ "`")))
+    [ "L072"; "L073"; "L143"; "L144"; "L145"; "L146" ];
+  Alcotest.(check bool)
+    "README documents WKV campaign guard" true
+    (string_contains readme "exact WKV row set")
 
 let tests =
   [
@@ -456,9 +593,16 @@ let tests =
     ( "launch-contract rows match manifest",
       `Quick,
       test_launch_contract_rows_match_manifest );
+    ("WKV campaign handoff state", `Quick, test_wkv_campaign_handoff_state);
+    ( "launch-contract artifact keys are row-local",
+      `Quick,
+      test_launch_contract_artifact_keys_are_row_local );
     ( "neighbor rows remain unpromoted",
       `Quick,
       test_neighbor_rows_remain_unpromoted );
+    ( "README lists current launch-contract rows",
+      `Quick,
+      test_readme_lists_current_launch_contract_rows );
   ]
 
 let () =
