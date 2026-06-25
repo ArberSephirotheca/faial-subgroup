@@ -62,6 +62,14 @@ let list_field name json =
   | `List values -> values
   | value -> failf "field %s must be a list, got %s" name (Json.to_string value)
 
+let string_list_field name json =
+  list_field name json
+  |> List.map (function
+    | `String value -> value
+    | value ->
+        failf "field %s must contain strings, got %s" name
+          (Json.to_string value))
+
 let null_field name json =
   match field name json with
   | `Null -> ()
@@ -98,6 +106,14 @@ let string_contains haystack needle =
     else matches_at offset 0 || search (offset + 1)
   in
   search 0
+
+let index_of_context_line label needle lines =
+  let rec loop index = function
+    | line :: _ when string_contains line needle -> index
+    | _ :: rest -> loop (index + 1) rest
+    | [] -> failf "missing %s containing %S" label needle
+  in
+  loop 0 lines
 
 let duplicate_values values =
   let rec loop duplicates = function
@@ -324,6 +340,253 @@ let check_command_metadata manifest contract artifact =
     (string_field "summary" artifact)
     (string_field "artifact" entry)
 
+let manual_contract_row row_id =
+  match
+    List.filter
+      (fun row -> String.equal row.Launch_contract_rows.row_id row_id)
+      Launch_contract_rows.all
+  with
+  | [ row ] -> row
+  | [] -> failf "missing manual launch-contract row %s" row_id
+  | _ -> failf "duplicate manual launch-contract row %s" row_id
+
+let check_generated_contract_matches_manual generated =
+  let generated_contract = generated.Launch_contract_generator.contract in
+  let manual = manual_contract_row generated_contract.row_id in
+  Alcotest.(check bool)
+    (generated_contract.row_id ^ " family")
+    true
+    (manual.family = generated_contract.family);
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " manifest kernel")
+    manual.manifest_kernel generated_contract.manifest_kernel;
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " parsed kernel")
+    manual.parsed_kernel generated_contract.parsed_kernel;
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " template arg")
+    manual.template_arg generated_contract.template_arg;
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " template param")
+    manual.template_param generated_contract.template_param;
+  Alcotest.(check int)
+    (generated_contract.row_id ^ " template value")
+    manual.template_value generated_contract.template_value
+
+let expected_generated_shape_preconditions (contract : Launch_contract_rows.t) =
+  let value = string_of_int contract.template_value in
+  [
+    contract.template_param ^ " == " ^ value;
+    "blockDim.x == " ^ value;
+    "blockDim.y == 1";
+    "blockDim.z == 1";
+    "C / H == " ^ value;
+    "B > 0";
+    "T > 0";
+    "C > 0";
+    "H > 0";
+    "gridDim.x == B * H";
+    "gridDim.y == 1";
+    "gridDim.z == 1";
+  ]
+
+let manifest_branch_condition row =
+  string_field "block_dim_source" row
+  ^ " == "
+  ^ (row |> field "concrete_template_args" |> string_field "value")
+
+let guarded_if_row_id_for_else = function
+  | "L073" -> "L072"
+  | "L144" -> "L143"
+  | "L146" -> "L145"
+  | row_id -> failf "no guarded-if manifest row for else row %s" row_id
+
+let check_generated_source_branch_matches_manifest rows row generated =
+  let generated_contract = generated.Launch_contract_generator.contract in
+  let launch_site = field "launch_site" row in
+  let context_lines = string_list_field "context_excerpt" launch_site in
+  let line_text = string_field "line_text" launch_site in
+  let launch_index =
+    index_of_context_line
+      (generated_contract.row_id ^ " launch line")
+      line_text context_lines
+  in
+  let else_index =
+    index_of_context_line
+      (generated_contract.row_id ^ " else branch")
+      "} else {" context_lines
+  in
+  Alcotest.(check bool)
+    (generated_contract.row_id ^ " launch line has manifest kernel")
+    true
+    (string_contains line_text generated_contract.manifest_kernel);
+  match generated.source_branch with
+  | Launch_contract_generator.Guarded_if_branch { condition } ->
+      let expected_condition = manifest_branch_condition row in
+      Alcotest.(check string)
+        (generated_contract.row_id ^ " guarded if condition")
+        expected_condition condition;
+      let guard_index =
+        index_of_context_line
+          (generated_contract.row_id ^ " guarded if")
+          ("if (" ^ condition ^ ")")
+          context_lines
+      in
+      Alcotest.(check bool)
+        (generated_contract.row_id ^ " guarded if precedes launch")
+        true
+        (guard_index < launch_index);
+      Alcotest.(check bool)
+        (generated_contract.row_id ^ " launch precedes else")
+        true
+        (launch_index < else_index)
+  | Launch_contract_generator.Else_branch_after { if_condition } ->
+      let guard_row =
+        find_row rows (guarded_if_row_id_for_else generated_contract.row_id)
+      in
+      Alcotest.(check string)
+        (generated_contract.row_id ^ " else guard condition")
+        (manifest_branch_condition guard_row)
+        if_condition;
+      Alcotest.(check bool)
+        (generated_contract.row_id ^ " else precedes launch")
+        true
+        (else_index < launch_index);
+      Alcotest.(check bool)
+        (generated_contract.row_id
+       ^ " source branch guard is not a row-shape precondition")
+        false
+        (List.mem if_condition generated.row_shape_preconditions)
+
+let source_branch_from_manifest rows row generated =
+  let generated_contract = generated.Launch_contract_generator.contract in
+  match generated.Launch_contract_generator.source_branch with
+  | Launch_contract_generator.Guarded_if_branch _ ->
+      Launch_contract_generator.Guarded_if_branch
+        { condition = manifest_branch_condition row }
+  | Launch_contract_generator.Else_branch_after _ ->
+      let guard_row =
+        find_row rows (guarded_if_row_id_for_else generated_contract.row_id)
+      in
+      Launch_contract_generator.Else_branch_after
+        { if_condition = manifest_branch_condition guard_row }
+
+let generated_manifest_facts root rows row generated =
+  let generated_contract = generated.Launch_contract_generator.contract in
+  let manifest_kernel = string_field "kernel_or_template" row in
+  let artifact =
+    row |> field "evidence_artifact" |> field generated.evidence_artifact_key
+  in
+  let summary =
+    Json.from_file (repo_path root (string_field "summary" artifact))
+  in
+  {
+    Launch_contract_generator.row_id = row_id row;
+    family_candidates =
+      Launch_contract_generator.family_candidates_of_manifest_kernel
+        manifest_kernel;
+    manifest_kernel = Some manifest_kernel;
+    parsed_kernel = Some (summary_parsed_kernel summary);
+    template_arg =
+      Some (row |> field "concrete_template_args" |> string_field "value");
+    template_value = Some generated_contract.template_value;
+    block_dim_source = Some (string_field "block_dim_source" row);
+    grid_dim_source = Some (string_field "grid_dim_source" row);
+    source_branch = Some (source_branch_from_manifest rows row generated);
+    dynamic_shared_memory = Some (string_field "dynamic_shared_memory" row);
+    evidence_artifact_key =
+      (if
+         Option.is_some
+           (row |> field "evidence_artifact"
+           |> field_opt generated.evidence_artifact_key)
+       then Some generated.evidence_artifact_key
+       else None);
+    timeout_ms = Some (int_field "timeout_ms" artifact);
+  }
+
+let check_generated_validation_guard root rows row generated =
+  let facts = generated_manifest_facts root rows row generated in
+  match Launch_contract_generator.validate_manifest_facts generated facts with
+  | Ok () -> ()
+  | Error error ->
+      Alcotest.fail (Launch_contract_generator.validation_error_to_string error)
+
+let check_generated_shape_preconditions_match_manifest row generated =
+  let generated_contract = generated.Launch_contract_generator.contract in
+  let exact_block_precondition =
+    string_field "block_dim_source" row
+    ^ " == "
+    ^ string_of_int generated_contract.template_value
+  in
+  Alcotest.(check (list string))
+    (generated_contract.row_id ^ " row-shape preconditions")
+    (expected_generated_shape_preconditions generated_contract)
+    generated.row_shape_preconditions;
+  Alcotest.(check bool)
+    (generated_contract.row_id ^ " shape uses manifest block source")
+    true
+    (List.mem exact_block_precondition generated.row_shape_preconditions)
+
+let check_generated_row_matches_manifest root rows generated =
+  let generated_contract = generated.Launch_contract_generator.contract in
+  let row = find_row rows generated_contract.row_id in
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " source file")
+    generated.source_file
+    (string_field "source_file" row);
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " manifest kernel")
+    generated_contract.manifest_kernel
+    (string_field "kernel_or_template" row);
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " template arg")
+    generated_contract.template_arg
+    (row |> field "concrete_template_args" |> string_field "value");
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " feature class")
+    generated.feature_class
+    (string_field "feature_class" row);
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " block dim source")
+    generated.block_dim_source
+    (string_field "block_dim_source" row);
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " grid dim source")
+    generated.grid_dim_source
+    (string_field "grid_dim_source" row);
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " dynamic shared memory")
+    generated.dynamic_shared_memory
+    (string_field "dynamic_shared_memory" row);
+  Alcotest.(check (list string))
+    (generated_contract.row_id ^ " required semantics")
+    generated.required_semantics
+    (string_list_field "required_semantics" row);
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " preprocessing profile")
+    generated.preprocessing_profile
+    (string_field "preprocessing_profile" row);
+  Alcotest.(check string)
+    (generated_contract.row_id ^ " extraction fixture")
+    generated.extraction_fixture
+    (string_field "extraction_fixture" row);
+  check_generated_source_branch_matches_manifest rows row generated;
+  check_generated_shape_preconditions_match_manifest row generated;
+  let artifact =
+    row |> field "evidence_artifact" |> field generated.evidence_artifact_key
+  in
+  check_generated_validation_guard root rows row generated;
+  Alcotest.(check int)
+    (generated_contract.row_id ^ " artifact timeout")
+    generated.timeout_ms
+    (int_field "timeout_ms" artifact);
+  assert_existing_repo_file root
+    (generated_contract.row_id ^ " generated preprocessing profile")
+    generated.preprocessing_profile;
+  assert_existing_repo_file root
+    (generated_contract.row_id ^ " generated extraction fixture")
+    generated.extraction_fixture
+
 let check_launch_contract_manifest_row root manifest rows row_id =
   let contract =
     Launch_contract.of_row_id row_id |> function
@@ -444,7 +707,7 @@ let test_launch_contract_rows_match_manifest () =
     "manifest duplicate row ids" []
     (duplicate_values (List.map row_id rows));
   let contract_ids =
-    Launch_contract_rows.all
+    Launch_contract.catalog_rows
     |> List.map (fun row -> row.Launch_contract_rows.row_id)
     |> sorted
   in
@@ -462,6 +725,96 @@ let test_launch_contract_rows_match_manifest () =
   Alcotest.(check (list string))
     "ordinary launch-contract manifest rows" contract_ids manifest_contract_ids;
   List.iter (check_launch_contract_manifest_row root manifest rows) contract_ids
+
+let test_generated_rows_match_manual_catalog_and_manifest () =
+  let root = repo_root () in
+  let rows = load_manifest root |> manifest_rows in
+  let generated_ids =
+    Launch_contract_generator.all
+    |> List.map (fun row -> row.Launch_contract_generator.contract.row_id)
+    |> sorted
+  in
+  let manual_ids =
+    Launch_contract_rows.all
+    |> List.map (fun row -> row.Launch_contract_rows.row_id)
+    |> sorted
+  in
+  Alcotest.(check (list string))
+    "generated rows match manual catalog" manual_ids generated_ids;
+  List.iter check_generated_contract_matches_manual
+    Launch_contract_generator.all;
+  List.iter
+    (check_generated_row_matches_manifest root rows)
+    Launch_contract_generator.all
+
+let generated_row row_id =
+  match Launch_contract_generator.of_row_id row_id with
+  | Ok row -> row
+  | Error error ->
+      Alcotest.fail (Launch_contract_generator.error_to_string error)
+
+let valid_manifest_facts_for_generated root rows generated =
+  let row = find_row rows generated.Launch_contract_generator.contract.row_id in
+  generated_manifest_facts root rows row generated
+
+let check_missing_validation_field label field generated facts =
+  match Launch_contract_generator.validate_manifest_facts generated facts with
+  | Ok () -> failf "%s: expected validation failure" label
+  | Error (Launch_contract_generator.Missing_field { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected validation error: %s" label
+        (Launch_contract_generator.validation_error_to_string error)
+
+let check_field_mismatch label field generated facts =
+  match Launch_contract_generator.validate_manifest_facts generated facts with
+  | Ok () -> failf "%s: expected validation failure" label
+  | Error (Launch_contract_generator.Field_mismatch { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected validation error: %s" label
+        (Launch_contract_generator.validation_error_to_string error)
+
+let test_generated_validation_fails_closed_on_missing_facts () =
+  let root = repo_root () in
+  let rows = load_manifest root |> manifest_rows in
+  let generated = generated_row "L072" in
+  let facts = valid_manifest_facts_for_generated root rows generated in
+  check_missing_validation_field "missing family classifier" "family" generated
+    { facts with family_candidates = [] };
+  (match
+     Launch_contract_generator.validate_manifest_facts generated
+       { facts with family_candidates = [ Launch_contract_rows.Gla; Wkv ] }
+   with
+  | Error (Launch_contract_generator.Ambiguous_field { field; _ }) ->
+      Alcotest.(check string) "ambiguous family classifier" "family" field
+  | Ok () -> failf "ambiguous family classifier: expected validation failure"
+  | Error error ->
+      failf "ambiguous family classifier: unexpected validation error: %s"
+        (Launch_contract_generator.validation_error_to_string error));
+  check_missing_validation_field "missing template value" "template_value"
+    generated
+    { facts with template_value = None };
+  check_missing_validation_field "missing parsed kernel" "parsed_kernel"
+    generated
+    { facts with parsed_kernel = None };
+  check_missing_validation_field "missing block-dim fact" "block_dim_source"
+    generated
+    { facts with block_dim_source = None };
+  check_missing_validation_field "missing grid-dim fact" "grid_dim_source"
+    generated
+    { facts with grid_dim_source = None };
+  check_missing_validation_field "missing source branch" "source_branch"
+    generated
+    { facts with source_branch = None };
+  check_missing_validation_field "missing dynamic shared memory"
+    "dynamic_shared_memory" generated
+    { facts with dynamic_shared_memory = None };
+  check_missing_validation_field "missing evidence artifact expectation"
+    "evidence_artifact_key" generated
+    { facts with evidence_artifact_key = None };
+  check_field_mismatch "mismatched parsed kernel" "parsed_kernel" generated
+    { facts with parsed_kernel = Some "other_kernel" }
 
 let test_wkv_campaign_handoff_state () =
   let root = repo_root () in
@@ -593,6 +946,12 @@ let tests =
     ( "launch-contract rows match manifest",
       `Quick,
       test_launch_contract_rows_match_manifest );
+    ( "generated rows match manual catalog and manifest",
+      `Quick,
+      test_generated_rows_match_manual_catalog_and_manifest );
+    ( "generated validation fails closed on missing facts",
+      `Quick,
+      test_generated_validation_fails_closed_on_missing_facts );
     ("WKV campaign handoff state", `Quick, test_wkv_campaign_handoff_state);
     ( "launch-contract artifact keys are row-local",
       `Quick,

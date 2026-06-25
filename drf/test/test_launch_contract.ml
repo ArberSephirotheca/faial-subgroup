@@ -192,12 +192,36 @@ let test_unknown_row_fails_closed () : unit =
 
 let test_catalog_and_contract_view_match () : unit =
   let catalog_ids =
-    List.map
-      (fun row -> row.Launch_contract_rows.row_id)
-      Launch_contract_rows.all
+    List.map (fun row -> row.Launch_contract_rows.row_id) LC.catalog_rows
   in
   let contract_ids = List.map (fun row -> row.LC.row_id) LC.all in
   Alcotest.(check (list string)) "row ids" catalog_ids contract_ids
+
+let row_ids rows = List.map (fun row -> row.Launch_contract_rows.row_id) rows
+
+let is_gla_row (row : Launch_contract_rows.t) =
+  match row.family with Gla -> true | Wkv | Wkv7 -> false
+
+let test_catalog_rows_are_generator_backed () : unit =
+  Alcotest.(check (list string))
+    "generated GLA rows" [ "L072"; "L073" ]
+    (row_ids LC.generated_gla_rows);
+  Alcotest.(check (list string))
+    "generated WKV/WKV7 rows"
+    [ "L143"; "L144"; "L145"; "L146" ]
+    (row_ids LC.generated_wkv_rows);
+  Alcotest.(check (list string))
+    "production GLA rows use generated source"
+    (row_ids LC.generated_gla_rows)
+    (LC.catalog_rows |> List.filter is_gla_row |> row_ids);
+  Alcotest.(check (list string))
+    "production WKV/WKV7 rows use generated source"
+    (row_ids LC.generated_wkv_rows)
+    (LC.catalog_rows |> List.filter (fun row -> not (is_gla_row row)) |> row_ids);
+  Alcotest.(check (list string))
+    "production catalog is generated seed set"
+    (row_ids Launch_contract_generator.contracts)
+    (row_ids LC.catalog_rows)
 
 let test_conflicting_param_fails_closed () : unit =
   let contract = expect_ok (LC.of_row_id "L072") in
@@ -255,6 +279,9 @@ let tests =
     ( "catalog and contract view match",
       `Quick,
       test_catalog_and_contract_view_match );
+    ( "catalog rows are generator-backed",
+      `Quick,
+      test_catalog_rows_are_generator_backed );
     ( "conflicting param fails closed",
       `Quick,
       test_conflicting_param_fails_closed );

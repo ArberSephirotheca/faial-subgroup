@@ -58,7 +58,20 @@ let of_row (row : Launch_contract_rows.t) : t =
     template_value = row.template_value;
   }
 
-let all : t list = List.map of_row Launch_contract_rows.all
+let is_gla_row (row : Launch_contract_rows.t) =
+  match row.family with Gla -> true | Wkv | Wkv7 -> false
+
+let generated_rows : Launch_contract_rows.t list =
+  Launch_contract_generator.contracts
+
+let generated_gla_rows : Launch_contract_rows.t list =
+  generated_rows |> List.filter is_gla_row
+
+let generated_wkv_rows : Launch_contract_rows.t list =
+  generated_rows |> List.filter (fun row -> not (is_gla_row row))
+
+let catalog_rows : Launch_contract_rows.t list = generated_rows
+let all : t list = List.map of_row catalog_rows
 
 let of_row_id (row_id : string) : (t, error) result =
   match List.filter (fun c -> String.equal c.row_id row_id) all with
