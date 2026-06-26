@@ -1,14 +1,18 @@
 open Protocols
 open Exp
 
+type family = Gla | Wkv | Wkv7 | Solve_tri_fast
+
 type t = {
   row_id : string;
-  family : Launch_contract_rows.family;
+  family : family;
   manifest_kernel : string;
   parsed_kernel : string;
   template_arg : string;
   template_param : string;
   template_value : int;
+  template_bindings : (string * int) list;
+  block_dim : Dim3.t;
 }
 
 type error =
@@ -19,6 +23,7 @@ type error =
   | Grid_dim_unsupported of Dim3.t
   | All_dims_unsupported of string
   | Missing_kernel_selection of { row_id : string; expected : string }
+  | Subgroup_route_required of string
   | Subgroup_kernel_unsupported of string
   | Duplicate_row of string
 
@@ -43,23 +48,36 @@ let error_to_string : error -> string = function
          --all-dims"
   | Missing_kernel_selection { row_id; expected } ->
       "launch contract '" ^ row_id ^ "' requires --kernel " ^ expected
+  | Subgroup_route_required kernel ->
+      "launch contract requires subgroup/matrix route for kernel '" ^ kernel
+      ^ "'"
   | Subgroup_kernel_unsupported kernel ->
       "launch contract is currently ordinary-DRF only, got subgroup/matrix \
        kernel '" ^ kernel ^ "'"
 
 let of_row (row : Launch_contract_rows.t) : t =
+  let family =
+    match row.family with
+    | Launch_contract_rows.Gla -> Gla
+    | Launch_contract_rows.Wkv -> Wkv
+    | Launch_contract_rows.Wkv7 -> Wkv7
+  in
   {
     row_id = row.row_id;
-    family = row.family;
+    family;
     manifest_kernel = row.manifest_kernel;
     parsed_kernel = row.parsed_kernel;
     template_arg = row.template_arg;
     template_param = row.template_param;
     template_value = row.template_value;
+    template_bindings = [ (row.template_param, row.template_value) ];
+    block_dim = Dim3.make ~x:row.template_value ();
   }
 
 let is_gla_row (row : Launch_contract_rows.t) =
-  match row.family with Gla -> true | Wkv | Wkv7 -> false
+  match row.family with
+  | Launch_contract_rows.Gla -> true
+  | Launch_contract_rows.Wkv | Launch_contract_rows.Wkv7 -> false
 
 let generated_rows : Launch_contract_rows.t list =
   Launch_contract_generator.contracts
@@ -73,23 +91,37 @@ let generated_wkv_rows : Launch_contract_rows.t list =
 let catalog_rows : Launch_contract_rows.t list = generated_rows
 let all : t list = List.map of_row catalog_rows
 
+let selected_l117 : t =
+  let selected = Launch_contract_generator.selected_l117 in
+  {
+    row_id = selected.selected_row_id;
+    family = Solve_tri_fast;
+    manifest_kernel = selected.selected_manifest_kernel;
+    parsed_kernel = selected.selected_parsed_kernel;
+    template_arg = selected.selected_template_arg;
+    template_param = "n_template";
+    template_value = 64;
+    template_bindings = selected.selected_template_bindings;
+    block_dim = Dim3.make ~x:32 ~y:32 ();
+  }
+
+let pending_lookup_rows : t list = [ selected_l117 ]
+let lookup_rows : t list = all @ pending_lookup_rows
+
 let of_row_id (row_id : string) : (t, error) result =
-  match List.filter (fun c -> String.equal c.row_id row_id) all with
+  match List.filter (fun c -> String.equal c.row_id row_id) lookup_rows with
   | [ contract ] -> Ok contract
   | [] -> Error (Unknown_row row_id)
   | _ -> Error (Duplicate_row row_id)
 
-let block_dim (contract : t) : Dim3.t =
-  match contract.family with
-  | Gla | Wkv | Wkv7 -> Dim3.make ~x:contract.template_value ()
+let block_dim (contract : t) : Dim3.t = contract.block_dim
 
 let required_params (contract : t) : (string * int) list =
-  match contract.family with
-  | Gla | Wkv | Wkv7 -> [ (contract.template_param, contract.template_value) ]
+  contract.template_bindings
 
 let var (name : string) : nexp = Var (Variable.from_name name)
 
-let row_shape_precondition (contract : t) : bexp =
+let standard_row_shape_precondition (contract : t) : bexp =
   let positive name = n_gt (var name) (Num 0) in
   b_and_ex
     [
@@ -107,9 +139,40 @@ let row_shape_precondition (contract : t) : bexp =
       n_eq (Var Variable.gdim_z) (Num 1);
     ]
 
+let solve_tri_fast_precondition (contract : t) : bexp =
+  b_and_ex
+    [
+      n_eq (var "n_template") (Num 64);
+      n_eq (var "k_template") (Num 32);
+      n_gt (var "n_template") (Num 0);
+      n_gt (var "k_template") (Num 0);
+      n_eq (Var Variable.bdim_x) (Num contract.block_dim.x);
+      n_eq (Var Variable.bdim_y) (Num contract.block_dim.y);
+      n_eq (Var Variable.bdim_z) (Num contract.block_dim.z);
+      n_gt (Var Variable.gdim_x) (Num 0);
+      n_eq (Var Variable.gdim_y) (Num 1);
+      n_eq (Var Variable.gdim_z) (Num 1);
+    ]
+
 let precondition (contract : t) : bexp =
   match contract.family with
-  | Gla | Wkv | Wkv7 -> row_shape_precondition contract
+  | Gla | Wkv | Wkv7 -> standard_row_shape_precondition contract
+  | Solve_tri_fast -> solve_tri_fast_precondition contract
+
+let subgroup_route_size (contract : t) : int option =
+  match contract.family with
+  | Gla | Wkv | Wkv7 -> None
+  | Solve_tri_fast ->
+      let selected = Launch_contract_generator.selected_l117 in
+      Some selected.selected_subgroup_size
+
+let requires_subgroup_route (contract : t) : bool =
+  Option.is_some (subgroup_route_size contract)
+
+let allows_subgroup_route (contract : t) ~(subgroup_size : int option) : bool =
+  match (subgroup_route_size contract, subgroup_size) with
+  | Some expected, Some actual -> Int.equal expected actual
+  | Some _, None | None, Some _ | None, None -> false
 
 let add_global_ints (names : string list) (kernel : Kernel.t) : Kernel.t =
   let globals =
@@ -128,9 +191,13 @@ let apply_to_kernel (contract : t) (kernel : Kernel.t) :
   if not (String.equal actual contract.parsed_kernel) then
     Error (Kernel_mismatch { expected = contract.parsed_kernel; actual })
   else
+    let globals =
+      match contract.family with
+      | Gla | Wkv | Wkv7 -> [ "B"; "T"; "C"; "H"; contract.template_param ]
+      | Solve_tri_fast -> List.map fst contract.template_bindings
+    in
     let kernel =
-      kernel |> add_global_ints [ "B"; "T"; "C"; "H"; contract.template_param ]
-      |> fun kernel ->
+      kernel |> add_global_ints globals |> fun kernel ->
       { kernel with pre = b_and kernel.pre (precondition contract) }
     in
     Ok kernel

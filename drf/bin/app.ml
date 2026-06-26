@@ -558,9 +558,18 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
         else
           selected
           |> List.map (function
+            | Ordinary_kernel kernel
+              when Launch_contract.requires_subgroup_route contract ->
+                launch_contract_error
+                  (Launch_contract.Subgroup_route_required
+                     (Protocols.Kernel.name kernel))
             | Ordinary_kernel kernel ->
                 Ordinary_kernel
                   (require_ok (Launch_contract.apply_to_kernel contract kernel))
+            | Subgroup_kernel kernel
+              when Launch_contract.allows_subgroup_route contract
+                     ~subgroup_size ->
+                Subgroup_kernel kernel
             | Subgroup_kernel kernel ->
                 launch_contract_error
                   (Launch_contract.Subgroup_kernel_unsupported

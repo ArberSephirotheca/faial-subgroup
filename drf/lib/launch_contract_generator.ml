@@ -55,6 +55,57 @@ type manifest_facts = {
   timeout_ms : int option;
 }
 
+type selected_family = Solve_tri_fast
+
+type selected_row = {
+  selected_row_id : string;
+  selected_family : selected_family;
+  selected_source_file : string;
+  selected_manifest_kernel : string;
+  selected_source_kernel_family : string;
+  selected_parsed_kernel : string;
+  selected_template_arg : string;
+  selected_template_bindings : (string * int) list;
+  selected_source_branch_conditions : string list;
+  selected_preprocessing_profile : string;
+  selected_extraction_fixture : string;
+  selected_block_dim_source : string;
+  selected_grid_dim_source : string;
+  selected_concrete_block_dim : int list;
+  selected_dynamic_shared_memory : string;
+  selected_feature_class : string;
+  selected_required_semantics : string list;
+  selected_subgroup_helper : string;
+  selected_subgroup_size : int;
+  selected_evidence_artifact_key : string;
+  selected_timeout_ms : int;
+}
+
+type selected_manifest_facts = {
+  selected_fact_row_id : string;
+  selected_family_candidates : selected_family list;
+  selected_fact_manifest_kernel : string option;
+  selected_fact_source_file : string option;
+  selected_fact_source_kernel_family : string option;
+  selected_fact_parsed_kernel : string option;
+  selected_fact_template_arg : string option;
+  selected_fact_block_dim_source : string option;
+  selected_fact_grid_dim_source : string option;
+  selected_fact_source_branch_conditions : string list option;
+  selected_fact_dynamic_shared_memory : string option;
+  selected_fact_feature_class : string option;
+  selected_fact_required_semantics : string list option;
+  selected_fact_drf_status : string option;
+  selected_fact_artifact_status : string option;
+  selected_fact_preprocessing_profile : string option;
+  selected_fact_extraction_fixture : string option;
+  selected_fact_subgroup_helper : string option;
+  selected_fact_subgroup_size : int option;
+  selected_fact_concrete_block_dim : int list option;
+  selected_fact_evidence_artifact_key : string option;
+  selected_fact_timeout_ms : int option;
+}
+
 type error =
   | Unknown_generated_row of string
   | Duplicate_generated_row of string
@@ -79,6 +130,8 @@ let family_to_string = function
   | Launch_contract_rows.Gla -> "gla"
   | Wkv -> "wkv"
   | Wkv7 -> "wkv7"
+
+let selected_family_to_string = function Solve_tri_fast -> "solve_tri_fast"
 
 let source_branch_to_string = function
   | Guarded_if_branch { condition } -> "if(" ^ condition ^ ")"
@@ -105,6 +158,11 @@ let family_candidates_of_manifest_kernel manifest_kernel =
     (Wkv, "rwkv_wkv_f32<");
     (Wkv7, "rwkv_wkv7_f32<");
   ]
+  |> List.filter_map (fun (family, prefix) ->
+      if starts_with ~prefix manifest_kernel then Some family else None)
+
+let selected_family_candidates_of_manifest_kernel manifest_kernel =
+  [ (Solve_tri_fast, "solve_tri_f32_fast<") ]
   |> List.filter_map (fun (family, prefix) ->
       if starts_with ~prefix manifest_kernel then Some family else None)
 
@@ -224,6 +282,35 @@ let wkv7_seed =
 
 let family_seeds = [ gla_seed; wkv_seed; wkv7_seed ]
 
+let selected_l117 =
+  {
+    selected_row_id = "L117";
+    selected_family = Solve_tri_fast;
+    selected_source_file = "llama.cpp/ggml/src/ggml-cuda/solve_tri.cu";
+    selected_manifest_kernel = "solve_tri_f32_fast<64, 32>";
+    selected_source_kernel_family = "solve_tri_f32_fast";
+    selected_parsed_kernel = "solve_tri_f32_fast_l117";
+    selected_template_arg = "64, 32";
+    selected_template_bindings = [ ("n_template", 64); ("k_template", 32) ];
+    selected_source_branch_conditions = [ "n == 64"; "case 32" ];
+    selected_preprocessing_profile =
+      "agent_results/rewrite/component_summaries/H516/preprocessing_profile.md";
+    selected_extraction_fixture =
+      "agent_results/rewrite/component_summaries/H516/artifacts/L117_solve_tri_f32_fast_l117_source_slice.cu";
+    selected_block_dim_source = "threads";
+    selected_grid_dim_source = "grid";
+    selected_concrete_block_dim = [ 32; 32; 1 ];
+    selected_dynamic_shared_memory = "0";
+    selected_feature_class = "shared_memory_syncthreads";
+    selected_required_semantics = shared_memory_required_semantics;
+    selected_subgroup_helper = "warp_reduce_sum";
+    selected_subgroup_size = 32;
+    selected_evidence_artifact_key = "h516_source_intake";
+    selected_timeout_ms = 1000;
+  }
+
+let selected_rows = [ selected_l117 ]
+
 let contract_of_seed (family : Launch_contract_rows.family) (row : row_seed) =
   match family with
   | Launch_contract_rows.Gla ->
@@ -272,6 +359,39 @@ let check_int row_id field actual expected =
              actual = string_of_int actual;
            })
 
+let string_of_string_list values = String.concat ", " values
+
+let string_of_int_list values =
+  values |> List.map string_of_int |> String.concat ", "
+
+let check_string_list row_id field actual expected =
+  match actual with
+  | None -> Error (Missing_field { row_id; field })
+  | Some actual when actual = expected -> Ok ()
+  | Some actual ->
+      Error
+        (Field_mismatch
+           {
+             row_id;
+             field;
+             expected = string_of_string_list expected;
+             actual = string_of_string_list actual;
+           })
+
+let check_int_list row_id field actual expected =
+  match actual with
+  | None -> Error (Missing_field { row_id; field })
+  | Some actual when actual = expected -> Ok ()
+  | Some actual ->
+      Error
+        (Field_mismatch
+           {
+             row_id;
+             field;
+             expected = string_of_int_list expected;
+             actual = string_of_int_list actual;
+           })
+
 let check_source_branch row_id actual expected =
   match actual with
   | None -> Error (Missing_field { row_id; field = "source_branch" })
@@ -306,6 +426,28 @@ let check_family row_id actual expected =
              row_id;
              field = "family";
              values = List.map family_to_string values;
+           })
+
+let check_selected_family row_id actual expected =
+  match actual with
+  | [] -> Error (Missing_field { row_id; field = "family" })
+  | [ actual ] when actual = expected -> Ok ()
+  | [ actual ] ->
+      Error
+        (Field_mismatch
+           {
+             row_id;
+             field = "family";
+             expected = selected_family_to_string expected;
+             actual = selected_family_to_string actual;
+           })
+  | values ->
+      Error
+        (Ambiguous_field
+           {
+             row_id;
+             field = "family";
+             values = List.map selected_family_to_string values;
            })
 
 let validate_manifest_facts (generated : t) (facts : manifest_facts) =
@@ -362,6 +504,103 @@ let validate_manifest_facts (generated : t) (facts : manifest_facts) =
   in
   run checks
 
+let validate_selected_manifest_facts (selected : selected_row)
+    (facts : selected_manifest_facts) =
+  let row_id = selected.selected_row_id in
+  let checks =
+    [
+      (fun () ->
+        if String.equal facts.selected_fact_row_id row_id then Ok ()
+        else
+          Error
+            (Field_mismatch
+               {
+                 row_id;
+                 field = "row_id";
+                 expected = row_id;
+                 actual = facts.selected_fact_row_id;
+               }));
+      (fun () ->
+        check_selected_family row_id facts.selected_family_candidates
+          selected.selected_family);
+      (fun () ->
+        check_string row_id "manifest_kernel"
+          facts.selected_fact_manifest_kernel selected.selected_manifest_kernel);
+      (fun () ->
+        check_string row_id "source_file" facts.selected_fact_source_file
+          selected.selected_source_file);
+      (fun () ->
+        check_string row_id "source_kernel_family"
+          facts.selected_fact_source_kernel_family
+          selected.selected_source_kernel_family);
+      (fun () ->
+        check_string row_id "parsed_kernel" facts.selected_fact_parsed_kernel
+          selected.selected_parsed_kernel);
+      (fun () ->
+        check_string row_id "template_arg" facts.selected_fact_template_arg
+          selected.selected_template_arg);
+      (fun () ->
+        check_string row_id "block_dim_source"
+          facts.selected_fact_block_dim_source
+          selected.selected_block_dim_source);
+      (fun () ->
+        check_string row_id "grid_dim_source"
+          facts.selected_fact_grid_dim_source selected.selected_grid_dim_source);
+      (fun () ->
+        check_string_list row_id "source_branch"
+          facts.selected_fact_source_branch_conditions
+          selected.selected_source_branch_conditions);
+      (fun () ->
+        check_string row_id "dynamic_shared_memory"
+          facts.selected_fact_dynamic_shared_memory
+          selected.selected_dynamic_shared_memory);
+      (fun () ->
+        check_string row_id "feature_class" facts.selected_fact_feature_class
+          selected.selected_feature_class);
+      (fun () ->
+        check_string_list row_id "required_semantics"
+          facts.selected_fact_required_semantics
+          selected.selected_required_semantics);
+      (fun () ->
+        check_string row_id "drf_status" facts.selected_fact_drf_status
+          "not_attempted");
+      (fun () ->
+        check_string row_id "artifact_status"
+          facts.selected_fact_artifact_status "none");
+      (fun () ->
+        check_string row_id "preprocessing_profile"
+          facts.selected_fact_preprocessing_profile
+          selected.selected_preprocessing_profile);
+      (fun () ->
+        check_string row_id "extraction_fixture"
+          facts.selected_fact_extraction_fixture
+          selected.selected_extraction_fixture);
+      (fun () ->
+        check_string row_id "subgroup_helper"
+          facts.selected_fact_subgroup_helper selected.selected_subgroup_helper);
+      (fun () ->
+        check_int row_id "subgroup_size" facts.selected_fact_subgroup_size
+          selected.selected_subgroup_size);
+      (fun () ->
+        check_int_list row_id "concrete_block_dim"
+          facts.selected_fact_concrete_block_dim
+          selected.selected_concrete_block_dim);
+      (fun () ->
+        check_string row_id "evidence_artifact_key"
+          facts.selected_fact_evidence_artifact_key
+          selected.selected_evidence_artifact_key);
+      (fun () ->
+        check_int row_id "timeout_ms" facts.selected_fact_timeout_ms
+          selected.selected_timeout_ms);
+    ]
+  in
+  let rec run = function
+    | [] -> Ok ()
+    | check :: rest -> (
+        match check () with Ok () -> run rest | Error _ as error -> error)
+  in
+  run checks
+
 let generate_row (family : family_seed) (row : row_seed) =
   let contract = contract_of_seed family.family row in
   {
@@ -387,6 +626,16 @@ let contracts = List.map (fun row -> row.contract) all
 let of_row_id row_id =
   match
     List.filter (fun row -> String.equal row.contract.row_id row_id) all
+  with
+  | [ row ] -> Ok row
+  | [] -> Error (Unknown_generated_row row_id)
+  | _ -> Error (Duplicate_generated_row row_id)
+
+let selected_of_row_id row_id =
+  match
+    List.filter
+      (fun row -> String.equal row.selected_row_id row_id)
+      selected_rows
   with
   | [ row ] -> Ok row
   | [] -> Error (Unknown_generated_row row_id)
