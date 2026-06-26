@@ -83,35 +83,6 @@ let to_nexp (e: t): Exp.nexp =
       Exp.Binary(N_binary.Plus Signedness.Signed, r, Mono.to_nexp x)
     ) (Mono.to_nexp x)
 
-(* Group monomials by their factor signature restricted to a given
-   candidate indeterminate set. Key: multiset of [candidates] indeterminates appearing
-   in the monomial. Value: induction-only polynomial summed from the
-   monomial parts excluding those [candidates] factors. Indeterminates outside
-   [candidates] (including other parameter indeterminates) flow to the
-   induction side, so they end up inside the bucket's polynomial value
-   rather than partitioning the key space. *)
-let group_by_parameters ~(candidates : Indet.t list) (e : t)
-    : t Monic.Map.t =
-  let is_candidate a =
-    List.exists (fun c -> Indet.compare a c = 0) candidates
-  in
-  fold (fun term acc ->
-    let coeff = Mono.coeff term in
-    let (param_sig, induct_factors) =
-      Mono.fold (fun a n (p, i) ->
-        if is_candidate a then (Indet.Map.add a n p, i)
-        else (p, Indet.Map.add a n i))
-        (Indet.Map.empty, Indet.Map.empty)
-        term
-    in
-    let induct_expr = of_list [(coeff, induct_factors)] in
-    let existing =
-      Monic.Map.find_opt param_sig acc
-      |> Option.value ~default:zero
-    in
-    Monic.Map.add param_sig (existing + induct_expr) acc
-  ) Monic.Map.empty e
-
 (* Try to express [a] as [k * b] for an integer scalar [k]. Pick any
    non-zero term of [b], read off the matching term of [a], compute
    the candidate scalar, then verify the whole [a == k * b]. *)

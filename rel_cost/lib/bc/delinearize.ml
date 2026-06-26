@@ -145,10 +145,10 @@ let injectivity_class (cfg : Config.t) (locals : Variable.Set.t)
    BankBlind; any smaller divisor [g] becomes [Diverse g] (when the
    subscript is also injective) or [NotInjective g]. *)
 let classify_index ?(oracle : Oracle.t option) ~(config : Config.t)
-    ~(locals : Variable.Set.t) (idx : Index.t) : axis_class list =
+    ~(locals : Variable.Set.t) (idx : Subscript.t) : axis_class list =
   let bank_count = config.bank_count in
   let normalize n = ((n mod bank_count) + bank_count) mod bank_count in
-  let nsubs = List.length idx.indices in
+  let nsubs = List.length idx.numeral in
   let classify_with_sigma sigma_hat sub =
     let warp = subscript_warp_class config locals sub in
     if sigma_hat = 0 then
@@ -172,8 +172,8 @@ let classify_index ?(oracle : Oracle.t option) ~(config : Config.t)
         | Some g -> classify_with_sigma g sub
   in
   List.init nsubs (fun j ->
-      let sub = List.nth idx.indices j in
-      let stride_expr = element_stride idx.dims j in
+      let sub = List.nth idx.numeral j in
+      let stride_expr = element_stride idx.radix j in
       match try_concrete config stride_expr with
       | Some n_raw -> classify_with_sigma (normalize n_raw) sub
       | None ->

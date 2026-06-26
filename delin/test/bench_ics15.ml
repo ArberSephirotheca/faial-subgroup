@@ -45,10 +45,9 @@ let expr_list_eq (a : Poly.t list) (b : Poly.t list) : bool =
   List.length a = List.length b
   && List.for_all2 (fun x y -> Poly.compare x y = 0) a b
 
-let index_eq (a : Index.t) (b : Index.t) : bool =
-  expr_list_eq a.indices b.indices
-  && expr_list_eq a.dims b.dims
-  && a.conditions = b.conditions
+let index_eq (a : Subscript.t) (b : Subscript.t) : bool =
+  expr_list_eq a.numeral b.numeral
+  && expr_list_eq a.radix b.radix
 
 let time (f : unit -> 'a) : 'a * float =
   let t0 = Sys.time () in

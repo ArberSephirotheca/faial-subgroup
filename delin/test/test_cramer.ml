@@ -58,7 +58,7 @@ let assert_delin ~radix ~expr ~expected =
   | None -> assert_failure "expected Some, got None"
   | Some idx ->
     assert_bool "indices mismatch"
-      (poly_list_eq idx.indices (List.map poly expected))
+      (poly_list_eq idx.numeral (List.map poly expected))
 
 let assert_none ~radix ~expr =
   let radix = List.map poly radix in

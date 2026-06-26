@@ -1,3 +1,3 @@
 include Algorithm.S
 
-val delin : radix:Poly.t list -> Poly.t -> Index.t option
+val delin : radix:Poly.t list -> Poly.t -> Subscript.t option

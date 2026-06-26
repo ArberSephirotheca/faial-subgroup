@@ -26,20 +26,19 @@ let string_of_option (f : 'a -> string) : 'a option -> string = function
   | None -> "None"
   | Some x -> "Some " ^ f x
 
-let string_of_index (i : Index.t) : string =
+let string_of_index (i : Subscript.t) : string =
   let exprs es =
     string_of_list (fun e -> Exp.n_to_string (Poly.to_nexp e)) es
   in
-  Printf.sprintf "{indices=%s; dims=%s}" (exprs i.indices) (exprs i.dims)
+  Printf.sprintf "{numeral=%s; radix=%s}" (exprs i.numeral) (exprs i.radix)
 
 let expr_list_eq (a : Poly.t list) (b : Poly.t list) : bool =
   List.length a = List.length b
   && List.for_all2 (fun x y -> Poly.compare x y = 0) a b
 
-let index_eq (i1 : Index.t) (i2 : Index.t) : bool =
-  expr_list_eq i1.indices i2.indices
-  && expr_list_eq i1.dims i2.dims
-  && i1.conditions = i2.conditions
+let index_eq (i1 : Subscript.t) (i2 : Subscript.t) : bool =
+  expr_list_eq i1.numeral i2.numeral
+  && expr_list_eq i1.radix i2.radix
 
 (* Stage 1: per-access size_params extracts the parameter-only portion of
    every term that mixes an induction variable with a parameter. *)
@@ -107,7 +106,7 @@ let stage2_tests =
         (Some expected) got)
 
 let reconstruct_tests =
-  "Index.reconstruct" >:: fun _ ->
+  "Subscript.flatten" >:: fun _ ->
   let open Build in
   let check ~msg before =
     let expr = Poly.from_nexp ~globals before in
@@ -116,7 +115,7 @@ let reconstruct_tests =
       Greedy.candidates ~globals ~size_params expr |> Seq.uncons
     with
     | Some (idx, _) ->
-      let rebuilt = Index.reconstruct idx in
+      let rebuilt = Subscript.flatten idx in
       assert_equal
         ~msg
         ~printer:Exp.n_to_string
@@ -149,7 +148,7 @@ let grosser_offset_test =
   with
   | None -> assert_failure "ICS15 produced no candidate"
   | Some (idx, _) ->
-    let rebuilt = Index.reconstruct idx in
+    let rebuilt = Subscript.flatten idx in
     assert_equal
       ~msg:"reconstructed polynomial"
       ~printer:Exp.n_to_string
@@ -160,11 +159,11 @@ let grosser_offset_test =
     assert_equal
       ~msg:"index count"
       ~printer:string_of_int
-      3 (List.length idx.indices);
+      3 (List.length idx.numeral);
     assert_equal
       ~msg:"dim count"
       ~printer:string_of_int
-      2 (List.length idx.dims)
+      2 (List.length idx.radix)
 
 (* Greedy alone fails on the same input. *)
 let greedy_fails_on_offset_test =
@@ -211,7 +210,7 @@ let ics15_differential_tests =
        assert_equal ~msg:(msg ^ ": opt reconstructs input")
          ~printer:Exp.n_to_string
          (normalize before)
-         (Poly.to_nexp (Index.reconstruct o))
+         (Poly.to_nexp (Subscript.flatten o))
      | _ ->
        assert_failure
          (Printf.sprintf "%s: only one driver produced a candidate (ref=%s opt=%s)"

@@ -1,8 +1,8 @@
 open Protocols
-(* [delin] is unwrapped, so [Indet], [Mono], [Poly], [Index], [Greedy],
+(* [delin] is unwrapped, so [Indet], [Mono], [Poly], [Subscript], [Greedy],
    [Ics15], [Algorithm], [Shape] are top-level modules available
    here without an [open]. [Stage0] stays qualified ([Stage0.Index]
-   would shadow delin's [Index] if we opened it). *)
+   would shadow delin's modules if we opened it). *)
 module Phase_timer = Stage0.Phase_timer
 
 let list_to_string (f : 'a -> string) (l : 'a list): string =
@@ -153,9 +153,9 @@ end = struct
       ~(size_params : Mono.t list) (expr : Poly.t) : t option =
     let ( let* ) = Option.bind in
     let* (idx, _) = Seq.uncons (A.candidates ~globals ~size_params expr) in
-    let inner_is = match (idx : Index.t).indices with
+    let inner_is = match (idx : Subscript.t).numeral with
       | _ :: rest -> rest
-      | [] -> failwith "from_exp: empty indices list"
+      | [] -> failwith "from_exp: empty numeral list"
     in
     (* [fold_right] so that bounds end up in axis order in
        [get_bounds], since [add_bound] in the standard
@@ -163,15 +163,15 @@ end = struct
     let final =
       List.fold_right
         (fun (d, i) acc -> G.add_bound acc i d)
-        (List.combine idx.dims inner_is)
+        (List.combine idx.radix inner_is)
         (G.create scope)
     in
-    let all_bounds = idx.conditions @ G.get_bounds final in
+    let all_bounds = G.get_bounds final in
     if List.for_all (fun b -> check ~scope:loop_scope ~bound:b) all_bounds
     then
       Some {
-        indices = List.map Poly.to_nexp idx.indices;
-        dims = List.map Poly.to_nexp idx.dims;
+        indices = List.map Poly.to_nexp idx.numeral;
+        dims = List.map Poly.to_nexp idx.radix;
         conditions = all_bounds;
       }
     else

@@ -21,7 +21,6 @@ val compare : t -> t -> int
 val from_nexp : globals:Variable.Set.t -> Exp.nexp -> t
 val to_nexp : t -> Exp.nexp
 
-val group_by_parameters : candidates:Indet.t list -> t -> t Monic.Map.t
 val try_scalar_quotient : t -> t -> int option
 
 val coeff_of : Monic.t -> t -> int
