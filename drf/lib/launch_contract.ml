@@ -91,8 +91,15 @@ let generated_wkv_rows : Launch_contract_rows.t list =
 let catalog_rows : Launch_contract_rows.t list = generated_rows
 let all : t list = List.map of_row catalog_rows
 
-let selected_l117 : t =
-  let selected = Launch_contract_generator.selected_l117 in
+let selected_contract (selected : Launch_contract_generator.selected_row) : t =
+  let n_template =
+    match List.assoc_opt "n_template" selected.selected_template_bindings with
+    | Some value -> value
+    | None ->
+        invalid_arg
+          ("solve-tri selected row " ^ selected.selected_row_id
+         ^ " is missing n_template")
+  in
   {
     row_id = selected.selected_row_id;
     family = Solve_tri_fast;
@@ -100,12 +107,20 @@ let selected_l117 : t =
     parsed_kernel = selected.selected_parsed_kernel;
     template_arg = selected.selected_template_arg;
     template_param = "n_template";
-    template_value = 64;
+    template_value = n_template;
     template_bindings = selected.selected_template_bindings;
-    block_dim = Dim3.make ~x:32 ~y:32 ();
+    block_dim =
+      (match selected.selected_concrete_block_dim with
+      | [ x; y; z ] -> Dim3.make ~x ~y ~z ()
+      | _ ->
+          invalid_arg
+            ("solve-tri selected row " ^ selected.selected_row_id
+           ^ " has invalid concrete block dim"));
   }
 
-let pending_lookup_rows : t list = [ selected_l117 ]
+let pending_lookup_rows : t list =
+  List.map selected_contract Launch_contract_generator.selected_rows
+
 let lookup_rows : t list = all @ pending_lookup_rows
 
 let of_row_id (row_id : string) : (t, error) result =
@@ -140,10 +155,20 @@ let standard_row_shape_precondition (contract : t) : bexp =
     ]
 
 let solve_tri_fast_precondition (contract : t) : bexp =
+  let template_value name =
+    match List.assoc_opt name contract.template_bindings with
+    | Some value -> value
+    | None ->
+        invalid_arg
+          ("solve-tri launch contract " ^ contract.row_id
+         ^ " is missing template binding " ^ name)
+  in
+  let n_template = template_value "n_template" in
+  let k_template = template_value "k_template" in
   b_and_ex
     [
-      n_eq (var "n_template") (Num 64);
-      n_eq (var "k_template") (Num 32);
+      n_eq (var "n_template") (Num n_template);
+      n_eq (var "k_template") (Num k_template);
       n_gt (var "n_template") (Num 0);
       n_gt (var "k_template") (Num 0);
       n_eq (Var Variable.bdim_x) (Num contract.block_dim.x);
@@ -163,7 +188,12 @@ let subgroup_route_size (contract : t) : int option =
   match contract.family with
   | Gla | Wkv | Wkv7 -> None
   | Solve_tri_fast ->
-      let selected = Launch_contract_generator.selected_l117 in
+      let selected =
+        match Launch_contract_generator.selected_of_row_id contract.row_id with
+        | Ok selected -> selected
+        | Error error ->
+            invalid_arg (Launch_contract_generator.error_to_string error)
+      in
       Some selected.selected_subgroup_size
 
 let requires_subgroup_route (contract : t) : bool =

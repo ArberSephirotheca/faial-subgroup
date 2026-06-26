@@ -67,22 +67,23 @@ variables, and merges required integer template parameters before the
 ordinary MAP pipeline runs.
 
 The current verified launch-contract manifest rows are the ggml-cuda GLA rows,
-the selected solve-tri subgroup row, the first two WKV6 rows, and the first two
-WKV7 rows:
+the two selected solve-tri subgroup rows, the first two WKV6 rows, and the
+first two WKV7 rows:
 
 - `L072`: `gated_linear_attn_f32<64>`
 - `L073`: `gated_linear_attn_f32<128>`
 - `L117`: `solve_tri_f32_fast<64, 32>`
+- `L118`: `solve_tri_f32_fast<64, 16>`
 - `L143`: `rwkv_wkv_f32<CUDA_WKV_BLOCK_SIZE>`
 - `L144`: `rwkv_wkv_f32<CUDA_WKV_BLOCK_SIZE * 2>`
 - `L145`: `rwkv_wkv7_f32<CUDA_WKV_BLOCK_SIZE>`
 - `L146`: `rwkv_wkv7_f32<CUDA_WKV_BLOCK_SIZE * 2>`
 
-`L117` is different from the ordinary GLA/WKV/WKV7 catalog rows. It remains a
-solve-tri lookup row routed through the subgroup/matrix analyzer under explicit
-`--subgroup-size 32`, and its accepted evidence is the H516 source-slice
-artifact plus the S404 exact row-local JSON verdict. It is not an ordinary
-`Launch_contract.catalog_rows` entry.
+`L117` and `L118` are different from the ordinary GLA/WKV/WKV7 catalog rows.
+They remain solve-tri lookup rows routed through the subgroup/matrix analyzer
+under explicit `--subgroup-size 32`, and their accepted evidence is row-local:
+H516 plus S404 for `L117`, and S408 plus S409 for `L118`. They are not ordinary
+`Launch_contract.catalog_rows` entries.
 
 The GLA rows require `--kernel gated_linear_attn_f32` and supply `HEAD_SIZE`.
 The WKV6 rows require `--kernel rwkv_wkv_f32`; the WKV7 rows require
@@ -177,17 +178,28 @@ H520 admits those selected facts to the production `Launch_contract` lookup for
 `--launch-contract L117` without changing the canonical manifest verdict. The
 lookup row supplies the two template bindings, the concrete `[32, 32, 1]`
 block shape, and row-local preconditions. It deliberately does not add `L117`
-to the verified manifest catalog rows, does not update manifest verdict
-fields, does not promote neighboring solve-tri rows `L116` or `L118`-`L128`,
-and does not treat `warp_reduce_sum` as a workgroup barrier.
+to the verified ordinary catalog rows, does not promote neighboring solve-tri
+rows `L116` or `L118`-`L128`, and does not treat `warp_reduce_sum` as a
+workgroup barrier.
 
-S403 routes only this validated L117 lookup row through the existing
+S407 generalizes that selected-row lookup surface for the first concrete
+neighbor, `L118: solve_tri_f32_fast<64, 16>`. Its row-local generated facts
+require parsed kernel `solve_tri_f32_fast_l118`, template bindings
+`n_template = 64` and `k_template = 16`, source branch conditions `n == 64`
+and `case 16`, concrete block dimension `[32, 16, 1]`, dynamic shared memory
+`0`, `warp_reduce_sum` as a subgroup helper, and explicit subgroup size `32`.
+S408 supplies the verifier-facing source/profile artifact. S409 promotes only
+canonical `L118` after exact structured subgroup JSON passes. Missing or
+mismatched parsed kernel, template values, block shape, grid policy, evidence
+artifact key, subgroup size, or any attempt to reuse `L117` facts fails closed.
+
+S403 and S407 route validated solve-tri lookup rows through the existing
 subgroup/matrix analyzer path, and only when the command provides explicit
 `--subgroup-size 32`. Missing subgroup configuration, a different subgroup
 size, a missing or mismatched `--kernel`, a mismatched `--block-dim`, concrete
-`--grid-dim`, `--all-dims`, or any solve-tri neighbor row still fails closed.
-A same-named ordinary kernel is also rejected instead of falling back to the
-ordinary launch-contract route.
+`--grid-dim`, `--all-dims`, or any unselected solve-tri neighbor row still
+fails closed. A same-named ordinary kernel is also rejected instead of falling
+back to the ordinary launch-contract route.
 
 S404 promotes only canonical `L117` in the launch manifest after the exact
 production command exits successfully with structured subgroup JSON:
@@ -203,6 +215,23 @@ The accepted verdict is `status=drf`, `mem_drf=drf`,
 `subgroup_uniformity=drf`, `drf_full=drf`, and two memory checks with zero
 racy, unknown, timeout, or unsupported classifications. This does not promote
 solve-tri neighbors `L116` or `L118`-`L128`, does not prove full-source
+host-header intake for `solve_tri.cu`, and does not broaden shared-memory,
+subgroup-helper, CUDA, or ggml-cuda support.
+
+S409 promotes only canonical `L118` in the launch manifest after the exact
+production command exits successfully with structured subgroup JSON:
+
+```bash
+faial-drf --json --launch-contract L118 \
+  --kernel solve_tri_f32_fast_l118 --block-dim '[32,16]' \
+  --subgroup-size 32 -t 10000 \
+  agent_results/rewrite/component_summaries/S408/artifacts/L118_solve_tri_f32_fast_l118_source_slice.cu
+```
+
+The accepted verdict is `status=drf`, `mem_drf=drf`,
+`subgroup_uniformity=drf`, `drf_full=drf`, and two memory checks with zero
+racy, unknown, timeout, or unsupported classifications. This does not promote
+solve-tri neighbors `L116` or `L119`-`L128`, does not prove full-source
 host-header intake for `solve_tri.cu`, and does not broaden shared-memory,
 subgroup-helper, CUDA, or ggml-cuda support.
 

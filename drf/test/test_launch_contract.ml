@@ -280,8 +280,7 @@ let test_solve_tri_l117_lookup_shape () : unit =
   | LC.Gla | LC.Wkv | LC.Wkv7 ->
       Alcotest.fail "L117 must remain a solve-tri pending lookup row");
   Alcotest.(check string)
-    "manifest kernel" "solve_tri_f32_fast<64, 32>"
-    contract.manifest_kernel;
+    "manifest kernel" "solve_tri_f32_fast<64, 32>" contract.manifest_kernel;
   Alcotest.(check string)
     "parsed kernel" "solve_tri_f32_fast_l117" contract.parsed_kernel;
   Alcotest.(check string) "template arg" "64, 32" contract.template_arg;
@@ -305,40 +304,71 @@ let test_solve_tri_l117_lookup_shape () : unit =
   let pre = LC.precondition contract in
   check_conjunct "n_template fact" (n_eq (nvar "n_template") (Num 64)) pre;
   check_conjunct "k_template fact" (n_eq (nvar "k_template") (Num 32)) pre;
-  check_conjunct "blockDim.x fact"
-    (n_eq (Var Variable.bdim_x) (Num 32))
-    pre;
-  check_conjunct "blockDim.y fact"
-    (n_eq (Var Variable.bdim_y) (Num 32))
-    pre
+  check_conjunct "blockDim.x fact" (n_eq (Var Variable.bdim_x) (Num 32)) pre;
+  check_conjunct "blockDim.y fact" (n_eq (Var Variable.bdim_y) (Num 32)) pre
+
+let test_solve_tri_l118_lookup_shape () : unit =
+  let contract = expect_ok (LC.of_row_id "L118") in
+  Alcotest.(check string) "row id" "L118" contract.row_id;
+  (match contract.family with
+  | LC.Solve_tri_fast -> ()
+  | LC.Gla | LC.Wkv | LC.Wkv7 ->
+      Alcotest.fail "L118 must be a solve-tri pending lookup row");
+  Alcotest.(check string)
+    "manifest kernel" "solve_tri_f32_fast<64, 16>" contract.manifest_kernel;
+  Alcotest.(check string)
+    "parsed kernel" "solve_tri_f32_fast_l118" contract.parsed_kernel;
+  Alcotest.(check string) "template arg" "64, 16" contract.template_arg;
+  Alcotest.(check (list (pair string int)))
+    "template bindings"
+    [ ("n_template", 64); ("k_template", 16) ]
+    contract.template_bindings;
+  let block_dim = LC.block_dim contract in
+  Alcotest.(check int) "blockDim.x" 32 block_dim.x;
+  Alcotest.(check int) "blockDim.y" 16 block_dim.y;
+  Alcotest.(check int) "blockDim.z" 1 block_dim.z;
+  Alcotest.(check bool)
+    "L118 is lookup-only" true
+    (LC.lookup_rows
+    |> List.exists (fun row -> String.equal row.LC.row_id "L118"));
+  Alcotest.(check bool)
+    "L118 is not in ordinary catalog" false
+    (LC.catalog_rows
+    |> List.exists (fun row ->
+        String.equal row.Launch_contract_rows.row_id "L118"));
+  let pre = LC.precondition contract in
+  check_conjunct "n_template fact" (n_eq (nvar "n_template") (Num 64)) pre;
+  check_conjunct "k_template fact" (n_eq (nvar "k_template") (Num 16)) pre;
+  check_conjunct "blockDim.x fact" (n_eq (Var Variable.bdim_x) (Num 32)) pre;
+  check_conjunct "blockDim.y fact" (n_eq (Var Variable.bdim_y) (Num 16)) pre
 
 let test_solve_tri_l117_route_options_fail_closed () : unit =
   let contract = expect_ok (LC.of_row_id "L117") in
   (match LC.check_only_kernel contract None with
   | Error
       (LC.Missing_kernel_selection
-        { row_id = "L117"; expected = "solve_tri_f32_fast_l117" }) ->
+         { row_id = "L117"; expected = "solve_tri_f32_fast_l117" }) ->
       ()
   | Ok () -> Alcotest.fail "missing kernel selection unexpectedly worked"
   | Error error -> Alcotest.fail (LC.error_to_string error));
   (match LC.check_only_kernel contract (Some "solve_tri_f32_fast") with
   | Error
       (LC.Kernel_mismatch
-        {
-          expected = "solve_tri_f32_fast_l117";
-          actual = "solve_tri_f32_fast";
-        }) ->
+         { expected = "solve_tri_f32_fast_l117"; actual = "solve_tri_f32_fast" })
+    ->
       ()
   | Ok () -> Alcotest.fail "source-family kernel selection unexpectedly worked"
   | Error error -> Alcotest.fail (LC.error_to_string error));
   expect_ok (LC.check_only_kernel contract (Some "solve_tri_f32_fast_l117"));
   let expected_block = Dim3.make ~x:32 ~y:32 () in
   (match LC.check_block_dim contract None with
-  | Ok (Some actual) -> check_dim3 "defaulted L117 blockDim" expected_block actual
+  | Ok (Some actual) ->
+      check_dim3 "defaulted L117 blockDim" expected_block actual
   | Ok None -> Alcotest.fail "L117 blockDim was not defaulted"
   | Error error -> Alcotest.fail (LC.error_to_string error));
   (match LC.check_block_dim contract (Some expected_block) with
-  | Ok (Some actual) -> check_dim3 "explicit L117 blockDim" expected_block actual
+  | Ok (Some actual) ->
+      check_dim3 "explicit L117 blockDim" expected_block actual
   | Ok None -> Alcotest.fail "explicit L117 blockDim was dropped"
   | Error error -> Alcotest.fail (LC.error_to_string error));
   let wrong_block = Dim3.make ~x:64 () in
@@ -354,10 +384,57 @@ let test_solve_tri_l117_route_options_fail_closed () : unit =
       check_dim3 "unsupported concrete gridDim" concrete_grid actual
   | Ok () -> Alcotest.fail "concrete L117 gridDim unexpectedly worked"
   | Error error -> Alcotest.fail (LC.error_to_string error));
-  (match LC.check_all_dims contract true with
+  match LC.check_all_dims contract true with
   | Error (LC.All_dims_unsupported "L117") -> ()
   | Ok () -> Alcotest.fail "--all-dims unexpectedly worked for L117"
-  | Error error -> Alcotest.fail (LC.error_to_string error))
+  | Error error -> Alcotest.fail (LC.error_to_string error)
+
+let test_solve_tri_l118_route_options_fail_closed () : unit =
+  let contract = expect_ok (LC.of_row_id "L118") in
+  (match LC.check_only_kernel contract None with
+  | Error
+      (LC.Missing_kernel_selection
+         { row_id = "L118"; expected = "solve_tri_f32_fast_l118" }) ->
+      ()
+  | Ok () -> Alcotest.fail "missing kernel selection unexpectedly worked"
+  | Error error -> Alcotest.fail (LC.error_to_string error));
+  (match LC.check_only_kernel contract (Some "solve_tri_f32_fast") with
+  | Error
+      (LC.Kernel_mismatch
+         { expected = "solve_tri_f32_fast_l118"; actual = "solve_tri_f32_fast" })
+    ->
+      ()
+  | Ok () -> Alcotest.fail "source-family kernel selection unexpectedly worked"
+  | Error error -> Alcotest.fail (LC.error_to_string error));
+  expect_ok (LC.check_only_kernel contract (Some "solve_tri_f32_fast_l118"));
+  let expected_block = Dim3.make ~x:32 ~y:16 () in
+  (match LC.check_block_dim contract None with
+  | Ok (Some actual) ->
+      check_dim3 "defaulted L118 blockDim" expected_block actual
+  | Ok None -> Alcotest.fail "L118 blockDim was not defaulted"
+  | Error error -> Alcotest.fail (LC.error_to_string error));
+  (match LC.check_block_dim contract (Some expected_block) with
+  | Ok (Some actual) ->
+      check_dim3 "explicit L118 blockDim" expected_block actual
+  | Ok None -> Alcotest.fail "explicit L118 blockDim was dropped"
+  | Error error -> Alcotest.fail (LC.error_to_string error));
+  let wrong_block = Dim3.make ~x:32 ~y:32 () in
+  (match LC.check_block_dim contract (Some wrong_block) with
+  | Error (LC.Conflicting_block_dim { expected; actual }) ->
+      check_dim3 "expected L118 blockDim" expected_block expected;
+      check_dim3 "actual wrong blockDim" wrong_block actual
+  | Ok _ -> Alcotest.fail "wrong L118 blockDim unexpectedly worked"
+  | Error error -> Alcotest.fail (LC.error_to_string error));
+  let concrete_grid = Dim3.make ~x:1 () in
+  (match LC.check_grid_dim contract (Some concrete_grid) with
+  | Error (LC.Grid_dim_unsupported actual) ->
+      check_dim3 "unsupported concrete gridDim" concrete_grid actual
+  | Ok () -> Alcotest.fail "concrete L118 gridDim unexpectedly worked"
+  | Error error -> Alcotest.fail (LC.error_to_string error));
+  match LC.check_all_dims contract true with
+  | Error (LC.All_dims_unsupported "L118") -> ()
+  | Ok () -> Alcotest.fail "--all-dims unexpectedly worked for L118"
+  | Error error -> Alcotest.fail (LC.error_to_string error)
 
 let test_solve_tri_l117_subgroup_route_requires_explicit_size () : unit =
   let l117 = expect_ok (LC.of_row_id "L117") in
@@ -373,6 +450,19 @@ let test_solve_tri_l117_subgroup_route_requires_explicit_size () : unit =
   Alcotest.(check bool)
     "L117 rejects mismatched subgroup size" false
     (LC.allows_subgroup_route l117 ~subgroup_size:(Some 16));
+  let l118 = expect_ok (LC.of_row_id "L118") in
+  Alcotest.(check bool)
+    "L118 requires subgroup route" true
+    (LC.requires_subgroup_route l118);
+  Alcotest.(check bool)
+    "L118 routes with explicit subgroup size 32" true
+    (LC.allows_subgroup_route l118 ~subgroup_size:(Some 32));
+  Alcotest.(check bool)
+    "L118 rejects missing subgroup size" false
+    (LC.allows_subgroup_route l118 ~subgroup_size:None);
+  Alcotest.(check bool)
+    "L118 rejects mismatched subgroup size" false
+    (LC.allows_subgroup_route l118 ~subgroup_size:(Some 16));
   let l072 = expect_ok (LC.of_row_id "L072") in
   Alcotest.(check bool)
     "ordinary rows do not require subgroup route" false
@@ -381,7 +471,7 @@ let test_solve_tri_l117_subgroup_route_requires_explicit_size () : unit =
     "ordinary rows do not use subgroup launch-contract route" false
     (LC.allows_subgroup_route l072 ~subgroup_size:(Some 32))
 
-let test_solve_tri_neighbors_are_not_lookup_rows () : unit =
+let test_unselected_solve_tri_neighbors_are_not_lookup_rows () : unit =
   List.iter
     (fun row_id ->
       match expect_error (LC.of_row_id row_id) with
@@ -389,7 +479,6 @@ let test_solve_tri_neighbors_are_not_lookup_rows () : unit =
       | error -> Alcotest.fail (LC.error_to_string error))
     [
       "L116";
-      "L118";
       "L119";
       "L120";
       "L121";
@@ -424,18 +513,20 @@ let tests =
       `Quick,
       test_apply_contract_adds_global_precondition );
     ("kernel mismatch fails closed", `Quick, test_kernel_mismatch_fails_closed);
-    ( "solve-tri L117 lookup shape",
-      `Quick,
-      test_solve_tri_l117_lookup_shape );
+    ("solve-tri L117 lookup shape", `Quick, test_solve_tri_l117_lookup_shape);
+    ("solve-tri L118 lookup shape", `Quick, test_solve_tri_l118_lookup_shape);
     ( "solve-tri L117 route options fail closed",
       `Quick,
       test_solve_tri_l117_route_options_fail_closed );
+    ( "solve-tri L118 route options fail closed",
+      `Quick,
+      test_solve_tri_l118_route_options_fail_closed );
     ( "solve-tri L117 subgroup route requires explicit size",
       `Quick,
       test_solve_tri_l117_subgroup_route_requires_explicit_size );
     ( "solve-tri neighbors are not lookup rows",
       `Quick,
-      test_solve_tri_neighbors_are_not_lookup_rows );
+      test_unselected_solve_tri_neighbors_are_not_lookup_rows );
   ]
 
 let () = Alcotest.run "Launch_contract" [ ("launch_contract", tests) ]

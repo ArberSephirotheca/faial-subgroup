@@ -199,7 +199,7 @@ let expected_timeout row_id =
   match row_id with
   | "L072" -> 1000
   | "L073" | "L143" | "L144" | "L145" | "L146" -> 10000
-  | "L117" -> 10000
+  | "L117" | "L118" -> 10000
   | _ -> failf "no expected launch-contract timeout for %s" row_id
 
 let expected_wkv_rows =
@@ -217,6 +217,7 @@ let launch_contract_artifact_owners =
     ("g504r_launch_contract", "L072");
     ("h501_launch_contract", "L073");
     ("s404_launch_contract", "L117");
+    ("s409_launch_contract", "L118");
     ("h502_launch_contract", "L143");
     ("h506_launch_contract", "L144");
     ("h507_launch_contract", "L145");
@@ -287,7 +288,8 @@ let check_subgroup_stdout_gate root contract stdout_rel =
     match list_field "kernels" stdout_json with
     | [ kernel ] -> kernel
     | kernels ->
-        failf "expected one subgroup stdout kernel, got %d" (List.length kernels)
+        failf "expected one subgroup stdout kernel, got %d"
+          (List.length kernels)
   in
   Alcotest.(check string)
     "subgroup stdout parsed kernel" contract.Launch_contract.parsed_kernel
@@ -309,8 +311,8 @@ let check_subgroup_stdout_gate root contract stdout_rel =
   List.iter
     (fun name ->
       Alcotest.(check int)
-        ("subgroup " ^ name ^ " checks") 0
-        (int_field name checks))
+        ("subgroup " ^ name ^ " checks")
+        0 (int_field name checks))
     [ "racy"; "unknown"; "timeout"; "unsupported" ]
 
 let check_summary_gate root contract artifact =
@@ -357,7 +359,7 @@ let check_summary_gate root contract artifact =
     (int_field "unknown_count" kernel);
   Alcotest.(check int) "summary error count" 0 (int_field "error_count" kernel)
 
-let check_l117_subgroup_summary_gate root contract artifact =
+let check_subgroup_summary_gate root contract artifact =
   check_summary_gate root contract artifact;
   let summary_rel = string_field "summary" artifact in
   let summary = Json.from_file (repo_path root summary_rel) in
@@ -376,8 +378,8 @@ let check_l117_subgroup_summary_gate root contract artifact =
   List.iter
     (fun name ->
       Alcotest.(check int)
-        ("summary " ^ name ^ " checks") 0
-        (int_field name checks))
+        ("summary " ^ name ^ " checks")
+        0 (int_field name checks))
     [ "racy"; "unknown"; "timeout"; "unsupported" ]
 
 let check_command_metadata manifest contract artifact =
@@ -957,7 +959,9 @@ let test_l117_exact_production_promotion () =
     (string_field "preprocessing_profile" row);
   assert_existing_repo_file root "L117 extraction fixture"
     (string_field "extraction_fixture" row);
-  let artifact = row |> field "evidence_artifact" |> field "s404_launch_contract" in
+  let artifact =
+    row |> field "evidence_artifact" |> field "s404_launch_contract"
+  in
   Alcotest.(check int)
     "L117 artifact timeout" 10000
     (int_field "timeout_ms" artifact);
@@ -973,7 +977,80 @@ let test_l117_exact_production_promotion () =
     "L117 status artifact" "0"
     (String.trim (read_file (repo_path root (string_field "status" artifact))));
   check_subgroup_stdout_gate root contract (string_field "stdout" artifact);
-  check_l117_subgroup_summary_gate root contract artifact;
+  check_subgroup_summary_gate root contract artifact;
+  check_command_metadata manifest contract artifact
+
+let test_l118_exact_production_promotion () =
+  let root = repo_root () in
+  let manifest = load_manifest root in
+  let rows = manifest_rows manifest in
+  let row = find_row rows "L118" in
+  let selected = selected_generated_row "L118" in
+  check_selected_validation_guard row selected;
+  let contract =
+    Launch_contract.of_row_id "L118" |> function
+    | Ok contract -> contract
+    | Error error -> Alcotest.fail (Launch_contract.error_to_string error)
+  in
+  Alcotest.(check string)
+    "L118 manifest kernel" "solve_tri_f32_fast<64, 16>" contract.manifest_kernel;
+  Alcotest.(check string)
+    "L118 parsed kernel" "solve_tri_f32_fast_l118" contract.parsed_kernel;
+  Alcotest.(check string) "L118 template arg" "64, 16" contract.template_arg;
+  Alcotest.(check (list (pair string int)))
+    "L118 template bindings"
+    [ ("n_template", 64); ("k_template", 16) ]
+    (Launch_contract.required_params contract);
+  let block_dim = Launch_contract.block_dim contract in
+  Alcotest.(check int) "L118 blockDim.x" 32 block_dim.x;
+  Alcotest.(check int) "L118 blockDim.y" 16 block_dim.y;
+  Alcotest.(check int) "L118 blockDim.z" 1 block_dim.z;
+  Alcotest.(check bool)
+    "L118 is in production lookup rows" true
+    (Launch_contract.lookup_rows
+    |> List.exists (fun row -> String.equal row.Launch_contract.row_id "L118"));
+  Alcotest.(check bool)
+    "L118 is not an ordinary catalog row" false
+    (Launch_contract.catalog_rows
+    |> List.exists (fun row ->
+        String.equal row.Launch_contract_rows.row_id "L118"));
+  Alcotest.(check string)
+    "canonical L118 DRF status" "verified"
+    (string_field "drf_status" row);
+  Alcotest.(check string)
+    "canonical L118 artifact status" "subgroup_drf_json_verdict"
+    (string_field "artifact_status" row);
+  Alcotest.(check (option int))
+    "canonical L118 timeout" (Some 10000)
+    (nullable_int_field "timeout_ms" row);
+  Alcotest.(check (option int))
+    "canonical L118 subgroup size" (Some 32)
+    (nullable_int_field "subgroup_size_if_any" row);
+  null_field "not_attempted_reason" row;
+  null_field "unsupported_reason" row;
+  assert_existing_repo_file root "L118 preprocessing profile"
+    (string_field "preprocessing_profile" row);
+  assert_existing_repo_file root "L118 extraction fixture"
+    (string_field "extraction_fixture" row);
+  let artifact =
+    row |> field "evidence_artifact" |> field "s409_launch_contract"
+  in
+  Alcotest.(check int)
+    "L118 artifact timeout" 10000
+    (int_field "timeout_ms" artifact);
+  Alcotest.(check string)
+    "L118 nested artifact status" "subgroup_drf_json_verdict"
+    (string_field "artifact_status" artifact);
+  List.iter
+    (fun key ->
+      assert_existing_repo_file root ("L118 artifact " ^ key)
+        (string_field key artifact))
+    [ "command"; "stdout"; "stderr"; "status"; "summary" ];
+  Alcotest.(check string)
+    "L118 status artifact" "0"
+    (String.trim (read_file (repo_path root (string_field "status" artifact))));
+  check_subgroup_stdout_gate root contract (string_field "stdout" artifact);
+  check_subgroup_summary_gate root contract artifact;
   check_command_metadata manifest contract artifact
 
 let test_selected_l117_generated_facts_match_h516_evidence () =
@@ -982,7 +1059,7 @@ let test_selected_l117_generated_facts_match_h516_evidence () =
   let row = find_row rows "L117" in
   let selected = selected_generated_row "L117" in
   Alcotest.(check (list string))
-    "selected generated rows" [ "L117" ]
+    "selected generated rows" [ "L117"; "L118" ]
     (Launch_contract_generator.selected_rows
     |> List.map (fun row -> row.Launch_contract_generator.selected_row_id)
     |> sorted);
@@ -1062,6 +1139,79 @@ let test_selected_l117_generated_facts_match_h516_evidence () =
   Alcotest.(check bool)
     "H516 source excerpt records k case" true
     (string_contains source_excerpt "case 32:");
+  check_selected_validation_guard row selected
+
+let test_selected_l118_generated_facts_match_s406_schema () =
+  let root = repo_root () in
+  let rows = load_manifest root |> manifest_rows in
+  let row = find_row rows "L118" in
+  let selected = selected_generated_row "L118" in
+  Alcotest.(check (list string))
+    "selected generated rows" [ "L117"; "L118" ]
+    (Launch_contract_generator.selected_rows
+    |> List.map (fun row -> row.Launch_contract_generator.selected_row_id)
+    |> sorted);
+  Alcotest.(check string)
+    "selected source file"
+    (string_field "source_file" row)
+    selected.Launch_contract_generator.selected_source_file;
+  Alcotest.(check string)
+    "selected manifest kernel"
+    (string_field "kernel_or_template" row)
+    selected.Launch_contract_generator.selected_manifest_kernel;
+  Alcotest.(check string)
+    "selected template arg"
+    (row |> field "concrete_template_args" |> string_field "value")
+    selected.Launch_contract_generator.selected_template_arg;
+  Alcotest.(check (list (pair string int)))
+    "selected template bindings"
+    [ ("n_template", 64); ("k_template", 16) ]
+    selected.Launch_contract_generator.selected_template_bindings;
+  Alcotest.(check string)
+    "selected parsed source-slice kernel" "solve_tri_f32_fast_l118"
+    selected.Launch_contract_generator.selected_parsed_kernel;
+  Alcotest.(check (list string))
+    "selected source branch conditions" [ "n == 64"; "case 16" ]
+    selected.Launch_contract_generator.selected_source_branch_conditions;
+  Alcotest.(check (list int))
+    "selected concrete block dim" [ 32; 16; 1 ]
+    selected.Launch_contract_generator.selected_concrete_block_dim;
+  Alcotest.(check string)
+    "selected subgroup helper" "warp_reduce_sum"
+    selected.Launch_contract_generator.selected_subgroup_helper;
+  Alcotest.(check int)
+    "selected subgroup size" 32
+    selected.Launch_contract_generator.selected_subgroup_size;
+  Alcotest.(check int)
+    "selected timeout" 10000
+    selected.Launch_contract_generator.selected_timeout_ms;
+  Alcotest.(check string)
+    "selected preprocessing profile"
+    "agent_results/rewrite/component_summaries/S408/preprocessing_profile.md"
+    selected.Launch_contract_generator.selected_preprocessing_profile;
+  Alcotest.(check string)
+    "selected extraction fixture"
+    "agent_results/rewrite/component_summaries/S408/artifacts/L118_solve_tri_f32_fast_l118_source_slice.cu"
+    selected.Launch_contract_generator.selected_extraction_fixture;
+  Alcotest.(check string)
+    "selected evidence key" "s408_source_intake"
+    selected.Launch_contract_generator.selected_evidence_artifact_key;
+  Alcotest.(check string)
+    "canonical L118 artifact status" "subgroup_drf_json_verdict"
+    (string_field "artifact_status" row);
+  Alcotest.(check string)
+    "canonical L118 DRF status" "verified"
+    (string_field "drf_status" row);
+  Alcotest.(check (option int))
+    "canonical L118 timeout" (Some 10000)
+    (nullable_int_field "timeout_ms" row);
+  Alcotest.(check (option int))
+    "canonical L118 subgroup size" (Some 32)
+    (nullable_int_field "subgroup_size_if_any" row);
+  assert_existing_repo_file root "canonical L118 preprocessing profile"
+    (string_field "preprocessing_profile" row);
+  assert_existing_repo_file root "canonical L118 extraction fixture"
+    (string_field "extraction_fixture" row);
   check_selected_validation_guard row selected
 
 let check_selected_missing_validation_field label field selected facts =
@@ -1153,7 +1303,10 @@ let test_selected_l117_validation_fails_closed_on_missing_facts () =
     { facts with selected_fact_concrete_block_dim = Some [ 64; 1; 1 ] };
   check_selected_field_mismatch "mismatched selected evidence key"
     "evidence_artifact_key" selected
-    { facts with selected_fact_evidence_artifact_key = Some "h518_source_slice" };
+    {
+      facts with
+      selected_fact_evidence_artifact_key = Some "h518_source_slice";
+    };
   check_selected_field_mismatch "mismatched selected DRF status" "drf_status"
     selected
     { facts with selected_fact_drf_status = Some "verified" };
@@ -1163,6 +1316,43 @@ let test_selected_l117_validation_fails_closed_on_missing_facts () =
   check_selected_field_mismatch "mismatched selected subgroup helper"
     "subgroup_helper" selected
     { facts with selected_fact_subgroup_helper = Some "__syncthreads" }
+
+let test_selected_l118_validation_rejects_l117_facts () =
+  let root = repo_root () in
+  let rows = load_manifest root |> manifest_rows in
+  let row = find_row rows "L118" in
+  let selected = selected_generated_row "L118" in
+  let facts = selected_pre_promotion_manifest_facts row selected in
+  check_selected_field_mismatch "L118 rejects L117 manifest kernel"
+    "manifest_kernel" selected
+    {
+      facts with
+      selected_fact_manifest_kernel = Some "solve_tri_f32_fast<64, 32>";
+    };
+  check_selected_field_mismatch "L118 rejects L117 parsed kernel"
+    "parsed_kernel" selected
+    { facts with selected_fact_parsed_kernel = Some "solve_tri_f32_fast_l117" };
+  check_selected_field_mismatch "L118 rejects L117 template arg" "template_arg"
+    selected
+    { facts with selected_fact_template_arg = Some "64, 32" };
+  check_selected_field_mismatch "L118 rejects L117 block dim"
+    "concrete_block_dim" selected
+    { facts with selected_fact_concrete_block_dim = Some [ 32; 32; 1 ] };
+  check_selected_field_mismatch "L118 rejects L117 evidence key"
+    "evidence_artifact_key" selected
+    {
+      facts with
+      selected_fact_evidence_artifact_key = Some "h516_source_intake";
+    };
+  check_selected_field_mismatch "L118 rejects premature verified status"
+    "drf_status" selected
+    { facts with selected_fact_drf_status = Some "verified" };
+  check_selected_field_mismatch "L118 rejects subgroup verdict artifact status"
+    "artifact_status" selected
+    {
+      facts with
+      selected_fact_artifact_status = Some "subgroup_drf_json_verdict";
+    }
 
 let check_missing_validation_field label field generated facts =
   match Launch_contract_generator.validate_manifest_facts generated facts with
@@ -1333,7 +1523,6 @@ let test_neighbor_rows_remain_unpromoted () =
     [
       "L074";
       "L116";
-      "L118";
       "L119";
       "L120";
       "L121";
@@ -1354,7 +1543,7 @@ let test_readme_lists_current_launch_contract_rows () =
       Alcotest.(check bool)
         ("README lists " ^ row_id) true
         (string_contains readme ("`" ^ row_id ^ "`")))
-    [ "L072"; "L073"; "L117"; "L143"; "L144"; "L145"; "L146" ];
+    [ "L072"; "L073"; "L117"; "L118"; "L143"; "L144"; "L145"; "L146" ];
   Alcotest.(check bool)
     "README documents WKV campaign guard" true
     (string_contains readme "exact WKV row set");
@@ -1366,7 +1555,16 @@ let test_readme_lists_current_launch_contract_rows () =
     (string_contains readme "`--subgroup-size 32`");
   Alcotest.(check bool)
     "README documents no ordinary L117 fallback" true
-    (string_contains readme "same-named ordinary kernel")
+    (string_contains readme "same-named ordinary kernel");
+  Alcotest.(check bool)
+    "README documents L118 subgroup promotion" true
+    (string_contains readme "S409 promotes only canonical `L118`");
+  Alcotest.(check bool)
+    "README documents L118 non-claim" true
+    (string_contains readme "This does not promote");
+  Alcotest.(check bool)
+    "README documents L118 neighbor boundary" true
+    (string_contains readme "solve-tri neighbors `L116` or `L119`-`L128`")
 
 let tests =
   [
@@ -1385,12 +1583,21 @@ let tests =
     ( "L117 exact production promotion",
       `Quick,
       test_l117_exact_production_promotion );
+    ( "L118 exact production promotion",
+      `Quick,
+      test_l118_exact_production_promotion );
     ( "selected L117 generated facts match H516 evidence",
       `Quick,
       test_selected_l117_generated_facts_match_h516_evidence );
+    ( "selected L118 generated facts match S406 schema",
+      `Quick,
+      test_selected_l118_generated_facts_match_s406_schema );
     ( "selected L117 validation fails closed on missing facts",
       `Quick,
       test_selected_l117_validation_fails_closed_on_missing_facts );
+    ( "selected L118 validation rejects L117 facts",
+      `Quick,
+      test_selected_l118_validation_rejects_l117_facts );
     ("WKV campaign handoff state", `Quick, test_wkv_campaign_handoff_state);
     ( "launch-contract artifact keys are row-local",
       `Quick,
