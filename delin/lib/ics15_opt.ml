@@ -50,18 +50,10 @@ let derive_fs
     go from 1
   in
   let contribution (prev_fs : Poly.t list) (j : int) : Poly.t =
-    List.fold_left
-      (fun (sum, i) f_i ->
-        let next =
-          if i = 0 then sum
-          else
-            Poly.( + ) sum
-              (scale (alpha_prod ~from:(i + 1) ~upto:j) f_i)
-        in
-        (next, i + 1))
-      (Poly.zero, 0)
-      prev_fs
-    |> fst
+    prev_fs
+    |> List.mapi (fun i _ ->
+         if i = 0 then 0 else alpha_prod ~from:(i + 1) ~upto:j)
+    |> Poly.linear_combination prev_fs
   in
   let rec go j prev_fs_rev =
     if j > d - 1 then List.rev prev_fs_rev

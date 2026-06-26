@@ -25,6 +25,13 @@ let ( * ) (c1, t1) (c2, t2) = (c1 * c2, Monic.( * ) t1 t2)
 let coeff (c, _) = c
 let fold f acc (_, t) = Monic.fold f acc t
 let filter f (c, t) = c, Indet.Map.filter f t
+let split pred (_, t) : Monic.t * Monic.t =
+  Monic.fold
+    (fun a n (yes, no) ->
+      if pred a then (Indet.Map.add a n yes, no)
+      else (yes, Indet.Map.add a n no))
+    (Indet.Map.empty, Indet.Map.empty)
+    t
 let factors (_, t): (Indet.t * int) list = Monic.to_list t
 let of_factors ?(coeff = 1) factors = coeff, Indet.Map.of_list factors
 

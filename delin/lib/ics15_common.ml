@@ -14,10 +14,6 @@ let bucket_lookup
   Monic.Map.find_opt (bucket_sig indets) buckets
   |> Option.value ~default:Poly.zero
 
-let scale (n : int) (e : Poly.t) : Poly.t =
-  if n = 0 then Poly.zero
-  else if n = 1 then e
-  else Poly.( * ) (Poly.of_int n) e
 
 let build_dims (perm : Indet.t list) (alphas : int list) : Poly.t list =
   List.mapi (fun i p ->

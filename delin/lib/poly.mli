@@ -6,6 +6,7 @@ val parameter : string -> t
 val induction : string -> t
 val of_int : int -> t
 val of_indet : Indet.t -> t
+val of_monic : Monic.t -> t
 val zero : t
 val ( + ) : t -> t -> t
 val ( - ) : t -> t -> t
@@ -22,3 +23,9 @@ val to_nexp : t -> Exp.nexp
 
 val group_by_parameters : candidates:Indet.t list -> t -> t Monic.Map.t
 val try_scalar_quotient : t -> t -> int option
+
+val coeff_of : Monic.t -> t -> int
+val scale : int -> t -> t
+val indets : t -> Indet.t list
+val dot : t list -> t list -> t
+val linear_combination : t list -> int list -> t

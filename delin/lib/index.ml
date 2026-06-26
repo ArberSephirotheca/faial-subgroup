@@ -6,30 +6,18 @@ type t = {
   conditions : Exp.bexp list;
 }
 
+(* The positional weight of each subscript: [place_values dims] is
+   [prod dims[0..]; prod dims[1..]; ..; prod dims[nd-1..]; 1], the
+   product of all dims from each position onward (the empty product 1
+   once a position runs past the dims list). Computed right-to-left so
+   each suffix product reuses the next, keeping it linear in the
+   dimension count. *)
+let rec place_values = function
+  | [] -> [ Poly.of_int 1 ]
+  | d :: ds ->
+    (match place_values ds with
+     | p :: _ as tail -> Poly.( * ) d p :: tail
+     | [] -> assert false)
+
 let reconstruct (idx : t) : Poly.t =
-  (* The index at position [j] is scaled by the product of all dims
-     from [j] onward (the empty product 1 once [j] runs past the dims
-     list). Computing those suffix products right-to-left and reusing
-     them keeps reconstruction linear in the dimension count rather
-     than recomputing each suffix product from scratch. [suffix] is
-     [prod dims[0..]; prod dims[1..]; ..; prod dims[nd-1..]; 1], so its
-     head aligns with the first index and is consumed in lock-step. *)
-  let rec suffix_products = function
-    | [] -> [ Poly.of_int 1 ]
-    | d :: ds ->
-      (match suffix_products ds with
-       | p :: _ as tail -> Poly.( * ) d p :: tail
-       | [] -> assert false)
-  in
-  let rec go indices suffix acc =
-    match indices with
-    | [] -> acc
-    | i :: rest ->
-      let mult, suffix' =
-        match suffix with
-        | m :: ms -> (m, ms)
-        | [] -> (Poly.of_int 1, [])
-      in
-      go rest suffix' (Poly.( + ) acc (Poly.( * ) i mult))
-  in
-  go idx.indices (suffix_products idx.dims) Poly.zero
+  Poly.dot idx.indices (place_values idx.dims)

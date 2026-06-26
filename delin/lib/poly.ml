@@ -10,6 +10,8 @@ let of_int i = match i with
 
 let of_indet (v : Indet.t): t = Monic.Map.singleton (Indet.Map.singleton v 1) 1
 
+let of_monic (s : Monic.t): t = Monic.Map.singleton s 1
+
 let to_list t: Mono.t list = t
   |> Monic.Map.bindings
   |> List.map (fun (t, c) -> (c, t))
@@ -134,3 +136,21 @@ let try_scalar_quotient (a : t) (b : t) : int option =
            |> of_list
          in
          if compare a scaled = 0 then Some k else None)
+
+let coeff_of (s : Monic.t) (p : t) : int =
+  Monic.Map.find_opt s p |> Option.value ~default:0
+
+let scale (n : int) (e : t) : t =
+  if n = 0 then zero
+  else if n = 1 then e
+  else of_int n * e
+
+let indets (p : t) : Indet.t list =
+  fold (fun m acc -> Mono.fold (fun a _ acc -> a :: acc) acc m) [] p
+  |> List.sort_uniq Indet.compare
+
+let dot (a : t list) (b : t list) : t =
+  List.fold_left2 (fun acc x y -> acc + (x * y)) zero a b
+
+let linear_combination (ps : t list) (weights : int list) : t =
+  List.fold_left2 (fun acc p n -> acc + scale n p) zero ps weights
