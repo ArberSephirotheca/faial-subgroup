@@ -52,13 +52,15 @@ exception Stop_at_stage
 (* Which polynomial delinearization driver [--assume-delin] uses.
    [Greedy] is the pairwise-division driver; [Ics15] is the reference
    permutation-search implementation; [Ics15_opt] is its optimized
-   equivalent (same results, faster search). Orthogonal to the
-   bound-emission strategy. *)
+   equivalent (same results, faster search); [Cramer] is the
+   linear-algebra decomposer (exact Cramer-rule subscript recovery).
+   Orthogonal to the bound-emission strategy. *)
 module Delin_algo = struct
   type t =
     | Greedy
     | Ics15
     | Ics15_opt
+    | Cramer
 
   let default = Ics15_opt
 
@@ -66,9 +68,16 @@ module Delin_algo = struct
     | Greedy -> "greedy"
     | Ics15 -> "ics15"
     | Ics15_opt -> "ics15-opt"
+    | Cramer -> "cramer"
 
   (* Name/value pairs for [Cmdliner.Arg.enum]. *)
-  let enum = [ ("greedy", Greedy); ("ics15", Ics15); ("ics15-opt", Ics15_opt) ]
+  let enum =
+    [
+      ("greedy", Greedy);
+      ("ics15", Ics15);
+      ("ics15-opt", Ics15_opt);
+      ("cramer", Cramer);
+    ]
 end
 
 type t = {
@@ -448,7 +457,7 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
      rewriter wraps each delinearized access in [Unsynced.Assert] nodes
      for the per-axis bounds the strategy emits; [inline_asserts]
      downstream lifts them into a [Cond] gate. Two orthogonal axes:
-     polynomial driver ([Greedy] | [Ics15] | [Ics15_opt]) and
+     polynomial driver ([Greedy] | [Ics15] | [Ics15_opt] | [Cramer]) and
      bound-emission strategy ([AllBounds] | [Maslov] | [RejectAll]). *)
   |> (if a.assume_delin
       then
@@ -457,6 +466,7 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
           | Delin_algo.Greedy -> (module Greedy)
           | Delin_algo.Ics15 -> (module Ics15)
           | Delin_algo.Ics15_opt -> (module Ics15_opt)
+          | Delin_algo.Cramer -> (module Cramer)
         in
         let bg : (module Delinearize.BoundGenerator) =
           if a.delin_elide then (module Delinearize.Maslov)

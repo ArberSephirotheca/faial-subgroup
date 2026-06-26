@@ -336,7 +336,10 @@ let main =
              search + alpha-derivation, rejecting any candidate that \
              requires a non-static polynomial division); $(b,ics15-opt) \
              is the optimized ICS15 driver, which yields the same \
-             candidates as $(b,ics15) with a pruned search. Defaults to \
+             candidates as $(b,ics15) with a pruned search; \
+             $(b,cramer) is the linear-algebra decomposer, recovering \
+             subscripts by exact integer Cramer-rule over the \
+             per-monomial systems. Defaults to \
              $(b,ics15-opt). Orthogonal to the bound-emission flags.")
   and+ no_check_delin =
     Arg.(
