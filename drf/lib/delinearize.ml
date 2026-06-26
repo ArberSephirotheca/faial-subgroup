@@ -1,6 +1,6 @@
 open Protocols
-(* [delin] is unwrapped, so [Atom], [Term], [Expr], [Index], [Greedy],
-   [Ics15], [Algorithm], [Polynomial] are top-level modules available
+(* [delin] is unwrapped, so [Indet], [Mono], [Poly], [Index], [Greedy],
+   [Ics15], [Algorithm], [Shape] are top-level modules available
    here without an [open]. [Stage0] stays qualified ([Stage0.Index]
    would shadow delin's [Index] if we opened it). *)
 module Phase_timer = Stage0.Phase_timer
@@ -45,15 +45,15 @@ module type BoundGenerator = sig
 
   type t
   val create : scope -> t
-  val add_bound : t -> Expr.t -> Expr.t -> t
+  val add_bound : t -> Poly.t -> Poly.t -> t
   val get_bounds : t -> Exp.bexp list
 end
 
 (* Build the standard [0 <= i] /\ [i < d] conjunction from an inner-axis
    index expression and its dimension. *)
-let make_bound (i : Expr.t) (d : Expr.t) : Exp.bexp =
+let make_bound (i : Poly.t) (d : Poly.t) : Exp.bexp =
   let open Exp in
-  b_and (n_le (Num 0) (Expr.to_nexp i)) (n_lt (Expr.to_nexp i) (Expr.to_nexp d))
+  b_and (n_le (Num 0) (Poly.to_nexp i)) (n_lt (Poly.to_nexp i) (Poly.to_nexp d))
 
 module AllBounds : BoundGenerator = struct
   type scope = unit
@@ -72,14 +72,14 @@ end
    [lower_bound = Num 0] and whose [upper_bound + 1] normalises to [d]
    under the [globals] in scope at the loop's entry. *)
 module Maslov : BoundGenerator = struct
-  type scope = Expr.t Lazy.t Variable.Map.t
+  type scope = Poly.t Lazy.t Variable.Map.t
   let initial_scope = Variable.Map.empty
 
-  (* Lazy [ub + 1] in [Expr.t] form. Built once per loop entry, capturing
+  (* Lazy [ub + 1] in [Poly.t] form. Built once per loop entry, capturing
      the [globals] in scope there, then reused across every emit-site
      inside the loop body. *)
-  let cache_entry ~globals (upper_bound : Exp.nexp) : Expr.t Lazy.t =
-    lazy (Expr.( + ) (Expr.from_nexp ~globals upper_bound) (Expr.of_int 1))
+  let cache_entry ~globals (upper_bound : Exp.nexp) : Poly.t Lazy.t =
+    lazy (Poly.( + ) (Poly.from_nexp ~globals upper_bound) (Poly.of_int 1))
 
   let add_range ~globals (r : Range.t) (s : scope) : scope =
     match r.lower_bound with
@@ -91,31 +91,31 @@ module Maslov : BoundGenerator = struct
 
   (* [Some v] iff [i] is a single bare induction variable [v] with
      coefficient 1: one polynomial term, one factor with exponent 1, and
-     that factor classifies as [Atom.Induction (Var v)]. *)
-  let as_single_induction_var (i : Expr.t) : Variable.t option =
+     that factor classifies as [Indet.Induction (Var v)]. *)
+  let as_single_induction_var (i : Poly.t) : Variable.t option =
     let ( let* ) = Option.bind in
-    let* t = match Expr.to_list i with
-      | [t] when Term.coeff t = 1 -> Some t
+    let* t = match Poly.to_list i with
+      | [t] when Mono.coeff t = 1 -> Some t
       | _ -> None
     in
-    let* a = match Term.factors t with
+    let* a = match Mono.factors t with
       | [(a, 1)] -> Some a
       | _ -> None
     in
-    Atom.as_induction_var a
+    Indet.as_induction_var a
 
-  let provable ~(ranges : scope) (i : Expr.t) (d : Expr.t) : bool =
+  let provable ~(ranges : scope) (i : Poly.t) (d : Poly.t) : bool =
     if Variable.Map.is_empty ranges then false
     else
       let ( let* ) = Option.bind in
       let outcome =
         let* v = as_single_induction_var i in
         let* lhs = Variable.Map.find_opt v ranges in
-        Some (Expr.compare (Lazy.force lhs) d = 0)
+        Some (Poly.compare (Lazy.force lhs) d = 0)
       in
       Option.value outcome ~default:false
 
-  let add_bound (s : t) (i : Expr.t) (d : Expr.t) : t =
+  let add_bound (s : t) (i : Poly.t) (d : Poly.t) : t =
     if provable ~ranges:s.ranges i d then s
     else { s with bounds = make_bound i d :: s.bounds }
 
@@ -142,15 +142,15 @@ module Make (A : Algorithm.S) (G : BoundGenerator) : sig
     scope:G.scope ->
     loop_scope:Exp.bexp list ->
     check:bound_oracle ->
-    size_params:Term.t list ->
-    Expr.t ->
+    size_params:Mono.t list ->
+    Poly.t ->
     t option
   val rewrite_kernel :
     check:bound_oracle -> Aligned.Kernel.t -> Aligned.Kernel.t
 end = struct
   let from_exp ~(globals : Variable.Set.t) ~(scope : G.scope)
       ~(loop_scope : Exp.bexp list) ~(check : bound_oracle)
-      ~(size_params : Term.t list) (expr : Expr.t) : t option =
+      ~(size_params : Mono.t list) (expr : Poly.t) : t option =
     let ( let* ) = Option.bind in
     let* (idx, _) = Seq.uncons (A.candidates ~globals ~size_params expr) in
     let inner_is = match (idx : Index.t).indices with
@@ -170,8 +170,8 @@ end = struct
     if List.for_all (fun b -> check ~scope:loop_scope ~bound:b) all_bounds
     then
       Some {
-        indices = List.map Expr.to_nexp idx.indices;
-        dims = List.map Expr.to_nexp idx.dims;
+        indices = List.map Poly.to_nexp idx.indices;
+        dims = List.map Poly.to_nexp idx.dims;
         conditions = all_bounds;
       }
     else
@@ -200,7 +200,7 @@ end = struct
       ~(scope : G.scope)
       ~(loop_scope : Exp.bexp list)
       ~(check : bound_oracle)
-      ~(size_params_map : Term.t list Variable.Map.t)
+      ~(size_params_map : Mono.t list Variable.Map.t)
       (unsync : Unsynced.t) : Variable.Set.t =
     let open Unsynced in
     let rec walk (scope : G.scope) (loop_scope : Exp.bexp list)
@@ -210,7 +210,7 @@ end = struct
         (match Variable.Map.find_opt array size_params_map with
          | None -> Variable.Set.add array failed
          | Some size_params ->
-           let a = Expr.from_nexp ~globals a in
+           let a = Poly.from_nexp ~globals a in
            match
              from_exp ~globals ~scope ~loop_scope ~check ~size_params a
            with
@@ -254,10 +254,10 @@ end = struct
            and its accesses pass through unchanged. *)
         accesses
         |> List.fold_left (fun acc -> function
-          | [a] -> Option.map (fun xs -> Expr.from_nexp ~globals a :: xs) acc
+          | [a] -> Option.map (fun xs -> Poly.from_nexp ~globals a :: xs) acc
           | _ -> None
         ) (Some [])
-        |> Option.map Polynomial.size_params_all))
+        |> Option.map Shape.size_params_all))
     in
     let viable = Phase_timer.measure "delin/viability" (fun () ->
       viable_arrays ~globals ~scope ~loop_scope ~check ~size_params_map
@@ -268,7 +268,7 @@ end = struct
       | Access ({ array; index = [a]; _ } as acc)
         when Variable.Set.mem array viable ->
         let size_params = Variable.Map.find array size_params_map in
-        let a = Expr.from_nexp ~globals a in
+        let a = Poly.from_nexp ~globals a in
         (match
            Phase_timer.measure "delin/from-exp" (fun () ->
              from_exp ~globals ~scope ~loop_scope ~check ~size_params a)

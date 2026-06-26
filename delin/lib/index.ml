@@ -1,12 +1,12 @@
 open Protocols
 
 type t = {
-  indices : Expr.t list;
-  dims : Expr.t list;
+  indices : Poly.t list;
+  dims : Poly.t list;
   conditions : Exp.bexp list;
 }
 
-let reconstruct (idx : t) : Expr.t =
+let reconstruct (idx : t) : Poly.t =
   (* The index at position [j] is scaled by the product of all dims
      from [j] onward (the empty product 1 once [j] runs past the dims
      list). Computing those suffix products right-to-left and reusing
@@ -15,10 +15,10 @@ let reconstruct (idx : t) : Expr.t =
      [prod dims[0..]; prod dims[1..]; ..; prod dims[nd-1..]; 1], so its
      head aligns with the first index and is consumed in lock-step. *)
   let rec suffix_products = function
-    | [] -> [ Expr.of_int 1 ]
+    | [] -> [ Poly.of_int 1 ]
     | d :: ds ->
       (match suffix_products ds with
-       | p :: _ as tail -> Expr.( * ) d p :: tail
+       | p :: _ as tail -> Poly.( * ) d p :: tail
        | [] -> assert false)
   in
   let rec go indices suffix acc =
@@ -28,8 +28,8 @@ let reconstruct (idx : t) : Expr.t =
       let mult, suffix' =
         match suffix with
         | m :: ms -> (m, ms)
-        | [] -> (Expr.of_int 1, [])
+        | [] -> (Poly.of_int 1, [])
       in
-      go rest suffix' (Expr.( + ) acc (Expr.( * ) i mult))
+      go rest suffix' (Poly.( + ) acc (Poly.( * ) i mult))
   in
-  go idx.indices (suffix_products idx.dims) Expr.zero
+  go idx.indices (suffix_products idx.dims) Poly.zero

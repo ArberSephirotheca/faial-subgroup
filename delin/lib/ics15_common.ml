@@ -1,38 +1,49 @@
 (* Helpers shared verbatim by the reference [Ics15] driver and the
    optimized [Ics15_opt] driver. They are algorithm-agnostic: the
    bucket signature and lookup, scalar scaling, dimension construction,
-   and candidate-atom extraction do not depend on how the permutation
+   and candidate-indeterminate extraction do not depend on how the permutation
    search is organized, so both drivers reuse them rather than forking. *)
 
-(* Multiset key for a list of atoms: each atom paired with exponent 1.
-   Permutation-invariant, since [Atom.Map.of_list] erases order. *)
-let bucket_sig (atoms : Atom.t list) : Term_inner.t =
-  atoms |> List.map (fun a -> (a, 1)) |> Atom.Map.of_list
+(* Multiset key for a list of indeterminates: each indeterminate paired with exponent 1.
+   Permutation-invariant, since [Indet.Map.of_list] erases order. *)
+let bucket_sig (indets : Indet.t list) : Monic.t =
+  indets |> List.map (fun a -> (a, 1)) |> Indet.Map.of_list
 
 let bucket_lookup
-    (buckets : Expr.t Term_inner.Map.t) (atoms : Atom.t list) : Expr.t =
-  Term_inner.Map.find_opt (bucket_sig atoms) buckets
-  |> Option.value ~default:Expr.zero
+    (buckets : Poly.t Monic.Map.t) (indets : Indet.t list) : Poly.t =
+  Monic.Map.find_opt (bucket_sig indets) buckets
+  |> Option.value ~default:Poly.zero
 
-let scale (n : int) (e : Expr.t) : Expr.t =
-  if n = 0 then Expr.zero
+let scale (n : int) (e : Poly.t) : Poly.t =
+  if n = 0 then Poly.zero
   else if n = 1 then e
-  else Expr.( * ) (Expr.of_int n) e
+  else Poly.( * ) (Poly.of_int n) e
 
-let build_dims (perm : Atom.t list) (alphas : int list) : Expr.t list =
+let build_dims (perm : Indet.t list) (alphas : int list) : Poly.t list =
   List.mapi (fun i p ->
     let a = List.nth alphas i in
-    let p_expr = Expr.of_atom p in
+    let p_expr = Poly.of_indet p in
     if a = 0 then p_expr
-    else Expr.( + ) p_expr (Expr.of_int a))
+    else Poly.( + ) p_expr (Poly.of_int a))
     perm
 
 (* Candidate parameters must be drawn from the array-shared
    [size_params], not from the per-access expression. Otherwise two
    accesses to one array can pick different shapes, breaking the
    downstream invariant that all accesses agree on dimensionality. *)
-let params_in_size_params (sp : Term.t list) : Atom.t list =
+let params_in_size_params (sp : Mono.t list) : Indet.t list =
   sp |> List.concat_map (fun t ->
-    Term.factors t |> List.filter_map (fun (a, _) ->
-      if Atom.is_parameter a then Some a else None))
-  |> List.sort_uniq Atom.compare
+    Mono.factors t |> List.filter_map (fun (a, _) ->
+      if Indet.is_parameter a then Some a else None))
+  |> List.sort_uniq Indet.compare
+
+(* All orderings of a list, as a lazy sequence. The permutation search
+   over candidate parameters drives both ics15 drivers. *)
+let rec permutations : 'a list -> 'a list Seq.t = function
+  | [] -> Seq.return []
+  | xs ->
+    List.mapi (fun i x -> (i, x)) xs
+    |> List.to_seq
+    |> Seq.concat_map (fun (i, x) ->
+        let rest = List.filteri (fun j _ -> j <> i) xs in
+        Seq.map (fun p -> x :: p) (permutations rest))

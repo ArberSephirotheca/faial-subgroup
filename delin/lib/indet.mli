@@ -12,7 +12,7 @@ val parameter : string -> t
 val is_induction : t -> bool
 val is_parameter : t -> bool
 
-(* When the atom is a bare induction variable [Var v], return [Some v].
+(* When the indeterminate is a bare induction variable [Var v], return [Some v].
    Returns [None] for parameters or compound induction expressions. *)
 val as_induction_var : t -> Variable.t option
 

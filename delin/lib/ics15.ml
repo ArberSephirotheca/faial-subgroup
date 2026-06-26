@@ -9,7 +9,7 @@
 
    This is the reference implementation: it follows the paper step by
    step (group buckets per permutation, derive alphas by filtering one
-   atom at a time, recover subscripts with list indexing). [Ics15_opt]
+   indeterminate at a time, recover subscripts with list indexing). [Ics15_opt]
    is the performance-tuned variant and is checked against this module
    by the differential tests. The shared, algorithm-agnostic helpers
    live in [Ics15_common]. *)
@@ -22,9 +22,9 @@ open Ics15_common
    [alpha_1] pinned to 0 (the documented constraint for the
    subscript-recovery step). *)
 let derive_alphas
-    ~(perm : Atom.t list)
-    ~(buckets : Expr.t Term_inner.Map.t)
-    ~(f0 : Expr.t)
+    ~(perm : Indet.t list)
+    ~(buckets : Poly.t Monic.Map.t)
+    ~(f0 : Poly.t)
     : int list option =
   let ( let* ) = Option.bind in
   let d = List.length perm + 1 in
@@ -35,7 +35,7 @@ let derive_alphas
         List.filteri (fun i _ -> i + 1 <> k) perm
       in
       let* a =
-        Polynomial.try_scalar_quotient
+        Poly.try_scalar_quotient
           (bucket_lookup buckets perm_without_pk) f0
       in
       go (k + 1) (a :: acc)
@@ -50,11 +50,11 @@ let derive_alphas
    where [contribution] sums each prior [f_i] scaled by
    [alpha_{i+1} * .. * alpha_j]. *)
 let derive_fs
-    ~(perm : Atom.t list)
-    ~(buckets : Expr.t Term_inner.Map.t)
+    ~(perm : Indet.t list)
+    ~(buckets : Poly.t Monic.Map.t)
     ~(alphas : int list)
-    ~(f0 : Expr.t)
-    : Expr.t list =
+    ~(f0 : Poly.t)
+    : Poly.t list =
   let d = List.length perm + 1 in
   let alpha k = List.nth alphas (k - 1) in
   let alpha_prod ~from ~upto =
@@ -63,17 +63,17 @@ let derive_fs
     in
     go from 1
   in
-  let contribution (prev_fs : Expr.t list) (j : int) : Expr.t =
+  let contribution (prev_fs : Poly.t list) (j : int) : Poly.t =
     List.fold_left
       (fun (sum, i) f_i ->
         let next =
           if i = 0 then sum
           else
-            Expr.( + ) sum
+            Poly.( + ) sum
               (scale (alpha_prod ~from:(i + 1) ~upto:j) f_i)
         in
         (next, i + 1))
-      (Expr.zero, 0)
+      (Poly.zero, 0)
       prev_fs
     |> fst
   in
@@ -83,26 +83,26 @@ let derive_fs
       let tail = List.filteri (fun idx _ -> idx + 1 > j) perm in
       let bucket = bucket_lookup buckets tail in
       let prev_fs = List.rev prev_fs_rev in
-      let f_j = Expr.( - ) bucket (contribution prev_fs j) in
+      let f_j = Poly.( - ) bucket (contribution prev_fs j) in
       go (j + 1) (f_j :: prev_fs_rev)
   in
   go 1 [f0]
 
-let try_permutation (perm : Atom.t list) (expr : Expr.t) : Index.t option =
-  let buckets = Polynomial.group_by_parameters ~candidates:perm expr in
+let try_permutation (perm : Indet.t list) (expr : Poly.t) : Index.t option =
+  let buckets = Poly.group_by_parameters ~candidates:perm expr in
   let f0 = bucket_lookup buckets perm in
   let d = List.length perm + 1 in
-  if d > 1 && Expr.compare f0 Expr.zero = 0 then None
+  if d > 1 && Poly.compare f0 Poly.zero = 0 then None
   else
     let ( let* ) = Option.bind in
     let* alphas = derive_alphas ~perm ~buckets ~f0 in
     let fs = derive_fs ~perm ~buckets ~alphas ~f0 in
     let dims = build_dims perm alphas in
     let idx : Index.t = { indices = fs; dims; conditions = [] } in
-    if Expr.compare (Index.reconstruct idx) expr = 0 then Some idx
+    if Poly.compare (Index.reconstruct idx) expr = 0 then Some idx
     else None
 
 let candidates ~globals:_ ~size_params expr =
   params_in_size_params size_params
-  |> Polynomial.permutations
+  |> permutations
   |> Seq.filter_map (fun perm -> try_permutation perm expr)

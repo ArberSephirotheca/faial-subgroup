@@ -21,10 +21,10 @@ type t = {
 
 (* Product of [dims.(j)], [dims.(j+1)], ..., [dims.(last)] as a polynomial.
    Empty product (j past the last dim) returns 1. *)
-let element_stride (dims : Expr.t list) (j : int) : Expr.t =
+let element_stride (dims : Poly.t list) (j : int) : Poly.t =
   dims
   |> List.filteri (fun i _ -> i >= j)
-  |> List.fold_left Expr.( * ) (Expr.of_int 1)
+  |> List.fold_left Poly.( * ) (Poly.of_int 1)
 
 (* Substitute the six [blockDim.*] / [gridDim.*] variables with concrete
    integers from [cfg], constfold, and read off a [Num n] if everything
@@ -37,14 +37,14 @@ let element_stride (dims : Expr.t list) (j : int) : Expr.t =
    work for callers that bypass the upstream substitution (e.g. unit
    tests). The oracle below covers the symbolic-stride cases that
    survive substitution. *)
-let try_concrete (cfg : Config.t) (e : Expr.t) : int option =
+let try_concrete (cfg : Config.t) (e : Poly.t) : int option =
   let bdim = cfg.block_dim in
   let gdim = cfg.grid_dim in
   let subst1 (x : Variable.t) (n : int) (e : Exp.nexp) : Exp.nexp =
     Subst.ReplacePair.n_subst (x, Num n) e
   in
   let reduced =
-    Expr.to_nexp e
+    Poly.to_nexp e
     |> subst1 Variable.bdim_x bdim.x
     |> subst1 Variable.bdim_y bdim.y
     |> subst1 Variable.bdim_z bdim.z
@@ -60,8 +60,8 @@ let try_concrete (cfg : Config.t) (e : Expr.t) : int option =
    [Config.is_warp_uniform] (which catches warp-local tids like [tid_y]
    when [blockDim.x >= threads_per_warp]). *)
 let subscript_warp_class (cfg : Config.t) (locals : Variable.Set.t)
-    (e : Expr.t) : [ `Uniform | `Varying ] =
-  let free = Exp.n_free_names (Expr.to_nexp e) Variable.Set.empty in
+    (e : Poly.t) : [ `Uniform | `Varying ] =
+  let free = Exp.n_free_names (Poly.to_nexp e) Variable.Set.empty in
   let scope = Variable.Set.union locals Variable.tid_set in
   let varying =
     Variable.Set.exists
@@ -104,30 +104,30 @@ let tid_is_warp_injective (cfg : Config.t) (v : Variable.t) : bool =
      [bank_count / g_stride]). Here [g_stride] is the
      outer-stride gcd passed in by [classify_index]. *)
 let injectivity_class (cfg : Config.t) (locals : Variable.Set.t)
-    ~(g_stride : int) (sub : Expr.t) : [ `Injective | `Unknown ] =
+    ~(g_stride : int) (sub : Poly.t) : [ `Injective | `Unknown ] =
   let bank_count = cfg.bank_count in
   let modulus = if g_stride = 0 then 1 else bank_count / g_stride in
   let scope = Variable.Set.union locals Variable.tid_set in
   let is_warp_varying_var (x : Variable.t) : bool =
     Variable.Set.mem x scope && not (Config.is_warp_uniform x cfg)
   in
-  let term_warp_class (t : Term.t) : [ `Uniform | `Varying ] =
+  let term_warp_class (t : Mono.t) : [ `Uniform | `Varying ] =
     let free =
-      Exp.n_free_names (Term.to_nexp t) Variable.Set.empty
+      Exp.n_free_names (Mono.to_nexp t) Variable.Set.empty
     in
     if Variable.Set.exists is_warp_varying_var free then `Varying
     else `Uniform
   in
   let varying =
-    Expr.to_list sub
+    Poly.to_list sub
     |> List.filter (fun t -> term_warp_class t = `Varying)
   in
   match varying with
   | [ single ] -> (
-      let c = Term.coeff single in
-      match Term.factors single with
+      let c = Mono.coeff single in
+      match Mono.factors single with
       | [ (atom, 1) ] -> (
-          match Atom.as_induction_var atom with
+          match Indet.as_induction_var atom with
           | Some v
             when is_warp_varying_var v && tid_is_warp_injective cfg v ->
               if gcd (abs c) modulus = 1 then `Injective else `Unknown
@@ -177,10 +177,10 @@ let classify_index ?(oracle : Oracle.t option) ~(config : Config.t)
       match try_concrete config stride_expr with
       | Some n_raw -> classify_with_sigma (normalize n_raw) sub
       | None ->
-          let stride = Expr.to_nexp stride_expr in
+          let stride = Poly.to_nexp stride_expr in
           classify_symbolic ~stride sub)
 
-(* Encapsulates BC's use of delin. Builds [Delin.Expr.from_nexp] with
+(* Encapsulates BC's use of delin. Builds [Delin.Poly.from_nexp] with
    the right globals (the locals-with-tids union excluded), runs
    [Delin.Greedy.candidates], and decorates the resulting axes.
    Returns a self-contained record the analysis layer can interpret.
@@ -190,15 +190,15 @@ let from_exp ?(oracle : Oracle.t option) ~(config : Config.t)
   (* Mirror [Normalize.BC.from_nexp]'s locals-with-tids union: a thread
      coord is induction-side in delin's classification (not a parameter),
      so it must be excluded from the [globals] passed to
-     [Expr.from_nexp]. *)
+     [Poly.from_nexp]. *)
   let local_scope = Variable.Set.union locals Variable.tid_set in
   let globals =
     Variable.Set.diff
       (Exp.n_free_names reduced Variable.Set.empty)
       local_scope
   in
-  let expr = Expr.from_nexp ~globals reduced in
-  let size_params = Polynomial.size_params expr in
+  let expr = Poly.from_nexp ~globals reduced in
+  let size_params = Shape.size_params expr in
   match Greedy.candidates ~globals ~size_params expr |> Seq.uncons with
   | None -> { reduced; axes = [] }
   | Some (idx, _) ->

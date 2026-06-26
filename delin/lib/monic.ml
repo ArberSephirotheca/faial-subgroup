@@ -1,20 +1,20 @@
-type t = int Atom.Map.t
+type t = int Indet.Map.t
 
-let compare = Atom.Map.compare Int.compare
+let compare = Indet.Map.compare Int.compare
 
-let normalize = Atom.Map.filter (fun _ v -> v != 0)
+let normalize = Indet.Map.filter (fun _ v -> v != 0)
 let ( ||> ) (x, y) f = f x y
 let ( * ) (t1: t) (t2: t): t = (t1, t2)
-  ||> Atom.Map.merge (fun _ v1 v2 -> match v1, v2 with
+  ||> Indet.Map.merge (fun _ v1 v2 -> match v1, v2 with
     | Some v1, Some v2 -> Some (v1 + v2)
     | Some v, None | None, Some v -> Some v
     | None, None -> None
   )
   |> normalize
-let fold f acc t = Atom.Map.fold f t acc
-let to_list = Atom.Map.bindings
+let fold f acc t = Indet.Map.fold f t acc
+let to_list = Indet.Map.bindings
 let nfactors t = t
-  |> Atom.Map.to_list
+  |> Indet.Map.to_list
   |> List.length
 let is_const t = nfactors t = 0
 
