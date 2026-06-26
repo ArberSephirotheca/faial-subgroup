@@ -44,7 +44,7 @@ rebuild-ci-image:
     - _build
 
 .macos-cache: &macos_cache
-  image: macos-14-xcode-15
+  image: macos-15-xcode-16
   variables:
     OCAML_VERSION: 5.3.0
     LLVM_VERSION: 17
