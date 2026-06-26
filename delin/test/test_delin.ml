@@ -17,7 +17,7 @@ end
 let globals = Variable.Set.of_list (["M"; "N"] |> List.map Variable.from_name)
 
 let normalize (e : nexp) : nexp =
-  e |> Expr.from_nexp ~globals |> Expr.to_nexp
+  e |> Poly.from_nexp ~globals |> Poly.to_nexp
 
 let string_of_list (f : 'a -> string) (l : 'a list) : string =
   l |> List.map f |> String.concat "; " |> Printf.sprintf "[%s]"
@@ -28,13 +28,13 @@ let string_of_option (f : 'a -> string) : 'a option -> string = function
 
 let string_of_index (i : Index.t) : string =
   let exprs es =
-    string_of_list (fun e -> Exp.n_to_string (Expr.to_nexp e)) es
+    string_of_list (fun e -> Exp.n_to_string (Poly.to_nexp e)) es
   in
   Printf.sprintf "{indices=%s; dims=%s}" (exprs i.indices) (exprs i.dims)
 
-let expr_list_eq (a : Expr.t list) (b : Expr.t list) : bool =
+let expr_list_eq (a : Poly.t list) (b : Poly.t list) : bool =
   List.length a = List.length b
-  && List.for_all2 (fun x y -> Expr.compare x y = 0) a b
+  && List.for_all2 (fun x y -> Poly.compare x y = 0) a b
 
 let index_eq (i1 : Index.t) (i2 : Index.t) : bool =
   expr_list_eq i1.indices i2.indices
@@ -81,9 +81,9 @@ let stage1_tests =
   |> List.iter (fun (msg, exp, params) ->
       let got =
         exp
-        |> Expr.from_nexp ~globals
-        |> Polynomial.size_params
-        |> List.map Term.to_nexp
+        |> Poly.from_nexp ~globals
+        |> Shape.size_params
+        |> List.map Mono.to_nexp
       in
       assert_equal
         ~msg
@@ -96,10 +96,10 @@ let stage2_tests =
   |> List.iter (fun (msg, exp, expected) ->
       let got =
         exp
-        |> Expr.from_nexp ~globals
-        |> Polynomial.size_params
-        |> Polynomial.dims
-        |> Option.map (List.map Term.to_nexp)
+        |> Poly.from_nexp ~globals
+        |> Shape.size_params
+        |> Shape.dims
+        |> Option.map (List.map Mono.to_nexp)
       in
       assert_equal
         ~msg
@@ -110,8 +110,8 @@ let reconstruct_tests =
   "Index.reconstruct" >:: fun _ ->
   let open Build in
   let check ~msg before =
-    let expr = Expr.from_nexp ~globals before in
-    let size_params = Polynomial.size_params expr in
+    let expr = Poly.from_nexp ~globals before in
+    let size_params = Shape.size_params expr in
     match
       Greedy.candidates ~globals ~size_params expr |> Seq.uncons
     with
@@ -121,7 +121,7 @@ let reconstruct_tests =
         ~msg
         ~printer:Exp.n_to_string
         (normalize before)
-        (Expr.to_nexp rebuilt)
+        (Poly.to_nexp rebuilt)
     | None ->
       failwith "test fixture: Greedy returned no candidate"
   in
@@ -139,10 +139,10 @@ let grosser_offset_test =
   "ICS15.candidates handles A[?][N][M+1]" >:: fun _ ->
   let open Build in
   let expr =
-    Expr.from_nexp ~globals
+    Poly.from_nexp ~globals
       (vN * vM * x + vN * x + vM * y + y + z)
   in
-  let size_params = Polynomial.size_params expr in
+  let size_params = Shape.size_params expr in
   match
     Ics15.candidates ~globals ~size_params expr
     |> Seq.uncons
@@ -153,10 +153,10 @@ let grosser_offset_test =
     assert_equal
       ~msg:"reconstructed polynomial"
       ~printer:Exp.n_to_string
-      (Expr.to_nexp
-        (Expr.from_nexp ~globals
+      (Poly.to_nexp
+        (Poly.from_nexp ~globals
           (vN * vM * x + vN * x + vM * y + y + z)))
-      (Expr.to_nexp rebuilt);
+      (Poly.to_nexp rebuilt);
     assert_equal
       ~msg:"index count"
       ~printer:string_of_int
@@ -171,10 +171,10 @@ let greedy_fails_on_offset_test =
   "Greedy.candidates fails on A[?][N][M+1]" >:: fun _ ->
   let open Build in
   let expr =
-    Expr.from_nexp ~globals
+    Poly.from_nexp ~globals
       (vN * vM * x + vN * x + vM * y + y + z)
   in
-  let size_params = Polynomial.size_params expr in
+  let size_params = Shape.size_params expr in
   match
     Greedy.candidates ~globals ~size_params expr |> Seq.uncons
   with
@@ -195,8 +195,8 @@ let ics15_differential_tests =
   let open Build in
   let head s = s |> Seq.uncons |> Option.map fst in
   let check ?(expect = `Any) ~msg before =
-    let expr = Expr.from_nexp ~globals before in
-    let size_params = Polynomial.size_params expr in
+    let expr = Poly.from_nexp ~globals before in
+    let size_params = Shape.size_params expr in
     let ref_idx = head (Ics15.candidates ~globals ~size_params expr) in
     let opt_idx = head (Ics15_opt.candidates ~globals ~size_params expr) in
     (match ref_idx, opt_idx with
@@ -211,7 +211,7 @@ let ics15_differential_tests =
        assert_equal ~msg:(msg ^ ": opt reconstructs input")
          ~printer:Exp.n_to_string
          (normalize before)
-         (Expr.to_nexp (Index.reconstruct o))
+         (Poly.to_nexp (Index.reconstruct o))
      | _ ->
        assert_failure
          (Printf.sprintf "%s: only one driver produced a candidate (ref=%s opt=%s)"

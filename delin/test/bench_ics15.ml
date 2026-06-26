@@ -41,9 +41,9 @@ let globals (n : int) : Variable.Set.t =
   List.init n (fun k -> Variable.from_name (Printf.sprintf "P%d" (k + 1)))
   |> Variable.Set.of_list
 
-let expr_list_eq (a : Expr.t list) (b : Expr.t list) : bool =
+let expr_list_eq (a : Poly.t list) (b : Poly.t list) : bool =
   List.length a = List.length b
-  && List.for_all2 (fun x y -> Expr.compare x y = 0) a b
+  && List.for_all2 (fun x y -> Poly.compare x y = 0) a b
 
 let index_eq (a : Index.t) (b : Index.t) : bool =
   expr_list_eq a.indices b.indices
@@ -59,8 +59,8 @@ let head s = s |> Seq.uncons |> Option.map fst
 let count s = Seq.fold_left (fun n _ -> n + 1) 0 s
 
 let run_one (n : int) : bool =
-  let expr = Expr.from_nexp ~globals:(globals n) (build_expr n) in
-  let size_params = Polynomial.size_params expr in
+  let expr = Poly.from_nexp ~globals:(globals n) (build_expr n) in
+  let size_params = Shape.size_params expr in
   let globals = globals n in
   let first_ref = head (Ics15.candidates ~globals ~size_params expr) in
   let first_opt = head (Ics15_opt.candidates ~globals ~size_params expr) in
