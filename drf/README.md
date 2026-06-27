@@ -247,6 +247,22 @@ and `L128` are recorded as excluded rows. Production lookup consumes only the
 admitted rows; the family record is not a guarded family proof and does not
 promote any neighbor without exact JSON or a future guarded proof artifact.
 
+S430 adds a typed symbolic `K` guard record for the same solve-tri family
+without admitting more lookup rows. The guard covers the manifest/source launch
+cases `K = {32,16,14,12,10,8,6,4,2,1}` with fixed `N = 64`,
+`blockDim = [32,K,1]`, dynamic shared memory `0`, subgroup helper
+`warp_reduce_sum`, and explicit `--subgroup-size 32`. `L117` and `L118` remain
+the only lookup anchors; `L119`-`L126` remain unpromoted guard candidates, and
+`L116`/`L127`/`L128` remain excluded.
+
+The current symbolic route is intentionally fail-closed before proof: the
+launch-contract generator records a `Memory_event.Subgroup_obligation` blocker
+because `Launch_contract.t` and `Dim3.t` still carry concrete template and
+block-shape values, so the production subgroup obligation builder cannot yet
+emit an obligation whose checked block dimension contains symbolic `K`. This
+blocker is not a solver or pre-solver result, is not a guarded family proof,
+and does not change manifest verdicts.
+
 ## Subgroup/Matrix Extension Boundary
 
 - `lib/memory_event.ml` exposes an internal `Subgroup_event` adapter from

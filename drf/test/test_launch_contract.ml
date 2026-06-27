@@ -24,6 +24,23 @@ let check_dim3 label (expected : Dim3.t) (actual : Dim3.t) =
   Alcotest.(check int) (label ^ ".y") expected.y actual.y;
   Alcotest.(check int) (label ^ ".z") expected.z actual.z
 
+let string_contains haystack needle =
+  let haystack_len = String.length haystack in
+  let needle_len = String.length needle in
+  let rec matches_at offset needle_offset =
+    if needle_offset = needle_len then true
+    else
+      offset + needle_offset < haystack_len
+      && Char.equal haystack.[offset + needle_offset] needle.[needle_offset]
+      && matches_at offset (needle_offset + 1)
+  in
+  let rec search offset =
+    if needle_len = 0 then true
+    else if offset + needle_len > haystack_len then false
+    else matches_at offset 0 || search (offset + 1)
+  in
+  search 0
+
 let test_gla_l072_contract_shape () : unit =
   let contract = expect_ok (LC.of_row_id "L072") in
   Alcotest.(check string) "row id" "L072" contract.row_id;
@@ -206,6 +223,11 @@ let row_ids rows = List.map (fun row -> row.Launch_contract_rows.row_id) rows
 
 let solve_tri_seed_row_ids rows =
   List.map (fun row -> row.Launch_contract_generator.solve_tri_row_id) rows
+
+let solve_tri_symbolic_row_ids rows =
+  List.map
+    (fun row -> row.Launch_contract_generator.solve_tri_symbolic_row_id)
+    rows
 
 let is_gla_row (row : Launch_contract_rows.t) =
   match row.family with Gla -> true | Wkv | Wkv7 -> false
@@ -484,9 +506,10 @@ let test_solve_tri_family_contract_guards () : unit =
   Alcotest.(check string)
     "family source kernel" "solve_tri_f32_fast"
     family.Launch_contract_generator.solve_tri_source_kernel_family;
-  Alcotest.(check int) "family N template" 64
-    family.Launch_contract_generator.solve_tri_n_template;
-  Alcotest.(check int) "family blockDim.x" 32
+  Alcotest.(check int)
+    "family N template" 64 family.Launch_contract_generator.solve_tri_n_template;
+  Alcotest.(check int)
+    "family blockDim.x" 32
     family.Launch_contract_generator.solve_tri_block_dim_x;
   Alcotest.(check string)
     "family blockDim source" "threads"
@@ -500,12 +523,29 @@ let test_solve_tri_family_contract_guards () : unit =
   Alcotest.(check string)
     "family subgroup helper" "warp_reduce_sum"
     family.Launch_contract_generator.solve_tri_subgroup_helper;
-  Alcotest.(check int) "family subgroup size" 32
+  Alcotest.(check int)
+    "family subgroup size" 32
     family.Launch_contract_generator.solve_tri_subgroup_size;
   Alcotest.(check (list string))
     "family lookup rows" [ "L117"; "L118" ]
     (solve_tri_seed_row_ids
        family.Launch_contract_generator.solve_tri_lookup_rows);
+  Alcotest.(check (list string))
+    "symbolic K candidate rows"
+    [
+      "L117";
+      "L118";
+      "L119";
+      "L120";
+      "L121";
+      "L122";
+      "L123";
+      "L124";
+      "L125";
+      "L126";
+    ]
+    (solve_tri_symbolic_row_ids
+       family.Launch_contract_generator.solve_tri_symbolic_k_rows);
   Alcotest.(check (list string))
     "family unpromoted rows"
     [ "L119"; "L120"; "L121"; "L122"; "L123"; "L124"; "L125"; "L126" ]
@@ -516,7 +556,36 @@ let test_solve_tri_family_contract_guards () : unit =
   Alcotest.(check (list string))
     "generated selected rows follow family lookup rows" [ "L117"; "L118" ]
     (Launch_contract_generator.selected_rows
-    |> List.map (fun row -> row.Launch_contract_generator.selected_row_id))
+    |> List.map (fun row -> row.Launch_contract_generator.selected_row_id));
+  let guard = LC.solve_tri_symbolic_k_guard in
+  Alcotest.(check string)
+    "symbolic K parameter" "K"
+    guard.Launch_contract_generator.symbolic_guard_k_parameter;
+  Alcotest.(check string)
+    "symbolic block relation" "blockDim = [32, K, 1]"
+    guard.Launch_contract_generator.symbolic_guard_block_dim_relation;
+  Alcotest.(check (list string))
+    "symbolic lookup anchors" [ "L117"; "L118" ]
+    guard.Launch_contract_generator.symbolic_guard_lookup_anchor_row_ids;
+  Alcotest.(check (list string))
+    "symbolic unpromoted rows"
+    [ "L119"; "L120"; "L121"; "L122"; "L123"; "L124"; "L125"; "L126" ]
+    guard.Launch_contract_generator.symbolic_guard_unpromoted_row_ids;
+  Alcotest.(check (list string))
+    "symbolic excluded rows" [ "L116"; "L127"; "L128" ]
+    guard.Launch_contract_generator.symbolic_guard_excluded_row_ids;
+  let blocker_dump =
+    String.concat "\n" (LC.solve_tri_symbolic_k_obligation_blocker_lines ())
+  in
+  Alcotest.(check bool)
+    "blocker names symbolic K" true
+    (string_contains blocker_dump "symbolic_parameter: K");
+  Alcotest.(check bool)
+    "blocker names subgroup obligation owner" true
+    (string_contains blocker_dump "Memory_event.Subgroup_obligation");
+  Alcotest.(check bool)
+    "blocker records zero-obligation cause" true
+    (string_contains blocker_dump "no fresh symbolic Memory_event")
 
 let test_unselected_solve_tri_neighbors_are_not_lookup_rows () : unit =
   List.iter

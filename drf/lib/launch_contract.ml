@@ -123,6 +123,19 @@ let pending_lookup_rows : t list =
 
 let lookup_rows : t list = all @ pending_lookup_rows
 
+let solve_tri_symbolic_k_guard =
+  Launch_contract_generator.solve_tri_symbolic_k_guard
+
+let validate_solve_tri_symbolic_k_guard =
+  Launch_contract_generator.validate_solve_tri_symbolic_k_guard
+
+let solve_tri_symbolic_k_obligation_blocker =
+  Launch_contract_generator.solve_tri_symbolic_k_obligation_blocker
+
+let solve_tri_symbolic_k_obligation_blocker_lines () =
+  Launch_contract_generator.symbolic_obligation_blocker_lines
+    solve_tri_symbolic_k_obligation_blocker
+
 let of_row_id (row_id : string) : (t, error) result =
   match List.filter (fun c -> String.equal c.row_id row_id) lookup_rows with
   | [ contract ] -> Ok contract

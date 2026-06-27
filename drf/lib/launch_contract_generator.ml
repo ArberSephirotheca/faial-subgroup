@@ -93,6 +93,18 @@ type solve_tri_fast_row_seed = {
   solve_tri_timeout_ms : int;
 }
 
+type solve_tri_fast_symbolic_row_kind =
+  | Symbolic_lookup_anchor
+  | Symbolic_unpromoted_candidate
+
+type solve_tri_fast_symbolic_row = {
+  solve_tri_symbolic_row_id : string;
+  solve_tri_symbolic_manifest_kernel : string;
+  solve_tri_symbolic_k_template : int;
+  solve_tri_symbolic_branch_case : string;
+  solve_tri_symbolic_row_kind : solve_tri_fast_symbolic_row_kind;
+}
+
 type solve_tri_fast_family_contract = {
   solve_tri_family : selected_family;
   solve_tri_source_file : string;
@@ -107,8 +119,35 @@ type solve_tri_fast_family_contract = {
   solve_tri_subgroup_helper : string;
   solve_tri_subgroup_size : int;
   solve_tri_lookup_rows : solve_tri_fast_row_seed list;
+  solve_tri_symbolic_k_rows : solve_tri_fast_symbolic_row list;
   solve_tri_unpromoted_row_ids : string list;
   solve_tri_excluded_row_ids : string list;
+}
+
+type solve_tri_symbolic_k_guard = {
+  symbolic_guard_family : selected_family;
+  symbolic_guard_source_file : string;
+  symbolic_guard_source_kernel_family : string;
+  symbolic_guard_n_template : int;
+  symbolic_guard_k_parameter : string;
+  symbolic_guard_k_source : string;
+  symbolic_guard_block_dim_relation : string;
+  symbolic_guard_dynamic_shared_memory : string;
+  symbolic_guard_subgroup_helper : string;
+  symbolic_guard_subgroup_size : int;
+  symbolic_guard_route_owner : string;
+  symbolic_guard_candidate_rows : solve_tri_fast_symbolic_row list;
+  symbolic_guard_lookup_anchor_row_ids : string list;
+  symbolic_guard_unpromoted_row_ids : string list;
+  symbolic_guard_excluded_row_ids : string list;
+}
+
+type symbolic_obligation_blocker = {
+  blocker_route_owner : string;
+  blocker_symbolic_parameter : string;
+  blocker_reason : string;
+  blocker_zero_obligation_cause : string;
+  blocker_next_step : string;
 }
 
 type selected_manifest_facts = {
@@ -134,6 +173,24 @@ type selected_manifest_facts = {
   selected_fact_concrete_block_dim : int list option;
   selected_fact_evidence_artifact_key : string option;
   selected_fact_timeout_ms : int option;
+}
+
+type solve_tri_symbolic_k_guard_facts = {
+  symbolic_fact_family_candidates : selected_family list;
+  symbolic_fact_source_file : string option;
+  symbolic_fact_source_kernel_family : string option;
+  symbolic_fact_n_template : int option;
+  symbolic_fact_k_parameter : string option;
+  symbolic_fact_k_source : string option;
+  symbolic_fact_candidate_rows : string list option;
+  symbolic_fact_lookup_anchor_row_ids : string list option;
+  symbolic_fact_unpromoted_row_ids : string list option;
+  symbolic_fact_excluded_row_ids : string list option;
+  symbolic_fact_block_dim_relation : string option;
+  symbolic_fact_dynamic_shared_memory : string option;
+  symbolic_fact_subgroup_helper : string option;
+  symbolic_fact_subgroup_size : int option;
+  symbolic_fact_route_owner : string option;
 }
 
 type error =
@@ -162,6 +219,10 @@ let family_to_string = function
   | Wkv7 -> "wkv7"
 
 let selected_family_to_string = function Solve_tri_fast -> "solve_tri_fast"
+
+let solve_tri_symbolic_row_kind_to_string = function
+  | Symbolic_lookup_anchor -> "lookup_anchor"
+  | Symbolic_unpromoted_candidate -> "unpromoted_candidate"
 
 let source_branch_to_string = function
   | Guarded_if_branch { condition } -> "if(" ^ condition ^ ")"
@@ -321,6 +382,80 @@ let wkv7_seed =
 
 let family_seeds = [ gla_seed; wkv_seed; wkv7_seed ]
 
+let solve_tri_fast_symbolic_k_rows =
+  [
+    {
+      solve_tri_symbolic_row_id = "L117";
+      solve_tri_symbolic_manifest_kernel = "solve_tri_f32_fast<64, 32>";
+      solve_tri_symbolic_k_template = 32;
+      solve_tri_symbolic_branch_case = "32";
+      solve_tri_symbolic_row_kind = Symbolic_lookup_anchor;
+    };
+    {
+      solve_tri_symbolic_row_id = "L118";
+      solve_tri_symbolic_manifest_kernel = "solve_tri_f32_fast<64, 16>";
+      solve_tri_symbolic_k_template = 16;
+      solve_tri_symbolic_branch_case = "16";
+      solve_tri_symbolic_row_kind = Symbolic_lookup_anchor;
+    };
+    {
+      solve_tri_symbolic_row_id = "L119";
+      solve_tri_symbolic_manifest_kernel = "solve_tri_f32_fast<64, 14>";
+      solve_tri_symbolic_k_template = 14;
+      solve_tri_symbolic_branch_case = "14";
+      solve_tri_symbolic_row_kind = Symbolic_unpromoted_candidate;
+    };
+    {
+      solve_tri_symbolic_row_id = "L120";
+      solve_tri_symbolic_manifest_kernel = "solve_tri_f32_fast<64, 12>";
+      solve_tri_symbolic_k_template = 12;
+      solve_tri_symbolic_branch_case = "12";
+      solve_tri_symbolic_row_kind = Symbolic_unpromoted_candidate;
+    };
+    {
+      solve_tri_symbolic_row_id = "L121";
+      solve_tri_symbolic_manifest_kernel = "solve_tri_f32_fast<64, 10>";
+      solve_tri_symbolic_k_template = 10;
+      solve_tri_symbolic_branch_case = "10";
+      solve_tri_symbolic_row_kind = Symbolic_unpromoted_candidate;
+    };
+    {
+      solve_tri_symbolic_row_id = "L122";
+      solve_tri_symbolic_manifest_kernel = "solve_tri_f32_fast<64, 8>";
+      solve_tri_symbolic_k_template = 8;
+      solve_tri_symbolic_branch_case = "8";
+      solve_tri_symbolic_row_kind = Symbolic_unpromoted_candidate;
+    };
+    {
+      solve_tri_symbolic_row_id = "L123";
+      solve_tri_symbolic_manifest_kernel = "solve_tri_f32_fast<64, 6>";
+      solve_tri_symbolic_k_template = 6;
+      solve_tri_symbolic_branch_case = "6";
+      solve_tri_symbolic_row_kind = Symbolic_unpromoted_candidate;
+    };
+    {
+      solve_tri_symbolic_row_id = "L124";
+      solve_tri_symbolic_manifest_kernel = "solve_tri_f32_fast<64, 4>";
+      solve_tri_symbolic_k_template = 4;
+      solve_tri_symbolic_branch_case = "4";
+      solve_tri_symbolic_row_kind = Symbolic_unpromoted_candidate;
+    };
+    {
+      solve_tri_symbolic_row_id = "L125";
+      solve_tri_symbolic_manifest_kernel = "solve_tri_f32_fast<64, 2>";
+      solve_tri_symbolic_k_template = 2;
+      solve_tri_symbolic_branch_case = "2";
+      solve_tri_symbolic_row_kind = Symbolic_unpromoted_candidate;
+    };
+    {
+      solve_tri_symbolic_row_id = "L126";
+      solve_tri_symbolic_manifest_kernel = "solve_tri_f32_fast<64, 1>";
+      solve_tri_symbolic_k_template = 1;
+      solve_tri_symbolic_branch_case = "1";
+      solve_tri_symbolic_row_kind = Symbolic_unpromoted_candidate;
+    };
+  ]
+
 let solve_tri_fast_family =
   {
     solve_tri_family = Solve_tri_fast;
@@ -364,6 +499,7 @@ let solve_tri_fast_family =
           solve_tri_timeout_ms = 10000;
         };
       ];
+    solve_tri_symbolic_k_rows = solve_tri_fast_symbolic_k_rows;
     solve_tri_unpromoted_row_ids =
       [ "L119"; "L120"; "L121"; "L122"; "L123"; "L124"; "L125"; "L126" ];
     solve_tri_excluded_row_ids = [ "L116"; "L127"; "L128" ];
@@ -411,6 +547,70 @@ let selected_rows =
   List.map
     (solve_tri_fast_selected_row solve_tri_fast_family)
     solve_tri_fast_family.solve_tri_lookup_rows
+
+let solve_tri_symbolic_row_spec row =
+  row.solve_tri_symbolic_row_id ^ ":K="
+  ^ string_of_int row.solve_tri_symbolic_k_template
+  ^ ":"
+  ^ solve_tri_symbolic_row_kind_to_string row.solve_tri_symbolic_row_kind
+
+let solve_tri_symbolic_k_guard =
+  {
+    symbolic_guard_family = solve_tri_fast_family.solve_tri_family;
+    symbolic_guard_source_file = solve_tri_fast_family.solve_tri_source_file;
+    symbolic_guard_source_kernel_family =
+      solve_tri_fast_family.solve_tri_source_kernel_family;
+    symbolic_guard_n_template = solve_tri_fast_family.solve_tri_n_template;
+    symbolic_guard_k_parameter = "K";
+    symbolic_guard_k_source =
+      "manifest/source launch cases for solve_tri_f32_fast<64,K>";
+    symbolic_guard_block_dim_relation = "blockDim = [32, K, 1]";
+    symbolic_guard_dynamic_shared_memory =
+      solve_tri_fast_family.solve_tri_dynamic_shared_memory;
+    symbolic_guard_subgroup_helper =
+      solve_tri_fast_family.solve_tri_subgroup_helper;
+    symbolic_guard_subgroup_size = solve_tri_fast_family.solve_tri_subgroup_size;
+    symbolic_guard_route_owner = "Memory_event.Subgroup_obligation";
+    symbolic_guard_candidate_rows =
+      solve_tri_fast_family.solve_tri_symbolic_k_rows;
+    symbolic_guard_lookup_anchor_row_ids =
+      List.map
+        (fun row -> row.solve_tri_row_id)
+        solve_tri_fast_family.solve_tri_lookup_rows;
+    symbolic_guard_unpromoted_row_ids =
+      solve_tri_fast_family.solve_tri_unpromoted_row_ids;
+    symbolic_guard_excluded_row_ids =
+      solve_tri_fast_family.solve_tri_excluded_row_ids;
+  }
+
+let solve_tri_symbolic_k_obligation_blocker =
+  {
+    blocker_route_owner = solve_tri_symbolic_k_guard.symbolic_guard_route_owner;
+    blocker_symbolic_parameter =
+      solve_tri_symbolic_k_guard.symbolic_guard_k_parameter;
+    blocker_reason =
+      "symbolic K is represented in the launch-contract guard, but the current \
+       executable subgroup route constructs Subgroup_obligation values only \
+       after selecting one concrete parsed kernel and concrete Dim3 block \
+       shape";
+    blocker_zero_obligation_cause =
+      "no fresh symbolic Memory_event or Subgroup_obligation is emitted \
+       because Launch_contract.t stores concrete template values and Dim3.t \
+       stores concrete block dimensions";
+    blocker_next_step =
+      "add a symbolic dimension carrier at the Launch_contract to \
+       Memory_event.Subgroup_obligation boundary before running a solver or \
+       pre-solver proof over K";
+  }
+
+let symbolic_obligation_blocker_lines (blocker : symbolic_obligation_blocker) =
+  [
+    "route_owner: " ^ blocker.blocker_route_owner;
+    "symbolic_parameter: " ^ blocker.blocker_symbolic_parameter;
+    "reason: " ^ blocker.blocker_reason;
+    "zero_obligation_cause: " ^ blocker.blocker_zero_obligation_cause;
+    "next_step: " ^ blocker.blocker_next_step;
+  ]
 
 let contract_of_seed (family : Launch_contract_rows.family) (row : row_seed) =
   match family with
@@ -693,6 +893,75 @@ let validate_selected_manifest_facts (selected : selected_row)
       (fun () ->
         check_int row_id "timeout_ms" facts.selected_fact_timeout_ms
           selected.selected_timeout_ms);
+    ]
+  in
+  let rec run = function
+    | [] -> Ok ()
+    | check :: rest -> (
+        match check () with Ok () -> run rest | Error _ as error -> error)
+  in
+  run checks
+
+let validate_solve_tri_symbolic_k_guard (guard : solve_tri_symbolic_k_guard)
+    (facts : solve_tri_symbolic_k_guard_facts) =
+  let row_id = "solve_tri_f32_fast<N,K>" in
+  let candidate_row_specs =
+    List.map solve_tri_symbolic_row_spec guard.symbolic_guard_candidate_rows
+  in
+  let checks =
+    [
+      (fun () ->
+        check_selected_family row_id facts.symbolic_fact_family_candidates
+          guard.symbolic_guard_family);
+      (fun () ->
+        check_string row_id "source_file" facts.symbolic_fact_source_file
+          guard.symbolic_guard_source_file);
+      (fun () ->
+        check_string row_id "source_kernel_family"
+          facts.symbolic_fact_source_kernel_family
+          guard.symbolic_guard_source_kernel_family);
+      (fun () ->
+        check_int row_id "n_template" facts.symbolic_fact_n_template
+          guard.symbolic_guard_n_template);
+      (fun () ->
+        check_string row_id "k_parameter" facts.symbolic_fact_k_parameter
+          guard.symbolic_guard_k_parameter);
+      (fun () ->
+        check_string row_id "k_source" facts.symbolic_fact_k_source
+          guard.symbolic_guard_k_source);
+      (fun () ->
+        check_string_list row_id "candidate_rows"
+          facts.symbolic_fact_candidate_rows candidate_row_specs);
+      (fun () ->
+        check_string_list row_id "lookup_anchor_rows"
+          facts.symbolic_fact_lookup_anchor_row_ids
+          guard.symbolic_guard_lookup_anchor_row_ids);
+      (fun () ->
+        check_string_list row_id "unpromoted_rows"
+          facts.symbolic_fact_unpromoted_row_ids
+          guard.symbolic_guard_unpromoted_row_ids);
+      (fun () ->
+        check_string_list row_id "excluded_rows"
+          facts.symbolic_fact_excluded_row_ids
+          guard.symbolic_guard_excluded_row_ids);
+      (fun () ->
+        check_string row_id "block_dim_relation"
+          facts.symbolic_fact_block_dim_relation
+          guard.symbolic_guard_block_dim_relation);
+      (fun () ->
+        check_string row_id "dynamic_shared_memory"
+          facts.symbolic_fact_dynamic_shared_memory
+          guard.symbolic_guard_dynamic_shared_memory);
+      (fun () ->
+        check_string row_id "subgroup_helper"
+          facts.symbolic_fact_subgroup_helper
+          guard.symbolic_guard_subgroup_helper);
+      (fun () ->
+        check_int row_id "subgroup_size" facts.symbolic_fact_subgroup_size
+          guard.symbolic_guard_subgroup_size);
+      (fun () ->
+        check_string row_id "route_owner" facts.symbolic_fact_route_owner
+          guard.symbolic_guard_route_owner);
     ]
   in
   let rec run = function
