@@ -125,10 +125,15 @@ type t = {
   params : (string * int) list;
   macros : string list;
   ignore_asserts : bool;
+  (* [assume_delin] runs delin in assume mode: the recovered axis bounds
+     are assumed rather than proven (the consistency oracle, unsound but
+     guarded against vacuity). [rewrite_delin] re-encodes accesses as
+     multidimensional subscripts (sound, performance only); it defaults
+     on. Delin runs when either is set. *)
   assume_delin : bool;
+  rewrite_delin : bool;
   delin_elide : bool;
   delin_algo : Delin_algo.t;
-  no_check_delin : bool;
   (* Per-kernel pre-condition list, keyed by [Kernel.name]. Genie's
      internal model treats assumptions as kernel-scoped: a variable
      declared in two kernels is a different variable in each, so an
@@ -224,9 +229,9 @@ let to_string (app : t) : string =
    only_true_data_races;
    ignore_asserts;
    assume_delin;
+   rewrite_delin;
    delin_elide;
    delin_algo;
-   no_check_delin;
    assumes;
    assume_dims;
    assume_launch;
@@ -249,9 +254,9 @@ let to_string (app : t) : string =
       ^ bool show_symbexp ^ "\nmacros = " ^ list_string macros
       ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
       ^ "\nassume_delin = " ^ bool assume_delin
+      ^ "\nrewrite_delin = " ^ bool rewrite_delin
       ^ "\ndelin_elide = " ^ bool delin_elide
       ^ "\ndelin_algo = " ^ Delin_algo.to_string delin_algo
-      ^ "\nno_check_delin = " ^ bool no_check_delin
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
       ^ "\nassume_launch = " ^ bool assume_launch
@@ -271,7 +276,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
-    ~assume_delin ~delin_elide ~delin_algo ~no_check_delin
+    ~assume_delin ~rewrite_delin ~delin_elide ~delin_algo
     ~assumes ~assume_dims
     ~assume_launch ~check_pre_sat
     ~memory_model ~cbor ~stop_at : t =
@@ -354,13 +359,15 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     macros;
     ignore_asserts;
     assume_delin;
+    rewrite_delin;
     delin_elide;
     delin_algo;
-    no_check_delin;
     assumes;
     assume_dims;
     assume_launch;
-    check_pre_sat;
+    (* Assume mode forces the pre-condition SAT pre-flight: an assumed
+       bound must never make a kernel vacuously DRF. *)
+    check_pre_sat = check_pre_sat || assume_delin;
     memory_model;
     stop_at;
   }
@@ -452,14 +459,15 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   |> Phase_timer.boundary "aligned"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned
        ~show:a.show_align Aligned.print_kernels
-  (* 6. delinearize accesses (no-op when --assume-delin is off, but the
-     boundary still emits a "delin" entry — 0 in that case). The
-     rewriter wraps each delinearized access in [Unsynced.Assert] nodes
-     for the per-axis bounds the strategy emits; [inline_asserts]
-     downstream lifts them into a [Cond] gate. Two orthogonal axes:
-     polynomial driver ([Greedy] | [Ics15] | [Ics15_opt] | [Cramer]) and
-     bound-emission strategy ([AllBounds] | [Maslov] | [RejectAll]). *)
-  |> (if a.assume_delin
+  (* 6. delinearize accesses (no-op when delin is off, but the boundary
+     still emits a "delin" entry — 0 in that case). The rewriter wraps
+     each delinearized access in [Unsynced.Assert] nodes for the per-axis
+     bounds the strategy emits; [inline_asserts] downstream lifts them
+     into a [Cond] gate. Two orthogonal axes: [assume_delin] picks the
+     bound oracle (consistency when assuming, entailment when sound) and
+     [rewrite_delin] picks whether the access is re-encoded. Delin runs
+     when either is set. *)
+  |> (if a.assume_delin || a.rewrite_delin
       then
         let algo : (module Algorithm.S) =
           match a.delin_algo with
@@ -476,15 +484,14 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
         let module G = (val bg) in
         let module M = Delinearize.Make (A) (G) in
         let rewrite kernel =
-          if a.no_check_delin
-          then M.rewrite_kernel
-            ~check:Delinearize.trivially_true_oracle kernel
-          else
-            Bound_check.with_slot ~timeout:0 kernel (fun slot ->
-              let check ~scope ~bound =
-                Bound_check.entails slot ~scope ~bound
-              in
-              M.rewrite_kernel ~check kernel)
+          Bound_check.with_slot ~timeout:0 kernel (fun slot ->
+            let check ~scope ~bound =
+              if a.assume_delin
+              then Bound_check.consistent slot ~scope ~bound
+              else Bound_check.entails slot ~scope ~bound
+            in
+            M.rewrite_kernel ~rewrite_access:a.rewrite_delin
+              ~assume:a.assume_delin ~check kernel)
         in
         Streamutil.map rewrite
       else Fun.id)

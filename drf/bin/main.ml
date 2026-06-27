@@ -312,57 +312,54 @@ let main =
              possible dimensions.")
   and+ ignore_asserts =
     Arg.(value & flag & info [ "ignore-asserts" ] ~doc:"Ignore asserts.")
-  and+ delin_elide =
+  and+ no_delin_elide =
     Arg.(
       value & flag
-      & info [ "delin-elide" ]
+      & info [ "no-delin-elide" ]
           ~doc:
-            "Drop the per-axis bound [0 <= i_k < d_k] from delinearised \
-             accesses when it is statically provable from the enclosing \
-             loop's [Range.t]. Conservative: when the predicate cannot \
-             prove a bound, that bound is emitted as an [Unsynced.Assert] \
-             (which downstream becomes a [Cond] gate on the analysis).")
+            "Keep every per-axis bound [0 <= i_k < d_k] on delinearised \
+             accesses. By default the trivial bounds, those statically \
+             provable from the enclosing loop's [Range.t], are elided, \
+             which only shrinks the formula and never changes a verdict.")
   and+ delin_algo =
     Arg.(
       value
       & opt (enum App.Delin_algo.enum) App.Delin_algo.default
       & info [ "delin-algo" ] ~docv:"ALGO"
           ~doc:
-            "Polynomial delinearization driver for [--assume-delin]: \
-             $(b,greedy) is the pairwise try_div driver; $(b,ics15) is \
-             the reference ICS15 permutation-search implementation \
-             (Grosser et al., 'Optimistic Delinearization of \
-             Parametrically Sized Arrays', sound fragment: permutation \
-             search + alpha-derivation, rejecting any candidate that \
-             requires a non-static polynomial division); $(b,ics15-opt) \
-             is the optimized ICS15 driver, which yields the same \
-             candidates as $(b,ics15) with a pruned search; \
-             $(b,cramer) is the linear-algebra decomposer, recovering \
-             subscripts by exact integer Cramer-rule over the \
-             per-monomial systems. Defaults to \
-             $(b,ics15-opt). Orthogonal to the bound-emission flags.")
-  and+ no_check_delin =
+            "Strategy [--assume-delin] uses to recover each array's \
+             dimensions from a flattened index. $(b,greedy): fast \
+             heuristic, factors sizes pairwise. $(b,ics15): permutation \
+             search (Grosser et al.'s optimistic delinearization). \
+             $(b,ics15-opt): same results as $(b,ics15) with a pruned \
+             search. $(b,cramer): exact integer linear-algebra solve. \
+             Default $(b,ics15-opt).")
+  and+ no_rewrite_delin =
     Arg.(
       value & flag
-      & info [ "no-check-delin" ]
+      & info [ "no-rewrite-delin" ]
           ~doc:
-            "Skip the Z3 entailment check on delin-emitted bounds. \
-             Default behaviour is to verify each bound against \
-             [kernel.pre /\\ runtime /\\ loop_scope] before emitting \
-             it as an [Assert]; bounds the verifier cannot prove are \
-             dropped and the access is left in its 1D linear form. \
-             With [--no-check-delin] bounds are emitted unchecked \
-             (assume semantics), which restores the pre-fix behaviour \
-             but admits silently vacuous bounds that can hide races.")
+            "Do not re-encode delinearised accesses as multidimensional \
+             subscripts. The rewrite is on by default: it is sound (only \
+             applied where the recovered bounds are provable) and \
+             verdict-neutral, turning the nonlinear flat-index collision \
+             test into a linear per-axis one, so it only speeds up Z3. \
+             Disable it to leave accesses in 1D form, e.g. to isolate the \
+             rewrite's effect from [--assume-delin]'s bounds.")
   and+ assume_delin =
     Arg.(
       value & flag
       & info [ "assume-delin" ]
           ~doc:
-            "Run the delinearization pass on aligned kernels, rewriting \
-             multidimensional accesses as flat offsets. UNSOUND in general: \
-             only valid when the inferred dimension sizes match the actual \
-             kernel allocations.")
+            "Assume the recovered per-axis bounds [0 <= i_k < d_k] instead \
+             of proving them, so delinearisation applies even where the \
+             bounds cannot be discharged from [kernel.pre /\\ runtime /\\ \
+             loop_scope]. UNSOUND in general (a wrong inferred dimension \
+             hides races), but never vacuous: each assumed bound is \
+             consistency-checked, and the pre-condition SAT pre-flight is \
+             forced on, so a delinearisation that would empty the state \
+             space is refused. Without this flag the bounds must be \
+             proven (sound). Composes with [--no-rewrite-delin].")
   and+ assumes =
     Arg.(
       value & opt_all conv_assume []
@@ -504,7 +501,8 @@ let main =
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
-        ~delin_elide ~delin_algo ~no_check_delin
+        ~rewrite_delin:(not no_rewrite_delin)
+        ~delin_elide:(not no_delin_elide) ~delin_algo
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at

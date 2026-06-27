@@ -52,3 +52,28 @@ let entails (t : t) ~(scope : bexp list) ~(bound : bexp) : bool =
   | Z3.Solver.UNSATISFIABLE -> true
   | Z3.Solver.SATISFIABLE -> false
   | Z3.Solver.UNKNOWN -> false
+
+(* Anti-vacuity check, the satisfiability mirror of [entails]: pushes
+   [scope /\ bound] and asks SAT. SAT means the assumed bound leaves a
+   non-empty state space (safe to assume); UNSAT means it contradicts
+   [kernel.pre /\ runtime /\ scope] and assuming it would erase the
+   access, i.e. a vacuous delinearisation, so the caller must refuse it.
+   UNKNOWN is treated as inconsistent: we never assume a bound we cannot
+   confirm is consistent. *)
+let consistent (t : t) ~(scope : bexp list) ~(bound : bexp) : bool =
+  let delta =
+    b_and (b_and_ex scope) bound
+    |> Predicates.b_inline
+    |> Predicates.strip_cross_thread
+  in
+  Z3.Solver.push t.solver;
+  Z3.Solver.add t.solver [ Gen_z3.Bv64Gen.b_to_expr t.ctx delta ];
+  let result =
+    Phase_timer.measure "delin/consistent" (fun () ->
+      Z3.Solver.check t.solver [])
+  in
+  Z3.Solver.pop t.solver 1;
+  match result with
+  | Z3.Solver.SATISFIABLE -> true
+  | Z3.Solver.UNSATISFIABLE -> false
+  | Z3.Solver.UNKNOWN -> false

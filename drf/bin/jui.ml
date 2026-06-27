@@ -62,6 +62,7 @@ let render (output : Analysis.t list) : unit =
     [
       ("kernels", `List kernels);
       ("phase_times", Phase_timer.to_json ());
+      ("stats", Stats.to_json ());
       ( "argv",
         `List (Sys.argv |> Array.to_list |> List.map (fun x -> `String x)) );
       ("executable_name", `String Sys.executable_name);

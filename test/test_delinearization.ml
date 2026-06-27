@@ -143,7 +143,7 @@ let kernel_tests =
   kernels
   |> List.iter (fun (msg, before, after) ->
       let got =
-        Delinearize.All.rewrite_kernel
+        Delinearize.All.rewrite_kernel ~rewrite_access:true ~assume:false
           ~check:Delinearize.trivially_true_oracle before
       in
       assert_equal
