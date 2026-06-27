@@ -831,6 +831,11 @@ let selected_generated_row row_id =
   | Error error ->
       Alcotest.fail (Launch_contract_generator.error_to_string error)
 
+let solve_tri_seed_row_ids rows =
+  rows
+  |> List.map (fun row -> row.Launch_contract_generator.solve_tri_row_id)
+  |> sorted
+
 let selected_generated_manifest_facts row selected =
   let manifest_kernel = string_field "kernel_or_template" row in
   {
@@ -1214,6 +1219,70 @@ let test_selected_l118_generated_facts_match_s406_schema () =
     (string_field "extraction_fixture" row);
   check_selected_validation_guard row selected
 
+let test_solve_tri_family_contract_manifest_boundaries () =
+  let root = repo_root () in
+  let rows = load_manifest root |> manifest_rows in
+  let family = Launch_contract_generator.solve_tri_fast_family in
+  Alcotest.(check string)
+    "family source file" "llama.cpp/ggml/src/ggml-cuda/solve_tri.cu"
+    family.Launch_contract_generator.solve_tri_source_file;
+  Alcotest.(check string)
+    "family kernel" "solve_tri_f32_fast"
+    family.Launch_contract_generator.solve_tri_source_kernel_family;
+  Alcotest.(check int)
+    "family N template" 64
+    family.Launch_contract_generator.solve_tri_n_template;
+  Alcotest.(check int)
+    "family blockDim.x" 32
+    family.Launch_contract_generator.solve_tri_block_dim_x;
+  Alcotest.(check string)
+    "family dynamic smem" "0"
+    family.Launch_contract_generator.solve_tri_dynamic_shared_memory;
+  Alcotest.(check int)
+    "family subgroup size" 32
+    family.Launch_contract_generator.solve_tri_subgroup_size;
+  Alcotest.(check (list string))
+    "family lookup rows" [ "L117"; "L118" ]
+    (solve_tri_seed_row_ids
+       family.Launch_contract_generator.solve_tri_lookup_rows);
+  Alcotest.(check (list string))
+    "selected rows are family lookup rows" [ "L117"; "L118" ]
+    (Launch_contract_generator.selected_rows
+    |> List.map (fun row -> row.Launch_contract_generator.selected_row_id)
+    |> sorted);
+  List.iter
+    (fun row_id ->
+      let row = find_row rows row_id in
+      Alcotest.(check string)
+        (row_id ^ " remains verified row-local")
+        "verified" (string_field "drf_status" row);
+      Alcotest.(check string)
+        (row_id ^ " remains subgroup artifact")
+        "subgroup_drf_json_verdict"
+        (string_field "artifact_status" row);
+      Alcotest.(check (option int))
+        (row_id ^ " explicit subgroup size")
+        (Some 32)
+        (nullable_int_field "subgroup_size_if_any" row))
+    [ "L117"; "L118" ];
+  List.iter
+    (fun row_id ->
+      let row = find_row rows row_id in
+      Alcotest.(check string)
+        (row_id ^ " remains unpromoted")
+        "not_attempted" (string_field "drf_status" row);
+      Alcotest.(check string)
+        (row_id ^ " has no artifact")
+        "none" (string_field "artifact_status" row);
+      null_field "subgroup_size_if_any" row;
+      match Launch_contract.of_row_id row_id with
+      | Error (Launch_contract.Unknown_row actual) ->
+          Alcotest.(check string) (row_id ^ " not in lookup") row_id actual
+      | Ok _ -> failf "%s unexpectedly became a lookup row" row_id
+      | Error error -> failf "%s" (Launch_contract.error_to_string error))
+    (family.Launch_contract_generator.solve_tri_unpromoted_row_ids
+    @ family.Launch_contract_generator.solve_tri_excluded_row_ids)
+
 let check_selected_missing_validation_field label field selected facts =
   match
     Launch_contract_generator.validate_selected_manifest_facts selected facts
@@ -1592,6 +1661,9 @@ let tests =
     ( "selected L118 generated facts match S406 schema",
       `Quick,
       test_selected_l118_generated_facts_match_s406_schema );
+    ( "solve-tri family contract manifest boundaries",
+      `Quick,
+      test_solve_tri_family_contract_manifest_boundaries );
     ( "selected L117 validation fails closed on missing facts",
       `Quick,
       test_selected_l117_validation_fails_closed_on_missing_facts );
