@@ -334,6 +334,18 @@ let tests =
      [Minus] subexpressions. The kernel shape mirrors the
      per-layer loop of an in-place square matrix rotation. *)
     ("drf-delin-rotate-bug.cu", [], 0);
+    (* A synchronized grid-stride loop whose start [idx = blockIdx.x *
+     blockDim.x + threadIdx.x] is thread-dependent, so the outer loop
+     variable is thread-varying in value even though the loop is
+     well-formed (uniform trip count). Under [--delin-algo cramer
+     --assume-delin], delinearization must classify that loop variable
+     as thread-varying, not uniform: otherwise the Flag shape inference
+     promotes it to an array dimension and drops it from the subscript,
+     so every thread appears to write the same cell and faial reports a
+     false race. *)
+    ("drf-delin-gridstride.cu",
+     [ "--all-dims"; "--assume-dims"; "--assume-launch";
+       "--assume-delin"; "--delin-algo"; "cramer" ], 0);
     (* Each thread writes to a unique cell of [arr]. The callee
      [f] has a local [int i;] whose name collides with the
      caller's [i]; faial-drf's parameter-substitution path under

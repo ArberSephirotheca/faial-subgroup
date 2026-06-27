@@ -351,12 +351,16 @@ end = struct
       Sync (rewrite_unsync ~globals ~scope ~loop_scope ~check
               ~rewrite_access ~assume c)
     | Loop ({ range; body; _ } as loop) ->
-      let globals' = Variable.Set.add range.var globals in
-      let scope' = G.add_range ~globals:globals' range scope in
-      let loop_scope' = Range.to_cond range :: loop_scope in
+      let globals =
+        if Variable.Set.subset (Range.free_names range Variable.Set.empty) globals
+        then Variable.Set.add range.var globals
+        else globals
+      in
+      let scope = G.add_range ~globals range scope in
+      let loop_scope = Range.to_cond range :: loop_scope in
       Loop { loop with body =
-        rewrite_aligned ~globals:globals' ~scope:scope'
-          ~loop_scope:loop_scope' ~check ~rewrite_access ~assume body }
+        rewrite_aligned ~globals ~scope
+          ~loop_scope ~check ~rewrite_access ~assume body }
     | Seq (a, b) ->
       Seq
         ( rewrite_aligned ~globals ~scope ~loop_scope ~check
