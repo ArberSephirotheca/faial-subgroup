@@ -120,21 +120,6 @@ module Kernel = struct
         |> Variable.Set.union Variable.tid_set
       in
       let approx_local_variables =
-        (* Two-stage propagation. (1) Hoisted ranges from phasalign /
-           phasesplit ([k.ranges]) carry [For] binders whose range
-           expressions may reference thread-local axes (e.g.
-           [linearIndex ∈ [blockIdx.x*256 + threadIdx.x, ...]]).
-           Seed propagation with the FULL local set so a hoisted
-           binder depending on [threadIdx.x] gets classified
-           thread-local. (2) For [Loop] binders still inside [k.code]
-           (typically synthesised [@loop_*] / [?] for Star unbounded
-           loops), keep the original seed [(k.local_variables - ids)]
-           — propagating through tid here would mark every code-level
-           synthesised binder thread-local and blow up the SMT pool
-           without a soundness gain (these binders don't carry
-           per-thread iteration semantics in the same way the
-           hoisted-range ones do). Strip [ids] from the final approx
-           set since the tid/bid axes themselves belong to exact. *)
         let with_ranges =
           List.fold_left
             (fun acc (r : Range.t) ->
