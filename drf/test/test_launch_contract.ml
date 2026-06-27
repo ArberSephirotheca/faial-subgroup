@@ -204,6 +204,9 @@ let test_catalog_and_contract_view_match () : unit =
 
 let row_ids rows = List.map (fun row -> row.Launch_contract_rows.row_id) rows
 
+let solve_tri_seed_row_ids rows =
+  List.map (fun row -> row.Launch_contract_generator.solve_tri_row_id) rows
+
 let is_gla_row (row : Launch_contract_rows.t) =
   match row.family with Gla -> true | Wkv | Wkv7 -> false
 
@@ -471,6 +474,50 @@ let test_solve_tri_l117_subgroup_route_requires_explicit_size () : unit =
     "ordinary rows do not use subgroup launch-contract route" false
     (LC.allows_subgroup_route l072 ~subgroup_size:(Some 32))
 
+let test_solve_tri_family_contract_guards () : unit =
+  let family = Launch_contract_generator.solve_tri_fast_family in
+  (match family.Launch_contract_generator.solve_tri_family with
+  | Launch_contract_generator.Solve_tri_fast -> ());
+  Alcotest.(check string)
+    "family source file" "llama.cpp/ggml/src/ggml-cuda/solve_tri.cu"
+    family.Launch_contract_generator.solve_tri_source_file;
+  Alcotest.(check string)
+    "family source kernel" "solve_tri_f32_fast"
+    family.Launch_contract_generator.solve_tri_source_kernel_family;
+  Alcotest.(check int) "family N template" 64
+    family.Launch_contract_generator.solve_tri_n_template;
+  Alcotest.(check int) "family blockDim.x" 32
+    family.Launch_contract_generator.solve_tri_block_dim_x;
+  Alcotest.(check string)
+    "family blockDim source" "threads"
+    family.Launch_contract_generator.solve_tri_block_dim_source;
+  Alcotest.(check string)
+    "family grid source" "grid"
+    family.Launch_contract_generator.solve_tri_grid_dim_source;
+  Alcotest.(check string)
+    "family dynamic smem" "0"
+    family.Launch_contract_generator.solve_tri_dynamic_shared_memory;
+  Alcotest.(check string)
+    "family subgroup helper" "warp_reduce_sum"
+    family.Launch_contract_generator.solve_tri_subgroup_helper;
+  Alcotest.(check int) "family subgroup size" 32
+    family.Launch_contract_generator.solve_tri_subgroup_size;
+  Alcotest.(check (list string))
+    "family lookup rows" [ "L117"; "L118" ]
+    (solve_tri_seed_row_ids
+       family.Launch_contract_generator.solve_tri_lookup_rows);
+  Alcotest.(check (list string))
+    "family unpromoted rows"
+    [ "L119"; "L120"; "L121"; "L122"; "L123"; "L124"; "L125"; "L126" ]
+    family.Launch_contract_generator.solve_tri_unpromoted_row_ids;
+  Alcotest.(check (list string))
+    "family excluded rows" [ "L116"; "L127"; "L128" ]
+    family.Launch_contract_generator.solve_tri_excluded_row_ids;
+  Alcotest.(check (list string))
+    "generated selected rows follow family lookup rows" [ "L117"; "L118" ]
+    (Launch_contract_generator.selected_rows
+    |> List.map (fun row -> row.Launch_contract_generator.selected_row_id))
+
 let test_unselected_solve_tri_neighbors_are_not_lookup_rows () : unit =
   List.iter
     (fun row_id ->
@@ -524,6 +571,9 @@ let tests =
     ( "solve-tri L117 subgroup route requires explicit size",
       `Quick,
       test_solve_tri_l117_subgroup_route_requires_explicit_size );
+    ( "solve-tri family contract guards",
+      `Quick,
+      test_solve_tri_family_contract_guards );
     ( "solve-tri neighbors are not lookup rows",
       `Quick,
       test_unselected_solve_tri_neighbors_are_not_lookup_rows );

@@ -235,6 +235,18 @@ solve-tri neighbors `L116` or `L119`-`L128`, does not prove full-source
 host-header intake for `solve_tri.cu`, and does not broaden shared-memory,
 subgroup-helper, CUDA, or ggml-cuda support.
 
+S427 makes the executable solve-tri support a first-class generated family
+contract consumed by the production launch-contract lookup. The family record
+is still bounded: it records source family `solve_tri_f32_fast`, source file
+`llama.cpp/ggml/src/ggml-cuda/solve_tri.cu`, `n_template = 64`,
+`blockDim.x = 32`, `blockDim.y = K`, `blockDim.z = 1`, dynamic shared memory
+`0`, `warp_reduce_sum` as the reviewed subgroup helper, and explicit
+`--subgroup-size 32`. Its admitted lookup rows are exactly `L117` and `L118`.
+Rows `L119`-`L126` are recorded as unpromoted neighbors, and `L116`, `L127`,
+and `L128` are recorded as excluded rows. Production lookup consumes only the
+admitted rows; the family record is not a guarded family proof and does not
+promote any neighbor without exact JSON or a future guarded proof artifact.
+
 ## Subgroup/Matrix Extension Boundary
 
 - `lib/memory_event.ml` exposes an internal `Subgroup_event` adapter from

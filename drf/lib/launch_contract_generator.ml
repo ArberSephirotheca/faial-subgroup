@@ -81,6 +81,36 @@ type selected_row = {
   selected_timeout_ms : int;
 }
 
+type solve_tri_fast_row_seed = {
+  solve_tri_row_id : string;
+  solve_tri_manifest_kernel : string;
+  solve_tri_parsed_kernel : string;
+  solve_tri_k_template : int;
+  solve_tri_branch_case : string;
+  solve_tri_preprocessing_profile : string;
+  solve_tri_extraction_fixture : string;
+  solve_tri_evidence_artifact_key : string;
+  solve_tri_timeout_ms : int;
+}
+
+type solve_tri_fast_family_contract = {
+  solve_tri_family : selected_family;
+  solve_tri_source_file : string;
+  solve_tri_source_kernel_family : string;
+  solve_tri_n_template : int;
+  solve_tri_block_dim_x : int;
+  solve_tri_block_dim_source : string;
+  solve_tri_grid_dim_source : string;
+  solve_tri_dynamic_shared_memory : string;
+  solve_tri_feature_class : string;
+  solve_tri_required_semantics : string list;
+  solve_tri_subgroup_helper : string;
+  solve_tri_subgroup_size : int;
+  solve_tri_lookup_rows : solve_tri_fast_row_seed list;
+  solve_tri_unpromoted_row_ids : string list;
+  solve_tri_excluded_row_ids : string list;
+}
+
 type selected_manifest_facts = {
   selected_fact_row_id : string;
   selected_family_candidates : selected_family list;
@@ -291,55 +321,96 @@ let wkv7_seed =
 
 let family_seeds = [ gla_seed; wkv_seed; wkv7_seed ]
 
-let solve_tri_fast_selected_row ~row_id ~manifest_kernel ~parsed_kernel
-    ~k_template ~branch_case ~preprocessing_profile ~extraction_fixture
-    ~evidence_artifact_key ~timeout_ms =
+let solve_tri_fast_family =
   {
-    selected_row_id = row_id;
-    selected_family = Solve_tri_fast;
-    selected_source_file = "llama.cpp/ggml/src/ggml-cuda/solve_tri.cu";
-    selected_manifest_kernel = manifest_kernel;
-    selected_source_kernel_family = "solve_tri_f32_fast";
-    selected_parsed_kernel = parsed_kernel;
-    selected_template_arg = "64, " ^ string_of_int k_template;
-    selected_template_bindings =
-      [ ("n_template", 64); ("k_template", k_template) ];
-    selected_source_branch_conditions = [ "n == 64"; "case " ^ branch_case ];
-    selected_preprocessing_profile = preprocessing_profile;
-    selected_extraction_fixture = extraction_fixture;
-    selected_block_dim_source = "threads";
-    selected_grid_dim_source = "grid";
-    selected_concrete_block_dim = [ 32; k_template; 1 ];
-    selected_dynamic_shared_memory = "0";
-    selected_feature_class = "shared_memory_syncthreads";
-    selected_required_semantics = solve_tri_fast_required_semantics;
-    selected_subgroup_helper = "warp_reduce_sum";
-    selected_subgroup_size = 32;
-    selected_evidence_artifact_key = evidence_artifact_key;
-    selected_timeout_ms = timeout_ms;
+    solve_tri_family = Solve_tri_fast;
+    solve_tri_source_file = "llama.cpp/ggml/src/ggml-cuda/solve_tri.cu";
+    solve_tri_source_kernel_family = "solve_tri_f32_fast";
+    solve_tri_n_template = 64;
+    solve_tri_block_dim_x = 32;
+    solve_tri_block_dim_source = "threads";
+    solve_tri_grid_dim_source = "grid";
+    solve_tri_dynamic_shared_memory = "0";
+    solve_tri_feature_class = "shared_memory_syncthreads";
+    solve_tri_required_semantics = solve_tri_fast_required_semantics;
+    solve_tri_subgroup_helper = "warp_reduce_sum";
+    solve_tri_subgroup_size = 32;
+    solve_tri_lookup_rows =
+      [
+        {
+          solve_tri_row_id = "L117";
+          solve_tri_manifest_kernel = "solve_tri_f32_fast<64, 32>";
+          solve_tri_parsed_kernel = "solve_tri_f32_fast_l117";
+          solve_tri_k_template = 32;
+          solve_tri_branch_case = "32";
+          solve_tri_preprocessing_profile =
+            "agent_results/rewrite/component_summaries/H516/preprocessing_profile.md";
+          solve_tri_extraction_fixture =
+            "agent_results/rewrite/component_summaries/H516/artifacts/L117_solve_tri_f32_fast_l117_source_slice.cu";
+          solve_tri_evidence_artifact_key = "h516_source_intake";
+          solve_tri_timeout_ms = 1000;
+        };
+        {
+          solve_tri_row_id = "L118";
+          solve_tri_manifest_kernel = "solve_tri_f32_fast<64, 16>";
+          solve_tri_parsed_kernel = "solve_tri_f32_fast_l118";
+          solve_tri_k_template = 16;
+          solve_tri_branch_case = "16";
+          solve_tri_preprocessing_profile =
+            "agent_results/rewrite/component_summaries/S408/preprocessing_profile.md";
+          solve_tri_extraction_fixture =
+            "agent_results/rewrite/component_summaries/S408/artifacts/L118_solve_tri_f32_fast_l118_source_slice.cu";
+          solve_tri_evidence_artifact_key = "s408_source_intake";
+          solve_tri_timeout_ms = 10000;
+        };
+      ];
+    solve_tri_unpromoted_row_ids =
+      [ "L119"; "L120"; "L121"; "L122"; "L123"; "L124"; "L125"; "L126" ];
+    solve_tri_excluded_row_ids = [ "L116"; "L127"; "L128" ];
   }
 
-let selected_l117 =
-  solve_tri_fast_selected_row ~row_id:"L117"
-    ~manifest_kernel:"solve_tri_f32_fast<64, 32>"
-    ~parsed_kernel:"solve_tri_f32_fast_l117" ~k_template:32 ~branch_case:"32"
-    ~preprocessing_profile:
-      "agent_results/rewrite/component_summaries/H516/preprocessing_profile.md"
-    ~extraction_fixture:
-      "agent_results/rewrite/component_summaries/H516/artifacts/L117_solve_tri_f32_fast_l117_source_slice.cu"
-    ~evidence_artifact_key:"h516_source_intake" ~timeout_ms:1000
+let solve_tri_fast_selected_row
+    (family_contract : solve_tri_fast_family_contract)
+    (row_seed : solve_tri_fast_row_seed) =
+  let n_template = family_contract.solve_tri_n_template in
+  let k_template = row_seed.solve_tri_k_template in
+  {
+    selected_row_id = row_seed.solve_tri_row_id;
+    selected_family = family_contract.solve_tri_family;
+    selected_source_file = family_contract.solve_tri_source_file;
+    selected_manifest_kernel = row_seed.solve_tri_manifest_kernel;
+    selected_source_kernel_family =
+      family_contract.solve_tri_source_kernel_family;
+    selected_parsed_kernel = row_seed.solve_tri_parsed_kernel;
+    selected_template_arg =
+      string_of_int n_template ^ ", " ^ string_of_int k_template;
+    selected_template_bindings =
+      [ ("n_template", n_template); ("k_template", k_template) ];
+    selected_source_branch_conditions =
+      [
+        "n == " ^ string_of_int n_template;
+        "case " ^ row_seed.solve_tri_branch_case;
+      ];
+    selected_preprocessing_profile = row_seed.solve_tri_preprocessing_profile;
+    selected_extraction_fixture = row_seed.solve_tri_extraction_fixture;
+    selected_block_dim_source = family_contract.solve_tri_block_dim_source;
+    selected_grid_dim_source = family_contract.solve_tri_grid_dim_source;
+    selected_concrete_block_dim =
+      [ family_contract.solve_tri_block_dim_x; k_template; 1 ];
+    selected_dynamic_shared_memory =
+      family_contract.solve_tri_dynamic_shared_memory;
+    selected_feature_class = family_contract.solve_tri_feature_class;
+    selected_required_semantics = family_contract.solve_tri_required_semantics;
+    selected_subgroup_helper = family_contract.solve_tri_subgroup_helper;
+    selected_subgroup_size = family_contract.solve_tri_subgroup_size;
+    selected_evidence_artifact_key = row_seed.solve_tri_evidence_artifact_key;
+    selected_timeout_ms = row_seed.solve_tri_timeout_ms;
+  }
 
-let selected_l118 =
-  solve_tri_fast_selected_row ~row_id:"L118"
-    ~manifest_kernel:"solve_tri_f32_fast<64, 16>"
-    ~parsed_kernel:"solve_tri_f32_fast_l118" ~k_template:16 ~branch_case:"16"
-    ~preprocessing_profile:
-      "agent_results/rewrite/component_summaries/S408/preprocessing_profile.md"
-    ~extraction_fixture:
-      "agent_results/rewrite/component_summaries/S408/artifacts/L118_solve_tri_f32_fast_l118_source_slice.cu"
-    ~evidence_artifact_key:"s408_source_intake" ~timeout_ms:10000
-
-let selected_rows = [ selected_l117; selected_l118 ]
+let selected_rows =
+  List.map
+    (solve_tri_fast_selected_row solve_tri_fast_family)
+    solve_tri_fast_family.solve_tri_lookup_rows
 
 let contract_of_seed (family : Launch_contract_rows.family) (row : row_seed) =
   match family with
