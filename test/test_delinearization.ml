@@ -35,13 +35,15 @@ let string_of_option (f : 'a -> string) : 'a option -> string = function
 let delin ~globals (e : nexp) : Delinearize.t option =
   let expr = Poly.from_nexp ~globals e in
   let size_params = Shape.size_params expr in
-  Delinearize.All.from_exp
-    ~globals
-    ~scope:Delinearize.AllBounds.initial_scope
-    ~loop_scope:[]
-    ~check:Delinearize.trivially_true_oracle
-    ~size_params
-    expr
+  match Greedy.candidates ~globals ~size_params expr |> Seq.uncons with
+  | None -> None
+  | Some (idx, _) ->
+    Delinearize.All.from_exp
+      ~scope:Delinearize.AllBounds.initial_scope
+      ~loop_scope:[]
+      ~check:Delinearize.trivially_true_oracle
+      ~radix:(idx : Subscript.t).radix
+      expr
 
 let positive_examples : (string * nexp * Delinearize.t) list =
   let open Build in
@@ -234,24 +236,28 @@ let cond_count = function
 let delin_all (e : nexp) : Delinearize.t option =
   let expr = Poly.from_nexp ~globals e in
   let size_params = Shape.size_params expr in
-  Delinearize.All.from_exp
-    ~globals
-    ~scope:Delinearize.AllBounds.initial_scope
-    ~loop_scope:[]
-    ~check:Delinearize.trivially_true_oracle
-    ~size_params
-    expr
+  match Greedy.candidates ~globals ~size_params expr |> Seq.uncons with
+  | None -> None
+  | Some (idx, _) ->
+    Delinearize.All.from_exp
+      ~scope:Delinearize.AllBounds.initial_scope
+      ~loop_scope:[]
+      ~check:Delinearize.trivially_true_oracle
+      ~radix:(idx : Subscript.t).radix
+      expr
 
 let delin_maslov ~scope (e : nexp) : Delinearize.t option =
   let expr = Poly.from_nexp ~globals e in
   let size_params = Shape.size_params expr in
-  Delinearize.Maslov_elide.from_exp
-    ~globals
-    ~scope
-    ~loop_scope:[]
-    ~check:Delinearize.trivially_true_oracle
-    ~size_params
-    expr
+  match Greedy.candidates ~globals ~size_params expr |> Seq.uncons with
+  | None -> None
+  | Some (idx, _) ->
+    Delinearize.Maslov_elide.from_exp
+      ~scope
+      ~loop_scope:[]
+      ~check:Delinearize.trivially_true_oracle
+      ~radix:(idx : Subscript.t).radix
+      expr
 
 let elision_tests =
   "from_exp elision" >:: fun _ ->

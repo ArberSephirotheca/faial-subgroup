@@ -24,7 +24,7 @@
 open Ics15
 
 module Infer : Algorithm.Infer = struct
-  let infer_dimensions ~globals:_ ~size_params expr =
+  let per_access ~size_params expr =
     let indets = params_in_size_params size_params in
     let coefs = Coefficient.of_poly ~params:indets expr in
     let f0 = Coefficient.find coefs indets in
@@ -62,6 +62,9 @@ module Infer : Algorithm.Infer = struct
              let tail = match perm with [] -> [] | _ :: tl -> tl in
              let alphas = 0 :: List.map (fun a -> Option.get (lookup a)) tail in
              build_dims perm alphas)
+
+  let infer_dimensions ~globals:_ ~size_params accesses =
+    List.to_seq accesses |> Seq.concat_map (per_access ~size_params)
 end
 
 include Algorithm.Driver (Infer) (Decompose)

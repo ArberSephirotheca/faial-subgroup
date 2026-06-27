@@ -93,15 +93,17 @@ module Infer : Algorithm.Infer = struct
     let* tail = go 2 [] in
     Some (0 :: tail)
 
-  let infer_dimensions ~globals:_ ~size_params expr =
-    params_in_size_params size_params
-    |> permutations
-    |> Seq.filter_map (fun perm ->
-         let coefs = Coefficient.of_poly ~params:perm expr in
-         let f0 = Coefficient.find coefs perm in
-         let d = List.length perm + 1 in
-         if d > 1 && Poly.compare f0 Poly.zero = 0 then None
-         else derive_alphas ~perm ~coefs ~f0 |> Option.map (build_dims perm))
+  let infer_dimensions ~globals:_ ~size_params accesses =
+    List.to_seq accesses
+    |> Seq.concat_map (fun expr ->
+         params_in_size_params size_params
+         |> permutations
+         |> Seq.filter_map (fun perm ->
+              let coefs = Coefficient.of_poly ~params:perm expr in
+              let f0 = Coefficient.find coefs perm in
+              let d = List.length perm + 1 in
+              if d > 1 && Poly.compare f0 Poly.zero = 0 then None
+              else derive_alphas ~perm ~coefs ~f0 |> Option.map (build_dims perm)))
 end
 
 (* Subscript recovery (Algorithm 3), reformulated to take the shape

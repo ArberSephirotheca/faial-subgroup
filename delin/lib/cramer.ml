@@ -54,7 +54,9 @@ end
 
 include
   Algorithm.Driver
-    (Algorithm.Chain (Monomial_infer) (Ics15_opt.Infer))
+    (Algorithm.Chain
+       (Flag.Infer)
+       (Algorithm.Chain (Monomial_infer) (Ics15_opt.Infer)))
     (Decompose)
 
 let delin ~(radix : Poly.t list) (p : Poly.t) : Subscript.t option =

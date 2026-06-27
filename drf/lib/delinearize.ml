@@ -138,21 +138,20 @@ let trivially_true_oracle : bound_oracle =
 
 module Make (A : Algorithm.S) (G : BoundGenerator) : sig
   val from_exp :
-    globals:Variable.Set.t ->
     scope:G.scope ->
     loop_scope:Exp.bexp list ->
     check:bound_oracle ->
-    size_params:Mono.t list ->
+    radix:Poly.t list ->
     Poly.t ->
     t option
   val rewrite_kernel :
     check:bound_oracle -> Aligned.Kernel.t -> Aligned.Kernel.t
 end = struct
-  let from_exp ~(globals : Variable.Set.t) ~(scope : G.scope)
+  let from_exp ~(scope : G.scope)
       ~(loop_scope : Exp.bexp list) ~(check : bound_oracle)
-      ~(size_params : Mono.t list) (expr : Poly.t) : t option =
+      ~(radix : Poly.t list) (expr : Poly.t) : t option =
     let ( let* ) = Option.bind in
-    let* (idx, _) = Seq.uncons (A.candidates ~globals ~size_params expr) in
+    let* idx = A.delinearize ~radix expr in
     let inner_is = match (idx : Subscript.t).numeral with
       | _ :: rest -> rest
       | [] -> failwith "from_exp: empty numeral list"
@@ -200,19 +199,19 @@ end = struct
       ~(scope : G.scope)
       ~(loop_scope : Exp.bexp list)
       ~(check : bound_oracle)
-      ~(size_params_map : Mono.t list Variable.Map.t)
+      ~(radix_map : Poly.t list Variable.Map.t)
       (unsync : Unsynced.t) : Variable.Set.t =
     let open Unsynced in
     let rec walk (scope : G.scope) (loop_scope : Exp.bexp list)
         (failed : Variable.Set.t) : Unsynced.t -> Variable.Set.t = function
       | Access { array; index = [a]; _ }
         when not (Variable.Set.mem array failed) ->
-        (match Variable.Map.find_opt array size_params_map with
+        (match Variable.Map.find_opt array radix_map with
          | None -> Variable.Set.add array failed
-         | Some size_params ->
+         | Some radix ->
            let a = Poly.from_nexp ~globals a in
            match
-             from_exp ~globals ~scope ~loop_scope ~check ~size_params a
+             from_exp ~scope ~loop_scope ~check ~radix a
            with
            | Some _ -> failed
            | None -> Variable.Set.add array failed)
@@ -230,7 +229,7 @@ end = struct
     Variable.Map.fold (fun arr _ viable ->
       if Variable.Set.mem arr failed then viable
       else Variable.Set.add arr viable)
-      size_params_map Variable.Set.empty
+      radix_map Variable.Set.empty
 
   let rewrite_unsync
       ~(globals : Variable.Set.t)
@@ -245,33 +244,41 @@ end = struct
     let accs =
       Phase_timer.measure "delin/get-accesses" (fun () -> get_accesses unsync)
     in
-    let size_params_map = Phase_timer.measure "delin/dims" (fun () ->
+    (* Per array, the single-index access polynomials, or [None] if any
+       access is multi-index (nothing to delinearise). *)
+    let acc_polys_map =
       accs
       |> Variable.Map.filter_map (fun _ accesses ->
-        (* Skip arrays that already have multi-index accesses; nothing
-           to delinearise. Returning [None] drops the array from
-           [size_params_map], so the array is excluded from viability
-           and its accesses pass through unchanged. *)
         accesses
         |> List.fold_left (fun acc -> function
           | [a] -> Option.map (fun xs -> Poly.from_nexp ~globals a :: xs) acc
           | _ -> None
-        ) (Some [])
-        |> Option.map Shape.size_params_all))
+        ) (Some []))
+    in
+    (* Infer one shared radix per array jointly from all its accesses;
+       [yields]'s first result is the biggest radix that decodes every
+       access. Arrays with no such radix are dropped (non-viable). *)
+    let radix_map = Phase_timer.measure "delin/dims" (fun () ->
+      acc_polys_map
+      |> Variable.Map.filter_map (fun _ polys ->
+        let size_params = Shape.size_params_all polys in
+        A.yields ~globals ~size_params polys
+        |> Seq.uncons
+        |> Option.map (fun ((radix, _), _) -> radix)))
     in
     let viable = Phase_timer.measure "delin/viability" (fun () ->
-      viable_arrays ~globals ~scope ~loop_scope ~check ~size_params_map
+      viable_arrays ~globals ~scope ~loop_scope ~check ~radix_map
         unsync)
     in
     let rec walk (scope : G.scope) (loop_scope : Exp.bexp list)
         : Unsynced.t -> Unsynced.t = function
       | Access ({ array; index = [a]; _ } as acc)
         when Variable.Set.mem array viable ->
-        let size_params = Variable.Map.find array size_params_map in
+        let radix = Variable.Map.find array radix_map in
         let a = Poly.from_nexp ~globals a in
         (match
            Phase_timer.measure "delin/from-exp" (fun () ->
-             from_exp ~globals ~scope ~loop_scope ~check ~size_params a)
+             from_exp ~scope ~loop_scope ~check ~radix a)
          with
          | Some t ->
            let body = Unsynced.Access { acc with index = t.indices } in
