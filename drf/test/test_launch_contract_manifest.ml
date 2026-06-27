@@ -894,6 +894,42 @@ let selected_pre_promotion_manifest_facts row selected =
       Some selected.Launch_contract_generator.selected_timeout_ms;
   }
 
+let symbolic_k_guard_facts guard =
+  {
+    Launch_contract_generator.symbolic_fact_family_candidates =
+      [ Launch_contract_generator.Solve_tri_fast ];
+    symbolic_fact_source_file =
+      Some guard.Launch_contract_generator.symbolic_guard_source_file;
+    symbolic_fact_source_kernel_family =
+      Some guard.Launch_contract_generator.symbolic_guard_source_kernel_family;
+    symbolic_fact_n_template =
+      Some guard.Launch_contract_generator.symbolic_guard_n_template;
+    symbolic_fact_k_parameter =
+      Some guard.Launch_contract_generator.symbolic_guard_k_parameter;
+    symbolic_fact_k_source =
+      Some guard.Launch_contract_generator.symbolic_guard_k_source;
+    symbolic_fact_candidate_rows =
+      Some
+        (List.map Launch_contract_generator.solve_tri_symbolic_row_spec
+           guard.Launch_contract_generator.symbolic_guard_candidate_rows);
+    symbolic_fact_lookup_anchor_row_ids =
+      Some guard.Launch_contract_generator.symbolic_guard_lookup_anchor_row_ids;
+    symbolic_fact_unpromoted_row_ids =
+      Some guard.Launch_contract_generator.symbolic_guard_unpromoted_row_ids;
+    symbolic_fact_excluded_row_ids =
+      Some guard.Launch_contract_generator.symbolic_guard_excluded_row_ids;
+    symbolic_fact_block_dim_relation =
+      Some guard.Launch_contract_generator.symbolic_guard_block_dim_relation;
+    symbolic_fact_dynamic_shared_memory =
+      Some guard.Launch_contract_generator.symbolic_guard_dynamic_shared_memory;
+    symbolic_fact_subgroup_helper =
+      Some guard.Launch_contract_generator.symbolic_guard_subgroup_helper;
+    symbolic_fact_subgroup_size =
+      Some guard.Launch_contract_generator.symbolic_guard_subgroup_size;
+    symbolic_fact_route_owner =
+      Some guard.Launch_contract_generator.symbolic_guard_route_owner;
+  }
+
 let check_selected_validation_guard row selected =
   let facts = selected_pre_promotion_manifest_facts row selected in
   match
@@ -1230,8 +1266,7 @@ let test_solve_tri_family_contract_manifest_boundaries () =
     "family kernel" "solve_tri_f32_fast"
     family.Launch_contract_generator.solve_tri_source_kernel_family;
   Alcotest.(check int)
-    "family N template" 64
-    family.Launch_contract_generator.solve_tri_n_template;
+    "family N template" 64 family.Launch_contract_generator.solve_tri_n_template;
   Alcotest.(check int)
     "family blockDim.x" 32
     family.Launch_contract_generator.solve_tri_block_dim_x;
@@ -1246,6 +1281,22 @@ let test_solve_tri_family_contract_manifest_boundaries () =
     (solve_tri_seed_row_ids
        family.Launch_contract_generator.solve_tri_lookup_rows);
   Alcotest.(check (list string))
+    "symbolic K guard rows"
+    [
+      "L117:K=32:lookup_anchor";
+      "L118:K=16:lookup_anchor";
+      "L119:K=14:unpromoted_candidate";
+      "L120:K=12:unpromoted_candidate";
+      "L121:K=10:unpromoted_candidate";
+      "L122:K=8:unpromoted_candidate";
+      "L123:K=6:unpromoted_candidate";
+      "L124:K=4:unpromoted_candidate";
+      "L125:K=2:unpromoted_candidate";
+      "L126:K=1:unpromoted_candidate";
+    ]
+    (List.map Launch_contract_generator.solve_tri_symbolic_row_spec
+       family.Launch_contract_generator.solve_tri_symbolic_k_rows);
+  Alcotest.(check (list string))
     "selected rows are family lookup rows" [ "L117"; "L118" ]
     (Launch_contract_generator.selected_rows
     |> List.map (fun row -> row.Launch_contract_generator.selected_row_id)
@@ -1255,7 +1306,8 @@ let test_solve_tri_family_contract_manifest_boundaries () =
       let row = find_row rows row_id in
       Alcotest.(check string)
         (row_id ^ " remains verified row-local")
-        "verified" (string_field "drf_status" row);
+        "verified"
+        (string_field "drf_status" row);
       Alcotest.(check string)
         (row_id ^ " remains subgroup artifact")
         "subgroup_drf_json_verdict"
@@ -1270,10 +1322,12 @@ let test_solve_tri_family_contract_manifest_boundaries () =
       let row = find_row rows row_id in
       Alcotest.(check string)
         (row_id ^ " remains unpromoted")
-        "not_attempted" (string_field "drf_status" row);
+        "not_attempted"
+        (string_field "drf_status" row);
       Alcotest.(check string)
         (row_id ^ " has no artifact")
-        "none" (string_field "artifact_status" row);
+        "none"
+        (string_field "artifact_status" row);
       null_field "subgroup_size_if_any" row;
       match Launch_contract.of_row_id row_id with
       | Error (Launch_contract.Unknown_row actual) ->
@@ -1281,7 +1335,112 @@ let test_solve_tri_family_contract_manifest_boundaries () =
       | Ok _ -> failf "%s unexpectedly became a lookup row" row_id
       | Error error -> failf "%s" (Launch_contract.error_to_string error))
     (family.Launch_contract_generator.solve_tri_unpromoted_row_ids
-    @ family.Launch_contract_generator.solve_tri_excluded_row_ids)
+   @ family.Launch_contract_generator.solve_tri_excluded_row_ids)
+
+let test_solve_tri_symbolic_k_guard_consumption_and_blocker () =
+  let root = repo_root () in
+  let rows = load_manifest root |> manifest_rows in
+  let guard = Launch_contract.solve_tri_symbolic_k_guard in
+  let facts = symbolic_k_guard_facts guard in
+  (match Launch_contract.validate_solve_tri_symbolic_k_guard guard facts with
+  | Ok () -> ()
+  | Error error ->
+      failf "symbolic K guard rejected valid facts: %s"
+        (Launch_contract_generator.validation_error_to_string error));
+  Alcotest.(check string)
+    "symbolic route owner" "Memory_event.Subgroup_obligation"
+    guard.Launch_contract_generator.symbolic_guard_route_owner;
+  Alcotest.(check string)
+    "symbolic K parameter" "K"
+    guard.Launch_contract_generator.symbolic_guard_k_parameter;
+  Alcotest.(check string)
+    "symbolic block relation" "blockDim = [32, K, 1]"
+    guard.Launch_contract_generator.symbolic_guard_block_dim_relation;
+  List.iter
+    (fun row_id ->
+      let row = find_row rows row_id in
+      Alcotest.(check string)
+        (row_id ^ " symbolic neighbor remains unpromoted")
+        "not_attempted"
+        (string_field "drf_status" row);
+      match Launch_contract.of_row_id row_id with
+      | Error (Launch_contract.Unknown_row actual) ->
+          Alcotest.(check string) (row_id ^ " absent from lookup") row_id actual
+      | Ok _ -> failf "%s unexpectedly became a lookup row" row_id
+      | Error error -> failf "%s" (Launch_contract.error_to_string error))
+    guard.Launch_contract_generator.symbolic_guard_unpromoted_row_ids;
+  List.iter
+    (fun row_id ->
+      let row = find_row rows row_id in
+      Alcotest.(check string)
+        (row_id ^ " excluded row remains unpromoted")
+        "not_attempted"
+        (string_field "drf_status" row))
+    guard.Launch_contract_generator.symbolic_guard_excluded_row_ids;
+  let dump =
+    String.concat "\n"
+      (Launch_contract.solve_tri_symbolic_k_obligation_blocker_lines ())
+  in
+  Alcotest.(check bool)
+    "blocker dump contains K" true
+    (string_contains dump "symbolic_parameter: K");
+  Alcotest.(check bool)
+    "blocker dump contains route owner" true
+    (string_contains dump "Memory_event.Subgroup_obligation");
+  Alcotest.(check bool)
+    "blocker dump explains concrete Dim3 blocker" true
+    (string_contains dump "Dim3 block shape")
+
+let check_symbolic_k_missing_validation_field label field guard facts =
+  match Launch_contract.validate_solve_tri_symbolic_k_guard guard facts with
+  | Ok () -> failf "%s: expected validation failure" label
+  | Error (Launch_contract_generator.Missing_field { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected validation error: %s" label
+        (Launch_contract_generator.validation_error_to_string error)
+
+let check_symbolic_k_field_mismatch label field guard facts =
+  match Launch_contract.validate_solve_tri_symbolic_k_guard guard facts with
+  | Ok () -> failf "%s: expected validation failure" label
+  | Error (Launch_contract_generator.Field_mismatch { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected validation error: %s" label
+        (Launch_contract_generator.validation_error_to_string error)
+
+let test_solve_tri_symbolic_k_guard_fails_closed_on_missing_facts () =
+  let guard = Launch_contract.solve_tri_symbolic_k_guard in
+  let facts = symbolic_k_guard_facts guard in
+  check_symbolic_k_missing_validation_field "missing symbolic K parameter"
+    "k_parameter" guard
+    { facts with symbolic_fact_k_parameter = None };
+  check_symbolic_k_missing_validation_field "missing symbolic K candidate rows"
+    "candidate_rows" guard
+    { facts with symbolic_fact_candidate_rows = None };
+  check_symbolic_k_missing_validation_field "missing symbolic subgroup size"
+    "subgroup_size" guard
+    { facts with symbolic_fact_subgroup_size = None };
+  check_symbolic_k_field_mismatch "mismatched symbolic N" "n_template" guard
+    { facts with symbolic_fact_n_template = Some 128 };
+  check_symbolic_k_field_mismatch "mismatched symbolic block relation"
+    "block_dim_relation" guard
+    {
+      facts with
+      symbolic_fact_block_dim_relation = Some "blockDim = [32, 16, 1]";
+    };
+  check_symbolic_k_field_mismatch "missing excluded sentinel row"
+    "excluded_rows" guard
+    { facts with symbolic_fact_excluded_row_ids = Some [ "L116"; "L127" ] };
+  check_symbolic_k_field_mismatch "neighbor cannot become lookup anchor"
+    "lookup_anchor_rows" guard
+    {
+      facts with
+      symbolic_fact_lookup_anchor_row_ids = Some [ "L117"; "L118"; "L119" ];
+    };
+  check_symbolic_k_field_mismatch "route owner must remain subgroup obligation"
+    "route_owner" guard
+    { facts with symbolic_fact_route_owner = Some "task-local-report" }
 
 let check_selected_missing_validation_field label field selected facts =
   match
@@ -1633,7 +1792,13 @@ let test_readme_lists_current_launch_contract_rows () =
     (string_contains readme "This does not promote");
   Alcotest.(check bool)
     "README documents L118 neighbor boundary" true
-    (string_contains readme "solve-tri neighbors `L116` or `L119`-`L128`")
+    (string_contains readme "solve-tri neighbors `L116` or `L119`-`L128`");
+  Alcotest.(check bool)
+    "README documents S430 symbolic K guard" true
+    (string_contains readme "S430 adds a typed symbolic `K` guard");
+  Alcotest.(check bool)
+    "README documents S430 blocker" true
+    (string_contains readme "Memory_event.Subgroup_obligation` blocker")
 
 let tests =
   [
@@ -1664,6 +1829,12 @@ let tests =
     ( "solve-tri family contract manifest boundaries",
       `Quick,
       test_solve_tri_family_contract_manifest_boundaries );
+    ( "solve-tri symbolic K guard consumption and blocker",
+      `Quick,
+      test_solve_tri_symbolic_k_guard_consumption_and_blocker );
+    ( "solve-tri symbolic K guard fails closed on missing facts",
+      `Quick,
+      test_solve_tri_symbolic_k_guard_fails_closed_on_missing_facts );
     ( "selected L117 validation fails closed on missing facts",
       `Quick,
       test_selected_l117_validation_fails_closed_on_missing_facts );
