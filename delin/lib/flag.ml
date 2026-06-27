@@ -16,6 +16,10 @@ let columns (accesses : Poly.t list) : Poly.t list =
        terms
        |> List.map fst
        |> List.sort_uniq Monic.compare
+       (* Drop the empty-signature column: a monomial with no induction factor
+          is an additive offset (e.g. blockDim.x*blockIdx.x), not a stride, so it
+          must never become a place value. *)
+       |> List.filter (fun nu -> not (Monic.is_const nu))
        |> List.map (fun nu ->
             terms
             |> List.filter_map (fun (nu', cm) ->

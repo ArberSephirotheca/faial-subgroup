@@ -55,6 +55,24 @@ let degraded_test =
      | Some _ -> ()
      | None -> assert_failure "Cramer rejected the degraded radix")
 
+(* A pure-parameter additive offset (no induction factor) must not become a
+   place value, even when its degree exceeds the genuine stride's. Mirrors the
+   grid-stride access [N*i + blockDim.x*blockIdx.x + threadIdx.x]: the stride is
+   [N] (degree 1); [M*K] stands in for the uniform offset [blockDim.x*blockIdx.x]
+   (degree 2) and must be ignored as an axis. *)
+let offset_not_axis_test =
+  "pure-parameter offset is not a place value" >:: fun _ ->
+  let i = Poly.induction "x" and t = Poly.induction "t" in
+  let acc = (vN *: i) +: (vM *: vK) +: t in
+  match Flag.infer ~globals:Variable.Set.empty [ acc ] |> Seq.uncons with
+  | None -> assert_failure "no radix"
+  | Some (r, _) ->
+    let printer ps = "[" ^ String.concat "; " (List.map Poly.to_string ps) ^ "]" in
+    assert_equal ~printer
+      ~cmp:(List.equal (fun a b -> Poly.compare a b = 0))
+      [ vN ] r
+
 let () =
   run_test_tt_main
-    ("flag" >::: [ "shapes" >::: shape_tests; "degrade" >::: [ degraded_test ] ])
+    ("flag" >::: [ "shapes" >::: shape_tests; "degrade" >::: [ degraded_test ];
+                   "offset" >::: [ offset_not_axis_test ] ])
