@@ -45,6 +45,21 @@ module Gen = struct
   let assign_mode (t : Task.t) (m : Access.Mode.t) : bexp =
     n_eq (mode t) (mode_to_nexp m)
 
+  (* Write-value signature. Two writes of the same statically-known
+     value to the same location do not race (a benign data-race, see
+     [Access.Mode.can_conflict]). To decide that inside the race goal
+     rather than after solving a single model, each access carries its
+     write value: a [Write (Some n)] sets [wknown = 1] and [wval = n];
+     every other access (read, atomic, or a value-unknown write) sets
+     [wknown = 0] so it is never paired off as a benign write. *)
+  let wval (t : Task.t) : nexp = var (Ids.prefix t ^ "wval")
+  let wknown (t : Task.t) : nexp = var (Ids.prefix t ^ "wknown")
+
+  let assign_value (t : Task.t) (m : Access.Mode.t) : bexp =
+    match m with
+    | Write (Some n) -> b_and (n_eq (wknown t) (Num 1)) (n_eq (wval t) (Num n))
+    | _ -> n_eq (wknown t) (Num 0)
+
   let access_id (t : Task.t) : nexp = Ids.access_id t |> var
 
   (* assign identifier of the conditional access *)
@@ -396,6 +411,8 @@ module SymAccess = struct
     :: a.condition
     :: (* assign the pre-condition of the access *)
        Gen.assign_mode t a.access.mode
+    :: (* assign the write-value signature (benign-write detection) *)
+       Gen.assign_value t a.access.mode
     ::
     (* assign the mode *)
     (if assign_index then
@@ -587,6 +604,18 @@ module Proof = struct
         Code.dim code |> Option.get |> Gen.assign_dim;
         (* mode spec *)
         Gen.mode_spec arch;
+        (* Exclude benign data-races: two writes of the same
+           statically-known value to the same location are not a
+           harmful conflict. This is the symbolic counterpart of the
+           [Write (Some x), Write (Some y) -> x <> y] case of
+           [Access.Mode.can_conflict]. *)
+        b_not
+          (b_and_ex
+             [
+               n_eq (Gen.wknown Task1) (Num 1);
+               n_eq (Gen.wknown Task2) (Num 1);
+               n_eq (Gen.wval Task1) (Gen.wval Task2);
+             ]);
       ]
 
   (* Co-reachability variant of [from_code]: builds the two-thread

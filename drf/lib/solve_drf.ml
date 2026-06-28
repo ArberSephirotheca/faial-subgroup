@@ -549,7 +549,10 @@ module Solution = struct
               match Solver.get_model s with
               | Some m ->
                   let w = Witness.parse enc.parse_num ~proof:p m in
-                  if Witness.can_conflict w then Racy w else Drf
+                  (* The race goal excludes benign same-value writes, so any
+                     satisfying model is a genuine conflict. *)
+                  assert (Witness.can_conflict w);
+                  Racy w
               | None -> failwith "INVALID")
           | UNKNOWN -> Unknown
         in
