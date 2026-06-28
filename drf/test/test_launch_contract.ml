@@ -617,6 +617,12 @@ let test_solve_tri_symbolic_dimension_carrier () : unit =
   Alcotest.(check string)
     "carrier source kernel" "solve_tri_f32_fast"
     carrier.Launch_contract_generator.carrier_source_kernel_family;
+  Alcotest.(check string)
+    "carrier source width variable" "k"
+    carrier.Launch_contract_generator.carrier_source_width_variable;
+  Alcotest.(check string)
+    "carrier source width relation" "k == K"
+    carrier.Launch_contract_generator.carrier_source_width_relation;
   Alcotest.(check (list string))
     "carrier template dimensions"
     [ "n_template=64"; "k_template=K" ]

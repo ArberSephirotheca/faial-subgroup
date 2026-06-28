@@ -938,6 +938,10 @@ let symbolic_dimension_carrier_facts carrier =
       Some carrier.Launch_contract_generator.carrier_source_file;
     carrier_fact_source_kernel_family =
       Some carrier.Launch_contract_generator.carrier_source_kernel_family;
+    carrier_fact_source_width_variable =
+      Some carrier.Launch_contract_generator.carrier_source_width_variable;
+    carrier_fact_source_width_relation =
+      Some carrier.Launch_contract_generator.carrier_source_width_relation;
     carrier_fact_template_dimensions =
       Some
         (List.map
@@ -1421,6 +1425,12 @@ let test_solve_tri_symbolic_k_guard_consumption_and_blocker () =
     (List.map Launch_contract_generator.symbolic_template_dimension_to_string
        carrier.Launch_contract_generator.carrier_template_dimensions);
   Alcotest.(check string)
+    "carrier source width variable" "k"
+    carrier.Launch_contract_generator.carrier_source_width_variable;
+  Alcotest.(check string)
+    "carrier source width relation" "k == K"
+    carrier.Launch_contract_generator.carrier_source_width_relation;
+  Alcotest.(check string)
     "carrier blockDim" "[32, K, 1]"
     (Launch_contract_generator.symbolic_dim3_to_string
        carrier.Launch_contract_generator.carrier_block_dim);
@@ -1561,6 +1571,9 @@ let test_solve_tri_symbolic_dimension_carrier_fails_closed_on_missing_facts () =
   check_carrier_missing_validation_field "missing carrier launch branch"
     "launch_branch_conditions" carrier
     { facts with carrier_fact_launch_branch_conditions = None };
+  check_carrier_missing_validation_field "missing carrier source width"
+    "source_width_relation" carrier
+    { facts with carrier_fact_source_width_relation = None };
   check_carrier_missing_validation_field "missing carrier positive guards"
     "positive_shape_guards" carrier
     { facts with carrier_fact_positive_shape_guards = None };
@@ -1573,6 +1586,9 @@ let test_solve_tri_symbolic_dimension_carrier_fails_closed_on_missing_facts () =
   check_carrier_field_mismatch "mismatched carrier symbolic block dim"
     "block_dim" carrier
     { facts with carrier_fact_block_dim = Some "[32, 16, 1]" };
+  check_carrier_field_mismatch "mismatched carrier source width"
+    "source_width_variable" carrier
+    { facts with carrier_fact_source_width_variable = Some "head_size" };
   check_carrier_field_mismatch "mismatched carrier route owner" "route_owner"
     carrier
     { facts with carrier_fact_route_owner = Some "task-local-report" };
@@ -1948,8 +1964,7 @@ let test_readme_lists_current_launch_contract_rows () =
     (string_contains readme "S433 adds a typed symbolic dimension carrier");
   Alcotest.(check bool)
     "README documents S437 symbolic checked dimensions" true
-    (string_contains readme
-       "S437 extends `Memory_event.Subgroup_obligation`")
+    (string_contains readme "S437 extends `Memory_event.Subgroup_obligation`")
 
 let tests =
   [

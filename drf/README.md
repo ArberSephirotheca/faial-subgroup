@@ -310,30 +310,37 @@ artifact rendering and solve-tri row ledger are owned by
 `Symbolic_launch_evidence`, not by `Memory_event` or the CLI driver. When
 `FAIAL_S438_SYMBOLIC_OBLIGATION_OUT` is set on a validated solve-tri
 `--launch-contract` run, the route writes a fresh Faial-owned artifact
-containing the route owner, launch row, family guard, checked-domain facts,
-candidate/anchor/unpromoted/excluded row sets, and the generated symbolic
-`Subgroup_obligation` goals. The artifact is generated from the parsed
-subgroup kernel and its ordinary source memory effects; it is not synthesized
-from task-local JSON or historical S404/S409/S427-S429 artifacts. Normal DRF
-verdicts still use the concrete row-local block dimensions for `L117` and
-`L118`, and the S438 artifact records `symbolic_solver_run: false`. Symbolic
-solver or pre-solver consumption remains a separate S439 boundary, and
-`L119`-`L126` remain unpromoted until exact JSON evidence or guarded symbolic
-proof covers them.
+containing the route owner, launch row, family guard, executable source/launch
+facts, checked-domain facts, candidate/anchor/unpromoted/excluded row sets, and
+the generated symbolic `Subgroup_obligation` goals. For the guarded
+`solve_tri_f32_fast<N,K>` route, the generated carrier records the source-width
+relation `k == K` and the finite candidate domain
+`K in {32,16,14,12,10,8,6,4,2,1}`. `Symbolic_launch_evidence` rewrites exact
+anchor-row facts such as `k == 32` into that source-width relation and appends
+the finite `K` domain before building symbolic obligations. If the carrier does
+not name the relation, if the relation mismatches the symbolic block dimension,
+or if no exact source-width fact is found in the source slice, the route fails
+closed. The artifact is generated from the parsed subgroup kernel and its
+ordinary source memory effects; it is not synthesized from task-local JSON or
+historical S404/S409/S427-S429 artifacts. Normal DRF verdicts still use the
+concrete row-local block dimensions for `L117` and `L118`, and the S438 artifact
+records `symbolic_solver_run: false`. Symbolic solver or pre-solver consumption
+remains a separate S439 boundary, and manifest promotion remains separate from
+artifact generation.
 
 S439 consumes those same fresh production-route symbolic obligations through
 an internal evidence hook, `FAIAL_S439_SYMBOLIC_PROOF_OUT`. The hook
 regenerates the symbolic checked-domain obligations through
 `Symbolic_launch_evidence`, then sends those symbolic goals to
 `Subgroup_solver` without passing the concrete row-local `Dim3.t` fallback.
-This records the actual solver classification over `blockDim.y = K` rather
-than reusing the exact `L117`/`L118` concrete proof route. The current
-classification is fail-closed: the goals contain `K > 0` and the checked
-thread-domain bounds, but the executable source-memory conditions still carry
-exact row facts such as `k == 32` and do not yet encode the guarded family
-relation between symbolic `K` and source `k`. Therefore S439 records no
-guarded family proof, adds no pre-solver rule, performs no manifest promotion,
-and keeps `L119`-`L126` unpromoted.
+This records the actual solver classification over `blockDim.y = K`, source
+relation `k == K`, and the finite guarded `K` domain rather than reusing the
+exact `L117`/`L118` concrete proof route. For the current solve-tri source-slice
+artifact, S439 classifies the two generated symbolic memory obligations as
+`unsat(drf)` and records `guarded_family_proof: true` over rows `L117`-`L126`.
+S439 still adds no pre-solver rule and performs no manifest promotion by
+itself; it is an evidence hook that reports whether the generated symbolic
+family obligations are proved, racy, unknown, timed out, or unsupported.
 
 ## Subgroup/Matrix Extension Boundary
 

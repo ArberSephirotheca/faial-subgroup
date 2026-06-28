@@ -164,6 +164,8 @@ type solve_tri_symbolic_dimension_carrier = {
   carrier_family : selected_family;
   carrier_source_file : string;
   carrier_source_kernel_family : string;
+  carrier_source_width_variable : string;
+  carrier_source_width_relation : string;
   carrier_template_dimensions : (string * symbolic_dimension) list;
   carrier_block_dim : symbolic_dim3;
   carrier_grid_dim_source : string;
@@ -233,6 +235,8 @@ type solve_tri_symbolic_dimension_carrier_facts = {
   carrier_fact_family_candidates : selected_family list;
   carrier_fact_source_file : string option;
   carrier_fact_source_kernel_family : string option;
+  carrier_fact_source_width_variable : string option;
+  carrier_fact_source_width_relation : string option;
   carrier_fact_template_dimensions : string list option;
   carrier_fact_symbolic_parameter : string option;
   carrier_fact_symbolic_candidate_values : int list option;
@@ -687,6 +691,8 @@ let solve_tri_symbolic_dimension_carrier =
     carrier_source_file = solve_tri_fast_family.solve_tri_source_file;
     carrier_source_kernel_family =
       solve_tri_fast_family.solve_tri_source_kernel_family;
+    carrier_source_width_variable = "k";
+    carrier_source_width_relation = "k == K";
     carrier_template_dimensions =
       [
         ( "n_template",
@@ -1160,6 +1166,14 @@ let validate_solve_tri_symbolic_dimension_carrier
         check_string row_id "source_kernel_family"
           facts.carrier_fact_source_kernel_family
           carrier.carrier_source_kernel_family);
+      (fun () ->
+        check_string row_id "source_width_variable"
+          facts.carrier_fact_source_width_variable
+          carrier.carrier_source_width_variable);
+      (fun () ->
+        check_string row_id "source_width_relation"
+          facts.carrier_fact_source_width_relation
+          carrier.carrier_source_width_relation);
       (fun () ->
         check_string_list row_id "template_dimensions"
           facts.carrier_fact_template_dimensions template_dimensions);
