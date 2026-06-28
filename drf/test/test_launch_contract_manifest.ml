@@ -930,6 +930,55 @@ let symbolic_k_guard_facts guard =
       Some guard.Launch_contract_generator.symbolic_guard_route_owner;
   }
 
+let symbolic_dimension_carrier_facts carrier =
+  {
+    Launch_contract_generator.carrier_fact_family_candidates =
+      [ Launch_contract_generator.Solve_tri_fast ];
+    carrier_fact_source_file =
+      Some carrier.Launch_contract_generator.carrier_source_file;
+    carrier_fact_source_kernel_family =
+      Some carrier.Launch_contract_generator.carrier_source_kernel_family;
+    carrier_fact_template_dimensions =
+      Some
+        (List.map
+           Launch_contract_generator.symbolic_template_dimension_to_string
+           carrier.Launch_contract_generator.carrier_template_dimensions);
+    carrier_fact_symbolic_parameter =
+      Some
+        (Launch_contract_generator.symbolic_dimension_to_string
+           carrier.Launch_contract_generator.carrier_block_dim.symbolic_dim_y);
+    carrier_fact_symbolic_candidate_values =
+      Some
+        (Launch_contract_generator.symbolic_dimension_candidate_values
+           carrier.Launch_contract_generator.carrier_block_dim.symbolic_dim_y);
+    carrier_fact_block_dim =
+      Some
+        (Launch_contract_generator.symbolic_dim3_to_string
+           carrier.Launch_contract_generator.carrier_block_dim);
+    carrier_fact_grid_dim_source =
+      Some carrier.Launch_contract_generator.carrier_grid_dim_source;
+    carrier_fact_dynamic_shared_memory =
+      Some carrier.Launch_contract_generator.carrier_dynamic_shared_memory;
+    carrier_fact_launch_branch_conditions =
+      Some carrier.Launch_contract_generator.carrier_launch_branch_conditions;
+    carrier_fact_positive_shape_guards =
+      Some carrier.Launch_contract_generator.carrier_positive_shape_guards;
+    carrier_fact_subgroup_size =
+      Some carrier.Launch_contract_generator.carrier_subgroup_size;
+    carrier_fact_route_owner =
+      Some carrier.Launch_contract_generator.carrier_route_owner;
+    carrier_fact_candidate_rows =
+      Some
+        (List.map Launch_contract_generator.solve_tri_symbolic_row_spec
+           carrier.Launch_contract_generator.carrier_candidate_rows);
+    carrier_fact_lookup_anchor_row_ids =
+      Some carrier.Launch_contract_generator.carrier_lookup_anchor_row_ids;
+    carrier_fact_unpromoted_row_ids =
+      Some carrier.Launch_contract_generator.carrier_unpromoted_row_ids;
+    carrier_fact_excluded_row_ids =
+      Some carrier.Launch_contract_generator.carrier_excluded_row_ids;
+  }
+
 let check_selected_validation_guard row selected =
   let facts = selected_pre_promotion_manifest_facts row selected in
   match
@@ -1356,6 +1405,42 @@ let test_solve_tri_symbolic_k_guard_consumption_and_blocker () =
   Alcotest.(check string)
     "symbolic block relation" "blockDim = [32, K, 1]"
     guard.Launch_contract_generator.symbolic_guard_block_dim_relation;
+  let carrier = Launch_contract.solve_tri_symbolic_dimension_carrier in
+  let carrier_facts = symbolic_dimension_carrier_facts carrier in
+  (match
+     Launch_contract.validate_solve_tri_symbolic_dimension_carrier carrier
+       carrier_facts
+   with
+  | Ok () -> ()
+  | Error error ->
+      failf "symbolic dimension carrier rejected valid facts: %s"
+        (Launch_contract_generator.validation_error_to_string error));
+  Alcotest.(check (list string))
+    "carrier template dimensions"
+    [ "n_template=64"; "k_template=K" ]
+    (List.map Launch_contract_generator.symbolic_template_dimension_to_string
+       carrier.Launch_contract_generator.carrier_template_dimensions);
+  Alcotest.(check string)
+    "carrier blockDim" "[32, K, 1]"
+    (Launch_contract_generator.symbolic_dim3_to_string
+       carrier.Launch_contract_generator.carrier_block_dim);
+  Alcotest.(check (list int))
+    "carrier symbolic K candidates"
+    [ 32; 16; 14; 12; 10; 8; 6; 4; 2; 1 ]
+    (Launch_contract_generator.symbolic_dimension_candidate_values
+       carrier.Launch_contract_generator.carrier_block_dim.symbolic_dim_y);
+  Alcotest.(check (list string))
+    "carrier launch branches"
+    [ "n == 64"; "case K in {32, 16, 14, 12, 10, 8, 6, 4, 2, 1}" ]
+    carrier.Launch_contract_generator.carrier_launch_branch_conditions;
+  Alcotest.(check bool)
+    "carrier positive guard keeps K bounded" true
+    (List.mem "K > 0"
+       carrier.Launch_contract_generator.carrier_positive_shape_guards);
+  Alcotest.(check bool)
+    "carrier positive guard keeps blockDim symbolic" true
+    (List.mem "blockDim.y == K"
+       carrier.Launch_contract_generator.carrier_positive_shape_guards);
   List.iter
     (fun row_id ->
       let row = find_row rows row_id in
@@ -1388,8 +1473,8 @@ let test_solve_tri_symbolic_k_guard_consumption_and_blocker () =
     "blocker dump contains route owner" true
     (string_contains dump "Memory_event.Subgroup_obligation");
   Alcotest.(check bool)
-    "blocker dump explains concrete Dim3 blocker" true
-    (string_contains dump "Dim3 block shape")
+    "blocker dump explains launch-contract provenance" true
+    (string_contains dump "provenance rather than solver input")
 
 let check_symbolic_k_missing_validation_field label field guard facts =
   match Launch_contract.validate_solve_tri_symbolic_k_guard guard facts with
@@ -1402,6 +1487,28 @@ let check_symbolic_k_missing_validation_field label field guard facts =
 
 let check_symbolic_k_field_mismatch label field guard facts =
   match Launch_contract.validate_solve_tri_symbolic_k_guard guard facts with
+  | Ok () -> failf "%s: expected validation failure" label
+  | Error (Launch_contract_generator.Field_mismatch { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected validation error: %s" label
+        (Launch_contract_generator.validation_error_to_string error)
+
+let check_carrier_missing_validation_field label field carrier facts =
+  match
+    Launch_contract.validate_solve_tri_symbolic_dimension_carrier carrier facts
+  with
+  | Ok () -> failf "%s: expected validation failure" label
+  | Error (Launch_contract_generator.Missing_field { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected validation error: %s" label
+        (Launch_contract_generator.validation_error_to_string error)
+
+let check_carrier_field_mismatch label field carrier facts =
+  match
+    Launch_contract.validate_solve_tri_symbolic_dimension_carrier carrier facts
+  with
   | Ok () -> failf "%s: expected validation failure" label
   | Error (Launch_contract_generator.Field_mismatch { field = actual; _ }) ->
       Alcotest.(check string) label field actual
@@ -1441,6 +1548,43 @@ let test_solve_tri_symbolic_k_guard_fails_closed_on_missing_facts () =
   check_symbolic_k_field_mismatch "route owner must remain subgroup obligation"
     "route_owner" guard
     { facts with symbolic_fact_route_owner = Some "task-local-report" }
+
+let test_solve_tri_symbolic_dimension_carrier_fails_closed_on_missing_facts () =
+  let carrier = Launch_contract.solve_tri_symbolic_dimension_carrier in
+  let facts = symbolic_dimension_carrier_facts carrier in
+  check_carrier_missing_validation_field "missing carrier K parameter"
+    "symbolic_parameter" carrier
+    { facts with carrier_fact_symbolic_parameter = None };
+  check_carrier_missing_validation_field "missing carrier K candidates"
+    "symbolic_candidate_values" carrier
+    { facts with carrier_fact_symbolic_candidate_values = None };
+  check_carrier_missing_validation_field "missing carrier launch branch"
+    "launch_branch_conditions" carrier
+    { facts with carrier_fact_launch_branch_conditions = None };
+  check_carrier_missing_validation_field "missing carrier positive guards"
+    "positive_shape_guards" carrier
+    { facts with carrier_fact_positive_shape_guards = None };
+  check_carrier_missing_validation_field "missing carrier subgroup size"
+    "subgroup_size" carrier
+    { facts with carrier_fact_subgroup_size = None };
+  check_carrier_field_mismatch "mismatched carrier template dimensions"
+    "template_dimensions" carrier
+    { facts with carrier_fact_template_dimensions = Some [ "n_template=64" ] };
+  check_carrier_field_mismatch "mismatched carrier symbolic block dim"
+    "block_dim" carrier
+    { facts with carrier_fact_block_dim = Some "[32, 16, 1]" };
+  check_carrier_field_mismatch "mismatched carrier route owner" "route_owner"
+    carrier
+    { facts with carrier_fact_route_owner = Some "task-local-report" };
+  check_carrier_field_mismatch "neighbor cannot become carrier lookup anchor"
+    "lookup_anchor_rows" carrier
+    {
+      facts with
+      carrier_fact_lookup_anchor_row_ids = Some [ "L117"; "L118"; "L119" ];
+    };
+  check_carrier_field_mismatch "missing carrier excluded sentinel row"
+    "excluded_rows" carrier
+    { facts with carrier_fact_excluded_row_ids = Some [ "L116"; "L127" ] }
 
 let check_selected_missing_validation_field label field selected facts =
   match
@@ -1798,7 +1942,14 @@ let test_readme_lists_current_launch_contract_rows () =
     (string_contains readme "S430 adds a typed symbolic `K` guard");
   Alcotest.(check bool)
     "README documents S430 blocker" true
-    (string_contains readme "Memory_event.Subgroup_obligation` blocker")
+    (string_contains readme "Memory_event.Subgroup_obligation` blocker");
+  Alcotest.(check bool)
+    "README documents S433 carrier" true
+    (string_contains readme "S433 adds a typed symbolic dimension carrier");
+  Alcotest.(check bool)
+    "README documents S437 symbolic checked dimensions" true
+    (string_contains readme
+       "S437 extends `Memory_event.Subgroup_obligation`")
 
 let tests =
   [
@@ -1835,6 +1986,9 @@ let tests =
     ( "solve-tri symbolic K guard fails closed on missing facts",
       `Quick,
       test_solve_tri_symbolic_k_guard_fails_closed_on_missing_facts );
+    ( "solve-tri symbolic dimension carrier fails closed on missing facts",
+      `Quick,
+      test_solve_tri_symbolic_dimension_carrier_fails_closed_on_missing_facts );
     ( "selected L117 validation fails closed on missing facts",
       `Quick,
       test_selected_l117_validation_fails_closed_on_missing_facts );

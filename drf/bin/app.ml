@@ -539,7 +539,8 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
           parsed.kernels
           |> List.filter (function
             | Ordinary_kernel kernel ->
-                String.equal (Protocols.Kernel.name kernel)
+                String.equal
+                  (Protocols.Kernel.name kernel)
                   contract.parsed_kernel
             | Subgroup_kernel kernel ->
                 String.equal kernel.matrix_kernel.name contract.parsed_kernel)
@@ -567,8 +568,8 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
                 Ordinary_kernel
                   (require_ok (Launch_contract.apply_to_kernel contract kernel))
             | Subgroup_kernel kernel
-              when Launch_contract.allows_subgroup_route contract
-                     ~subgroup_size ->
+              when Launch_contract.allows_subgroup_route contract ~subgroup_size
+              ->
                 Subgroup_kernel kernel
             | Subgroup_kernel kernel ->
                 launch_contract_error
@@ -826,6 +827,15 @@ let run (a : t) : Analysis.t list =
     let config =
       Subgroup_solver.solver_config ?timeout_ms:a.timeout ?logic:a.logic ()
     in
+    (match
+       Drf.Symbolic_launch_evidence.maybe_write_artifacts ~filename:a.filename
+         ~contract:a.launch_contract ~kernel:subgroup
+         ~globals:subgroup.memory_globals ~config
+     with
+    | Ok () -> ()
+    | Error error ->
+        Logger.Colors.error error;
+        exit 2);
     let memory =
       let globals = subgroup.memory_globals in
       kernel

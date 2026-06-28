@@ -142,6 +142,42 @@ type solve_tri_symbolic_k_guard = {
   symbolic_guard_excluded_row_ids : string list;
 }
 
+type symbolic_dimension =
+  | Concrete_dimension of {
+      concrete_dimension_value : int;
+      concrete_dimension_source : string;
+    }
+  | Symbolic_dimension of {
+      symbolic_dimension_parameter : string;
+      symbolic_dimension_source : string;
+      symbolic_dimension_candidate_values : int list;
+      symbolic_dimension_positive_guard : string;
+    }
+
+type symbolic_dim3 = {
+  symbolic_dim_x : symbolic_dimension;
+  symbolic_dim_y : symbolic_dimension;
+  symbolic_dim_z : symbolic_dimension;
+}
+
+type solve_tri_symbolic_dimension_carrier = {
+  carrier_family : selected_family;
+  carrier_source_file : string;
+  carrier_source_kernel_family : string;
+  carrier_template_dimensions : (string * symbolic_dimension) list;
+  carrier_block_dim : symbolic_dim3;
+  carrier_grid_dim_source : string;
+  carrier_dynamic_shared_memory : string;
+  carrier_launch_branch_conditions : string list;
+  carrier_positive_shape_guards : string list;
+  carrier_subgroup_size : int;
+  carrier_route_owner : string;
+  carrier_candidate_rows : solve_tri_fast_symbolic_row list;
+  carrier_lookup_anchor_row_ids : string list;
+  carrier_unpromoted_row_ids : string list;
+  carrier_excluded_row_ids : string list;
+}
+
 type symbolic_obligation_blocker = {
   blocker_route_owner : string;
   blocker_symbolic_parameter : string;
@@ -191,6 +227,26 @@ type solve_tri_symbolic_k_guard_facts = {
   symbolic_fact_subgroup_helper : string option;
   symbolic_fact_subgroup_size : int option;
   symbolic_fact_route_owner : string option;
+}
+
+type solve_tri_symbolic_dimension_carrier_facts = {
+  carrier_fact_family_candidates : selected_family list;
+  carrier_fact_source_file : string option;
+  carrier_fact_source_kernel_family : string option;
+  carrier_fact_template_dimensions : string list option;
+  carrier_fact_symbolic_parameter : string option;
+  carrier_fact_symbolic_candidate_values : int list option;
+  carrier_fact_block_dim : string option;
+  carrier_fact_grid_dim_source : string option;
+  carrier_fact_dynamic_shared_memory : string option;
+  carrier_fact_launch_branch_conditions : string list option;
+  carrier_fact_positive_shape_guards : string list option;
+  carrier_fact_subgroup_size : int option;
+  carrier_fact_route_owner : string option;
+  carrier_fact_candidate_rows : string list option;
+  carrier_fact_lookup_anchor_row_ids : string list option;
+  carrier_fact_unpromoted_row_ids : string list option;
+  carrier_fact_excluded_row_ids : string list option;
 }
 
 type error =
@@ -554,6 +610,31 @@ let solve_tri_symbolic_row_spec row =
   ^ ":"
   ^ solve_tri_symbolic_row_kind_to_string row.solve_tri_symbolic_row_kind
 
+let symbolic_dimension_to_string = function
+  | Concrete_dimension { concrete_dimension_value; _ } ->
+      string_of_int concrete_dimension_value
+  | Symbolic_dimension { symbolic_dimension_parameter; _ } ->
+      symbolic_dimension_parameter
+
+let symbolic_dimension_candidate_values = function
+  | Concrete_dimension { concrete_dimension_value; _ } ->
+      [ concrete_dimension_value ]
+  | Symbolic_dimension { symbolic_dimension_candidate_values; _ } ->
+      symbolic_dimension_candidate_values
+
+let symbolic_dim3_to_string dim =
+  "["
+  ^ String.concat ", "
+      [
+        symbolic_dimension_to_string dim.symbolic_dim_x;
+        symbolic_dimension_to_string dim.symbolic_dim_y;
+        symbolic_dimension_to_string dim.symbolic_dim_z;
+      ]
+  ^ "]"
+
+let symbolic_template_dimension_to_string (name, dimension) =
+  name ^ "=" ^ symbolic_dimension_to_string dimension
+
 let solve_tri_symbolic_k_guard =
   {
     symbolic_guard_family = solve_tri_fast_family.solve_tri_family;
@@ -583,24 +664,105 @@ let solve_tri_symbolic_k_guard =
       solve_tri_fast_family.solve_tri_excluded_row_ids;
   }
 
+let solve_tri_symbolic_k_candidate_values =
+  List.map
+    (fun row -> row.solve_tri_symbolic_k_template)
+    solve_tri_fast_family.solve_tri_symbolic_k_rows
+
+let solve_tri_symbolic_dimension_carrier =
+  let k_dimension =
+    Symbolic_dimension
+      {
+        symbolic_dimension_parameter =
+          solve_tri_symbolic_k_guard.symbolic_guard_k_parameter;
+        symbolic_dimension_source =
+          solve_tri_symbolic_k_guard.symbolic_guard_k_source;
+        symbolic_dimension_candidate_values =
+          solve_tri_symbolic_k_candidate_values;
+        symbolic_dimension_positive_guard = "K > 0";
+      }
+  in
+  {
+    carrier_family = solve_tri_fast_family.solve_tri_family;
+    carrier_source_file = solve_tri_fast_family.solve_tri_source_file;
+    carrier_source_kernel_family =
+      solve_tri_fast_family.solve_tri_source_kernel_family;
+    carrier_template_dimensions =
+      [
+        ( "n_template",
+          Concrete_dimension
+            {
+              concrete_dimension_value =
+                solve_tri_fast_family.solve_tri_n_template;
+              concrete_dimension_source = "manifest/source launch n == 64";
+            } );
+        ("k_template", k_dimension);
+      ];
+    carrier_block_dim =
+      {
+        symbolic_dim_x =
+          Concrete_dimension
+            {
+              concrete_dimension_value =
+                solve_tri_fast_family.solve_tri_block_dim_x;
+              concrete_dimension_source =
+                solve_tri_fast_family.solve_tri_block_dim_source;
+            };
+        symbolic_dim_y = k_dimension;
+        symbolic_dim_z =
+          Concrete_dimension
+            { concrete_dimension_value = 1; concrete_dimension_source = "z" };
+      };
+    carrier_grid_dim_source = solve_tri_fast_family.solve_tri_grid_dim_source;
+    carrier_dynamic_shared_memory =
+      solve_tri_fast_family.solve_tri_dynamic_shared_memory;
+    carrier_launch_branch_conditions =
+      [
+        "n == " ^ string_of_int solve_tri_fast_family.solve_tri_n_template;
+        "case K in {"
+        ^ String.concat ", "
+            (List.map string_of_int solve_tri_symbolic_k_candidate_values)
+        ^ "}";
+      ];
+    carrier_positive_shape_guards =
+      [
+        "n_template > 0";
+        "K > 0";
+        "blockDim.x == "
+        ^ string_of_int solve_tri_fast_family.solve_tri_block_dim_x;
+        "blockDim.y == K";
+        "blockDim.z == 1";
+        "gridDim.x > 0";
+        "gridDim.y == 1";
+        "gridDim.z == 1";
+      ];
+    carrier_subgroup_size = solve_tri_fast_family.solve_tri_subgroup_size;
+    carrier_route_owner = solve_tri_symbolic_k_guard.symbolic_guard_route_owner;
+    carrier_candidate_rows = solve_tri_fast_family.solve_tri_symbolic_k_rows;
+    carrier_lookup_anchor_row_ids =
+      solve_tri_symbolic_k_guard.symbolic_guard_lookup_anchor_row_ids;
+    carrier_unpromoted_row_ids =
+      solve_tri_fast_family.solve_tri_unpromoted_row_ids;
+    carrier_excluded_row_ids = solve_tri_fast_family.solve_tri_excluded_row_ids;
+  }
+
 let solve_tri_symbolic_k_obligation_blocker =
   {
     blocker_route_owner = solve_tri_symbolic_k_guard.symbolic_guard_route_owner;
     blocker_symbolic_parameter =
       solve_tri_symbolic_k_guard.symbolic_guard_k_parameter;
     blocker_reason =
-      "symbolic K is represented in the launch-contract guard, but the current \
-       executable subgroup route constructs Subgroup_obligation values only \
-       after selecting one concrete parsed kernel and concrete Dim3 block \
-       shape";
+      "symbolic K is represented in the launch-contract guard and typed \
+       dimension carrier; S437 consumes that carrier as symbolic checked block \
+       dimensions in Memory_event.Subgroup_obligation, but the launch-contract \
+       guard itself is still provenance rather than solver input";
     blocker_zero_obligation_cause =
-      "no fresh symbolic Memory_event or Subgroup_obligation is emitted \
-       because Launch_contract.t stores concrete template values and Dim3.t \
-       stores concrete block dimensions";
+      "the launch-contract guard/carrier alone is not a solver obligation; \
+       proof remains blocked until a later task consumes fresh symbolic \
+       Subgroup_obligation artifacts containing K";
     blocker_next_step =
-      "add a symbolic dimension carrier at the Launch_contract to \
-       Memory_event.Subgroup_obligation boundary before running a solver or \
-       pre-solver proof over K";
+      "read back fresh S437 symbolic checked-domain obligations before running \
+       any solver or pre-solver proof over K";
   }
 
 let symbolic_obligation_blocker_lines (blocker : symbolic_obligation_blocker) =
@@ -962,6 +1124,90 @@ let validate_solve_tri_symbolic_k_guard (guard : solve_tri_symbolic_k_guard)
       (fun () ->
         check_string row_id "route_owner" facts.symbolic_fact_route_owner
           guard.symbolic_guard_route_owner);
+    ]
+  in
+  let rec run = function
+    | [] -> Ok ()
+    | check :: rest -> (
+        match check () with Ok () -> run rest | Error _ as error -> error)
+  in
+  run checks
+
+let validate_solve_tri_symbolic_dimension_carrier
+    (carrier : solve_tri_symbolic_dimension_carrier)
+    (facts : solve_tri_symbolic_dimension_carrier_facts) =
+  let row_id = "solve_tri_f32_fast<N,K>" in
+  let candidate_row_specs =
+    List.map solve_tri_symbolic_row_spec carrier.carrier_candidate_rows
+  in
+  let template_dimensions =
+    List.map symbolic_template_dimension_to_string
+      carrier.carrier_template_dimensions
+  in
+  let k_candidate_values =
+    carrier.carrier_block_dim.symbolic_dim_y
+    |> symbolic_dimension_candidate_values
+  in
+  let checks =
+    [
+      (fun () ->
+        check_selected_family row_id facts.carrier_fact_family_candidates
+          carrier.carrier_family);
+      (fun () ->
+        check_string row_id "source_file" facts.carrier_fact_source_file
+          carrier.carrier_source_file);
+      (fun () ->
+        check_string row_id "source_kernel_family"
+          facts.carrier_fact_source_kernel_family
+          carrier.carrier_source_kernel_family);
+      (fun () ->
+        check_string_list row_id "template_dimensions"
+          facts.carrier_fact_template_dimensions template_dimensions);
+      (fun () ->
+        check_string row_id "symbolic_parameter"
+          facts.carrier_fact_symbolic_parameter
+          (symbolic_dimension_to_string carrier.carrier_block_dim.symbolic_dim_y));
+      (fun () ->
+        check_int_list row_id "symbolic_candidate_values"
+          facts.carrier_fact_symbolic_candidate_values k_candidate_values);
+      (fun () ->
+        check_string row_id "block_dim" facts.carrier_fact_block_dim
+          (symbolic_dim3_to_string carrier.carrier_block_dim));
+      (fun () ->
+        check_string row_id "grid_dim_source" facts.carrier_fact_grid_dim_source
+          carrier.carrier_grid_dim_source);
+      (fun () ->
+        check_string row_id "dynamic_shared_memory"
+          facts.carrier_fact_dynamic_shared_memory
+          carrier.carrier_dynamic_shared_memory);
+      (fun () ->
+        check_string_list row_id "launch_branch_conditions"
+          facts.carrier_fact_launch_branch_conditions
+          carrier.carrier_launch_branch_conditions);
+      (fun () ->
+        check_string_list row_id "positive_shape_guards"
+          facts.carrier_fact_positive_shape_guards
+          carrier.carrier_positive_shape_guards);
+      (fun () ->
+        check_int row_id "subgroup_size" facts.carrier_fact_subgroup_size
+          carrier.carrier_subgroup_size);
+      (fun () ->
+        check_string row_id "route_owner" facts.carrier_fact_route_owner
+          carrier.carrier_route_owner);
+      (fun () ->
+        check_string_list row_id "candidate_rows"
+          facts.carrier_fact_candidate_rows candidate_row_specs);
+      (fun () ->
+        check_string_list row_id "lookup_anchor_rows"
+          facts.carrier_fact_lookup_anchor_row_ids
+          carrier.carrier_lookup_anchor_row_ids);
+      (fun () ->
+        check_string_list row_id "unpromoted_rows"
+          facts.carrier_fact_unpromoted_row_ids
+          carrier.carrier_unpromoted_row_ids);
+      (fun () ->
+        check_string_list row_id "excluded_rows"
+          facts.carrier_fact_excluded_row_ids carrier.carrier_excluded_row_ids);
     ]
   in
   let rec run = function

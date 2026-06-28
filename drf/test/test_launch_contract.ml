@@ -11,6 +11,10 @@ let expect_error = function
   | Ok _ -> Alcotest.fail "expected error"
   | Error error -> error
 
+let expect_some label = function
+  | Some value -> value
+  | None -> Alcotest.fail (label ^ " unexpectedly missing")
+
 let nvar name = Var (Variable.from_name name)
 
 let has_conjunct expected actual =
@@ -228,6 +232,10 @@ let solve_tri_symbolic_row_ids rows =
   List.map
     (fun row -> row.Launch_contract_generator.solve_tri_symbolic_row_id)
     rows
+
+let carrier_template_dimensions carrier =
+  List.map Launch_contract_generator.symbolic_template_dimension_to_string
+    carrier.Launch_contract_generator.carrier_template_dimensions
 
 let is_gla_row (row : Launch_contract_rows.t) =
   match row.family with Gla -> true | Wkv | Wkv7 -> false
@@ -584,8 +592,72 @@ let test_solve_tri_family_contract_guards () : unit =
     "blocker names subgroup obligation owner" true
     (string_contains blocker_dump "Memory_event.Subgroup_obligation");
   Alcotest.(check bool)
-    "blocker records zero-obligation cause" true
-    (string_contains blocker_dump "no fresh symbolic Memory_event")
+    "blocker records non-solver provenance" true
+    (string_contains blocker_dump "provenance rather than solver input")
+
+let test_solve_tri_symbolic_dimension_carrier () : unit =
+  let l117 = expect_ok (LC.of_row_id "L117") in
+  let l118 = expect_ok (LC.of_row_id "L118") in
+  let l072 = expect_ok (LC.of_row_id "L072") in
+  let carrier =
+    expect_some "L117 symbolic dimension carrier"
+      (LC.symbolic_dimension_carrier l117)
+  in
+  ignore
+    (expect_some "L118 symbolic dimension carrier"
+       (LC.symbolic_dimension_carrier l118));
+  Alcotest.(check (option string))
+    "ordinary row has no symbolic dimension carrier" None
+    (Option.map
+       (fun carrier -> carrier.Launch_contract_generator.carrier_source_file)
+       (LC.symbolic_dimension_carrier l072));
+  Alcotest.(check string)
+    "carrier source file" "llama.cpp/ggml/src/ggml-cuda/solve_tri.cu"
+    carrier.Launch_contract_generator.carrier_source_file;
+  Alcotest.(check string)
+    "carrier source kernel" "solve_tri_f32_fast"
+    carrier.Launch_contract_generator.carrier_source_kernel_family;
+  Alcotest.(check (list string))
+    "carrier template dimensions"
+    [ "n_template=64"; "k_template=K" ]
+    (carrier_template_dimensions carrier);
+  Alcotest.(check string)
+    "carrier blockDim" "[32, K, 1]"
+    (Launch_contract_generator.symbolic_dim3_to_string
+       carrier.Launch_contract_generator.carrier_block_dim);
+  Alcotest.(check (list int))
+    "carrier symbolic K values"
+    [ 32; 16; 14; 12; 10; 8; 6; 4; 2; 1 ]
+    (Launch_contract_generator.symbolic_dimension_candidate_values
+       carrier.Launch_contract_generator.carrier_block_dim.symbolic_dim_y);
+  Alcotest.(check (list string))
+    "carrier launch branch conditions"
+    [ "n == 64"; "case K in {32, 16, 14, 12, 10, 8, 6, 4, 2, 1}" ]
+    carrier.Launch_contract_generator.carrier_launch_branch_conditions;
+  Alcotest.(check bool)
+    "carrier records positive K guard" true
+    (List.mem "K > 0"
+       carrier.Launch_contract_generator.carrier_positive_shape_guards);
+  Alcotest.(check bool)
+    "carrier preserves symbolic blockDim.y" true
+    (List.mem "blockDim.y == K"
+       carrier.Launch_contract_generator.carrier_positive_shape_guards);
+  Alcotest.(check int)
+    "carrier explicit subgroup size" 32
+    carrier.Launch_contract_generator.carrier_subgroup_size;
+  Alcotest.(check string)
+    "carrier route owner" "Memory_event.Subgroup_obligation"
+    carrier.Launch_contract_generator.carrier_route_owner;
+  Alcotest.(check (list string))
+    "carrier lookup anchors" [ "L117"; "L118" ]
+    carrier.Launch_contract_generator.carrier_lookup_anchor_row_ids;
+  Alcotest.(check (list string))
+    "carrier unpromoted rows"
+    [ "L119"; "L120"; "L121"; "L122"; "L123"; "L124"; "L125"; "L126" ]
+    carrier.Launch_contract_generator.carrier_unpromoted_row_ids;
+  Alcotest.(check (list string))
+    "carrier excluded rows" [ "L116"; "L127"; "L128" ]
+    carrier.Launch_contract_generator.carrier_excluded_row_ids
 
 let test_unselected_solve_tri_neighbors_are_not_lookup_rows () : unit =
   List.iter
@@ -643,6 +715,9 @@ let tests =
     ( "solve-tri family contract guards",
       `Quick,
       test_solve_tri_family_contract_guards );
+    ( "solve-tri symbolic dimension carrier",
+      `Quick,
+      test_solve_tri_symbolic_dimension_carrier );
     ( "solve-tri neighbors are not lookup rows",
       `Quick,
       test_unselected_solve_tri_neighbors_are_not_lookup_rows );

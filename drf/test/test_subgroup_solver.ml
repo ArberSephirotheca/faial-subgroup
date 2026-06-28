@@ -659,6 +659,55 @@ let test_solver_normalizes_transitive_numeric_constants () : unit =
     "solver sees normalized contradiction" "solver=unsat(drf)"
     (Solver.classification_to_string (Solver.solve_goal goal))
 
+let symbolic_k_vector_goal ?(include_upper_guard = false) () : Exp.bexp =
+  let k = Exp.Var (var "K") in
+  let bdim_x = Exp.Var Variable.bdim_x in
+  let bdim_y = Exp.Var Variable.bdim_y in
+  let bdim_z = Exp.Var Variable.bdim_z in
+  let tx1 = Exp.Var (var "threadIdx.x$T1") in
+  let ty1 = Exp.Var (var "threadIdx.y$T1") in
+  let tz1 = Exp.Var (var "threadIdx.z$T1") in
+  let tx2 = Exp.Var (var "threadIdx.x$T2") in
+  let ty2 = Exp.Var (var "threadIdx.y$T2") in
+  let tz2 = Exp.Var (var "threadIdx.z$T2") in
+  let row_major tx ty = Exp.n_plus (Exp.n_mult tx (Exp.Num 32)) ty in
+  let upper_guard =
+    if include_upper_guard then [ Exp.n_le k (Exp.Num 32) ] else []
+  in
+  Exp.b_and_ex
+    ([
+       Exp.n_eq bdim_x (Exp.Num 32);
+       Exp.n_eq bdim_y k;
+       Exp.n_eq bdim_z (Exp.Num 1);
+       Exp.n_gt k (Exp.Num 0);
+       Exp.n_le (Exp.Num 0) tx1;
+       Exp.n_lt tx1 bdim_x;
+       Exp.n_le (Exp.Num 0) ty1;
+       Exp.n_lt ty1 k;
+       Exp.n_eq tz1 (Exp.Num 0);
+       Exp.n_le (Exp.Num 0) tx2;
+       Exp.n_lt tx2 bdim_x;
+       Exp.n_le (Exp.Num 0) ty2;
+       Exp.n_lt ty2 k;
+       Exp.n_eq tz2 (Exp.Num 0);
+       Exp.b_or_ex [ Exp.n_neq tx1 tx2; Exp.n_neq ty1 ty2 ];
+       Exp.n_eq (row_major tx1 ty1) (row_major tx2 ty2);
+     ]
+    @ upper_guard)
+
+let test_symbolic_k_goal_requires_executable_upper_guard () : unit =
+  let underconstrained_goal = symbolic_k_vector_goal () in
+  let obligation = obligation ~id:9 ~goal:underconstrained_goal () in
+  Solver.pre_solver_classification obligation
+  |> expect_pre_solver_none "symbolic K without concrete checked block dim";
+  Alcotest.(check string)
+    "underconstrained symbolic K stays solver-visible" "solver=sat(racy)"
+    (Solver.classification_to_string (Solver.solve_goal underconstrained_goal));
+  Alcotest.(check string)
+    "guarded symbolic K closes the vector ownership proof" "solver=unsat(drf)"
+    (Solver.classification_to_string
+       (Solver.solve_goal (symbolic_k_vector_goal ~include_upper_guard:true ())))
+
 let test_unsupported_memory_boundary_is_not_solver_unknown () : unit =
   let outcome =
     kernel ~name:"missing_block_dim" [ matrix_store 10 ]
@@ -1066,6 +1115,9 @@ let tests : unit Alcotest.test_case list =
     ( "transitive numeric constant normalization",
       `Quick,
       test_solver_normalizes_transitive_numeric_constants );
+    ( "symbolic K proof needs executable guard",
+      `Quick,
+      test_symbolic_k_goal_requires_executable_upper_guard );
     ( "unsupported memory boundary",
       `Quick,
       test_unsupported_memory_boundary_is_not_solver_unknown );
