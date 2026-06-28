@@ -66,6 +66,10 @@ type t = {
 
 let var (r : t) : Variable.t = r.var
 let ty (r : t) : C_type.t = r.ty
+let lower_bound (r : t) : nexp = r.lower_bound
+let upper_bound (r : t) : nexp = r.upper_bound
+let dir (r : t) : direction = r.dir
+let step (r : t) : Step.t = r.step
 
 let to_string (r : t) : string =
   let x = Variable.name r.var in
@@ -127,14 +131,9 @@ let decl_to_bexp (var : Variable.t) (ty : C_type.t) : bexp =
   |> Option.value ~default:Int_dom.signed_int
   |> Int_dom.to_bexp var
 
-(* Loop normalization. For a [Plus] range whose stride evaluates
-   to a literal [k > 1], rewrite to a step-1 range over a fresh
-   quotient variable [<r.var>$q] in [[0, (ub - lb) / k]] together
-   with the substitution that recovers the original iteration
-   variable as [lb + k * q]. Applied as a pre-flatacc pass so no
-   downstream stage sees a literal-step Plus and the [Plus n] arm
-   below never has to emit the [(x - lb) % k == 0] form (which
-   pushes Z3 onto its non-linear-int tactic). *)
+(* For a [Plus] range whose stride evaluates to a literal [k > 1],
+   returns [k]. Detects strided additive loops that can be
+   reparametrized over a unit-stride index. *)
 let plus_step_literal (s : Step.t) : int option =
   match s with
   | Step.Plus e ->
@@ -142,23 +141,6 @@ let plus_step_literal (s : Step.t) : int option =
        | Ok k when k > 1 -> Some k
        | _ -> None)
   | _ -> None
-
-let normalize (r : t) : (t * (Variable.t * nexp)) option =
-  match plus_step_literal r.step with
-  | None -> None
-  | Some k ->
-      let q = Variable.from_name (Variable.name r.var ^ "$q") in
-      let r' =
-        {
-          r with
-          var = q;
-          lower_bound = Num 0;
-          upper_bound = n_div (n_minus r.upper_bound r.lower_bound) (Num k);
-          step = Plus (Num 1);
-        }
-      in
-      let orig_expr = n_plus r.lower_bound (n_mult (Num k) (Var q)) in
-      Some (r', (r.var, orig_expr))
 
 let to_cond (r : t) : bexp =
   let x = Var r.var in

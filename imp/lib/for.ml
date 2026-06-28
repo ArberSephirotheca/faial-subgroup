@@ -375,11 +375,7 @@ module Infer = struct
   let to_range (r : t) : Range.t option =
     let lower_bound, upper_bound, dir = infer_bounds r in
     let* step = infer_step r in
-    let dst =
-      Range.
-        { var = r.name; lower_bound; upper_bound; step; dir; ty = C_type.int }
-    in
-    Some dst
+    Some (Range.make ~lower_bound ~step ~dir r.name upper_bound)
 end
 
 let to_stmt (l : t) (body : Stmt.t) : Stmt.t =

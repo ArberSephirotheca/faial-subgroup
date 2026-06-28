@@ -48,7 +48,7 @@ module Code = struct
           failwith "Internall error: call Unsynced.inline_asserts first!"
       | Access e -> { access = e; cond = b } :: accum
       | Cond (b', p) -> flatten accum (b_and b' b) p
-      | Loop (r, p) -> flatten accum (b_and (Range.to_cond r) b) p
+      | Loop (r, p) -> flatten accum (b_and (Norm_range.to_cond r) b) p
       | Seq (p, q) ->
           let accum = flatten accum b p in
           flatten accum b q
@@ -85,32 +85,25 @@ module Kernel = struct
 
   let from_loc_split (arch : Architecture.t) (k : Locsplit.Kernel.t) : t option
       =
-    (* Loop normalization. Walk [k.ranges] (hoisted) and [k.code]
-       (still-nested [Loop]s) and rewrite every range whose stride
-       evaluates to a literal [k > 1] into a step-1 range over a
-       fresh quotient variable, substituting [lb + k * q] for the
-       original iteration variable everywhere it appears. After
-       this point no consumer ([Code.from_unsync] /
-       [Range.to_cond] / [unsafe_binders] / [binders] / symbexp's
-       projection) sees a literal-step stride, so the modulo
-       constraint in [Range.to_cond]'s [Plus n] arm only fires for
-       genuinely-symbolic strides. *)
-    let normalized_ranges, subst_pairs =
-      List.fold_right
-        (fun r (rs, sps) ->
-          match Range.normalize r with
-          | None -> (r :: rs, sps)
-          | Some (r', sp) -> (r' :: rs, sp :: sps))
-        k.ranges ([], [])
+    (* Loop normalization. Reparametrize every strided additive loop,
+       hoisted ([k.ranges]) and still-nested ([k.code]), over a fresh
+       unit-stride index, substituting the recovered value for the
+       original iteration variable everywhere it appears (see
+       [Norm_range]). The hoisted substitutions are applied to the
+       body before its own nested loops are normalized. *)
+    let normalized_ranges = List.map Norm_range.normalize k.ranges in
+    let subst_pairs =
+      List.filter_map
+        (function
+          | Norm_range.Index ix -> Some (Norm_range.substitution ix)
+          | Norm_range.Plain _ -> None)
+        normalized_ranges
     in
     let k_code =
       List.fold_left (fun c sp -> Unsynced.subst sp c) k.code subst_pairs
       |> Unsynced.normalize_loops
     in
-    let k =
-      { k with code = k_code; ranges = normalized_ranges }
-    in
-    let code = Code.from_unsync k.code in
+    let code = Code.from_unsync k_code in
     if code = [] then None
     else
       let ids =
@@ -122,26 +115,26 @@ module Kernel = struct
       let approx_local_variables =
         let with_ranges =
           List.fold_left
-            (fun acc (r : Range.t) ->
-              let r_vars = Range.free_names r Variable.Set.empty in
+            (fun acc (r : Norm_range.t) ->
+              let r_vars = Norm_range.free_names r Variable.Set.empty in
               if Variable.Set.is_empty (Variable.Set.inter r_vars acc) then acc
-              else Variable.Set.add r.var acc)
+              else Variable.Set.add (Norm_range.var r) acc)
             (Params.to_set k.local_variables)
-            k.ranges
+            normalized_ranges
         in
         let from_ranges = Variable.Set.diff with_ranges ids in
         let from_code =
           Variable.Set.diff (Params.to_set k.local_variables) ids
-          |> Unsynced.unsafe_binders k.code
+          |> Unsynced.unsafe_binders k_code
         in
         Variable.Set.union from_ranges from_code
       in
       let exact_local_variables =
         approx_local_variables
-        |> Variable.Set.diff (Unsynced.binders k.code Variable.Set.empty)
+        |> Variable.Set.diff (Unsynced.binders k_code Variable.Set.empty)
         |> Variable.Set.union ids
       in
-      let pre = b_and_ex (List.map Range.to_cond k.ranges) in
+      let pre = b_and_ex (List.map Norm_range.to_cond normalized_ranges) in
       Some
         {
           name = k.name;

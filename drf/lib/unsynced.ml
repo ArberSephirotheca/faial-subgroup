@@ -8,7 +8,7 @@ type t =
   | Assert of bexp
   | Access of Access.t
   | Cond of bexp * t
-  | Loop of Range.t * t
+  | Loop of Norm_range.t * t
   | Seq of t * t
 
 module Opt = struct
@@ -17,7 +17,8 @@ module Opt = struct
   let seq (u1 : t) (u2 : t) : t =
     if u1 = Skip then u2 else if u2 = Skip then u1 else Seq (u1, u2)
 
-  let loop (r : Range.t) (u : t) : t = if u = Skip then Skip else Loop (r, u)
+  let loop (r : Range.t) (u : t) : t =
+    if u = Skip then Skip else Loop (Norm_range.Plain r, u)
 end
 
 let rec to_s : t -> Indent.t list = function
@@ -28,7 +29,9 @@ let rec to_s : t -> Indent.t list = function
       [ Line ("if (" ^ Exp.b_to_string b ^ ") {"); Block (to_s p1); Line "}" ]
   | Loop (r, p) ->
       [
-        Line ("foreach (" ^ Range.to_string r ^ ") {"); Block (to_s p); Line "}";
+        Line ("foreach (" ^ Norm_range.to_string r ^ ") {");
+        Block (to_s p);
+        Line "}";
       ]
   | Seq (p, q) -> to_s p @ to_s q
 
@@ -46,8 +49,10 @@ module Make (S : SUBST) = struct
     | Access e -> Access (M.a_subst s e)
     | Cond (b, p) -> Cond (M.b_subst s b, subst s p)
     | Loop (r, p) ->
-        let p = M.add s r.var (function Some s -> subst s p | None -> p) in
-        Loop (M.r_subst s r, p)
+        let p =
+          M.add s (Norm_range.var r) (function Some s -> subst s p | None -> p)
+        in
+        Loop (Norm_range.map (M.n_subst s) r, p)
     | Seq (p, q) -> Seq (subst s p, subst s q)
 end
 
@@ -74,8 +79,8 @@ let rec free_names (p : t) (fns : Variable.Set.t) : Variable.Set.t =
   | Access e -> Access.free_names e fns
   | Loop (r, l) ->
       free_names l fns
-      |> Variable.Set.remove (Range.var r)
-      |> Range.free_names r
+      |> Variable.Set.remove (Norm_range.var r)
+      |> Norm_range.free_names r
   | Cond (b, l) -> Exp.b_free_names b fns |> free_names l
   | Seq (p, q) -> free_names p fns |> free_names q
 
@@ -85,9 +90,9 @@ let rec unsafe_binders (i : t) (vars : Variable.Set.t) : Variable.Set.t =
   | Cond (_, p) -> unsafe_binders p vars
   | Loop (r, p) ->
       let vars =
-        let r_vars = Range.free_names r Variable.Set.empty in
+        let r_vars = Norm_range.free_names r Variable.Set.empty in
         if Variable.Set.is_empty (Variable.Set.inter r_vars vars) then vars
-        else Variable.Set.add r.var vars
+        else Variable.Set.add (Norm_range.var r) vars
       in
       unsafe_binders p vars
   | Seq (p, q) -> unsafe_binders p vars |> unsafe_binders q
@@ -96,27 +101,25 @@ let rec binders (i : t) (vars : Variable.Set.t) : Variable.Set.t =
   match i with
   | Skip | Assert _ | Access _ -> vars
   | Cond (_, p) -> binders p vars
-  | Loop (r, p) -> binders p (Variable.Set.add r.var vars)
+  | Loop (r, p) -> binders p (Variable.Set.add (Norm_range.var r) vars)
   | Seq (p, q) -> binders p vars |> binders q
 
-(* Pre-flatacc pass: every code-level [Loop] whose range has a
-   literal stride [k > 1] is rewritten to step 1 over a fresh
-   quotient variable, and the original loop variable is
-   substituted by [lb + k * q] throughout the body. After this
-   pass no [Loop] in [t] carries a literal-step [Plus] (k > 1)
-   range, so [Range.to_cond]'s [Plus n] arm only sees
-   genuinely-symbolic strides. *)
+(* Pre-flatacc pass: every code-level [Loop] over a strided additive
+   range is reparametrized over a fresh unit-stride index, and the
+   original loop variable is substituted by the recovered value
+   throughout the body (see [Norm_range]). *)
 let rec normalize_loops : t -> t = function
   | Skip -> Skip
   | Assert b -> Assert b
   | Access a -> Access a
   | Cond (b, p) -> Cond (b, normalize_loops p)
   | Seq (p, q) -> Seq (normalize_loops p, normalize_loops q)
-  | Loop (r, body) ->
+  | Loop (Norm_range.Plain range, body) -> (
       let body = normalize_loops body in
-      (match Range.normalize r with
-      | None -> Loop (r, body)
-      | Some (r', sp) -> Loop (r', subst sp body))
+      match Norm_range.normalize range with
+      | Norm_range.Index ix as r -> Loop (r, subst (Norm_range.substitution ix) body)
+      | Norm_range.Plain _ as r -> Loop (r, body))
+  | Loop ((Norm_range.Index _ as r), body) -> Loop (r, normalize_loops body)
 
 let inline_asserts : t -> t =
   let rec has_asserts : t -> bool = function

@@ -227,10 +227,13 @@ end = struct
       | Access _ -> failed
       | Skip | Assert _ -> failed
       | Cond (_, b) -> walk scope loop_scope failed b
-      | Loop (r, b) ->
+      | Loop (Norm_range.Plain r, b) ->
         let scope' = G.add_range ~globals r scope in
         let loop_scope' = Range.to_cond r :: loop_scope in
         walk scope' loop_scope' failed b
+      | Loop (Norm_range.Index _, b) ->
+        (* loops are normalized only after delinearization *)
+        walk scope loop_scope failed b
       | Seq (a, b) ->
         walk scope loop_scope (walk scope loop_scope failed a) b
     in
@@ -326,10 +329,13 @@ end = struct
            Access acc)
       | Access _ as code -> code
       | Cond (p, b) -> Cond (p, walk scope loop_scope b)
-      | Loop (r, b) ->
+      | Loop (Norm_range.Plain r, b) ->
         let scope' = G.add_range ~globals r scope in
         let loop_scope' = Range.to_cond r :: loop_scope in
-        Loop (r, walk scope' loop_scope' b)
+        Loop (Norm_range.Plain r, walk scope' loop_scope' b)
+      | Loop ((Norm_range.Index _ as r), b) ->
+        (* loops are normalized only after delinearization *)
+        Loop (r, walk scope loop_scope b)
       | Seq (a, b) ->
         Seq (walk scope loop_scope a, walk scope loop_scope b)
       | code -> code

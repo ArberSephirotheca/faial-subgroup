@@ -40,15 +40,7 @@ end
 
 let range ~lb ~ub ~step : Range.t =
   let step, dir = ForStep.to_range step in
-  let open Range in
-  {
-    var = Variable.from_name "x";
-    lower_bound = Num lb;
-    upper_bound = Num ub;
-    step;
-    dir;
-    ty = C_type.int;
-  }
+  Range.make ~lower_bound:(Num lb) ~step ~dir (Variable.from_name "x") (Num ub)
 
 let eval (e : Exp.nexp) : int =
   match Exp.n_eval_res e with Ok e -> e | Error e -> failwith e
