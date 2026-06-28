@@ -543,7 +543,7 @@ let run (a : t) : Analysis.t list =
             |> Option.value ~default:[]
           in
           Solve_drf.Solution.solve ~timeout:a.timeout
-            ~_show_proofs:a.show_proofs ~logic:a.logic
+            ~show_proofs:a.show_proofs ~logic:a.logic
             ~solve_tactic:a.solve_tactic ~extras:kernel_extras ps)
       |> Phase_timer.boundary "solve"
       |> Streamutil.to_list

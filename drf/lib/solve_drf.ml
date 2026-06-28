@@ -436,7 +436,7 @@ module Solution = struct
 
     https://github.com/icra-team/icra/blob/ee3fd360ee75490277dd3fd05d92e1548db983e4/duet/pa/paSmt.ml
     *)
-  let solve ?(timeout = None) ?(_show_proofs = false) ?(logic = None)
+  let solve ?(timeout = None) ?(show_proofs = false) ?(logic = None)
       ?(solve_tactic : Gen_z3.Tactic.t option = None)
       ?(extras : (int * bexp) list = [])
       (ps : Symbexp.Proof.t Streamutil.stream) : t Streamutil.stream =
@@ -509,7 +509,7 @@ module Solution = struct
             let bv = Encoder.bv64 () in
             (bv, solve_with bv)
         in
-        (if _show_proofs then
+        (if show_proofs then
           let title = "proof #" ^ string_of_int p.id in
           let body = Solver.to_string s ^ "(check-sat)\n(get-model)\n" in
           prerr_endline ("=== " ^ title ^ " ===");
