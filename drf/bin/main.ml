@@ -96,10 +96,6 @@ let conv_tactic =
   in
   Arg.conv (parse, print)
 
-let default_solve_tactic : Gen_z3.Tactic.t =
-  Gen_z3.Tactic.and_then_ex
-    [ Tactic "simplify"; Tactic "solve-eqs"; Tactic "bv" ]
-
 let main =
   let doc = "Verify if CUDA file is free from data races." in
   let info = Cmd.info "faial-drf" ~doc in
@@ -156,13 +152,13 @@ let main =
       & opt (some string) None
       & info [ "logic" ] ~doc:"Set the logic used by the Z3 solver.")
   and+ solve_tactic =
-    let default_doc = Gen_z3.Tactic.to_string default_solve_tactic in
     Arg.(
       value
-      & opt (some conv_tactic) (Some default_solve_tactic)
+      & opt (some conv_tactic) None
       & info [ "solve-tactic" ] ~docv:"TACTIC"
-        ~doc:("Z3 tactic expression for the race-query solver. \
-               Default: " ^ default_doc))
+          ~doc:
+            "Z3 tactic expression for the race-query solver. When omitted, \
+             the solver uses Z3's default strategy.")
   and+ output_json =
     Arg.(value & flag & info [ "json" ] ~doc:"Output result as JSON.")
   and+ ignore_parsing_errors =
