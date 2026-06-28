@@ -13,6 +13,8 @@ type t = {
   template_value : int;
   template_bindings : (string * int) list;
   block_dim : Dim3.t;
+  symbolic_dimension_carrier :
+    Launch_contract_generator.solve_tri_symbolic_dimension_carrier option;
 }
 
 type error =
@@ -72,6 +74,7 @@ let of_row (row : Launch_contract_rows.t) : t =
     template_value = row.template_value;
     template_bindings = [ (row.template_param, row.template_value) ];
     block_dim = Dim3.make ~x:row.template_value ();
+    symbolic_dimension_carrier = None;
   }
 
 let is_gla_row (row : Launch_contract_rows.t) =
@@ -116,6 +119,8 @@ let selected_contract (selected : Launch_contract_generator.selected_row) : t =
           invalid_arg
             ("solve-tri selected row " ^ selected.selected_row_id
            ^ " has invalid concrete block dim"));
+    symbolic_dimension_carrier =
+      Some Launch_contract_generator.solve_tri_symbolic_dimension_carrier;
   }
 
 let pending_lookup_rows : t list =
@@ -128,6 +133,12 @@ let solve_tri_symbolic_k_guard =
 
 let validate_solve_tri_symbolic_k_guard =
   Launch_contract_generator.validate_solve_tri_symbolic_k_guard
+
+let solve_tri_symbolic_dimension_carrier =
+  Launch_contract_generator.solve_tri_symbolic_dimension_carrier
+
+let validate_solve_tri_symbolic_dimension_carrier =
+  Launch_contract_generator.validate_solve_tri_symbolic_dimension_carrier
 
 let solve_tri_symbolic_k_obligation_blocker =
   Launch_contract_generator.solve_tri_symbolic_k_obligation_blocker
@@ -143,6 +154,10 @@ let of_row_id (row_id : string) : (t, error) result =
   | _ -> Error (Duplicate_row row_id)
 
 let block_dim (contract : t) : Dim3.t = contract.block_dim
+
+let symbolic_dimension_carrier (contract : t) :
+    Launch_contract_generator.solve_tri_symbolic_dimension_carrier option =
+  contract.symbolic_dimension_carrier
 
 let required_params (contract : t) : (string * int) list =
   contract.template_bindings

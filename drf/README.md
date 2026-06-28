@@ -263,6 +263,78 @@ emit an obligation whose checked block dimension contains symbolic `K`. This
 blocker is not a solver or pre-solver result, is not a guarded family proof,
 and does not change manifest verdicts.
 
+S433 adds a typed symbolic dimension carrier beside the exact solve-tri
+lookup rows. The carrier preserves `n_template = 64`, `k_template = K`,
+candidate values `K = {32,16,14,12,10,8,6,4,2,1}`, `blockDim = [32,K,1]`,
+dynamic shared memory `0`, launch branch guards, positive shape guards,
+unpromoted neighbor rows, excluded sentinel/helper rows, and explicit
+`--subgroup-size 32`. Exact `L117` and `L118` lookup contracts still keep their
+concrete `Dim3.t` block dimensions for regression runs, while the carrier is
+available through the launch-contract boundary for the next
+`Memory_event.Subgroup_obligation` step. Until that lower boundary consumes
+the carrier and emits a fresh symbolic obligation containing `K`, S432 remains
+blocked, no solver or pre-solver proof may run over symbolic `K`, and
+`L119`-`L126` remain unpromoted.
+
+S434 consumed that carrier at the subgroup-obligation boundary and emitted a
+Faial-owned symbolic-dimension blocker record. The record contains the route
+owner, source family, symbolic `K` candidate values, `blockDim = [32,K,1]`,
+lookup anchors, unpromoted rows, excluded rows, and `obligation_count = 0`.
+It names the first concrete-only lower boundary:
+`checked_invocation_domain_condition` still consumed `Dim3.t`, so real
+subgroup obligation goals could not yet encode `blockDim.y = K`. This is a
+fresh handoff artifact and exact blocker, not solver input, not a guarded
+family proof, and not permission to promote `L119`-`L126`.
+
+S437 extends `Memory_event.Subgroup_obligation` with typed checked block
+dimensions that can be concrete or symbolic. Existing callers may still pass a
+concrete `Dim3.t`; that path keeps the current facts `blockDim.{x,y,z} =
+<concrete>` and bounds projected tasks against `blockDim.{x,y,z}`. The
+generic `checked_dimension` / `checked_block_dim` API lives in
+`Memory_event.Subgroup_obligation`; solve-tri carrier interpretation lives
+outside the proof primitive in `Symbolic_launch_evidence`. That module converts
+the solve-tri symbolic carrier into a checked block dimension `[32,K,1]` whose
+obligation-domain facts include `blockDim.y = K`, `K > 0`,
+`0 <= threadIdx.y$T1 < K`, and `0 <= threadIdx.y$T2 < K`. The conversion
+remains guarded by the existing row-derived facts: fixed `N = 64`, candidate
+`K` values `{32,16,14,12,10,8,6,4,2,1}`, dynamic shared memory `0`, route
+owner `Memory_event.Subgroup_obligation`, and explicit subgroup size `32`.
+Missing or non-positive symbolic candidates, missing positive guards,
+unexpected route owners, or missing subgroup size fail explicitly. S437 does
+not run solver/pre-solver proof, does not promote `L119`-`L126`, and keeps
+`L116`/`L127`/`L128` excluded.
+
+S438 connects the same checked-dimension carrier to the production
+`drf/bin/app.ml` subgroup launch-contract route for evidence emission, but the
+artifact rendering and solve-tri row ledger are owned by
+`Symbolic_launch_evidence`, not by `Memory_event` or the CLI driver. When
+`FAIAL_S438_SYMBOLIC_OBLIGATION_OUT` is set on a validated solve-tri
+`--launch-contract` run, the route writes a fresh Faial-owned artifact
+containing the route owner, launch row, family guard, checked-domain facts,
+candidate/anchor/unpromoted/excluded row sets, and the generated symbolic
+`Subgroup_obligation` goals. The artifact is generated from the parsed
+subgroup kernel and its ordinary source memory effects; it is not synthesized
+from task-local JSON or historical S404/S409/S427-S429 artifacts. Normal DRF
+verdicts still use the concrete row-local block dimensions for `L117` and
+`L118`, and the S438 artifact records `symbolic_solver_run: false`. Symbolic
+solver or pre-solver consumption remains a separate S439 boundary, and
+`L119`-`L126` remain unpromoted until exact JSON evidence or guarded symbolic
+proof covers them.
+
+S439 consumes those same fresh production-route symbolic obligations through
+an internal evidence hook, `FAIAL_S439_SYMBOLIC_PROOF_OUT`. The hook
+regenerates the symbolic checked-domain obligations through
+`Symbolic_launch_evidence`, then sends those symbolic goals to
+`Subgroup_solver` without passing the concrete row-local `Dim3.t` fallback.
+This records the actual solver classification over `blockDim.y = K` rather
+than reusing the exact `L117`/`L118` concrete proof route. The current
+classification is fail-closed: the goals contain `K > 0` and the checked
+thread-domain bounds, but the executable source-memory conditions still carry
+exact row facts such as `k == 32` and do not yet encode the guarded family
+relation between symbolic `K` and source `k`. Therefore S439 records no
+guarded family proof, adds no pre-solver rule, performs no manifest promotion,
+and keeps `L119`-`L126` unpromoted.
+
 ## Subgroup/Matrix Extension Boundary
 
 - `lib/memory_event.ml` exposes an internal `Subgroup_event` adapter from
@@ -328,9 +400,12 @@ and does not change manifest verdicts.
   assumed warp size or unbounded-thread fallbacks.
 - Subgroup-aware memory obligations constrain both projected tasks to the
   checked invocation domain:
-  `0 <= threadIdx.{x,y,z}$Tn < blockDim.{x,y,z}`, plus concrete
-  `blockDim.{x,y,z}` facts for the checked kernel configuration. When checked
-  block dimensions are supplied, these facts are included for every generated
+  `0 <= threadIdx.{x,y,z}$Tn < checked_bound.{x,y,z}`, plus concrete or
+  symbolic `blockDim.{x,y,z}` facts for the checked kernel configuration. For
+  concrete `Dim3.t` inputs, checked bounds remain `blockDim.{x,y,z}`. For the
+  accepted solve-tri symbolic carrier, the y bound is symbolic `K`, and the
+  goal also records `blockDim.y = K` and `K > 0`. When checked block
+  dimensions are supplied, these facts are included for every generated
   obligation, including ordinary same-phase obligations that do not otherwise
   need subgroup identity.
 - `lib/subgroup_uniformity.ml` checks the subgroup/matrix carrier's subgroup

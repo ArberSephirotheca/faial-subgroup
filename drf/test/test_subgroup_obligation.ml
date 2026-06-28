@@ -1,7 +1,10 @@
 open Protocols
+module LC = Drf.Launch_contract
+module LCG = Drf.Launch_contract_generator
 module SM = Inference.Subgroup_matrix
 module Source = Inference.Subgroup_source
 module Memory = Drf.Memory_event.Subgroup_obligation
+module Symbolic_launch_evidence = Drf.Symbolic_launch_evidence
 
 let var (name : string) : Variable.t = Variable.from_name name
 
@@ -12,6 +15,23 @@ let expect_memory_ok (type a) (result : (a, Memory.error) result) : a =
   match result with
   | Ok value -> value
   | Error error -> Alcotest.fail (Memory.error_to_string error)
+
+let expect_launch_contract_ok (type a) (result : (a, LC.error) result) : a =
+  match result with
+  | Ok value -> value
+  | Error error -> Alcotest.fail (LC.error_to_string error)
+
+let write_optional_symbolic_obligation_artifact (obligation : Memory.obligation)
+    : unit =
+  match Sys.getenv_opt "FAIAL_S437_SYMBOLIC_OBLIGATION_OUT" with
+  | None -> ()
+  | Some path ->
+      let out_channel = open_out path in
+      Fun.protect
+        ~finally:(fun () -> close_out_noerr out_channel)
+        (fun () ->
+          output_string out_channel (Memory.obligation_to_string obligation);
+          output_char out_channel '\n')
 
 let subgroup_config () : SM.Target_config.t =
   SM.Target_config.subgroup_size_exn 32 |> SM.Target_config.cuda_x_contiguous
@@ -812,6 +832,81 @@ let test_valid_cross_subgroup_pair_remains_visible () : unit =
     "valid different-subgroup matrix pair remains solver-visible" true
     (eval_goal assignments obligation.goal)
 
+let symbolic_checked_block_dim_of_l117 () : Memory.checked_block_dim =
+  let l117 = LC.of_row_id "L117" |> expect_launch_contract_ok in
+  match Symbolic_launch_evidence.checked_block_dim_of_launch_contract l117 with
+  | Ok (Some checked_block_dim) -> checked_block_dim
+  | Ok None -> Alcotest.fail "expected L117 symbolic checked block dimensions"
+  | Error error -> Alcotest.fail (Memory.error_to_string error)
+
+let test_solve_tri_carrier_emits_symbolic_checked_obligation () : unit =
+  let symbolic_checked_block_dim = symbolic_checked_block_dim_of_l117 () in
+  Alcotest.(check string)
+    "symbolic checked block dim" "[32, K, 1]"
+    (Memory.checked_block_dim_to_string symbolic_checked_block_dim);
+  let kernel =
+    SM.Kernel.make ~target_config:(subgroup_config ())
+      ~name:"symbolic_checked_domain" []
+  in
+  let ordinary =
+    ordinary_effect
+      ~access:(Access.write (var "tile") [ Exp.Var Variable.tid_y ] None)
+      ()
+  in
+  let obligations =
+    Memory.obligations ~checked_block_dim:symbolic_checked_block_dim
+      ~ordinary_memory_effects:[ ordinary ] kernel
+    |> expect_memory_ok
+  in
+  let obligation =
+    match obligations with
+    | [ obligation ] -> obligation
+    | obligations ->
+        Alcotest.fail
+          (Printf.sprintf "expected one symbolic K obligation, got %d"
+             (List.length obligations))
+  in
+  write_optional_symbolic_obligation_artifact obligation;
+  let rendered = Memory.obligation_to_string obligation in
+  Alcotest.(check bool)
+    "rendered obligation contains blockDim.y = K" true
+    (Stage0.Common.contains ~substring:"blockDim.y == K" rendered);
+  Alcotest.(check bool)
+    "rendered obligation contains positive K guard" true
+    (Stage0.Common.contains ~substring:"K > 0" rendered);
+  Alcotest.(check bool)
+    "rendered obligation bounds T1 y by K" true
+    (Stage0.Common.contains ~substring:"threadIdx.y$T1 < K" rendered);
+  Alcotest.(check bool)
+    "rendered obligation bounds T2 y by K" true
+    (Stage0.Common.contains ~substring:"threadIdx.y$T2 < K" rendered);
+  Alcotest.(check bool)
+    "rendered obligation preserves concrete x fact" true
+    (Stage0.Common.contains ~substring:"blockDim.x == 32" rendered)
+
+let test_symbolic_checked_block_dim_requires_subgroup_size () : unit =
+  let carrier =
+    {
+      LC.solve_tri_symbolic_dimension_carrier with
+      LCG.carrier_subgroup_size = 0;
+    }
+  in
+  match Symbolic_launch_evidence.checked_block_dim_of_carrier carrier with
+  | Ok _ -> Alcotest.fail "missing subgroup size unexpectedly worked"
+  | Error (Memory.Invalid_symbolic_checked_block_dim reason) ->
+      Alcotest.(check bool)
+        "error names subgroup size" true
+        (Stage0.Common.contains ~substring:"subgroup size" reason)
+  | Error error -> Alcotest.fail (Memory.error_to_string error)
+
+let test_ordinary_launch_contract_has_no_symbolic_checked_block_dim () : unit =
+  let l072 = LC.of_row_id "L072" |> expect_launch_contract_ok in
+  match Symbolic_launch_evidence.checked_block_dim_of_launch_contract l072 with
+  | Ok None -> ()
+  | Ok (Some _) ->
+      Alcotest.fail "ordinary row unexpectedly had symbolic checked block dim"
+  | Error error -> Alcotest.fail (Memory.error_to_string error)
+
 let tests : unit Alcotest.test_case list =
   [
     ( "subgroup barrier advances only subgroup phase",
@@ -878,6 +973,15 @@ let tests : unit Alcotest.test_case list =
     ( "valid cross-subgroup visibility",
       `Quick,
       test_valid_cross_subgroup_pair_remains_visible );
+    ( "solve-tri carrier emits symbolic checked obligation",
+      `Quick,
+      test_solve_tri_carrier_emits_symbolic_checked_obligation );
+    ( "symbolic checked block dim requires subgroup size",
+      `Quick,
+      test_symbolic_checked_block_dim_requires_subgroup_size );
+    ( "ordinary launch contract has no symbolic checked block dim",
+      `Quick,
+      test_ordinary_launch_contract_has_no_symbolic_checked_block_dim );
   ]
 
 let () = Alcotest.run "Subgroup_obligation" [ ("subgroup_obligation", tests) ]

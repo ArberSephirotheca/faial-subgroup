@@ -507,6 +507,8 @@ module Subgroup_obligation = struct
     | Subgroup_config_error of SM.Target_config.error
     | Missing_block_dim_for_subgroup_ordering
     | Invalid_block_dim of Dim3.t
+    | Invalid_symbolic_checked_block_dim of string
+    | Conflicting_checked_block_dim_inputs
     | Ordinary_effect_target_config_mismatch of {
         expected : string;
         actual : string;
@@ -521,6 +523,11 @@ module Subgroup_obligation = struct
         Printf.sprintf
           "invalid checked block dimensions %s: dimensions must be positive"
           (Dim3.to_string block_dim)
+    | Invalid_symbolic_checked_block_dim reason ->
+        "invalid symbolic checked block dimensions: " ^ reason
+    | Conflicting_checked_block_dim_inputs ->
+        "provide either concrete checked block dimensions or symbolic checked \
+         block dimensions, not both"
     | Ordinary_effect_target_config_mismatch { expected; actual; memory_effect }
       ->
         Printf.sprintf
@@ -589,6 +596,115 @@ module Subgroup_obligation = struct
     right : conditional_access;
     goal : Exp.bexp;
   }
+
+  type checked_dimension = {
+    checked_dimension_variable : Variable.t;
+    checked_dimension_value : Exp.nexp;
+    checked_dimension_upper_bound : Exp.nexp;
+    checked_dimension_source : string;
+    checked_dimension_positive_guard : Exp.bexp option;
+  }
+
+  type checked_block_dim = {
+    checked_dim_x : checked_dimension;
+    checked_dim_y : checked_dimension;
+    checked_dim_z : checked_dimension;
+  }
+
+  let checked_block_dim_dimensions (checked_block_dim : checked_block_dim) :
+      checked_dimension list =
+    [
+      checked_block_dim.checked_dim_x;
+      checked_block_dim.checked_dim_y;
+      checked_block_dim.checked_dim_z;
+    ]
+
+  let checked_dimension_to_string (dimension : checked_dimension) : string =
+    Variable.name dimension.checked_dimension_variable
+    ^ "="
+    ^ Exp.n_to_string dimension.checked_dimension_value
+
+  let checked_block_dim_to_string (checked_block_dim : checked_block_dim) :
+      string =
+    checked_block_dim |> checked_block_dim_dimensions
+    |> List.map (fun dimension ->
+        Exp.n_to_string dimension.checked_dimension_value)
+    |> String.concat ", "
+    |> fun body -> "[" ^ body ^ "]"
+
+  let concrete_checked_dimension ~(variable : Variable.t) ~(value : int)
+      ~(source : string) : checked_dimension =
+    {
+      checked_dimension_variable = variable;
+      checked_dimension_value = Exp.Num value;
+      checked_dimension_upper_bound = Exp.Var variable;
+      checked_dimension_source = source;
+      checked_dimension_positive_guard = None;
+    }
+
+  let checked_block_dim_of_dim3 (block_dim : Dim3.t) :
+      (checked_block_dim, error) result =
+    if not (List.for_all (fun value -> value > 0) (Dim3.to_list block_dim)) then
+      Error (Invalid_block_dim block_dim)
+    else
+      Ok
+        {
+          checked_dim_x =
+            concrete_checked_dimension ~variable:Variable.bdim_x
+              ~value:block_dim.x ~source:"concrete Dim3.x";
+          checked_dim_y =
+            concrete_checked_dimension ~variable:Variable.bdim_y
+              ~value:block_dim.y ~source:"concrete Dim3.y";
+          checked_dim_z =
+            concrete_checked_dimension ~variable:Variable.bdim_z
+              ~value:block_dim.z ~source:"concrete Dim3.z";
+        }
+
+  let symbolic_checked_dimension ~(variable : Variable.t) ~(parameter : string)
+      ~(source : string) ~(candidate_values : int list)
+      ~(positive_guard_source : string) : (checked_dimension, error) result =
+    if String.equal parameter "" then
+      Error
+        (Invalid_symbolic_checked_block_dim
+           (Variable.name variable ^ " has an empty symbolic parameter"))
+    else if
+      candidate_values = []
+      || List.exists (fun candidate -> candidate <= 0) candidate_values
+    then
+      Error
+        (Invalid_symbolic_checked_block_dim
+           (Variable.name variable
+          ^ " has missing or non-positive symbolic candidates"))
+    else if String.equal positive_guard_source "" then
+      Error
+        (Invalid_symbolic_checked_block_dim
+           (Variable.name variable ^ " is missing a positive guard"))
+    else
+      let parameter = Variable.from_name parameter in
+      let value = Exp.Var parameter in
+      Ok
+        {
+          checked_dimension_variable = variable;
+          checked_dimension_value = value;
+          checked_dimension_upper_bound = value;
+          checked_dimension_source = source;
+          checked_dimension_positive_guard = Some (Exp.n_gt value (Exp.Num 0));
+        }
+
+  let checked_dimension_free_names (dimension : checked_dimension)
+      (fns : Variable.Set.t) : Variable.Set.t =
+    let fns = Exp.n_free_names dimension.checked_dimension_value fns in
+    let fns = Exp.n_free_names dimension.checked_dimension_upper_bound fns in
+    match dimension.checked_dimension_positive_guard with
+    | None -> fns
+    | Some guard -> Exp.b_free_names guard fns
+
+  let checked_block_dim_free_names (checked_block_dim : checked_block_dim)
+      (fns : Variable.Set.t) : Variable.Set.t =
+    checked_block_dim |> checked_block_dim_dimensions
+    |> List.fold_left
+         (fun fns dimension -> checked_dimension_free_names dimension fns)
+         fns
 
   let task_suffix (task : Task.t) : string = "$" ^ Task.to_string task
 
@@ -816,37 +932,47 @@ module Subgroup_obligation = struct
     in
     Exp.b_or_ex (List.map neq Variable.tid_list)
 
-  let block_dim_is_valid (block_dim : Dim3.t) : bool =
-    List.for_all (fun value -> value > 0) (Dim3.to_list block_dim)
+  let checked_invocation_domain_condition
+      (checked_block_dim : checked_block_dim) : (Exp.bexp, error) result =
+    let dimensions = checked_block_dim_dimensions checked_block_dim in
+    let block_dim_facts =
+      List.map
+        (fun dimension ->
+          Exp.n_eq (Exp.Var dimension.checked_dimension_variable)
+            dimension.checked_dimension_value)
+        dimensions
+    in
+    let positive_guards =
+      dimensions
+      |> List.filter_map (fun dimension ->
+          dimension.checked_dimension_positive_guard)
+    in
+    let task_bounds task =
+      List.map2
+        (fun thread_idx dimension ->
+          let projected = Exp.Var (project_var task thread_idx) in
+          Exp.b_and
+            (Exp.n_ge projected (Exp.Num 0))
+            (Exp.n_lt projected dimension.checked_dimension_upper_bound))
+        Variable.tid_list dimensions
+    in
+    Ok
+      (Exp.b_and_ex
+         (block_dim_facts @ positive_guards @ task_bounds Task.Task1
+        @ task_bounds Task.Task2))
 
-  let checked_invocation_domain_condition (block_dim : Dim3.t) :
+  let invocation_domain_condition ?checked_block_dim ?block_dim
+      (left : conditional_access) (right : conditional_access) :
       (Exp.bexp, error) result =
-    if not (block_dim_is_valid block_dim) then
-      Error (Invalid_block_dim block_dim)
-    else
-      let block_dim_facts =
-        List.map2
-          (fun dimension bound -> Exp.n_eq (Exp.Var dimension) (Exp.Num bound))
-          Variable.bdim_list (Dim3.to_list block_dim)
-      in
-      let task_bounds task =
-        List.map2
-          (fun thread_idx block_dim ->
-            let projected = Exp.Var (project_var task thread_idx) in
-            Exp.b_and
-              (Exp.n_ge projected (Exp.Num 0))
-              (Exp.n_lt projected (Exp.Var block_dim)))
-          Variable.tid_list Variable.bdim_list
-      in
-      Ok
-        (Exp.b_and_ex
-           (block_dim_facts @ task_bounds Task.Task1 @ task_bounds Task.Task2))
-
-  let invocation_domain_condition ?block_dim (left : conditional_access)
-      (right : conditional_access) : (Exp.bexp, error) result =
-    match block_dim with
-    | Some block_dim -> checked_invocation_domain_condition block_dim
-    | None ->
+    match (checked_block_dim, block_dim) with
+    | Some _, Some _ -> Error Conflicting_checked_block_dim_inputs
+    | Some checked_block_dim, None ->
+        checked_invocation_domain_condition checked_block_dim
+    | None, Some block_dim ->
+        let ( let* ) = Result.bind in
+        let* checked_block_dim = checked_block_dim_of_dim3 block_dim in
+        checked_invocation_domain_condition checked_block_dim
+    | None, None ->
         if subgroup_ordering_needs_identity left right then
           Error Missing_block_dim_for_subgroup_ordering
         else Ok (Exp.Bool true)
@@ -862,8 +988,8 @@ module Subgroup_obligation = struct
     in
     Exp.b_and_ex clauses
 
-  let obligation_goal ?(globals = Variable.Set.empty) ?block_dim
-      (config : SM.Target_config.t) (left : conditional_access)
+  let obligation_goal ?(globals = Variable.Set.empty) ?checked_block_dim
+      ?block_dim (config : SM.Target_config.t) (left : conditional_access)
       (right : conditional_access) : (Exp.bexp, error) result =
     let globals =
       globals
@@ -875,6 +1001,12 @@ module Subgroup_obligation = struct
       |> Variable.Set.add Variable.gdim_y
       |> Variable.Set.add Variable.gdim_z
     in
+    let globals =
+      match checked_block_dim with
+      | None -> globals
+      | Some checked_block_dim ->
+          checked_block_dim_free_names checked_block_dim globals
+    in
     let left_access =
       Access.map (project_nexp globals Task.Task1) left.access
     in
@@ -885,7 +1017,7 @@ module Subgroup_obligation = struct
     let right_condition = project_bexp globals Task.Task2 right.condition in
     let ( let* ) = Result.bind in
     let* invocation_domain =
-      invocation_domain_condition ?block_dim left right
+      invocation_domain_condition ?checked_block_dim ?block_dim left right
     in
     let* subgroup_condition =
       not_ordered_by_subgroup_condition config left right
@@ -921,7 +1053,7 @@ module Subgroup_obligation = struct
         |> List.map (fun right -> (left, right)))
     |> List.concat
 
-  let obligations_of_phased ?globals ?config ?block_dim
+  let obligations_of_phased ?globals ?config ?checked_block_dim ?block_dim
       (kernel : Subgroup_event.t) (phased : phased_kernel) :
       (obligation list, error) result =
     let ( let* ) = Result.bind in
@@ -929,7 +1061,9 @@ module Subgroup_obligation = struct
     let config = Option.value config ~default:kernel.target_config in
     let next_id = ref 0 in
     let make_obligation phase_id array_name left right =
-      let* goal = obligation_goal ~globals ?block_dim config left right in
+      let* goal =
+        obligation_goal ~globals ?checked_block_dim ?block_dim config left right
+      in
       let id = !next_id in
       next_id := id + 1;
       Ok { id; phase_id; array_name; left; right; goal }
@@ -952,21 +1086,23 @@ module Subgroup_obligation = struct
         | Error error, _ | _, Error error -> Error error)
       obligations (Ok [])
 
-  let obligations_of_events ?globals ?config ?block_dim
+  let obligations_of_events ?globals ?config ?checked_block_dim ?block_dim
       (kernel : Subgroup_event.t) : (obligation list, error) result =
     phases_of_unified_events kernel
-    |> obligations_of_phased ?globals ?config ?block_dim kernel
+    |> obligations_of_phased ?globals ?config ?checked_block_dim ?block_dim
+         kernel
 
-  let obligations ?globals ?config ?block_dim ?(site_controls = [])
-      ?(ordinary_memory_effects = []) (kernel : SM.Kernel.t) :
-      (obligation list, error) result =
+  let obligations ?globals ?config ?checked_block_dim ?block_dim
+      ?(site_controls = []) ?(ordinary_memory_effects = [])
+      (kernel : SM.Kernel.t) : (obligation list, error) result =
     let memory_globals = Option.value globals ~default:Variable.Set.empty in
     let ( let* ) = Result.bind in
     let* events =
       unified_events_of_kernel ?config ~site_controls ~memory_globals
         ~ordinary_memory_effects kernel
     in
-    obligations_of_events ~globals:memory_globals ?config ?block_dim events
+    obligations_of_events ~globals:memory_globals ?config ?checked_block_dim
+      ?block_dim events
 
   let obligation_to_string (obligation : obligation) : string =
     Printf.sprintf
