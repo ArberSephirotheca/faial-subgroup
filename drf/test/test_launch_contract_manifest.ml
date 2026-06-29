@@ -983,6 +983,32 @@ let symbolic_dimension_carrier_facts carrier =
       Some carrier.Launch_contract_generator.carrier_excluded_row_ids;
   }
 
+let guarded_candidate_carrier_facts carrier =
+  {
+    Launch_contract_generator.candidate_fact_carrier_id =
+      carrier.Launch_contract_generator.candidate_carrier_id;
+    candidate_fact_priority_bucket =
+      Some carrier.Launch_contract_generator.candidate_priority_bucket;
+    candidate_fact_first_blocker =
+      Some carrier.Launch_contract_generator.candidate_first_blocker;
+    candidate_fact_proof_ladder_stage =
+      Some carrier.Launch_contract_generator.candidate_proof_ladder_stage;
+    candidate_fact_source_ledger =
+      Some carrier.Launch_contract_generator.candidate_source_ledger;
+    candidate_fact_affected_family_count =
+      Some carrier.Launch_contract_generator.candidate_affected_family_count;
+    candidate_fact_required_fact_keys =
+      Some carrier.Launch_contract_generator.candidate_required_fact_keys;
+    candidate_fact_route_owner =
+      Some carrier.Launch_contract_generator.candidate_route_owner;
+    candidate_fact_solver_policy =
+      Some carrier.Launch_contract_generator.candidate_solver_policy;
+    candidate_fact_admission_status =
+      Some carrier.Launch_contract_generator.candidate_admission_status;
+    candidate_fact_next_support_step =
+      Some carrier.Launch_contract_generator.candidate_next_support_step;
+  }
+
 let check_selected_validation_guard row selected =
   let facts = selected_pre_promotion_manifest_facts row selected in
   match
@@ -1486,6 +1512,48 @@ let test_solve_tri_symbolic_k_guard_consumption_and_blocker () =
     "blocker dump explains launch-contract provenance" true
     (string_contains dump "provenance rather than solver input")
 
+let test_host_template_candidate_carrier_matches_s445_blocker () =
+  let root = repo_root () in
+  let carrier =
+    Launch_contract.host_template_specialization_candidate_carrier
+  in
+  let facts = guarded_candidate_carrier_facts carrier in
+  (match Launch_contract.validate_guarded_candidate_carrier carrier facts with
+  | Ok () -> ()
+  | Error error ->
+      failf "candidate carrier rejected valid facts: %s"
+        (Launch_contract_generator.validation_error_to_string error));
+  let ledger =
+    Json.from_file
+      (repo_path root carrier.Launch_contract_generator.candidate_source_ledger)
+  in
+  let families = list_field "families" ledger in
+  let matching =
+    families
+    |> List.filter (fun family ->
+        String.equal
+          (string_field "first_blocker" family)
+          carrier.Launch_contract_generator.candidate_first_blocker)
+  in
+  Alcotest.(check int)
+    "S445 host/template blocker count"
+    carrier.Launch_contract_generator.candidate_affected_family_count
+    (List.length matching);
+  Alcotest.(check string)
+    "carrier route owner" "Launch_contract_generator.guarded_candidate_carrier"
+    carrier.Launch_contract_generator.candidate_route_owner;
+  Alcotest.(check string)
+    "carrier solver policy" "not_solver_input"
+    carrier.Launch_contract_generator.candidate_solver_policy;
+  Alcotest.(check string)
+    "carrier admission status" "blocked_no_fresh_obligation"
+    carrier.Launch_contract_generator.candidate_admission_status;
+  match Launch_contract.of_row_id "L003" with
+  | Error (Launch_contract.Unknown_row actual) ->
+      Alcotest.(check string) "carrier does not admit L003" "L003" actual
+  | Ok _ -> failf "S447 candidate carrier unexpectedly admitted L003"
+  | Error error -> failf "%s" (Launch_contract.error_to_string error)
+
 let check_symbolic_k_missing_validation_field label field guard facts =
   match Launch_contract.validate_solve_tri_symbolic_k_guard guard facts with
   | Ok () -> failf "%s: expected validation failure" label
@@ -1519,6 +1587,24 @@ let check_carrier_field_mismatch label field carrier facts =
   match
     Launch_contract.validate_solve_tri_symbolic_dimension_carrier carrier facts
   with
+  | Ok () -> failf "%s: expected validation failure" label
+  | Error (Launch_contract_generator.Field_mismatch { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected validation error: %s" label
+        (Launch_contract_generator.validation_error_to_string error)
+
+let check_candidate_missing_validation_field label field carrier facts =
+  match Launch_contract.validate_guarded_candidate_carrier carrier facts with
+  | Ok () -> failf "%s: expected validation failure" label
+  | Error (Launch_contract_generator.Missing_field { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected validation error: %s" label
+        (Launch_contract_generator.validation_error_to_string error)
+
+let check_candidate_field_mismatch label field carrier facts =
+  match Launch_contract.validate_guarded_candidate_carrier carrier facts with
   | Ok () -> failf "%s: expected validation failure" label
   | Error (Launch_contract_generator.Field_mismatch { field = actual; _ }) ->
       Alcotest.(check string) label field actual
@@ -1601,6 +1687,33 @@ let test_solve_tri_symbolic_dimension_carrier_fails_closed_on_missing_facts () =
   check_carrier_field_mismatch "missing carrier excluded sentinel row"
     "excluded_rows" carrier
     { facts with carrier_fact_excluded_row_ids = Some [ "L116"; "L127" ] }
+
+let test_host_template_candidate_carrier_fails_closed_on_missing_facts () =
+  let carrier =
+    Launch_contract.host_template_specialization_candidate_carrier
+  in
+  let facts = guarded_candidate_carrier_facts carrier in
+  check_candidate_missing_validation_field "missing candidate first blocker"
+    "first_blocker" carrier
+    { facts with candidate_fact_first_blocker = None };
+  check_candidate_missing_validation_field "missing candidate required facts"
+    "required_fact_keys" carrier
+    { facts with candidate_fact_required_fact_keys = None };
+  check_candidate_missing_validation_field "missing candidate solver policy"
+    "solver_policy" carrier
+    { facts with candidate_fact_solver_policy = None };
+  check_candidate_field_mismatch "mismatched candidate count"
+    "affected_family_count" carrier
+    { facts with candidate_fact_affected_family_count = Some 53 };
+  check_candidate_field_mismatch "mismatched candidate route owner"
+    "route_owner" carrier
+    { facts with candidate_fact_route_owner = Some "Memory_event.translate" };
+  check_candidate_field_mismatch "mismatched candidate solver policy"
+    "solver_policy" carrier
+    { facts with candidate_fact_solver_policy = Some "solver_input" };
+  check_candidate_field_mismatch "mismatched candidate admission status"
+    "admission_status" carrier
+    { facts with candidate_fact_admission_status = Some "admitted" }
 
 let check_selected_missing_validation_field label field selected facts =
   match
@@ -1964,7 +2077,11 @@ let test_readme_lists_current_launch_contract_rows () =
     (string_contains readme "S433 adds a typed symbolic dimension carrier");
   Alcotest.(check bool)
     "README documents S437 symbolic checked dimensions" true
-    (string_contains readme "S437 extends `Memory_event.Subgroup_obligation`")
+    (string_contains readme "S437 extends `Memory_event.Subgroup_obligation`");
+  Alcotest.(check bool)
+    "README documents S447 candidate carrier" true
+    (string_contains readme
+       "S447 adds a non-admission generic candidate carrier")
 
 let tests =
   [
@@ -1998,12 +2115,18 @@ let tests =
     ( "solve-tri symbolic K guard consumption and blocker",
       `Quick,
       test_solve_tri_symbolic_k_guard_consumption_and_blocker );
+    ( "host/template candidate carrier matches S445 blocker",
+      `Quick,
+      test_host_template_candidate_carrier_matches_s445_blocker );
     ( "solve-tri symbolic K guard fails closed on missing facts",
       `Quick,
       test_solve_tri_symbolic_k_guard_fails_closed_on_missing_facts );
     ( "solve-tri symbolic dimension carrier fails closed on missing facts",
       `Quick,
       test_solve_tri_symbolic_dimension_carrier_fails_closed_on_missing_facts );
+    ( "host/template candidate carrier fails closed on missing facts",
+      `Quick,
+      test_host_template_candidate_carrier_fails_closed_on_missing_facts );
     ( "selected L117 validation fails closed on missing facts",
       `Quick,
       test_selected_l117_validation_fails_closed_on_missing_facts );

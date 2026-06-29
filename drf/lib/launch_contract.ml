@@ -140,6 +140,16 @@ let solve_tri_symbolic_dimension_carrier =
 let validate_solve_tri_symbolic_dimension_carrier =
   Launch_contract_generator.validate_solve_tri_symbolic_dimension_carrier
 
+let host_template_specialization_candidate_carrier =
+  Launch_contract_generator.host_template_specialization_candidate_carrier
+
+let validate_guarded_candidate_carrier =
+  Launch_contract_generator.validate_guarded_candidate_carrier
+
+let guarded_candidate_carrier_lines () =
+  Launch_contract_generator.guarded_candidate_carrier_lines
+    host_template_specialization_candidate_carrier
+
 let solve_tri_symbolic_k_obligation_blocker =
   Launch_contract_generator.solve_tri_symbolic_k_obligation_blocker
 

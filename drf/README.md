@@ -218,6 +218,19 @@ solve-tri neighbors `L116` or `L118`-`L128`, does not prove full-source
 host-header intake for `solve_tri.cu`, and does not broaden shared-memory,
 subgroup-helper, CUDA, or ggml-cuda support.
 
+S447 adds a non-admission generic candidate carrier for the recurring S445
+host/template blocker class. The carrier records that 54 families stopped at
+`template_args_unresolved_or_conflicting` in the S445 sweep and lists the
+required row-owned facts that must exist before source or proof work can run:
+source file, kernel/template, concrete template arguments, launch site,
+preprocessing profile, extraction fixture, include and macro profile,
+block/grid sources, and dynamic shared memory. It is owned by
+`Launch_contract_generator.guarded_candidate_carrier`, has
+`solver_policy = not_solver_input`, and has
+`admission_status = blocked_no_fresh_obligation`. It does not add a launch
+lookup row, change manifest verdict fields, run a solver or pre-solver, or
+turn first-blocker accounting into guarded family proof.
+
 S409 promotes only canonical `L118` in the launch manifest after the exact
 production command exits successfully with structured subgroup JSON:
 
