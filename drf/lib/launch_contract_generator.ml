@@ -180,6 +180,20 @@ type solve_tri_symbolic_dimension_carrier = {
   carrier_excluded_row_ids : string list;
 }
 
+type guarded_candidate_carrier = {
+  candidate_carrier_id : string;
+  candidate_priority_bucket : string;
+  candidate_first_blocker : string;
+  candidate_proof_ladder_stage : string;
+  candidate_source_ledger : string;
+  candidate_affected_family_count : int;
+  candidate_required_fact_keys : string list;
+  candidate_route_owner : string;
+  candidate_solver_policy : string;
+  candidate_admission_status : string;
+  candidate_next_support_step : string;
+}
+
 type symbolic_obligation_blocker = {
   blocker_route_owner : string;
   blocker_symbolic_parameter : string;
@@ -251,6 +265,20 @@ type solve_tri_symbolic_dimension_carrier_facts = {
   carrier_fact_lookup_anchor_row_ids : string list option;
   carrier_fact_unpromoted_row_ids : string list option;
   carrier_fact_excluded_row_ids : string list option;
+}
+
+type guarded_candidate_carrier_facts = {
+  candidate_fact_carrier_id : string;
+  candidate_fact_priority_bucket : string option;
+  candidate_fact_first_blocker : string option;
+  candidate_fact_proof_ladder_stage : string option;
+  candidate_fact_source_ledger : string option;
+  candidate_fact_affected_family_count : int option;
+  candidate_fact_required_fact_keys : string list option;
+  candidate_fact_route_owner : string option;
+  candidate_fact_solver_policy : string option;
+  candidate_fact_admission_status : string option;
+  candidate_fact_next_support_step : string option;
 }
 
 type error =
@@ -771,6 +799,38 @@ let solve_tri_symbolic_k_obligation_blocker =
        any solver or pre-solver proof over K";
   }
 
+let host_template_specialization_candidate_carrier =
+  {
+    candidate_carrier_id = "s447_host_template_specialization";
+    candidate_priority_bucket = "host_or_template_resolution_schema_candidate";
+    candidate_first_blocker = "template_args_unresolved_or_conflicting";
+    candidate_proof_ladder_stage = "blocked_at_host_or_template_specialization";
+    candidate_source_ledger =
+      "agent_results/rewrite/component_summaries/S445/guarded_expansion_sweep.json";
+    candidate_affected_family_count = 54;
+    candidate_required_fact_keys =
+      [
+        "source_file";
+        "kernel_or_template";
+        "concrete_template_args";
+        "launch_site";
+        "preprocessing_profile";
+        "extraction_fixture";
+        "selected_include_order";
+        "macro_profile";
+        "block_dim_source";
+        "grid_dim_source";
+        "dynamic_shared_memory";
+      ];
+    candidate_route_owner =
+      "Launch_contract_generator.guarded_candidate_carrier";
+    candidate_solver_policy = "not_solver_input";
+    candidate_admission_status = "blocked_no_fresh_obligation";
+    candidate_next_support_step =
+      "derive row-owned host/template specialization facts before source or \
+       proof work";
+  }
+
 let symbolic_obligation_blocker_lines (blocker : symbolic_obligation_blocker) =
   [
     "route_owner: " ^ blocker.blocker_route_owner;
@@ -778,6 +838,23 @@ let symbolic_obligation_blocker_lines (blocker : symbolic_obligation_blocker) =
     "reason: " ^ blocker.blocker_reason;
     "zero_obligation_cause: " ^ blocker.blocker_zero_obligation_cause;
     "next_step: " ^ blocker.blocker_next_step;
+  ]
+
+let guarded_candidate_carrier_lines (carrier : guarded_candidate_carrier) =
+  [
+    "carrier_id: " ^ carrier.candidate_carrier_id;
+    "priority_bucket: " ^ carrier.candidate_priority_bucket;
+    "first_blocker: " ^ carrier.candidate_first_blocker;
+    "proof_ladder_stage: " ^ carrier.candidate_proof_ladder_stage;
+    "source_ledger: " ^ carrier.candidate_source_ledger;
+    "affected_family_count: "
+    ^ string_of_int carrier.candidate_affected_family_count;
+    "required_fact_keys: "
+    ^ String.concat ", " carrier.candidate_required_fact_keys;
+    "route_owner: " ^ carrier.candidate_route_owner;
+    "solver_policy: " ^ carrier.candidate_solver_policy;
+    "admission_status: " ^ carrier.candidate_admission_status;
+    "next_support_step: " ^ carrier.candidate_next_support_step;
   ]
 
 let contract_of_seed (family : Launch_contract_rows.family) (row : row_seed) =
@@ -1222,6 +1299,66 @@ let validate_solve_tri_symbolic_dimension_carrier
       (fun () ->
         check_string_list row_id "excluded_rows"
           facts.carrier_fact_excluded_row_ids carrier.carrier_excluded_row_ids);
+    ]
+  in
+  let rec run = function
+    | [] -> Ok ()
+    | check :: rest -> (
+        match check () with Ok () -> run rest | Error _ as error -> error)
+  in
+  run checks
+
+let validate_guarded_candidate_carrier (carrier : guarded_candidate_carrier)
+    (facts : guarded_candidate_carrier_facts) =
+  let row_id = carrier.candidate_carrier_id in
+  let checks =
+    [
+      (fun () ->
+        if String.equal facts.candidate_fact_carrier_id row_id then Ok ()
+        else
+          Error
+            (Field_mismatch
+               {
+                 row_id;
+                 field = "carrier_id";
+                 expected = row_id;
+                 actual = facts.candidate_fact_carrier_id;
+               }));
+      (fun () ->
+        check_string row_id "priority_bucket"
+          facts.candidate_fact_priority_bucket carrier.candidate_priority_bucket);
+      (fun () ->
+        check_string row_id "first_blocker" facts.candidate_fact_first_blocker
+          carrier.candidate_first_blocker);
+      (fun () ->
+        check_string row_id "proof_ladder_stage"
+          facts.candidate_fact_proof_ladder_stage
+          carrier.candidate_proof_ladder_stage);
+      (fun () ->
+        check_string row_id "source_ledger" facts.candidate_fact_source_ledger
+          carrier.candidate_source_ledger);
+      (fun () ->
+        check_int row_id "affected_family_count"
+          facts.candidate_fact_affected_family_count
+          carrier.candidate_affected_family_count);
+      (fun () ->
+        check_string_list row_id "required_fact_keys"
+          facts.candidate_fact_required_fact_keys
+          carrier.candidate_required_fact_keys);
+      (fun () ->
+        check_string row_id "route_owner" facts.candidate_fact_route_owner
+          carrier.candidate_route_owner);
+      (fun () ->
+        check_string row_id "solver_policy" facts.candidate_fact_solver_policy
+          carrier.candidate_solver_policy);
+      (fun () ->
+        check_string row_id "admission_status"
+          facts.candidate_fact_admission_status
+          carrier.candidate_admission_status);
+      (fun () ->
+        check_string row_id "next_support_step"
+          facts.candidate_fact_next_support_step
+          carrier.candidate_next_support_step);
     ]
   in
   let rec run = function

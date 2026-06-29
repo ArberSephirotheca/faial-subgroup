@@ -665,6 +665,47 @@ let test_solve_tri_symbolic_dimension_carrier () : unit =
     "carrier excluded rows" [ "L116"; "L127"; "L128" ]
     carrier.Launch_contract_generator.carrier_excluded_row_ids
 
+let test_host_template_candidate_carrier_is_non_admission () : unit =
+  let carrier = LC.host_template_specialization_candidate_carrier in
+  Alcotest.(check string)
+    "carrier id" "s447_host_template_specialization"
+    carrier.Launch_contract_generator.candidate_carrier_id;
+  Alcotest.(check string)
+    "carrier blocker" "template_args_unresolved_or_conflicting"
+    carrier.Launch_contract_generator.candidate_first_blocker;
+  Alcotest.(check string)
+    "carrier stage" "blocked_at_host_or_template_specialization"
+    carrier.Launch_contract_generator.candidate_proof_ladder_stage;
+  Alcotest.(check int)
+    "affected families" 54
+    carrier.Launch_contract_generator.candidate_affected_family_count;
+  Alcotest.(check bool)
+    "carrier requires template args" true
+    (List.mem "concrete_template_args"
+       carrier.Launch_contract_generator.candidate_required_fact_keys);
+  Alcotest.(check bool)
+    "carrier requires macro profile" true
+    (List.mem "macro_profile"
+       carrier.Launch_contract_generator.candidate_required_fact_keys);
+  Alcotest.(check string)
+    "carrier is not solver input" "not_solver_input"
+    carrier.Launch_contract_generator.candidate_solver_policy;
+  Alcotest.(check string)
+    "carrier does not admit proof" "blocked_no_fresh_obligation"
+    carrier.Launch_contract_generator.candidate_admission_status;
+  (match LC.of_row_id "L003" with
+  | Error (LC.Unknown_row "L003") -> ()
+  | Ok _ -> Alcotest.fail "S447 carrier unexpectedly admitted L003 lookup row"
+  | Error error -> Alcotest.fail (LC.error_to_string error));
+  let rendered = String.concat "\n" (LC.guarded_candidate_carrier_lines ()) in
+  Alcotest.(check bool)
+    "rendered carrier records task-local route" true
+    (string_contains rendered
+       "Launch_contract_generator.guarded_candidate_carrier");
+  Alcotest.(check bool)
+    "rendered carrier records non-solver status" true
+    (string_contains rendered "solver_policy: not_solver_input")
+
 let test_unselected_solve_tri_neighbors_are_not_lookup_rows () : unit =
   List.iter
     (fun row_id ->
@@ -724,6 +765,9 @@ let tests =
     ( "solve-tri symbolic dimension carrier",
       `Quick,
       test_solve_tri_symbolic_dimension_carrier );
+    ( "host/template candidate carrier is non-admission",
+      `Quick,
+      test_host_template_candidate_carrier_is_non_admission );
     ( "solve-tri neighbors are not lookup rows",
       `Quick,
       test_unselected_solve_tri_neighbors_are_not_lookup_rows );
