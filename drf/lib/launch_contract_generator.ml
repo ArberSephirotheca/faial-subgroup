@@ -281,6 +281,27 @@ type guarded_candidate_carrier_facts = {
   candidate_fact_next_support_step : string option;
 }
 
+type guarded_candidate_row_facts = {
+  candidate_row_fact_carrier_id : string;
+  candidate_row_fact_row_id : string;
+  candidate_row_fact_family_key : string option;
+  candidate_row_fact_source_file : string option;
+  candidate_row_fact_kernel_or_template : string option;
+  candidate_row_fact_first_blocker : string option;
+  candidate_row_fact_required_fact_statuses : (string * string) list option;
+  candidate_row_fact_carrier_readiness_status : string option;
+  candidate_row_fact_missing_fact_if_any : string list option;
+  candidate_row_fact_solver_policy : string option;
+  candidate_row_fact_admission_status : string option;
+  candidate_row_fact_fresh_obligation_artifacts : int option;
+  candidate_row_fact_solver_runs : int option;
+  candidate_row_fact_pre_solver_runs : int option;
+  candidate_row_fact_new_guarded_family_admissions : int option;
+  candidate_row_fact_manifest_verdict_fields_changed : bool option;
+  candidate_row_fact_lookup_rows_added : bool option;
+  candidate_row_fact_shortcut_keying_used : bool option;
+}
+
 type error =
   | Unknown_generated_row of string
   | Duplicate_generated_row of string
@@ -891,6 +912,12 @@ let check_string row_id field actual expected =
   | Some actual when String.equal actual expected -> Ok ()
   | Some actual -> Error (Field_mismatch { row_id; field; expected; actual })
 
+let check_present_string row_id field actual =
+  match actual with
+  | None -> Error (Missing_field { row_id; field })
+  | Some "" -> Error (Missing_field { row_id; field })
+  | Some _ -> Ok ()
+
 let check_int row_id field actual expected =
   match actual with
   | None -> Error (Missing_field { row_id; field })
@@ -903,6 +930,20 @@ let check_int row_id field actual expected =
              field;
              expected = string_of_int expected;
              actual = string_of_int actual;
+           })
+
+let check_bool row_id field actual expected =
+  match actual with
+  | None -> Error (Missing_field { row_id; field })
+  | Some actual when Bool.equal actual expected -> Ok ()
+  | Some actual ->
+      Error
+        (Field_mismatch
+           {
+             row_id;
+             field;
+             expected = string_of_bool expected;
+             actual = string_of_bool actual;
            })
 
 let string_of_string_list values = String.concat ", " values
@@ -923,6 +964,12 @@ let check_string_list row_id field actual expected =
              expected = string_of_string_list expected;
              actual = string_of_string_list actual;
            })
+
+let check_nonempty_string_list row_id field actual =
+  match actual with
+  | None -> Error (Missing_field { row_id; field })
+  | Some [] -> Error (Missing_field { row_id; field })
+  | Some _ -> Ok ()
 
 let check_int_list row_id field actual expected =
   match actual with
@@ -995,6 +1042,66 @@ let check_selected_family row_id actual expected =
              field = "family";
              values = List.map selected_family_to_string values;
            })
+
+let fact_status_is_complete status = starts_with ~prefix:"populated" status
+
+let check_required_fact_statuses row_id required_keys actual =
+  match actual with
+  | None -> Error (Missing_field { row_id; field = "required_fact_statuses" })
+  | Some statuses ->
+      let actual_keys = List.map fst statuses in
+      let missing =
+        List.filter
+          (fun required -> not (List.mem required actual_keys))
+          required_keys
+      in
+      let extras =
+        List.filter
+          (fun actual -> not (List.mem actual required_keys))
+          actual_keys
+      in
+      if missing <> [] then
+        Error (Missing_field { row_id; field = List.hd missing })
+      else if extras <> [] then
+        Error
+          (Field_mismatch
+             {
+               row_id;
+               field = "required_fact_keys";
+               expected = string_of_string_list required_keys;
+               actual = string_of_string_list actual_keys;
+             })
+      else Ok ()
+
+let required_fact_statuses_complete = function
+  | None -> false
+  | Some statuses ->
+      List.for_all (fun (_, status) -> fact_status_is_complete status) statuses
+
+let check_candidate_readiness row_id facts =
+  let ready_status = "ready_for_obligation_construction" in
+  if
+    required_fact_statuses_complete
+      facts.candidate_row_fact_required_fact_statuses
+  then
+    check_string row_id "carrier_readiness_status"
+      facts.candidate_row_fact_carrier_readiness_status ready_status
+  else
+    match facts.candidate_row_fact_carrier_readiness_status with
+    | None ->
+        Error (Missing_field { row_id; field = "carrier_readiness_status" })
+    | Some status when starts_with ~prefix:"not_ready_" status ->
+        check_nonempty_string_list row_id "missing_fact_if_any"
+          facts.candidate_row_fact_missing_fact_if_any
+    | Some status ->
+        Error
+          (Field_mismatch
+             {
+               row_id;
+               field = "carrier_readiness_status";
+               expected = "not_ready_*";
+               actual = status;
+             })
 
 let validate_manifest_facts (generated : t) (facts : manifest_facts) =
   let contract = generated.contract in
@@ -1359,6 +1466,82 @@ let validate_guarded_candidate_carrier (carrier : guarded_candidate_carrier)
         check_string row_id "next_support_step"
           facts.candidate_fact_next_support_step
           carrier.candidate_next_support_step);
+    ]
+  in
+  let rec run = function
+    | [] -> Ok ()
+    | check :: rest -> (
+        match check () with Ok () -> run rest | Error _ as error -> error)
+  in
+  run checks
+
+let validate_guarded_candidate_row_facts (carrier : guarded_candidate_carrier)
+    (facts : guarded_candidate_row_facts) =
+  let row_id = facts.candidate_row_fact_row_id in
+  let expected_family_key =
+    Option.value facts.candidate_row_fact_source_file ~default:""
+    ^ " :: "
+    ^ Option.value facts.candidate_row_fact_kernel_or_template ~default:""
+  in
+  let checks =
+    [
+      (fun () ->
+        if
+          String.equal facts.candidate_row_fact_carrier_id
+            carrier.candidate_carrier_id
+        then Ok ()
+        else
+          Error
+            (Field_mismatch
+               {
+                 row_id;
+                 field = "carrier_id";
+                 expected = carrier.candidate_carrier_id;
+                 actual = facts.candidate_row_fact_carrier_id;
+               }));
+      (fun () ->
+        check_present_string row_id "source_file"
+          facts.candidate_row_fact_source_file);
+      (fun () ->
+        check_present_string row_id "kernel_or_template"
+          facts.candidate_row_fact_kernel_or_template);
+      (fun () ->
+        check_string row_id "family_key" facts.candidate_row_fact_family_key
+          expected_family_key);
+      (fun () ->
+        check_string row_id "first_blocker"
+          facts.candidate_row_fact_first_blocker carrier.candidate_first_blocker);
+      (fun () ->
+        check_required_fact_statuses row_id carrier.candidate_required_fact_keys
+          facts.candidate_row_fact_required_fact_statuses);
+      (fun () -> check_candidate_readiness row_id facts);
+      (fun () ->
+        check_string row_id "solver_policy"
+          facts.candidate_row_fact_solver_policy carrier.candidate_solver_policy);
+      (fun () ->
+        check_string row_id "admission_status"
+          facts.candidate_row_fact_admission_status
+          carrier.candidate_admission_status);
+      (fun () ->
+        check_int row_id "fresh_obligation_artifacts"
+          facts.candidate_row_fact_fresh_obligation_artifacts 0);
+      (fun () ->
+        check_int row_id "solver_runs" facts.candidate_row_fact_solver_runs 0);
+      (fun () ->
+        check_int row_id "pre_solver_runs"
+          facts.candidate_row_fact_pre_solver_runs 0);
+      (fun () ->
+        check_int row_id "new_guarded_family_admissions"
+          facts.candidate_row_fact_new_guarded_family_admissions 0);
+      (fun () ->
+        check_bool row_id "manifest_verdict_fields_changed"
+          facts.candidate_row_fact_manifest_verdict_fields_changed false);
+      (fun () ->
+        check_bool row_id "lookup_rows_added"
+          facts.candidate_row_fact_lookup_rows_added false);
+      (fun () ->
+        check_bool row_id "shortcut_keying_used"
+          facts.candidate_row_fact_shortcut_keying_used false);
     ]
   in
   let rec run = function

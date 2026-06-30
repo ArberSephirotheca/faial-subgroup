@@ -2,6 +2,7 @@ open Drf
 open Protocols
 open Exp
 module Json = Yojson.Basic
+module Symbolic_launch_evidence = Drf.Symbolic_launch_evidence
 
 let failf fmt = Printf.ksprintf (fun msg -> Alcotest.fail msg) fmt
 let nvar name = Var (Variable.from_name name)
@@ -58,6 +59,11 @@ let int_field name json =
   match field name json with
   | `Int value -> value
   | value -> failf "field %s must be an int, got %s" name (Json.to_string value)
+
+let bool_field name json =
+  match field name json with
+  | `Bool value -> value
+  | value -> failf "field %s must be a bool, got %s" name (Json.to_string value)
 
 let nullable_int_field name json =
   match field name json with
@@ -1009,6 +1015,104 @@ let guarded_candidate_carrier_facts carrier =
       Some carrier.Launch_contract_generator.candidate_next_support_step;
   }
 
+let string_assoc_field name json =
+  field name json |> object_fields
+  |> List.map (function
+    | key, `String value -> (key, value)
+    | key, value ->
+        failf "field %s.%s must be a string, got %s" name key
+          (Json.to_string value))
+
+let s453_fact_ledger root =
+  Json.from_file
+    (repo_path root
+       "agent_results/rewrite/component_summaries/S453/row_owned_fact_ledger.json")
+
+let single_s453_family ledger =
+  match list_field "families" ledger with
+  | [ family ] -> family
+  | families -> failf "expected one S453 family, got %d" (List.length families)
+
+let single_row_id row_ids =
+  match row_ids with
+  | [ row_id ] -> row_id
+  | row_ids ->
+      failf "expected one selected S453 row, got %s"
+        (String.concat ", " row_ids)
+
+let s453_l012_candidate_row_facts root =
+  let ledger = s453_fact_ledger root in
+  let claim = field "claim" ledger in
+  let carrier = field "s447_candidate_carrier" ledger in
+  let family = single_s453_family ledger in
+  let shortcut_keying_used = bool_field "shortcut_keying_used" family in
+  Alcotest.(check bool)
+    "claim and family shortcut-keying readbacks agree" shortcut_keying_used
+    (bool_field "shortcut_keying_used" claim);
+  {
+    Launch_contract_generator.candidate_row_fact_carrier_id =
+      string_field "carrier_id" carrier;
+    candidate_row_fact_row_id =
+      family |> string_list_field "row_ids" |> single_row_id;
+    candidate_row_fact_family_key = Some (string_field "family_key" family);
+    candidate_row_fact_source_file = Some (string_field "source_file" family);
+    candidate_row_fact_kernel_or_template =
+      Some (string_field "base_kernel_or_template" family);
+    candidate_row_fact_first_blocker =
+      Some (string_field "s450_first_blocker" family);
+    candidate_row_fact_required_fact_statuses =
+      Some (string_assoc_field "s447_carrier_validation_inputs" family);
+    candidate_row_fact_carrier_readiness_status =
+      Some (string_field "carrier_readiness_status" family);
+    candidate_row_fact_missing_fact_if_any =
+      Some (string_list_field "missing_fact_if_any" family);
+    candidate_row_fact_solver_policy = Some (string_field "solver_policy" claim);
+    candidate_row_fact_admission_status =
+      Some (string_field "admission_status" carrier);
+    candidate_row_fact_fresh_obligation_artifacts =
+      Some (int_field "fresh_obligation_artifacts" claim);
+    candidate_row_fact_solver_runs = Some (int_field "solver_runs" claim);
+    candidate_row_fact_pre_solver_runs =
+      Some (int_field "pre_solver_runs" claim);
+    candidate_row_fact_new_guarded_family_admissions =
+      Some (int_field "new_guarded_family_admissions" claim);
+    candidate_row_fact_manifest_verdict_fields_changed =
+      Some (bool_field "manifest_verdict_fields_changed" claim);
+    candidate_row_fact_lookup_rows_added =
+      Some (bool_field "lookup_rows_added" claim);
+    candidate_row_fact_shortcut_keying_used = Some shortcut_keying_used;
+  }
+
+let object_status_field name json = field name json |> string_field "status"
+
+let s453_l012_boundary_input root =
+  let ledger = s453_fact_ledger root in
+  let family = single_s453_family ledger in
+  {
+    Symbolic_launch_evidence.candidate_boundary_row_facts =
+      s453_l012_candidate_row_facts root;
+    candidate_boundary_positive_shape_status =
+      Some (object_status_field "positive_shape_guards" family);
+    candidate_boundary_memory_effect_status =
+      Some (object_status_field "memory_effect_summary" family);
+    candidate_boundary_alias_status =
+      Some (object_status_field "address_space_and_alias_assumptions" family);
+  }
+
+let expect_l012_boundary root =
+  let carrier =
+    Launch_contract.host_template_specialization_candidate_carrier
+  in
+  match
+    Symbolic_launch_evidence.guarded_candidate_boundary ~carrier
+      (s453_l012_boundary_input root)
+  with
+  | Ok boundary -> boundary
+  | Error error ->
+      failf "S453 L012 boundary rejected: %s"
+        (Symbolic_launch_evidence.guarded_candidate_boundary_error_to_string
+           error)
+
 let check_selected_validation_guard row selected =
   let facts = selected_pre_promotion_manifest_facts row selected in
   match
@@ -1612,6 +1716,24 @@ let check_candidate_field_mismatch label field carrier facts =
       failf "%s: unexpected validation error: %s" label
         (Launch_contract_generator.validation_error_to_string error)
 
+let check_candidate_row_missing_validation_field label field carrier facts =
+  match Launch_contract.validate_guarded_candidate_row_facts carrier facts with
+  | Ok () -> failf "%s: expected validation failure" label
+  | Error (Launch_contract_generator.Missing_field { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected validation error: %s" label
+        (Launch_contract_generator.validation_error_to_string error)
+
+let check_candidate_row_field_mismatch label field carrier facts =
+  match Launch_contract.validate_guarded_candidate_row_facts carrier facts with
+  | Ok () -> failf "%s: expected validation failure" label
+  | Error (Launch_contract_generator.Field_mismatch { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected validation error: %s" label
+        (Launch_contract_generator.validation_error_to_string error)
+
 let test_solve_tri_symbolic_k_guard_fails_closed_on_missing_facts () =
   let guard = Launch_contract.solve_tri_symbolic_k_guard in
   let facts = symbolic_k_guard_facts guard in
@@ -1714,6 +1836,227 @@ let test_host_template_candidate_carrier_fails_closed_on_missing_facts () =
   check_candidate_field_mismatch "mismatched candidate admission status"
     "admission_status" carrier
     { facts with candidate_fact_admission_status = Some "admitted" }
+
+let test_s453_l012_carrier_row_facts_validate_fail_closed () =
+  let root = repo_root () in
+  let carrier =
+    Launch_contract.host_template_specialization_candidate_carrier
+  in
+  let facts = s453_l012_candidate_row_facts root in
+  (match Launch_contract.validate_guarded_candidate_row_facts carrier facts with
+  | Ok () -> ()
+  | Error error ->
+      failf "S453 L012 row-owned facts rejected: %s"
+        (Launch_contract_generator.validation_error_to_string error));
+  Alcotest.(check string)
+    "L012 readiness remains lower blocker"
+    "not_ready_missing_checked_specialization_profile_fixture_and_positive_guard"
+    (Option.get facts.candidate_row_fact_carrier_readiness_status);
+  Alcotest.(check (option string))
+    "L012 template facts are partial" (Some "partial_candidate_set_extracted")
+    (Option.bind facts.candidate_row_fact_required_fact_statuses
+       (fun statuses -> List.assoc_opt "concrete_template_args" statuses));
+  Alcotest.(check bool)
+    "L012 records profile blocker" true
+    (facts.candidate_row_fact_missing_fact_if_any |> Option.value ~default:[]
+    |> List.exists (fun missing ->
+        string_contains missing "full preprocessing profile"));
+  match Launch_contract.of_row_id "L012" with
+  | Error (Launch_contract.Unknown_row actual) ->
+      Alcotest.(check string) "S454 does not add L012 lookup row" "L012" actual
+  | Ok _ -> failf "S454 row-owned fact validation unexpectedly admitted L012"
+  | Error error -> failf "%s" (Launch_contract.error_to_string error)
+
+let test_s453_l012_carrier_row_facts_fail_closed_on_schema_mismatch () =
+  let root = repo_root () in
+  let carrier =
+    Launch_contract.host_template_specialization_candidate_carrier
+  in
+  let facts = s453_l012_candidate_row_facts root in
+  let without_preprocessing_profile =
+    facts.candidate_row_fact_required_fact_statuses
+    |> Option.map (List.remove_assoc "preprocessing_profile")
+  in
+  check_candidate_row_missing_validation_field
+    "missing S453 preprocessing status" "preprocessing_profile" carrier
+    {
+      facts with
+      candidate_row_fact_required_fact_statuses = without_preprocessing_profile;
+    };
+  check_candidate_row_field_mismatch "stale ready status"
+    "carrier_readiness_status" carrier
+    {
+      facts with
+      candidate_row_fact_carrier_readiness_status =
+        Some "ready_for_obligation_construction";
+    };
+  check_candidate_row_missing_validation_field "ready status without blockers"
+    "missing_fact_if_any" carrier
+    { facts with candidate_row_fact_missing_fact_if_any = Some [] };
+  check_candidate_row_field_mismatch "row facts cannot become solver input"
+    "solver_policy" carrier
+    { facts with candidate_row_fact_solver_policy = Some "solver_input" };
+  check_candidate_row_field_mismatch "row facts cannot change admission status"
+    "admission_status" carrier
+    { facts with candidate_row_fact_admission_status = Some "admitted" };
+  check_candidate_row_field_mismatch "row facts cannot add lookup rows"
+    "lookup_rows_added" carrier
+    { facts with candidate_row_fact_lookup_rows_added = Some true };
+  check_candidate_row_field_mismatch "row facts cannot imply obligations"
+    "fresh_obligation_artifacts" carrier
+    { facts with candidate_row_fact_fresh_obligation_artifacts = Some 1 };
+  check_candidate_row_field_mismatch "row facts cannot run solver" "solver_runs"
+    carrier
+    { facts with candidate_row_fact_solver_runs = Some 1 };
+  check_candidate_row_field_mismatch "row facts cannot run pre-solver"
+    "pre_solver_runs" carrier
+    { facts with candidate_row_fact_pre_solver_runs = Some 1 };
+  check_candidate_row_field_mismatch "row facts cannot admit families"
+    "new_guarded_family_admissions" carrier
+    { facts with candidate_row_fact_new_guarded_family_admissions = Some 1 };
+  check_candidate_row_field_mismatch "row facts cannot change manifest verdicts"
+    "manifest_verdict_fields_changed" carrier
+    {
+      facts with
+      candidate_row_fact_manifest_verdict_fields_changed = Some true;
+    };
+  check_candidate_row_field_mismatch "row facts cannot use shortcut keying"
+    "shortcut_keying_used" carrier
+    { facts with candidate_row_fact_shortcut_keying_used = Some true }
+
+let check_boundary_missing_field label field carrier input =
+  match Symbolic_launch_evidence.guarded_candidate_boundary ~carrier input with
+  | Ok _ -> failf "%s: expected boundary failure" label
+  | Error
+      (Symbolic_launch_evidence.Candidate_boundary_missing_field
+         { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected boundary error: %s" label
+        (Symbolic_launch_evidence.guarded_candidate_boundary_error_to_string
+           error)
+
+let check_boundary_validation_mismatch label field carrier input =
+  match Symbolic_launch_evidence.guarded_candidate_boundary ~carrier input with
+  | Ok _ -> failf "%s: expected boundary failure" label
+  | Error
+      (Symbolic_launch_evidence.Candidate_boundary_validation_error
+         (Launch_contract_generator.Field_mismatch { field = actual; _ })) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected boundary error: %s" label
+        (Symbolic_launch_evidence.guarded_candidate_boundary_error_to_string
+           error)
+
+let check_boundary_inferred_fact label field carrier input =
+  match Symbolic_launch_evidence.guarded_candidate_boundary ~carrier input with
+  | Ok _ -> failf "%s: expected boundary failure" label
+  | Error
+      (Symbolic_launch_evidence.Candidate_boundary_inferred_fact
+         { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected boundary error: %s" label
+        (Symbolic_launch_evidence.guarded_candidate_boundary_error_to_string
+           error)
+
+let check_boundary_stale_ready_fact label field carrier input =
+  match Symbolic_launch_evidence.guarded_candidate_boundary ~carrier input with
+  | Ok _ -> failf "%s: expected boundary failure" label
+  | Error
+      (Symbolic_launch_evidence.Candidate_boundary_stale_ready_fact
+         { field = actual; _ }) ->
+      Alcotest.(check string) label field actual
+  | Error error ->
+      failf "%s: unexpected boundary error: %s" label
+        (Symbolic_launch_evidence.guarded_candidate_boundary_error_to_string
+           error)
+
+let test_s455_l012_boundary_records_lower_blocker () =
+  let root = repo_root () in
+  let boundary = expect_l012_boundary root in
+  Alcotest.(check string)
+    "S455 boundary route" "Symbolic_launch_evidence.guarded_candidate_boundary"
+    boundary.Symbolic_launch_evidence.boundary_route_owner;
+  Alcotest.(check string)
+    "S455 boundary status" "blocked_before_obligation_construction"
+    boundary.Symbolic_launch_evidence.boundary_status;
+  Alcotest.(check string)
+    "S455 lower blocker"
+    "not_ready_missing_checked_specialization_profile_fixture_and_positive_guard"
+    boundary.Symbolic_launch_evidence.boundary_lower_blocker;
+  Alcotest.(check string)
+    "S455 memory effect status" "source_visible_not_obligation"
+    boundary.Symbolic_launch_evidence.boundary_memory_effect_status;
+  Alcotest.(check string)
+    "S455 positive-shape status" "missing"
+    boundary.Symbolic_launch_evidence.boundary_positive_shape_status;
+  Alcotest.(check string)
+    "S455 alias status" "unresolved"
+    boundary.Symbolic_launch_evidence.boundary_alias_status;
+  Alcotest.(check int)
+    "S455 emits no obligations" 0
+    boundary.Symbolic_launch_evidence.boundary_obligation_count;
+  Alcotest.(check string)
+    "S455 remains non-solver" "not_solver_input"
+    boundary.Symbolic_launch_evidence.boundary_solver_policy;
+  let rendered =
+    String.concat "\n"
+      (Symbolic_launch_evidence.guarded_candidate_boundary_lines boundary)
+  in
+  Alcotest.(check bool)
+    "S455 renderer records no solver run" true
+    (string_contains rendered "solver_run: false");
+  Alcotest.(check bool)
+    "S455 renderer records lower blocker" true
+    (string_contains rendered
+       "lower_blocker: \
+        not_ready_missing_checked_specialization_profile_fixture_and_positive_guard")
+
+let test_s455_l012_boundary_fails_closed_on_bad_inputs () =
+  let root = repo_root () in
+  let carrier =
+    Launch_contract.host_template_specialization_candidate_carrier
+  in
+  let input = s453_l012_boundary_input root in
+  check_boundary_missing_field "missing memory effect status"
+    "memory_effect_status" carrier
+    { input with candidate_boundary_memory_effect_status = None };
+  check_boundary_validation_mismatch "mismatched solver policy" "solver_policy"
+    carrier
+    {
+      input with
+      candidate_boundary_row_facts =
+        {
+          input.candidate_boundary_row_facts with
+          candidate_row_fact_solver_policy = Some "solver_input";
+        };
+    };
+  check_boundary_inferred_fact "inferred alias facts are rejected"
+    "alias_status" carrier
+    { input with candidate_boundary_alias_status = Some "inferred_from_row_id" };
+  let ready_row_facts =
+    {
+      input.candidate_boundary_row_facts with
+      candidate_row_fact_required_fact_statuses =
+        input.candidate_boundary_row_facts
+          .candidate_row_fact_required_fact_statuses
+        |> Option.map (List.map (fun (key, _status) -> (key, "populated")));
+      candidate_row_fact_carrier_readiness_status =
+        Some "ready_for_obligation_construction";
+      candidate_row_fact_missing_fact_if_any = Some [];
+    }
+  in
+  check_boundary_stale_ready_fact
+    "stale ready status still needs memory obligations" "memory_effect_status"
+    carrier
+    {
+      candidate_boundary_row_facts = ready_row_facts;
+      candidate_boundary_positive_shape_status = Some "populated";
+      candidate_boundary_memory_effect_status =
+        Some "source_visible_not_obligation";
+      candidate_boundary_alias_status = Some "checked";
+    }
 
 let check_selected_missing_validation_field label field selected facts =
   match
@@ -2081,7 +2424,10 @@ let test_readme_lists_current_launch_contract_rows () =
   Alcotest.(check bool)
     "README documents S447 candidate carrier" true
     (string_contains readme
-       "S447 adds a non-admission generic candidate carrier")
+       "S447 adds a non-admission generic candidate carrier");
+  Alcotest.(check bool)
+    "README documents S454 row-owned fact validation" true
+    (string_contains readme "S454 validates populated row-owned carrier facts")
 
 let tests =
   [
@@ -2127,6 +2473,18 @@ let tests =
     ( "host/template candidate carrier fails closed on missing facts",
       `Quick,
       test_host_template_candidate_carrier_fails_closed_on_missing_facts );
+    ( "S453 L012 carrier row facts validate fail-closed",
+      `Quick,
+      test_s453_l012_carrier_row_facts_validate_fail_closed );
+    ( "S453 L012 carrier row facts fail closed on schema mismatch",
+      `Quick,
+      test_s453_l012_carrier_row_facts_fail_closed_on_schema_mismatch );
+    ( "S455 L012 boundary records lower blocker",
+      `Quick,
+      test_s455_l012_boundary_records_lower_blocker );
+    ( "S455 L012 boundary fails closed on bad inputs",
+      `Quick,
+      test_s455_l012_boundary_fails_closed_on_bad_inputs );
     ( "selected L117 validation fails closed on missing facts",
       `Quick,
       test_selected_l117_validation_fails_closed_on_missing_facts );
