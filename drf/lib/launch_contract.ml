@@ -146,6 +146,9 @@ let host_template_specialization_candidate_carrier =
 let validate_guarded_candidate_carrier =
   Launch_contract_generator.validate_guarded_candidate_carrier
 
+let validate_guarded_candidate_row_facts =
+  Launch_contract_generator.validate_guarded_candidate_row_facts
+
 let guarded_candidate_carrier_lines () =
   Launch_contract_generator.guarded_candidate_carrier_lines
     host_template_specialization_candidate_carrier

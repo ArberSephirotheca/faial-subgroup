@@ -94,6 +94,167 @@ type source_launch_rewrite = {
   source_width_rewrite_count : int;
 }
 
+type guarded_candidate_boundary_input = {
+  candidate_boundary_row_facts : LCG.guarded_candidate_row_facts;
+  candidate_boundary_positive_shape_status : string option;
+  candidate_boundary_memory_effect_status : string option;
+  candidate_boundary_alias_status : string option;
+}
+
+type guarded_candidate_boundary = {
+  boundary_route_owner : string;
+  boundary_row_id : string;
+  boundary_family_key : string;
+  boundary_status : string;
+  boundary_lower_blocker : string;
+  boundary_missing_facts : string list;
+  boundary_required_fact_statuses : (string * string) list;
+  boundary_positive_shape_status : string;
+  boundary_memory_effect_status : string;
+  boundary_alias_status : string;
+  boundary_obligation_count : int;
+  boundary_solver_policy : string;
+  boundary_admission_status : string;
+}
+
+type guarded_candidate_boundary_error =
+  | Candidate_boundary_validation_error of LCG.validation_error
+  | Candidate_boundary_missing_field of { row_id : string; field : string }
+  | Candidate_boundary_inferred_fact of {
+      row_id : string;
+      field : string;
+      status : string;
+    }
+  | Candidate_boundary_stale_ready_fact of {
+      row_id : string;
+      field : string;
+      status : string;
+    }
+
+let guarded_candidate_boundary_error_to_string = function
+  | Candidate_boundary_validation_error error ->
+      LCG.validation_error_to_string error
+  | Candidate_boundary_missing_field { row_id; field } ->
+      "guarded candidate row " ^ row_id ^ " is missing boundary field " ^ field
+  | Candidate_boundary_inferred_fact { row_id; field; status } ->
+      "guarded candidate row " ^ row_id ^ " has inferred " ^ field ^ " "
+      ^ status
+  | Candidate_boundary_stale_ready_fact { row_id; field; status } ->
+      "guarded candidate row " ^ row_id ^ " is marked ready before " ^ field
+      ^ " is complete: " ^ status
+
+let status_is_inferred status =
+  List.exists
+    (fun prefix -> String.starts_with ~prefix status)
+    [ "inferred"; "guessed"; "shortcut"; "row_id_keyed"; "name_keyed" ]
+
+let require_boundary_status row_id field = function
+  | None | Some "" -> Error (Candidate_boundary_missing_field { row_id; field })
+  | Some status when status_is_inferred status ->
+      Error (Candidate_boundary_inferred_fact { row_id; field; status })
+  | Some status -> Ok status
+
+let require_ready_boundary_status row_id field expected actual =
+  if String.equal actual expected then Ok ()
+  else
+    Error
+      (Candidate_boundary_stale_ready_fact { row_id; field; status = actual })
+
+let guarded_candidate_boundary ~(carrier : LCG.guarded_candidate_carrier)
+    (input : guarded_candidate_boundary_input) :
+    (guarded_candidate_boundary, guarded_candidate_boundary_error) result =
+  let facts = input.candidate_boundary_row_facts in
+  let row_id = facts.LCG.candidate_row_fact_row_id in
+  let ( let* ) = Result.bind in
+  let* () =
+    LCG.validate_guarded_candidate_row_facts carrier facts
+    |> Result.map_error (fun error -> Candidate_boundary_validation_error error)
+  in
+  let* positive_shape_status =
+    require_boundary_status row_id "positive_shape_status"
+      input.candidate_boundary_positive_shape_status
+  in
+  let* memory_effect_status =
+    require_boundary_status row_id "memory_effect_status"
+      input.candidate_boundary_memory_effect_status
+  in
+  let* alias_status =
+    require_boundary_status row_id "alias_status"
+      input.candidate_boundary_alias_status
+  in
+  let readiness =
+    Option.value facts.candidate_row_fact_carrier_readiness_status
+      ~default:"not_ready_missing_carrier_readiness_status"
+  in
+  let boundary_status, lower_blocker =
+    if String.equal readiness "ready_for_obligation_construction" then
+      ("ready_for_obligation_construction", "none")
+    else ("blocked_before_obligation_construction", readiness)
+  in
+  let* () =
+    if String.equal boundary_status "ready_for_obligation_construction" then
+      let* () =
+        require_ready_boundary_status row_id "positive_shape_status" "populated"
+          positive_shape_status
+      in
+      let* () =
+        require_ready_boundary_status row_id "memory_effect_status"
+          "obligation_ready" memory_effect_status
+      in
+      require_ready_boundary_status row_id "alias_status" "checked" alias_status
+    else Ok ()
+  in
+  Ok
+    {
+      boundary_route_owner =
+        "Symbolic_launch_evidence.guarded_candidate_boundary";
+      boundary_row_id = row_id;
+      boundary_family_key =
+        Option.value facts.candidate_row_fact_family_key ~default:"";
+      boundary_status;
+      boundary_lower_blocker = lower_blocker;
+      boundary_missing_facts =
+        Option.value facts.candidate_row_fact_missing_fact_if_any ~default:[];
+      boundary_required_fact_statuses =
+        Option.value facts.candidate_row_fact_required_fact_statuses ~default:[];
+      boundary_positive_shape_status = positive_shape_status;
+      boundary_memory_effect_status = memory_effect_status;
+      boundary_alias_status = alias_status;
+      boundary_obligation_count = 0;
+      boundary_solver_policy =
+        Option.value facts.candidate_row_fact_solver_policy ~default:"";
+      boundary_admission_status =
+        Option.value facts.candidate_row_fact_admission_status ~default:"";
+    }
+
+let guarded_candidate_boundary_lines (boundary : guarded_candidate_boundary) :
+    string list =
+  [
+    "artifact: ocaml-guarded-candidate-proof-boundary-v1";
+    "route_owner: " ^ boundary.boundary_route_owner;
+    "row_id: " ^ boundary.boundary_row_id;
+    "family_key: " ^ boundary.boundary_family_key;
+    "status: " ^ boundary.boundary_status;
+    "lower_blocker: " ^ boundary.boundary_lower_blocker;
+    "required_fact_statuses: "
+    ^ list_to_string
+        (List.map
+           (fun (key, status) -> key ^ "=" ^ status)
+           boundary.boundary_required_fact_statuses);
+    "positive_shape_status: " ^ boundary.boundary_positive_shape_status;
+    "memory_effect_status: " ^ boundary.boundary_memory_effect_status;
+    "alias_status: " ^ boundary.boundary_alias_status;
+    "missing_facts: " ^ list_to_string boundary.boundary_missing_facts;
+    "obligation_count: " ^ string_of_int boundary.boundary_obligation_count;
+    "solver_policy: " ^ boundary.boundary_solver_policy;
+    "admission_status: " ^ boundary.boundary_admission_status;
+    "solver_run: false";
+    "pre_solver_run: false";
+    "guarded_family_admission: false";
+    "manifest_promotion: false";
+    "shortcut_keying: none";
+  ]
+
 let symbolic_block_y_variable
     (carrier : LCG.solve_tri_symbolic_dimension_carrier) :
     (Variable.t, string) result =

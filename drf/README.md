@@ -231,6 +231,38 @@ block/grid sources, and dynamic shared memory. It is owned by
 lookup row, change manifest verdict fields, run a solver or pre-solver, or
 turn first-blocker accounting into guarded family proof.
 
+S454 validates populated row-owned carrier facts against the S447 required
+fact-key/status schema. The current validated seed is the S453 `L012` clamp
+family ledger; the validator checks the flattened carrier status entries for
+source, launch, block/grid, dynamic-shared-memory, include, macro, and
+profile-related facts, while source-visible memory effects and
+alias/address-space assumptions remain explicit S455 proof-construction
+blockers rather than S454-validated inputs. Partial or missing
+`concrete_template_args`, `preprocessing_profile`, `extraction_fixture`,
+`positive_shape_guards`, and alias/address-space assumptions keep the
+readiness status at
+`not_ready_missing_checked_specialization_profile_fixture_and_positive_guard`.
+The validation surface is still pre-proof: it requires
+`solver_policy = not_solver_input`, zero fresh obligations, zero solver and
+pre-solver runs, zero guarded-family admissions, no lookup rows, and no
+manifest verdict-field changes. It also requires
+`shortcut_keying_used = false`, so row IDs, kernel names, task IDs, fixture
+shapes, and expected output counts cannot stand in for row-owned facts.
+
+S455 adds the next pure proof-boundary classifier for those validated
+candidate facts. The classifier is owned by
+`Symbolic_launch_evidence.guarded_candidate_boundary`: it consumes the
+S453/S454 row facts plus the source-visible memory-effect, positive-shape, and
+alias/address-space blocker statuses, rejects inferred or stale ready inputs,
+and renders the exact lower blocker before `Memory_event` obligation
+construction. For the current `L012` clamp seed, the boundary stops at
+`not_ready_missing_checked_specialization_profile_fixture_and_positive_guard`
+with zero obligations, no solver or pre-solver run, no lookup row, no guarded
+family admission, and no manifest promotion. Completing this boundary for
+`L012` still requires checked `T=half`/`T=float` specialization facts, a full
+preprocessing/source profile or extraction fixture, positive `k`/zero-work
+launch policy, and checked alias/address-space assumptions for `x` and `dst`.
+
 S409 promotes only canonical `L118` in the launch manifest after the exact
 production command exits successfully with structured subgroup JSON:
 
