@@ -761,10 +761,23 @@ module Make (L : Logger) = struct
                     Context.add_array v.var
                       (Memory.from_type GlobalMemory ty) ctx
                   else if Context.is_int ty ctx then
+                    (* Fold a global's initializer into a constant only
+                       when it is immutable: a C-level [const], or a
+                       global cu-to-json proved is never written (the
+                       [c_attr_immutable] tag). A mutable global, e.g. one
+                       accumulated at runtime before a launch, would
+                       otherwise be pinned to its stale initializer;
+                       without proof of immutability, keep it symbolic. *)
+                    let immutable =
+                      (not is_mut)
+                      || List.mem C_lang.c_attr_immutable v.attrs
+                    in
                     let g =
-                      match v.init with
-                      | Some (IExpr n) -> try_to_nexp n
-                      | _ -> None
+                      if immutable then
+                        (match v.init with
+                         | Some (IExpr n) -> try_to_nexp n
+                         | _ -> None)
+                      else None
                     in
                     match g with
                     | Some g -> Context.add_assign v.var g ctx

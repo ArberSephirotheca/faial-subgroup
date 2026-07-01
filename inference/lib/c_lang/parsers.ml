@@ -561,6 +561,12 @@ and parse_decl (j : json) : c_decl option j_result =
         inner
     in
     let* attrs = map parse_attr attrs in
+    (* cu-to-json flags a file-scope global it proves is never written as
+       [mutated: false]; record that as a synthetic attr so the lowering
+       may fold its initializer. An absent field defaults to mutable,
+       the conservative choice. *)
+    let* mutated = with_field_or "mutated" cast_bool true o in
+    let attrs = if mutated then attrs else c_attr_immutable :: attrs in
     let* inits = map parse_init inits in
     (* Further enforce that there is _at most_ one init expression. *)
     let* init =

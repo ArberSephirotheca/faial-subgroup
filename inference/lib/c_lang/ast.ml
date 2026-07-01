@@ -190,3 +190,10 @@ let c_attr_global = c_attr "global"
 let c_attr_device = c_attr "device"
 let c_attr_constant = c_attr "constant"
 let c_attr_managed = c_attr "managed"
+
+(* Synthetic tag, not a source attribute: recorded when cu-to-json marks
+   a file-scope variable [mutated: false], i.e. it proved the global is
+   never written after initialization. The lowering folds the
+   initializer of a global only when it carries this tag (or is
+   [const]); absence means treat the global as mutable. *)
+let c_attr_immutable = c_attr "faial_immutable"
