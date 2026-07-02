@@ -1,8 +1,5 @@
 open Protocols
-(* [delin] is unwrapped, so [Indet], [Mono], [Poly], [Subscript], [Greedy],
-   [Ics15], [Algorithm], [Shape] are top-level modules available
-   here without an [open]. [Stage0] stays qualified ([Stage0.Index]
-   would shadow delin's modules if we opened it). *)
+
 module Phase_timer = Stage0.Phase_timer
 module Stats = Stage0.Stats
 
@@ -123,15 +120,6 @@ module Maslov : BoundGenerator = struct
   let get_bounds s = s.bounds
 end
 
-(* The rewriter, parameterised over a polynomial driver and a
-   bound-generation strategy. *)
-(* The bound-check oracle threaded through the rewriter. Given the
-   enclosing loop-scope conjuncts and a candidate bound, returns true
-   iff [kernel.pre /\ runtime /\ scope ==> bound]. A constant-true
-   oracle bypasses the check (preserves the pre-existing
-   assume-bounds behaviour); the Z3-backed oracle from
-   [Bound_check.entails] makes the bounds proof obligations the
-   rewriter discharges before committing to delinearisation. *)
 type bound_oracle = scope:Exp.bexp list -> bound:Exp.bexp -> bool
 
 let trivially_true_oracle : bound_oracle =
@@ -161,9 +149,6 @@ end = struct
       | _ :: rest -> rest
       | [] -> failwith "from_exp: empty numeral list"
     in
-    (* [fold_right] so that bounds end up in axis order in
-       [get_bounds], since [add_bound] in the standard
-       implementations prepends. *)
     let final =
       List.fold_right
         (fun (d, i) acc -> G.add_bound acc i d)
@@ -171,10 +156,6 @@ end = struct
         (G.create scope)
     in
     let all_bounds = G.get_bounds final in
-    (* Discharge the bounds as a single conjunction. For the entailment
-       oracle this matches per-bound checking; for the consistency
-       (anti-vacuity) oracle it is required, since bounds that are each
-       individually consistent can be jointly contradictory. *)
     if check ~scope:loop_scope ~bound:(Exp.b_and_ex all_bounds)
     then
       Some {
@@ -195,14 +176,6 @@ end = struct
       | Seq (u, v) -> Fun.compose (walk u) (walk v)
     in walk unsync Variable.Map.empty
 
-  (* Walk the code computing, per array, whether every access site
-     produces a successful [from_exp] result in its own scope. An array
-     is "viable" iff every access to it delinearises cleanly. This
-     enforces the per-array shape-unification invariant the verifier
-     assumes ([Flatacc.Code.dim] uses one index-length value for the
-     entire array, so mixed-arity per-array IR breaks the alias check).
-     Arrays that already have multi-index accesses are skipped (no
-     entry in [size_params_map]) so they remain non-viable. *)
   let viable_arrays
       ~(globals : Variable.Set.t)
       ~(scope : G.scope)
@@ -252,9 +225,6 @@ end = struct
       ~(assume : bool)
       (unsync : Unsynced.t) : Unsynced.t =
     let open Unsynced in
-    (* Sub-phases measured separately so the JSON phase_times shows
-       where delin time actually goes; they sum to ~all of
-       [rewrite_unsync] (modulo glue). *)
     let accs =
       Phase_timer.measure "delin/get-accesses" (fun () -> get_accesses unsync)
     in
@@ -284,12 +254,6 @@ end = struct
       viable_arrays ~globals ~scope ~loop_scope ~check ~radix_map
         unsync)
     in
-    (* Per array with a candidate shape, count whether its bounds were
-       discharged ([viable]) or refused. The labels depend on the oracle:
-       under [assume] a refusal means the bound was inconsistent with the
-       context, i.e. a vacuous delinearisation we declined; under the
-       sound oracle a refusal means the bound was not provable. Reads the
-       already-computed maps, so no extra inference runs. *)
     let committed_stat, refused_stat =
       if assume then "delin/assumed", "delin/vacuity-refused"
       else "delin/sound-rewritten", "delin/unprovable"
@@ -385,12 +349,6 @@ end
 module All = Make (Greedy) (AllBounds)
 module Maslov_elide = Make (Greedy) (Maslov)
 
-(* Which polynomial delinearization driver [--assume-delin] uses.
-   [Greedy] is the pairwise-division driver; [Ics15] is the reference
-   permutation-search implementation; [Ics15_opt] is its optimized
-   equivalent (same results, faster search); [Cramer] is the
-   linear-algebra decomposer (exact Cramer-rule subscript recovery).
-   Orthogonal to the bound-emission strategy. *)
 module Algo = struct
   type t =
     | Greedy
@@ -423,11 +381,11 @@ module Algo = struct
 end
 
 (* Entry point from the DRF pipeline. *)
-let translate ~(assume : bool) ~(rewrite : bool) ~(elide : bool)
-    ~(algo : Algo.t)
+let translate ~(enabled : bool) ~(rewrite : bool) ~(elide : bool)
+    ~(check_vacuosity : bool) ~(algo : Algo.t)
     (kernels : Aligned.Kernel.t Stage0.Streamutil.stream) :
     Aligned.Kernel.t Stage0.Streamutil.stream =
-  if not (assume || rewrite) then kernels
+  if not enabled then kernels
   else
     let algo_mod : (module Algorithm.S) = Algo.to_module algo in
     let bg : (module BoundGenerator) =
@@ -436,19 +394,26 @@ let translate ~(assume : bool) ~(rewrite : bool) ~(elide : bool)
     let module A = (val algo_mod) in
     let module G = (val bg) in
     let module M = Make (A) (G) in
-    let rewrite_one (kernel : Aligned.Kernel.t) =
-      let open Exp in
-      let runtime =
-        Params.to_bexp
-          (Params.union_left kernel.global_variables kernel.local_variables)
-      in
-      let base = b_and kernel.pre runtime in
-      Gen_z3.CachedSolver.with_assertion base (fun s ->
-        let check ~scope ~bound =
-          if assume
-          then Gen_z3.CachedSolver.is_possible s (b_and (b_and_ex scope) bound)
-          else Gen_z3.CachedSolver.is_always_true s (b_impl (b_and_ex scope) bound)
-        in
-        M.rewrite_kernel ~rewrite_access:rewrite ~assume ~check kernel)
+    let rewrite_one =
+      if check_vacuosity then
+        (* When checking for vacuosity, we test the generated bounds until
+            we find the first non-vacuous one. *)
+        fun (kernel : Aligned.Kernel.t) ->
+          let open Exp in
+          let runtime =
+            Params.to_bexp
+              (Params.union_left kernel.global_variables kernel.local_variables)
+          in
+          let base = b_and kernel.pre runtime in
+          Gen_z3.CachedSolver.with_assertion base (fun s ->
+            let check ~scope ~bound =
+              Gen_z3.CachedSolver.is_possible s (b_and (b_and_ex scope) bound)
+            in
+            M.rewrite_kernel ~rewrite_access:rewrite ~assume:enabled ~check kernel)
+      else
+        (* Default: no vacuosity checks are done. *)
+        fun (kernel : Aligned.Kernel.t) ->
+          M.rewrite_kernel ~rewrite_access:rewrite ~assume:enabled
+            ~check:trivially_true_oracle kernel
     in
     Stage0.Streamutil.map rewrite_one kernels

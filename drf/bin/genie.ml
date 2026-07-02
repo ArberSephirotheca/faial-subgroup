@@ -1322,6 +1322,7 @@ let main =
       ~rewrite_delin:true
       ~delin_elide:true
       ~delin_algo:App.Delin_algo.Ics15_opt
+      ~delin_check_vacuosity:false
       ~assumes:extra_assumes
       ~assume_dims:false
       ~assume_launch:true

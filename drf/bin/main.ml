@@ -317,6 +317,17 @@ let main =
              accesses. By default the trivial bounds, those statically \
              provable from the enclosing loop's [Range.t], are elided, \
              which only shrinks the formula and never changes a verdict.")
+  and+ delin_check_vacuosity =
+    Arg.(
+      value & flag
+      & info [ "delin-avoid-vacuous" ]
+          ~doc:
+            "Under $(b,--assume-delin), verify each recovered axis bound is \
+             consistent with the kernel precondition before committing it, \
+             declining vacuous delinearisations. Off by default: bounds are \
+             assumed and any resulting vacuity is caught by the \
+             $(b,--check-pre-sat) pre-flight, which $(b,--assume-delin) forces \
+             on.")
   and+ delin_algo =
     Arg.(
       value
@@ -498,7 +509,7 @@ let main =
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
         ~rewrite_delin:(not no_rewrite_delin)
-        ~delin_elide:(not no_delin_elide) ~delin_algo
+        ~delin_elide:(not no_delin_elide) ~delin_algo ~delin_check_vacuosity
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at

@@ -100,6 +100,7 @@ type t = {
   rewrite_delin : bool;
   delin_elide : bool;
   delin_algo : Delin_algo.t;
+  delin_check_vacuosity : bool;
   (* Per-kernel pre-condition list, keyed by [Kernel.name]. Genie's
      internal model treats assumptions as kernel-scoped: a variable
      declared in two kernels is a different variable in each, so an
@@ -198,6 +199,7 @@ let to_string (app : t) : string =
    rewrite_delin;
    delin_elide;
    delin_algo;
+   delin_check_vacuosity;
    assumes;
    assume_dims;
    assume_launch;
@@ -223,6 +225,7 @@ let to_string (app : t) : string =
       ^ "\nrewrite_delin = " ^ bool rewrite_delin
       ^ "\ndelin_elide = " ^ bool delin_elide
       ^ "\ndelin_algo = " ^ Delin_algo.to_string delin_algo
+      ^ "\ndelin_check_vacuosity = " ^ bool delin_check_vacuosity
       ^ "\nignore_asserts = " ^ bool ignore_asserts
       ^ "\nassume_dims = " ^ bool assume_dims
       ^ "\nassume_launch = " ^ bool assume_launch
@@ -243,7 +246,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
     ~assume_delin ~rewrite_delin ~delin_elide ~delin_algo
-    ~assumes ~assume_dims
+    ~delin_check_vacuosity ~assumes ~assume_dims
     ~assume_launch ~check_pre_sat
     ~memory_model ~cbor ~stop_at : t =
   let parsed =
@@ -328,6 +331,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     rewrite_delin;
     delin_elide;
     delin_algo;
+    delin_check_vacuosity;
     assumes;
     assume_dims;
     assume_launch;
@@ -426,8 +430,9 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned
        ~show:a.show_align Aligned.print_kernels
   (* 6. delinearize accesses *)
-  |> Delinearize.translate ~assume:a.assume_delin ~rewrite:a.rewrite_delin
-       ~elide:a.delin_elide ~algo:a.delin_algo
+  |> Delinearize.translate ~enabled:a.assume_delin ~rewrite:a.rewrite_delin
+       ~elide:a.delin_elide ~check_vacuosity:a.delin_check_vacuosity
+       ~algo:a.delin_algo
   |> Phase_timer.boundary "delin"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Delin
        ~show:a.show_delin Aligned.print_kernels
