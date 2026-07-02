@@ -806,3 +806,90 @@ module IntGen = CodeGen (ArithmeticOps)
 module Bv32Gen = CodeGen (BitVectorOps (W32))
 module Bv64Gen = CodeGen (BitVectorOps (W64))
 module SignedBv32Gen = CodeGen (SignedBitVectorOps (SIGNED_32))
+
+(* Centralized satisfiability / validity checks.
+
+   [is_possible] asks whether a bexp is satisfiable ("may it hold?");
+   [is_always_true] whether it is valid ("must it?"). Both inline
+   predicate definitions and replace cross-thread primitives
+   ([ThreadUnif] / [AtomicResult]) with fresh booleans, then encode with
+   the arithmetic [IntGen] encoder, falling back to [Bv64Gen] only on an
+   operator [IntGen] cannot express. UNKNOWN maps to [false] for both,
+   the conservative reading. *)
+
+let prepare_bexp (b : bexp) : bexp =
+  b |> Predicates.b_inline |> Predicates.strip_cross_thread
+
+let solve_with_fallback ?(timeout : int option = None)
+    ?(logic : string option = None) (b : bexp) : (Solver.t, string) Result.t =
+  let timeout = Option.value ~default:0 timeout in
+  let prepared = prepare_bexp b in
+  let prefer_bv =
+    match logic with Some l -> String.ends_with ~suffix:"BV" l | None -> false
+  in
+  if prefer_bv then Bv64Gen.solve ~timeout prepared
+  else
+    try IntGen.solve ~timeout prepared
+    with Not_implemented _ -> Bv64Gen.solve ~timeout prepared
+
+let is_possible ?(timeout : int option = None) ?(logic : string option = None)
+    (b : bexp) : bool =
+  match solve_with_fallback ~timeout ~logic b with
+  | Ok (Solver.Sat _) -> true
+  | _ -> false
+
+let is_unsat ?(timeout : int option = None) ?(logic : string option = None)
+    (b : bexp) : bool =
+  match solve_with_fallback ~timeout ~logic b with
+  | Ok Solver.Unsat -> true
+  | _ -> false
+
+let is_always_true ?(timeout : int option = None) ?(logic : string option = None)
+    (b : bexp) : bool =
+  is_unsat ~timeout ~logic (b_not b)
+
+(* A solver that keeps one asserted [base] across many queries: the base
+   is asserted once, then each [is_possible] / [is_always_true] pushes its
+   goal, checks, and pops. Same [IntGen]-first / [Bv64]-fallback policy as
+   the one-shot checks; on an unencodable operator the whole
+   [with_assertion] closure is replayed under [Bv64], so the push/pop
+   stack is never left unbalanced and no solver handle escapes. *)
+module CachedSolver = struct
+  type t = {
+    ctx : Z3.context;
+    solver : Z3.Solver.solver;
+    b_to_expr : Z3.context -> bexp -> Z3.Expr.expr;
+  }
+
+  let query (t : t) (delta : bexp) : (Solver.t, string) Result.t =
+    Z3.Solver.push t.solver;
+    Z3.Solver.add t.solver [ t.b_to_expr t.ctx (prepare_bexp delta) ];
+    let r = Solver.run t.solver in
+    Z3.Solver.pop t.solver 1;
+    r
+
+  let is_possible (t : t) (b : bexp) : bool =
+    match query t b with Ok (Solver.Sat _) -> true | _ -> false
+
+  let is_always_true (t : t) (b : bexp) : bool =
+    match query t (b_not b) with Ok Solver.Unsat -> true | _ -> false
+
+  let with_assertion ?(timeout : int option = None)
+      ?(logic : string option = None) (base : bexp) (f : t -> 'a) : 'a =
+    let args =
+      match timeout with Some t -> [ ("timeout", string_of_int t) ] | None -> []
+    in
+    let prepared_base = prepare_bexp base in
+    let prefer_bv =
+      match logic with Some l -> String.ends_with ~suffix:"BV" l | None -> false
+    in
+    let run (b_to_expr : Z3.context -> bexp -> Z3.Expr.expr) : 'a =
+      let ctx = Z3.mk_context args in
+      let solver = Z3.Solver.mk_solver ctx None in
+      Z3.Solver.add solver [ b_to_expr ctx prepared_base ];
+      let t = { ctx; solver; b_to_expr } in
+      Fun.protect ~finally:(fun () -> Z3.Solver.reset solver) (fun () -> f t)
+    in
+    if prefer_bv then run Bv64Gen.b_to_expr
+    else try run IntGen.b_to_expr with Not_implemented _ -> run Bv64Gen.b_to_expr
+end

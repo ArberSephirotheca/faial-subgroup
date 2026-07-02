@@ -384,3 +384,71 @@ end
 
 module All = Make (Greedy) (AllBounds)
 module Maslov_elide = Make (Greedy) (Maslov)
+
+(* Which polynomial delinearization driver [--assume-delin] uses.
+   [Greedy] is the pairwise-division driver; [Ics15] is the reference
+   permutation-search implementation; [Ics15_opt] is its optimized
+   equivalent (same results, faster search); [Cramer] is the
+   linear-algebra decomposer (exact Cramer-rule subscript recovery).
+   Orthogonal to the bound-emission strategy. *)
+module Algo = struct
+  type t =
+    | Greedy
+    | Ics15
+    | Ics15_opt
+    | Cramer
+
+  let default = Ics15_opt
+
+  let to_string = function
+    | Greedy -> "greedy"
+    | Ics15 -> "ics15"
+    | Ics15_opt -> "ics15-opt"
+    | Cramer -> "cramer"
+
+  (* Name/value pairs for [Cmdliner.Arg.enum]. *)
+  let enum =
+    [
+      ("greedy", Greedy);
+      ("ics15", Ics15);
+      ("ics15-opt", Ics15_opt);
+      ("cramer", Cramer);
+    ]
+
+  let to_module : t -> (module Algorithm.S) = function
+    | Greedy -> (module Greedy)
+    | Ics15 -> (module Ics15)
+    | Ics15_opt -> (module Ics15_opt)
+    | Cramer -> (module Cramer)
+end
+
+(* Entry point from the DRF pipeline. *)
+let translate ~(assume : bool) ~(rewrite : bool) ~(elide : bool)
+    ~(algo : Algo.t)
+    (kernels : Aligned.Kernel.t Stage0.Streamutil.stream) :
+    Aligned.Kernel.t Stage0.Streamutil.stream =
+  if not (assume || rewrite) then kernels
+  else
+    let algo_mod : (module Algorithm.S) = Algo.to_module algo in
+    let bg : (module BoundGenerator) =
+      if elide then (module Maslov) else (module AllBounds)
+    in
+    let module A = (val algo_mod) in
+    let module G = (val bg) in
+    let module M = Make (A) (G) in
+    let rewrite_one (kernel : Aligned.Kernel.t) =
+      let open Exp in
+      let runtime =
+        Params.to_bexp
+          (Params.union_left kernel.global_variables kernel.local_variables)
+      in
+      let base = b_and kernel.pre runtime in
+      Gen_z3.CachedSolver.with_assertion base (fun s ->
+        let check ~scope ~bound =
+          if assume
+          then Gen_z3.CachedSolver.is_possible s (b_and (b_and_ex scope) bound)
+          else Gen_z3.CachedSolver.is_always_true s (b_impl (b_and_ex scope) bound)
+        in
+        M.rewrite_kernel ~rewrite_access:rewrite ~assume ~check kernel)
+    in
+    Stage0.Streamutil.map rewrite_one kernels

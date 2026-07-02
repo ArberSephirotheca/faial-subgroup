@@ -358,42 +358,6 @@ module Encoder = struct
     | Some l -> Solver.mk_solver_s ctx l
 end
 
-(* Single-bexp satisfiability check. Used by [App.run] as a pre-flight
-   on the merged kernel precondition: if the precondition is UNSAT,
-   every race goal is also UNSAT, so faial-drf would report DRF
-   vacuously. [check_bexp_sat] surfaces that case so the caller can
-   warn instead of silently claiming DRF.
-
-   The input is [b_inline]'d (expanding predicate definitions) and
-   then run through [strip_cross_thread], which replaces
-   [ThreadUnif] / [AtomicResult] occurrences with fresh stable
-   booleans. Cross-thread primitives are normally expanded by
-   symbexp's [project_b]; before symbexp runs (this pre-flight's
-   position in the pipeline), they are still raw and the Z3 codegen
-   rejects them. The conservative replacement is sound for our
-   check: a fresh boolean is free to be true or false, so an
-   over-approximation of satisfiability. If the result is UNSAT,
-   the original bexp is also UNSAT under any consistent
-   interpretation of the cross-thread primitives. *)
-let check_bexp_sat ?(timeout : int option = None) ?(logic : string option = None)
-    (b : bexp) : Z3.Solver.status =
-  let options =
-    [ ("model", "false"); ("proof", "false") ]
-    @
-    match timeout with
-    | Some timeout -> [ ("timeout", string_of_int timeout) ]
-    | None -> []
-  in
-  let prepared = b |> Predicates.b_inline |> Predicates.strip_cross_thread in
-  let try_with (enc : Encoder.t) =
-    let ctx = Z3.mk_context options in
-    let s = Encoder.mk_solver enc ctx in
-    Solver.add s [ enc.b_to_expr ctx prepared ];
-    Solver.check s []
-  in
-  try try_with (Encoder.initial ~logic)
-  with Not_implemented _ -> try_with (Encoder.bv64 ())
-
 module Outcome = struct
   type t =
     | Drf

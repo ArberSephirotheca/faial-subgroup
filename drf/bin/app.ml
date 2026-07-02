@@ -49,36 +49,8 @@ end
    further work. *)
 exception Stop_at_stage
 
-(* Which polynomial delinearization driver [--assume-delin] uses.
-   [Greedy] is the pairwise-division driver; [Ics15] is the reference
-   permutation-search implementation; [Ics15_opt] is its optimized
-   equivalent (same results, faster search); [Cramer] is the
-   linear-algebra decomposer (exact Cramer-rule subscript recovery).
-   Orthogonal to the bound-emission strategy. *)
-module Delin_algo = struct
-  type t =
-    | Greedy
-    | Ics15
-    | Ics15_opt
-    | Cramer
-
-  let default = Ics15_opt
-
-  let to_string = function
-    | Greedy -> "greedy"
-    | Ics15 -> "ics15"
-    | Ics15_opt -> "ics15-opt"
-    | Cramer -> "cramer"
-
-  (* Name/value pairs for [Cmdliner.Arg.enum]. *)
-  let enum =
-    [
-      ("greedy", Greedy);
-      ("ics15", Ics15);
-      ("ics15-opt", Ics15_opt);
-      ("cramer", Cramer);
-    ]
-end
+(* CLI re-export; the type and driver mapping live in [Delinearize.Algo]. *)
+module Delin_algo = Delinearize.Algo
 
 type t = {
   filename : string;
@@ -95,12 +67,6 @@ type t = {
   show_symbexp : bool;
   logic : string option;
   solve_tactic : Gen_z3.Tactic.t option;
-  (* Candidate clauses for UNSAT-core shrinking. Each [(id, b)] is
-     added to the per-proof Z3 solver via [assert_and_track] using a
-     fresh boolean constant named [extra_<id>]; if the proof's race
-     formula is UNSAT, the returned outcome carries the subset of
-     [id]s the core mentions. Empty by default; populated by genie's
-     [shrink_via_core] path. *)
   (* Per-kernel tracked-assertion clauses for UNSAT-core shrinking,
      keyed by [Kernel.name]. Each kernel's list pairs an integer ID
      with a [bexp] that gets added to that kernel's per-proof Z3
@@ -459,42 +425,9 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   |> Phase_timer.boundary "aligned"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned
        ~show:a.show_align Aligned.print_kernels
-  (* 6. delinearize accesses (no-op when delin is off, but the boundary
-     still emits a "delin" entry — 0 in that case). The rewriter wraps
-     each delinearized access in [Unsynced.Assert] nodes for the per-axis
-     bounds the strategy emits; [inline_asserts] downstream lifts them
-     into a [Cond] gate. Two orthogonal axes: [assume_delin] picks the
-     bound oracle (consistency when assuming, entailment when sound) and
-     [rewrite_delin] picks whether the access is re-encoded. Delin runs
-     when either is set. *)
-  |> (if a.assume_delin || a.rewrite_delin
-      then
-        let algo : (module Algorithm.S) =
-          match a.delin_algo with
-          | Delin_algo.Greedy -> (module Greedy)
-          | Delin_algo.Ics15 -> (module Ics15)
-          | Delin_algo.Ics15_opt -> (module Ics15_opt)
-          | Delin_algo.Cramer -> (module Cramer)
-        in
-        let bg : (module Delinearize.BoundGenerator) =
-          if a.delin_elide then (module Delinearize.Maslov)
-          else (module Delinearize.AllBounds)
-        in
-        let module A = (val algo) in
-        let module G = (val bg) in
-        let module M = Delinearize.Make (A) (G) in
-        let rewrite kernel =
-          Bound_check.with_slot ~timeout:0 kernel (fun slot ->
-            let check ~scope ~bound =
-              if a.assume_delin
-              then Bound_check.consistent slot ~scope ~bound
-              else Bound_check.entails slot ~scope ~bound
-            in
-            M.rewrite_kernel ~rewrite_access:a.rewrite_delin
-              ~assume:a.assume_delin ~check kernel)
-        in
-        Streamutil.map rewrite
-      else Fun.id)
+  (* 6. delinearize accesses *)
+  |> Delinearize.translate ~assume:a.assume_delin ~rewrite:a.rewrite_delin
+       ~elide:a.delin_elide ~algo:a.delin_algo
   |> Phase_timer.boundary "delin"
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Delin
        ~show:a.show_delin Aligned.print_kernels
@@ -557,13 +490,10 @@ let run (a : t) : Analysis.t list =
         else match a.archs with
           | arch :: _ ->
             let prepared = prepare_pre arch a kernel in
-            (match
-               Phase_timer.measure "pre-sat"
-                 (fun () -> Solve_drf.check_bexp_sat ~timeout:a.timeout
+            if Phase_timer.measure "pre-sat"
+                 (fun () -> Gen_z3.is_unsat ~timeout:a.timeout
                               ~logic:a.logic prepared.pre)
-             with
-             | Z3.Solver.UNSATISFIABLE -> Some prepared.pre
-             | Z3.Solver.SATISFIABLE | Z3.Solver.UNKNOWN -> None)
+            then Some prepared.pre else None
           | [] -> None
       in
       match vacuous with
