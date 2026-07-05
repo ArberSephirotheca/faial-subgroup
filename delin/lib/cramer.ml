@@ -22,9 +22,10 @@ module Decompose : Algorithm.Decompose = struct
     (* Build W *)
     let w_matrix =
       (* For each radix monic r extract the coefficient: [r] p *)
-      List.map
-        (fun r -> List.map (Poly.extract_coeff r) pv)
-        radix_monics
+      radix_monics
+      |> List.map (fun r ->
+           pv |> List.map (Poly.extract_coeff r) |> Int_linear.Vector.of_list)
+      |> Int_linear.Matrix.of_rows
     in
     let numeral_monics =
       Poly.to_monic_list p
@@ -39,6 +40,7 @@ module Decompose : Algorithm.Decompose = struct
            radix_monics
            |> List.map (fun r ->
                 Poly.extract_coeff (Monic.(r  * d)) p)
+           |> Int_linear.Vector.of_list
            |> Int_linear.int_solve w_matrix)
     in
     let monics = List.map Poly.of_monic numeral_monics in
@@ -46,7 +48,7 @@ module Decompose : Algorithm.Decompose = struct
     List.init (List.length radix + 1) (fun k ->
         coeffs
         |> List.map (fun c ->
-            (let* c = c in List.nth_opt c k)
+            (let* c = c in Int_linear.Vector.nth_opt c k)
             |> Option.value ~default:0
           )
         |> Poly.linear_combination monics)

@@ -26,30 +26,84 @@ let poly_list_eq (a : Poly.t list) (b : Poly.t list) : bool =
   List.length a = List.length b
   && List.for_all2 (fun x y -> Poly.compare x y = 0) a b
 
+let vec = Int_linear.Vector.of_list
+
+let mat (rows : int list list) : Int_linear.Matrix.t =
+  Int_linear.Matrix.of_rows (List.map vec rows)
+
+let vec_opt_printer = function
+  | None -> "None"
+  | Some v -> Int_linear.Vector.to_string v
+
+let assert_vec_opt expected actual =
+  assert_equal ~cmp:(Option.equal Int_linear.Vector.equal)
+    ~printer:vec_opt_printer expected actual
+
 let int_linear_tests =
   [
-    ("det empty" >:: fun _ -> assert_equal 1 (Int_linear.det []));
-    ("det 1x1" >:: fun _ -> assert_equal 5 (Int_linear.det [ [ 5 ] ]));
+    ("det empty" >:: fun _ -> assert_equal 1 (Int_linear.Matrix.det (mat [])));
+    ( "det 1x1" >:: fun _ ->
+      assert_equal 5 (Int_linear.Matrix.det (mat [ [ 5 ] ])) );
     ( "det 2x2" >:: fun _ ->
-      assert_equal 1 (Int_linear.det [ [ 1; 2 ]; [ 3; 7 ] ]) );
+      assert_equal 1 (Int_linear.Matrix.det (mat [ [ 1; 2 ]; [ 3; 7 ] ])) );
     ( "det anti-diagonal" >:: fun _ ->
       assert_equal (-1)
-        (Int_linear.det [ [ 0; 0; 1 ]; [ 0; 1; 0 ]; [ 1; 0; 0 ] ]) );
-    ( "solve_square integral" >:: fun _ ->
-      assert_equal (Some [ 2; 1 ])
-        (Int_linear.solve_square [ [ 1; 1 ]; [ 1; -1 ] ] [ 3; 1 ]) );
-    ( "solve_square singular" >:: fun _ ->
-      assert_equal None
-        (Int_linear.solve_square [ [ 1; 1 ]; [ 2; 2 ] ] [ 1; 2 ]) );
-    ( "solve_square non-integral" >:: fun _ ->
-      assert_equal None
-        (Int_linear.solve_square [ [ 2; 0 ]; [ 0; 1 ] ] [ 1; 3 ]) );
+        (Int_linear.Matrix.det (mat [ [ 0; 0; 1 ]; [ 0; 1; 0 ]; [ 1; 0; 0 ] ]))
+    );
+    ( "cramer_solve integral" >:: fun _ ->
+      assert_vec_opt
+        (Some (vec [ 2; 1 ]))
+        (Int_linear.Matrix.cramer_solve
+           (mat [ [ 1; 1 ]; [ 1; -1 ] ])
+           (vec [ 3; 1 ])) );
+    ( "cramer_solve singular" >:: fun _ ->
+      assert_vec_opt None
+        (Int_linear.Matrix.cramer_solve
+           (mat [ [ 1; 1 ]; [ 2; 2 ] ])
+           (vec [ 1; 2 ])) );
+    ( "cramer_solve non-integral" >:: fun _ ->
+      assert_vec_opt None
+        (Int_linear.Matrix.cramer_solve
+           (mat [ [ 2; 0 ]; [ 0; 1 ] ])
+           (vec [ 1; 3 ])) );
     ( "int_solve overdetermined consistent" >:: fun _ ->
-      assert_equal (Some [ 2; 3 ])
-        (Int_linear.int_solve [ [ 1; 0 ]; [ 0; 1 ]; [ 1; 1 ] ] [ 2; 3; 5 ]) );
+      assert_vec_opt
+        (Some (vec [ 2; 3 ]))
+        (Int_linear.int_solve
+           (mat [ [ 1; 0 ]; [ 0; 1 ]; [ 1; 1 ] ])
+           (vec [ 2; 3; 5 ])) );
     ( "int_solve inconsistent" >:: fun _ ->
-      assert_equal None
-        (Int_linear.int_solve [ [ 1; 0 ]; [ 0; 1 ]; [ 1; 1 ] ] [ 2; 3; 9 ]) );
+      assert_vec_opt None
+        (Int_linear.int_solve
+           (mat [ [ 1; 0 ]; [ 0; 1 ]; [ 1; 1 ] ])
+           (vec [ 2; 3; 9 ])) );
+  ]
+
+let vector_tests =
+  [
+    ( "get" >:: fun _ ->
+      assert_equal 7 (Int_linear.Vector.get (vec [ 3; 7; 9 ]) 1) );
+    ( "nth_opt in range" >:: fun _ ->
+      assert_equal (Some 9) (Int_linear.Vector.nth_opt (vec [ 3; 7; 9 ]) 2) );
+    ( "nth_opt out of range" >:: fun _ ->
+      assert_equal None (Int_linear.Vector.nth_opt (vec [ 3; 7; 9 ]) 3) );
+    ( "select" >:: fun _ ->
+      assert_bool "select picks positions"
+        (Int_linear.Vector.equal (vec [ 3; 9 ])
+           (Int_linear.Vector.select (vec [ 3; 7; 9 ]) [ 0; 2 ])) );
+    ( "to_string" >:: fun _ ->
+      assert_equal "[3; 7; 9]" (Int_linear.Vector.to_string (vec [ 3; 7; 9 ])) );
+  ]
+
+let matrix_tests =
+  [
+    ( "rows and cols" >:: fun _ ->
+      let m = mat [ [ 1; 2; 3 ]; [ 4; 5; 6 ] ] in
+      assert_equal (2, 3) (Int_linear.Matrix.rows m, Int_linear.Matrix.cols m) );
+    ( "of_rows rejects ragged" >:: fun _ ->
+      assert_raises
+        (Invalid_argument "Matrix.of_rows: rows have differing lengths")
+        (fun () -> mat [ [ 1; 2 ]; [ 3 ] ]) );
   ]
 
 let assert_delin ~radix ~expr ~expected =
@@ -118,4 +172,9 @@ let cramer_tests =
 let () =
   run_test_tt_main
     ("cramer"
-    >::: [ "int_linear" >::: int_linear_tests; "decompose" >::: cramer_tests ])
+    >::: [
+           "int_linear" >::: int_linear_tests;
+           "vector" >::: vector_tests;
+           "matrix" >::: matrix_tests;
+           "decompose" >::: cramer_tests;
+         ])
