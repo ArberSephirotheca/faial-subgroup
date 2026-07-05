@@ -4,7 +4,7 @@
    apart by those extents. *)
 
 let size_params (t : Poly.t) : Mono.t list = t
-  |> Poly.to_list
+  |> Poly.to_mono_list
   |> List.filter (fun t -> Mono.has_induction t && Mono.has_parameter t)
   |> List.map (Mono.filter (fun v _ -> Indet.is_parameter v))
   |> List.sort_uniq Mono.compare

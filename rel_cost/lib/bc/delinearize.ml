@@ -119,7 +119,7 @@ let injectivity_class (cfg : Config.t) (locals : Variable.Set.t)
     else `Uniform
   in
   let varying =
-    Poly.to_list sub
+    Poly.to_mono_list sub
     |> List.filter (fun t -> term_warp_class t = `Varying)
   in
   match varying with

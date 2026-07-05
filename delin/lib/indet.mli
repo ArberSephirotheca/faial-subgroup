@@ -17,3 +17,4 @@ val is_parameter : t -> bool
 val as_induction_var : t -> Variable.t option
 
 module Map : Map.S with type key = t
+module Set : Set.S with type elt = t

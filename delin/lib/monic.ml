@@ -12,6 +12,19 @@ let ( * ) (t1: t) (t2: t): t = (t1, t2)
   )
   |> normalize
 let fold f acc t = Indet.Map.fold f t acc
+
+let filter (f : Indet.t -> int -> bool) (t : t) : t = Indet.Map.filter f t
+
+let filter_factor (f : Indet.t -> bool) : t -> t = filter (fun a _ -> f a)
+
+let partition pred (t : t) : t * t =
+  fold
+    (fun a n (yes, no) ->
+      if pred a then (Indet.Map.add a n yes, no)
+      else (yes, Indet.Map.add a n no))
+    (Indet.Map.empty, Indet.Map.empty)
+    t
+
 let to_list = Indet.Map.bindings
 let nfactors t = t
   |> Indet.Map.to_list

@@ -92,7 +92,7 @@ module Maslov : BoundGenerator = struct
      that factor classifies as [Indet.Induction (Var v)]. *)
   let as_single_induction_var (i : Poly.t) : Variable.t option =
     let ( let* ) = Option.bind in
-    let* t = match Poly.to_list i with
+    let* t = match Poly.to_mono_list i with
       | [t] when Mono.coeff t = 1 -> Some t
       | _ -> None
     in

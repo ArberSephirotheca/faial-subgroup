@@ -1,14 +1,11 @@
 module Decompose : Algorithm.Decompose = struct
-  let as_mono (p : Poly.t) : Mono.t option =
-    match Poly.to_list p with [ m ] -> Some m | _ -> None
-
   let delinearize ~(radix : Poly.t list) (expr : Poly.t) : Poly.t list option =
     let ( let* ) = Option.bind in
     let* monos =
       List.fold_right
         (fun d acc ->
           let* rest = acc in
-          let* m = as_mono d in
+          let* m = Poly.to_mono d in
           Some (m :: rest))
         radix (Some [])
     in

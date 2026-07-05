@@ -39,3 +39,4 @@ module OT = struct
 end
 
 module Map = Map.Make (OT)
+module Set = Set.Make (OT)

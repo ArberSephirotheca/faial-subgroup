@@ -16,14 +16,8 @@ end = struct
     let is_param a = List.exists (fun c -> Indet.compare a c = 0) params in
     Poly.fold (fun term acc ->
       let coeff = Mono.coeff term in
-      let (param_sig, numeral_factors) =
-        Mono.fold (fun a n (ps, ns) ->
-          if is_param a then (Indet.Map.add a n ps, ns)
-          else (ps, Indet.Map.add a n ns))
-          (Indet.Map.empty, Indet.Map.empty)
-          term
-      in
-      let numeral = Poly.of_list [ (coeff, numeral_factors) ] in
+      let (param_sig, numeral_factors) = Monic.partition is_param (Mono.monic term) in
+      let numeral = Poly.of_list [ Mono.of_monic ~coeff numeral_factors ] in
       let existing =
         Monic.Map.find_opt param_sig acc |> Option.value ~default:Poly.zero
       in
@@ -151,11 +145,11 @@ module Decompose : Algorithm.Decompose = struct
      back off a dimension polynomial; [None] if not of that form. *)
   let parse_affine (d : Poly.t) : (Indet.t * int) option =
     let ( let* ) = Option.bind in
-    let c = Poly.coeff_of Indet.Map.empty d in
+    let c = Poly.extract_coeff Indet.Map.empty d in
     let* a =
-      match Poly.to_list (Poly.( - ) d (Poly.of_int c)) with
-      | [ (1, factors) ] ->
-        (match Monic.to_list factors with [ (v, 1) ] -> Some v | _ -> None)
+      match Poly.to_mono_list (Poly.( - ) d (Poly.of_int c)) with
+      | [ m ] when Mono.coeff m = 1 ->
+        (match Monic.to_list (Mono.monic m) with [ (v, 1) ] -> Some v | _ -> None)
       | _ -> None
     in
     Some (a, c)

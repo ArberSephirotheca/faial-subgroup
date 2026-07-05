@@ -8,10 +8,10 @@ let columns (accesses : Poly.t list) : Poly.t list =
   accesses
   |> List.concat_map (fun p ->
        let terms =
-         Poly.to_list p
+         Poly.to_mono_list p
          |> List.map (fun m ->
-              let mu, nu = Mono.split Indet.is_parameter m in
-              (nu, (Mono.coeff m, mu)))
+              let mu, nu = Monic.partition Indet.is_parameter (Mono.monic m) in
+              (nu, Mono.of_monic ~coeff:(Mono.coeff m) mu))
        in
        terms
        |> List.map fst

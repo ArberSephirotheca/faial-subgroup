@@ -47,16 +47,16 @@ let column_space (polys : Poly.t list) : Poly.t list =
   let polys = List.filter (fun p -> Poly.compare p Poly.zero <> 0) polys in
   let monos =
     polys
-    |> List.concat_map (fun p -> List.map snd (Poly.to_list p))
+    |> List.concat_map (fun p -> List.map Mono.monic (Poly.to_mono_list p))
     |> List.sort_uniq Monic.compare
     |> List.sort (fun a b -> -graded_compare a b)
   in
   let index = Array.of_list monos in
-  let to_vec p = Array.map (fun s -> Poly.coeff_of s p) index in
+  let to_vec p = Array.map (fun s -> Poly.extract_coeff s p) index in
   let of_vec v =
     Array.to_list v
-    |> List.mapi (fun i c -> (c, index.(i)))
-    |> List.filter (fun (c, _) -> c <> 0)
+    |> List.mapi (fun i c -> Mono.of_monic ~coeff:c index.(i))
+    |> List.filter (fun m -> Mono.coeff m <> 0)
     |> Poly.of_list
   in
   List.map to_vec polys
@@ -65,12 +65,12 @@ let column_space (polys : Poly.t list) : Poly.t list =
   |> List.sort (fun a b -> Int.compare (degree a) (degree b))
 
 let leading (p : Poly.t) : Mono.t option =
-  match Poly.to_list p with
+  match Poly.to_mono_list p with
   | [] -> None
   | m :: ms ->
     Some
       (List.fold_left
-         (fun best m -> if graded_compare (snd m) (snd best) > 0 then m else best)
+         (fun best m -> if graded_compare (Mono.monic m) (Mono.monic best) > 0 then m else best)
          m ms)
 
 let rec divide_exact (num : Poly.t) (den : Poly.t) : Poly.t option =
