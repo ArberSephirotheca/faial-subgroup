@@ -21,9 +21,9 @@ module Decompose : Algorithm.Decompose = struct
     in
     (* Build W *)
     let w_matrix =
-      (* For each radix monic m extract the coefficient: [m] p *)
+      (* For each radix monic r extract the coefficient: [r] p *)
       List.map
-        (fun radix_monic -> List.map (Poly.extract_coeff radix_monic) pv)
+        (fun r -> List.map (Poly.extract_coeff r) pv)
         radix_monics
     in
     let numeral_monics =
@@ -31,7 +31,7 @@ module Decompose : Algorithm.Decompose = struct
       |> List.map (Monic.filter_factor (fun a -> not (is_radix a)))
       |> List.sort_uniq Monic.compare
     in
-    (* Get the coefficients for each numeral *)
+    (* Get the coefficients of each numeral *)
     let coeffs =
       numeral_monics
       |> List.map (fun d ->
@@ -45,10 +45,10 @@ module Decompose : Algorithm.Decompose = struct
     (* Reconstruct the coefficients *)
     List.init (List.length radix + 1) (fun k ->
         coeffs
-        |> List.map (fun sol ->
-             (let* c = sol in
-              List.nth_opt c k)
-             |> Option.value ~default:0)
+        |> List.map (fun c ->
+            (let* c = c in List.nth_opt c k)
+            |> Option.value ~default:0
+          )
         |> Poly.linear_combination monics)
 
   let delinearize ~(radix : Poly.t list) (p : Poly.t) : Poly.t list option =
