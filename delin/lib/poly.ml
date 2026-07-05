@@ -120,7 +120,7 @@ let try_scalar_quotient (a : t) (b : t) : int option =
          in
          if compare a scaled = 0 then Some k else None)
 
-let extract_coeff (s : Monic.t) (p : t) : int =
+let coeff_of (s : Monic.t) (p : t) : int =
   Monic.Map.find_opt s p |> Option.value ~default:0
 
 let scale (n : int) (e : t) : t =

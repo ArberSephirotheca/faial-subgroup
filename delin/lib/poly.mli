@@ -25,7 +25,7 @@ val to_nexp : t -> Exp.nexp
 
 val try_scalar_quotient : t -> t -> int option
 
-val extract_coeff : Monic.t -> t -> int
+val coeff_of : Monic.t -> t -> int
 val scale : int -> t -> t
 val indets : t -> Indet.t list
 val dot : t list -> t list -> t

@@ -52,7 +52,7 @@ let column_space (polys : Poly.t list) : Poly.t list =
     |> List.sort (fun a b -> -graded_compare a b)
   in
   let index = Array.of_list monos in
-  let to_vec p = Array.map (fun s -> Poly.extract_coeff s p) index in
+  let to_vec p = Array.map (fun s -> Poly.coeff_of s p) index in
   let of_vec v =
     Array.to_list v
     |> List.mapi (fun i c -> Mono.of_monic ~coeff:c index.(i))

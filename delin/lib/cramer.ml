@@ -24,7 +24,7 @@ module Decompose : Algorithm.Decompose = struct
       (* For each radix monic r extract the coefficient: [r] p *)
       radix_monics
       |> List.map (fun r ->
-           pv |> List.map (Poly.extract_coeff r) |> Int_linear.Vector.of_list)
+           pv |> List.map (Poly.coeff_of r) |> Int_linear.Vector.of_list)
       |> Int_linear.Matrix.of_rows
     in
     let numeral_monics =
@@ -33,13 +33,12 @@ module Decompose : Algorithm.Decompose = struct
       |> List.sort_uniq Monic.compare
     in
     (* Get the coefficients of each numeral *)
-    let coeffs =
+    let coeffs : Int_linear.Vector.t option list =
       numeral_monics
       |> List.map (fun d ->
            (* Solves system `W ([d] n) = [r d] P` for `[d] n` *)
            radix_monics
-           |> List.map (fun r ->
-                Poly.extract_coeff (Monic.(r  * d)) p)
+           |> List.map (fun r -> Poly.coeff_of (Monic.(r * d)) p)
            |> Int_linear.Vector.of_list
            |> Int_linear.int_solve w_matrix)
     in

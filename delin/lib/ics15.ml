@@ -145,7 +145,7 @@ module Decompose : Algorithm.Decompose = struct
      back off a dimension polynomial; [None] if not of that form. *)
   let parse_affine (d : Poly.t) : (Indet.t * int) option =
     let ( let* ) = Option.bind in
-    let c = Poly.extract_coeff Indet.Map.empty d in
+    let c = Poly.coeff_of Indet.Map.empty d in
     let* a =
       match Poly.to_mono_list (Poly.( - ) d (Poly.of_int c)) with
       | [ m ] when Mono.coeff m = 1 ->
