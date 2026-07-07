@@ -549,7 +549,10 @@ and parse_decl (j : json) : c_decl option j_result =
         true
     | _ -> false
   in
-  if is_invalid o || is_tag_decl then Ok None
+  (* A block-scope [namespace a = b;] is a NamespaceAliasDecl: it has no
+     [type] and no runtime effect, so skip it like a tag decl. *)
+  let is_namespace_alias = k = "NamespaceAliasDecl" in
+  if is_invalid o || is_tag_decl || is_namespace_alias then Ok None
   else
     let* name = parse_variable j in
     let* ty = get_field "type" o in

@@ -154,6 +154,11 @@ let tests =
      body's accesses are analysed. Here the body writes [d[v]] with v the
      per-thread argument, so each thread writes a distinct cell: DRF. *)
     ("drf-generic-lambda.cu", [], 0);
+    (* A block-scope namespace alias ([namespace a = b;] inside a kernel
+     body) is a NamespaceAliasDecl in the DeclStmt, which has no [type]
+     and no runtime effect; parse_decl skips it rather than failing on
+     the missing field. *)
+    ("drf-namespace-alias.cu", [], 0);
     (* Same lambda shape but the body writes [d[0]] from every thread, so
      the invocation collides: racy. Pinning that the lambda body is
      actually analysed, not dropped (a dropped body would false-negative
