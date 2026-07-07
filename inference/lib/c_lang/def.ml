@@ -82,7 +82,7 @@ let parse_constant (j : Yojson.Basic.t) : Imp.Enum.Constant.t j_result =
   let* o = cast_object j in
   let* _ = expect_kind "EnumConstantDecl" o in
   let* var = parse_variable j in
-  let parse_init (j : json) : int option j_result =
+  let rec parse_init (j : json) : int option j_result =
     let* o = cast_object j in
     let* k = get_kind o in
     if k = "ConstantExpr" then
@@ -95,6 +95,8 @@ let parse_constant (j : Yojson.Basic.t) : Imp.Enum.Constant.t j_result =
                 ("ConstantExpr.value is not an integer: " ^ s) j)
       | _ ->
           root_cause "ConstantExpr without a pre-evaluated value" j
+    else if List.mem k [ "ImplicitCastExpr"; "ParenExpr"; "CStyleCastExpr" ] then
+      with_field "inner" (cast_list_1 parse_init) o
     else
       let* e = Expr.parse j in
       match e with

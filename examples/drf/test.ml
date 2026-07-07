@@ -124,6 +124,11 @@ let tests =
     ("drf-enum-typedef.cu", [], 0);
     (* Support for enumerates *)
     ("drf-enum-constraint.cu", [], 0);
+    (* Enum constants with a computed initializer: cu-to-json pre-folds
+     [(1 << 8)] and [ANTIALIAS + 1] into a ConstantExpr wrapped in an
+     ImplicitCastExpr/ParenExpr, which parse_init must unwrap to read
+     the folded value. *)
+    ("drf-enum-computed.cu", [], 0);
     (* Aliasing using shared memory (example 1) *)
     ("racy-alias-shmem1.cu", [], 1);
     (* Aliasing using shared memory (example 1) *)
