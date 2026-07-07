@@ -134,6 +134,18 @@ let tests =
      constant, which parse_expr treats as an opaque unknown value
      like any StringLiteral rather than rejecting with parse_exp. *)
     ("drf-predefined-expr.cu", [], 0);
+    (* A [[maybe_unused]] attribute on a local variable emits an
+     UnusedAttr node in the VarDecl's inner list; parse_decl must drop
+     the attribute rather than treating it as an initializer. *)
+    ("drf-maybe-unused.cu", [], 0);
+    (* sizeof...(pack) in a dependent template body reaches the reader as
+     a SizeOfPackExpr, whose count is unknown until instantiation and is
+     read as an opaque unknown value. *)
+    ("drf-sizeof-pack.cu", [], 0);
+    (* A device function bound to a function-pointer template parameter
+     reaches the reader as a TemplateArgument carrying a FunctionDecl;
+     the argument is read by name (TArgDecl). *)
+    ("drf-template-fn-arg.cu", [], 0);
     (* Aliasing using shared memory (example 1) *)
     ("racy-alias-shmem1.cu", [], 1);
     (* Aliasing using shared memory (example 1) *)

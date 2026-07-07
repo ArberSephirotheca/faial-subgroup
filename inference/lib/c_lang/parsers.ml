@@ -28,7 +28,8 @@ let rec parse_expr (j : json) : c_expr j_result =
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.from_json ty))
   | "ImplicitValueInitExpr" | "CXXNullPtrLiteralExpr"
-  | "StringLiteral" | "PredefinedExpr" | "RecoveryExpr" | "CXXThisExpr" ->
+  | "StringLiteral" | "PredefinedExpr" | "SizeOfPackExpr"
+  | "RecoveryExpr" | "CXXThisExpr" ->
       (* Unknown value *)
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.from_json ty))
@@ -560,6 +561,11 @@ and parse_decl (j : json) : c_decl option j_result =
           |> Result.value ~default:false)
         inner
     in
+    let inits =
+      List.filter
+        (fun j -> not (j_filter_kind (String.ends_with ~suffix:"Attr") j))
+        inits
+    in
     let* attrs = map parse_attr attrs in
     (* cu-to-json flags a file-scope global it proves is never written as
        [mutated: false]; record that as a synthetic attr so the lowering
@@ -1007,6 +1013,15 @@ and parse_c_template_argument (j : json) : c_template_argument j_result =
     Ok (TArgPack xs)
   else if is_null_ptr then Ok TArgNullPtr
   else if is_null then Ok TArgNullArg
+  else if List.mem_assoc "decl" o then
+    let* name =
+      with_field "decl"
+        (fun d ->
+          let* od = cast_object d in
+          with_field "name" cast_string od)
+        o
+    in
+    Ok (TArgDecl name)
   else
     let* value_opt = with_opt_field "value" cast_int o in
     let* type_opt =
