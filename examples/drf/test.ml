@@ -301,6 +301,13 @@ let tests =
      threadIdx.x) pair writes a distinct address. *)
     ("drf-launch-const-arg.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* A structured-binding variable ([const auto [slot, token] = ...])
+     passed as a scalar launch argument. The launch-arg walk reads the
+     [slot] reference, whose [DeclRefExpr] resolves to a [BindingDecl];
+     that decl kind is read like a [VarDecl]. Without it the launch
+     synthesis hits parse_exp and the whole file exits 2. *)
+    ("drf-launch-binding-arg.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
     (* Grid-arithmetic relation flowing transitively to a kernel
      arg: launch picks [gridDim.x = imageW / 128]. The launch-arg
      resolver passes the BinaryOp structure through verbatim

@@ -169,10 +169,13 @@ let rec parse_expr (j : json) : c_expr j_result =
       let* name = parse_variable j in
       let* ty = get_field "type" o in
       Ok (Ident { name; ty = J_type.from_json ty; kind = EnumConstant })
-  | "VarDecl" | "VarTemplateSpecializationDecl" ->
+  | "VarDecl" | "VarTemplateSpecializationDecl" | "BindingDecl" ->
       (* [VarTemplateSpecializationDecl] is a C++14 variable-template
          instantiation (e.g. [HASHTABLE_EMPTY_VALUE<uint64, uint32>]); it
-         carries the same [name]/[type] shape as a plain [VarDecl]. *)
+         carries the same [name]/[type] shape as a plain [VarDecl].
+         [BindingDecl] is a structured-binding element ([auto [a, b] =
+         ...]); as a [DeclRefExpr]'s referencedDecl it carries the same
+         [name]/[type] shape. *)
       let* name = parse_variable j in
       let* ty = get_field "type" o in
       Ok (Ident { name; ty = J_type.from_json ty; kind = Var })
