@@ -427,19 +427,27 @@ let rec parse_expr (j : json) : c_expr j_result =
       let* _ = expect_kind "CXXRecordDecl" closure_o in
       let* closure_inner = with_field "inner" cast_list closure_o in
       let is_kind k j = j_filter_kind (fun x -> x = k) j in
-      let is_op_method (item : json) : bool =
-        let r =
-          let* o = cast_object item in
-          let* k = get_kind o in
-          if k <> "CXXMethodDecl" then Ok false
-          else
-            let* nm = with_field_or "name" cast_string "" o in
-            Ok (nm = "operator()")
-        in
-        Result.value ~default:false r
+      let is_named_method (name : string) (item : json) : bool =
+        Result.value ~default:false
+          (let* o = cast_object item in
+           let* k = get_kind o in
+           let* nm = with_field_or "name" cast_string "" o in
+           Ok (k = "CXXMethodDecl" && nm = name))
+      in
+      let op_method_of (item : json) : json option =
+        if is_named_method "operator()" item then Some item
+        else
+          Result.value ~default:None
+            (let* o = cast_object item in
+             let* k = get_kind o in
+             let* nm = with_field_or "name" cast_string "" o in
+             if k = "FunctionTemplateDecl" && nm = "operator()" then
+               let* tmpl_inner = with_field "inner" cast_list o in
+               Ok (List.find_opt (is_named_method "operator()") tmpl_inner)
+             else Ok None)
       in
       let* op_j =
-        match List.find_opt is_op_method closure_inner with
+        match List.find_map op_method_of closure_inner with
         | Some op -> Ok op
         | None -> root_cause "LambdaExpr: no operator() method" j
       in

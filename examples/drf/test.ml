@@ -146,6 +146,19 @@ let tests =
      reaches the reader as a TemplateArgument carrying a FunctionDecl;
      the argument is read by name (TArgDecl). *)
     ("drf-template-fn-arg.cu", [], 0);
+    (* A generic lambda ([&](auto v){...}) invoked directly. Two things
+     must work: the LambdaExpr reader descends through the
+     FunctionTemplateDecl that wraps a generic lambda's operator(), and
+     Lift_lambdas rewrites the operator() call site (a CXXOperatorCallExpr
+     whose first argument is the closure) to the synthetic kernel so the
+     body's accesses are analysed. Here the body writes [d[v]] with v the
+     per-thread argument, so each thread writes a distinct cell: DRF. *)
+    ("drf-generic-lambda.cu", [], 0);
+    (* Same lambda shape but the body writes [d[0]] from every thread, so
+     the invocation collides: racy. Pinning that the lambda body is
+     actually analysed, not dropped (a dropped body would false-negative
+     as DRF). *)
+    ("racy-generic-lambda.cu", [], 1);
     (* Aliasing using shared memory (example 1) *)
     ("racy-alias-shmem1.cu", [], 1);
     (* Aliasing using shared memory (example 1) *)

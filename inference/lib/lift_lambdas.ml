@@ -98,18 +98,24 @@ open State.Syntax
    the recursion. *)
 let rewrite_expr (e : Expr.t) : Expr.t state =
   let* env = Context.bindings in
+  let synth_call (b : Context.binding) (args : Expr.t list) (ty : J_type.t) :
+      Expr.t =
+    let cap_args = List.map snd b.captures in
+    let func =
+      Expr.Ident
+        (Decl_expr.from_name ~ty:J_type.unknown ~kind:Decl_expr.Kind.Function
+           b.fname)
+    in
+    Expr.CallExpr { func; args = cap_args @ args; ty }
+  in
   Expr.st_map
     (function
       | CallExpr { func = Ident { name = v; _ }; args; ty }
         when Variable.Map.mem v env ->
-          let b = Variable.Map.find v env in
-          let cap_args = List.map snd b.captures in
-          let func =
-            Expr.Ident
-              (Decl_expr.from_name ~ty:J_type.unknown
-                 ~kind:Decl_expr.Kind.Function b.fname)
-          in
-          return (Expr.CallExpr { func; args = cap_args @ args; ty })
+          return (synth_call (Variable.Map.find v env) args ty)
+      | CXXOperatorCallExpr { args = Ident { name = v; _ } :: args; ty; _ }
+        when Variable.Map.mem v env ->
+          return (synth_call (Variable.Map.find v env) args ty)
       | e -> return e)
     e
 
