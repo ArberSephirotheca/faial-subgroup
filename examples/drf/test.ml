@@ -129,6 +129,11 @@ let tests =
      ImplicitCastExpr/ParenExpr, which parse_init must unwrap to read
      the folded value. *)
     ("drf-enum-computed.cu", [], 0);
+    (* PredefinedExpr arguments (__FUNCTION__ / __func__ /
+     __PRETTY_FUNCTION__): cu-to-json resolves each to a string
+     constant, which parse_expr treats as an opaque unknown value
+     like any StringLiteral rather than rejecting with parse_exp. *)
+    ("drf-predefined-expr.cu", [], 0);
     (* Aliasing using shared memory (example 1) *)
     ("racy-alias-shmem1.cu", [], 1);
     (* Aliasing using shared memory (example 1) *)

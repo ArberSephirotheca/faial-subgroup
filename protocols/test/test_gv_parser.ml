@@ -56,6 +56,27 @@ let test_parse () : unit =
   let given = from_pair ~pass ~params |> Option.get in
   Alcotest.check gv_parser "parse blockDim=32 gridDim=[2]" expected given
 
+let parse_file (contents : string) : Gv_parser.t option =
+  let path = Filename.temp_file "gv_parser" ".cu" in
+  Out_channel.with_open_text path (fun oc ->
+      Out_channel.output_string oc contents);
+  Fun.protect
+    ~finally:(fun () -> Sys.remove path)
+    (fun () -> Gv_parser.parse path)
+
+let test_parse_file () : unit =
+  let open Gv_parser in
+  (* Files with fewer than two lines carry no header and must yield None
+     rather than raising End_of_file on the second line. *)
+  Alcotest.(check (option gv_parser)) "empty file" None (parse_file "");
+  Alcotest.(check (option gv_parser)) "one-line kernel, no header" None
+    (parse_file "__global__ void k(int *d){ d[threadIdx.x] = 0; }\n");
+  let expected =
+    { default with pass = true; block_dim = Dim3.{ x = 12; y = 1; z = 1 } }
+  in
+  Alcotest.(check (option gv_parser)) "two-line header" (Some expected)
+    (parse_file "//pass\n//--blockDim=12\n__global__ void k(){}\n")
+
 let test_parse_ser () : unit =
   let open Gv_parser in
   parses_ser default;
@@ -73,6 +94,7 @@ let tests : unit Alcotest.test_case list =
   [
     ("parse_param", `Quick, test_parse_param);
     ("parse", `Quick, test_parse);
+    ("parse_file", `Quick, test_parse_file);
     ("parse_ser", `Quick, test_parse_ser);
   ]
 

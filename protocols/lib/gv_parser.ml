@@ -95,8 +95,4 @@ let from_string (x : string) : t option =
   | _ -> None
 
 let parse (filename : string) : t option =
-  let ic = open_in filename in
-  let pass = input_line ic in
-  let params = input_line ic in
-  close_in ic;
-  from_pair ~pass ~params
+  In_channel.with_open_text filename In_channel.input_all |> from_string
