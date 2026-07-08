@@ -581,7 +581,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
   let block_dim =
     match launch_contract with
     | None -> block_dim
-    | Some contract -> Some (Launch_contract.block_dim contract)
+    | Some contract -> Launch_contract.block_dim_option contract
   in
   let grid_dim =
     match launch_contract with

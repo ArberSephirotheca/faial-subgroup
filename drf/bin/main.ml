@@ -320,9 +320,11 @@ let main =
       & opt (some string) None
       & info [ "launch-contract" ] ~docv:"ROW"
           ~doc:
-            "Apply a guarded launch/template/shape contract for a concrete \
-             manifest row. Currently supported rows: L072, L073, L143, L144, \
-             L145, L146.")
+            "Apply a guarded launch/template/shape contract for a manifest or \
+             profile-backed row. Currently supported exact catalog rows: L072, \
+             L073, L143, L144, L145, L146. Additional lookup rows include \
+             L012, L018-L021, L024-L043, L046-L056, L067, L068, L074-L076, \
+             L117, L118, and L135-L138.")
   and+ macros =
     Arg.(
       value & opt_all string []

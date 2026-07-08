@@ -2,6 +2,7 @@ open Protocols
 module SM = Inference.Subgroup_matrix
 module Memory = Drf.Memory_event.Subgroup_obligation
 module Solver = Drf.Subgroup_solver
+module Symbolic_launch_evidence = Drf.Symbolic_launch_evidence
 module Uniformity = Drf.Subgroup_uniformity
 
 let var (name : string) : Variable.t = Variable.from_name name
@@ -637,6 +638,226 @@ let test_timeout_and_unknown_reasons_are_not_collapsed () : unit =
     "generic unknown reason" "solver=unknown(reason=incomplete)"
     (Solver.classification_to_string unknown)
 
+let report_with_classification (classification : Solver.classification) :
+    Solver.report =
+  {
+    kernel_name = "s488_classification_test";
+    config = Solver.default_config;
+    z3_version = "test";
+    obligations =
+      [
+        Solver.evidence_of_obligation ~classification:(Some classification)
+          (obligation ());
+      ];
+  }
+
+let test_s488_classification_labels_follow_solver_verdict () : unit =
+  let check expected classification =
+    Alcotest.(check string)
+      expected expected
+      (Symbolic_launch_evidence.s488_classification_to_string
+         (Symbolic_launch_evidence.s488_classification_of_report
+            (report_with_classification classification)))
+  in
+  check "unguarded_unsat" Solver.Solver_unsat_drf;
+  check "invalid_counterexample_needs_guard" Solver.Solver_sat_racy;
+  check "timeout" (Solver.Solver_timeout "unit timeout");
+  check "timeout" (Solver.Solver_unknown "unit unknown");
+  check "unsupported" (Solver.Unsupported "unit unsupported")
+
+let s489_family_result family_id results =
+  match
+    List.find_opt
+      (fun result ->
+        String.equal result.Symbolic_launch_evidence.s489_family_id family_id)
+      results
+  with
+  | Some result -> result
+  | None -> Alcotest.fail ("missing S489 family " ^ family_id)
+
+let s489_count label counts =
+  List.assoc_opt label counts |> Option.value ~default:0
+
+let test_s489_frontier_classifies_solve_tri_and_blocks_unbuilt_families () :
+    unit =
+  let report = report_with_classification Solver.Solver_unsat_drf in
+  let results =
+    Symbolic_launch_evidence.s489_frontier_results
+      ~solve_tri_report:(Some report)
+  in
+  Alcotest.(check int) "full imported family inventory" 95 (List.length results);
+  let counts = Symbolic_launch_evidence.s489_classification_counts results in
+  Alcotest.(check int)
+    "current proof overlays solved" 33
+    (s489_count "unguarded_unsat" counts);
+  Alcotest.(check int)
+    "remaining extraction blockers" 54
+    (s489_count "extraction_blocked" counts);
+  Alcotest.(check int)
+    "unsupported boundaries" 8
+    (s489_count "unsupported" counts);
+  let solve_tri = s489_family_result "F082" results in
+  Alcotest.(check string)
+    "solve_tri classification" "unguarded_unsat"
+    (Symbolic_launch_evidence.s488_classification_to_string
+       solve_tri.Symbolic_launch_evidence.s489_classification);
+  Alcotest.(check string)
+    "solve_tri solver status" "solver_classified"
+    solve_tri.Symbolic_launch_evidence.s489_solver_artifact_status;
+  let clamp = s489_family_result "F011" results in
+  Alcotest.(check string)
+    "clamp structural classification" "unguarded_unsat"
+    (Symbolic_launch_evidence.s488_classification_to_string
+       clamp.Symbolic_launch_evidence.s489_classification);
+  Alcotest.(check string)
+    "clamp shape builder" "one_dimensional_elementwise"
+    clamp.Symbolic_launch_evidence.s489_shape_builder;
+  Alcotest.(check string)
+    "clamp structural solver status" "pre_solver_structural_drf"
+    clamp.Symbolic_launch_evidence.s489_solver_artifact_status;
+  let atomic = s489_family_result "F040" results in
+  Alcotest.(check string)
+    "atomic unsupported classification" "unsupported"
+    (Symbolic_launch_evidence.s488_classification_to_string
+       atomic.Symbolic_launch_evidence.s489_classification);
+  Alcotest.(check bool)
+    "atomic blocker is preserved" true
+    (Stage0.Common.contains ~substring:"atomic"
+       atomic.Symbolic_launch_evidence.s489_first_blocker);
+  let artifact =
+    Symbolic_launch_evidence.s489_all_family_frontier_artifact_lines
+      ~filename:"unit_s489.cu" ~solve_tri_report:(Some report)
+    |> String.concat "\n"
+  in
+  Alcotest.(check bool)
+    "artifact marker" true
+    (Stage0.Common.contains
+       ~substring:"artifact: ocaml-s489-all-family-unguarded-frontier-v1"
+       artifact);
+  Alcotest.(check bool)
+    "family count" true
+    (Stage0.Common.contains ~substring:"family_count: 95" artifact);
+  Alcotest.(check bool)
+    "row count" true
+    (Stage0.Common.contains ~substring:"row_count: 146" artifact);
+  Alcotest.(check bool)
+    "classification counts" true
+    (Stage0.Common.contains
+       ~substring:
+         "classification_counts: extraction_blocked=54, unguarded_unsat=33, \
+          unsupported=8"
+       artifact)
+
+let test_s489_frontier_without_symbolic_report_marks_all_blocked () : unit =
+  let results =
+    Symbolic_launch_evidence.s489_frontier_results ~solve_tri_report:None
+  in
+  Alcotest.(check int) "full imported family inventory" 95 (List.length results);
+  let counts = Symbolic_launch_evidence.s489_classification_counts results in
+  Alcotest.(check int)
+    "blocked families including solve_tri" 55
+    (s489_count "extraction_blocked" counts);
+  Alcotest.(check int)
+    "structural families solved without report" 32
+    (s489_count "unguarded_unsat" counts);
+  Alcotest.(check int)
+    "unsupported boundaries remain explicit" 8
+    (s489_count "unsupported" counts);
+  let solve_tri = s489_family_result "F082" results in
+  Alcotest.(check string)
+    "solve_tri waits for report" "extraction_blocked"
+    (Symbolic_launch_evidence.s488_classification_to_string
+       solve_tri.Symbolic_launch_evidence.s489_classification);
+  let im2col = s489_family_result "F055" results in
+  Alcotest.(check string)
+    "im2col builder" "bounded_symbolic_block_dim"
+    im2col.Symbolic_launch_evidence.s489_shape_builder;
+  let artifact =
+    Symbolic_launch_evidence.s489_all_family_frontier_artifact_lines
+      ~filename:"unit_s489_no_report.cu" ~solve_tri_report:None
+    |> String.concat "\n"
+  in
+  Alcotest.(check bool)
+    "blocked count is recorded" true
+    (Stage0.Common.contains
+       ~substring:
+         "classification_counts: extraction_blocked=55, unguarded_unsat=32, \
+          unsupported=8"
+       artifact)
+
+let s491_candidate family_id candidates =
+  match
+    List.find_opt
+      (fun candidate ->
+        String.equal candidate.Symbolic_launch_evidence.s491_family_id family_id)
+      candidates
+  with
+  | Some candidate -> candidate
+  | None -> Alcotest.fail ("missing S491 candidate " ^ family_id)
+
+let s491_count label counts =
+  List.assoc_opt label counts |> Option.value ~default:0
+
+let test_s491_blocker_retirement_frontier_targets_launch_template () : unit =
+  let report = report_with_classification Solver.Solver_unsat_drf in
+  let candidates =
+    Symbolic_launch_evidence.s491_blocker_retirement_candidates
+      ~solve_tri_report:(Some report)
+  in
+  Alcotest.(check int) "remaining blocked families" 54 (List.length candidates);
+  let counts = Symbolic_launch_evidence.s491_candidate_counts candidates in
+  Alcotest.(check int)
+    "launch-template blockers" 22
+    (s491_count "launch_template" counts);
+  Alcotest.(check int)
+    "preprocessing blockers" 28
+    (s491_count "preprocessing" counts);
+  Alcotest.(check int)
+    "row-derived symbolic blockers" 3
+    (s491_count "row_derived_symbolic_family_guard" counts);
+  Alcotest.(check int)
+    "subgroup-config blockers" 1
+    (s491_count "subgroup_config" counts);
+  let selected =
+    Symbolic_launch_evidence.s491_selected_launch_template_candidates
+      ~solve_tri_report:(Some report)
+  in
+  Alcotest.(check int)
+    "selected launch-template worklist" 22 (List.length selected);
+  let allreduce = s491_candidate "F003" selected in
+  Alcotest.(check string)
+    "F003 selected blocker" "launch_template:template_argument_status"
+    allreduce.Symbolic_launch_evidence.s491_first_blocker;
+  Alcotest.(check bool)
+    "F011 already structurally discharged" false
+    (List.exists
+       (fun candidate ->
+         String.equal candidate.Symbolic_launch_evidence.s491_family_id "F011")
+       candidates);
+  let gla = s491_candidate "F054" candidates in
+  Alcotest.(check string)
+    "GLA remains symbolic-family blocker" "row_derived_symbolic_family_guard"
+    gla.Symbolic_launch_evidence.s491_blocker_class;
+  let artifact =
+    Symbolic_launch_evidence.s491_blocker_retirement_artifact_lines
+      ~filename:"unit_s491.cu" ~solve_tri_report:(Some report)
+    |> String.concat "\n"
+  in
+  Alcotest.(check bool)
+    "artifact marker" true
+    (Stage0.Common.contains
+       ~substring:"artifact: ocaml-s491-blocker-retirement-frontier-v1" artifact);
+  Alcotest.(check bool)
+    "blocker counts" true
+    (Stage0.Common.contains
+       ~substring:
+         "blocker_counts: launch_template=22, preprocessing=28, \
+          row_derived_symbolic_family_guard=3, subgroup_config=1"
+       artifact);
+  Alcotest.(check bool)
+    "selected count" true
+    (Stage0.Common.contains ~substring:"selected_family_count: 22" artifact)
+
 let test_solver_normalizes_transitive_numeric_constants () : unit =
   let wg_size = var "WG_SIZE" in
   let warp_size = var "WARP_SIZE" in
@@ -1112,6 +1333,18 @@ let tests : unit Alcotest.test_case list =
     ( "timeout and unknown classifications",
       `Quick,
       test_timeout_and_unknown_reasons_are_not_collapsed );
+    ( "S488 classification labels",
+      `Quick,
+      test_s488_classification_labels_follow_solver_verdict );
+    ( "S489 frontier classification",
+      `Quick,
+      test_s489_frontier_classifies_solve_tri_and_blocks_unbuilt_families );
+    ( "S489 no-report frontier",
+      `Quick,
+      test_s489_frontier_without_symbolic_report_marks_all_blocked );
+    ( "S491 blocker-retirement frontier",
+      `Quick,
+      test_s491_blocker_retirement_frontier_targets_launch_template );
     ( "transitive numeric constant normalization",
       `Quick,
       test_solver_normalizes_transitive_numeric_constants );
