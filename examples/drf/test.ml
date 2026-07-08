@@ -404,19 +404,13 @@ let tests =
      alpha-renamed callee local instead of the call-site
      [arr + i]. *)
     ("drf-pointer-param-shadow.cu", [], 0);
-    (* Regression: [Imp.Scoped.Code.Distinct.distinct] used to pick
-     a fresh name by consulting only the names bound on the path
-     from the root, ignoring names that lived deeper in the binder's
-     body. A helper with a parameter named [i] was inlined into a
-     kernel whose local [int i] clashed with the host-loop [int i]
-     captured by the synthesised launch wrapper; the wrapper pass
-     renamed the kernel's [i] to [i1], the same fresh name the
-     earlier helper-inline pass had already chosen for the helper's
-     [i] deeper in the body, and the subsequent rename of that
-     deeper [i1] to [i11] captured the kernel's freshly-placed
-     index reference. The access landed on the helper's
-     uninitialised float local and the analysis reported a false
-     race. *)
+    (* Regression: [Imp.Scoped.Code.vars_distinct] must pick fresh
+     names that avoid binders living deeper in the body, not just the
+     names bound on the path from the root. A helper's parameter [i]
+     inlined into a kernel with a clashing local [i] once got renamed
+     to a fresh name that collided with a deeper binder, and the
+     resulting capture landed the access on the wrong local, reporting
+     a false race. *)
     ("drf-inline-rename-capture.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
     (* ensure that an aligned protocol remains aligned *)

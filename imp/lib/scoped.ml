@@ -245,12 +245,9 @@ module Code = struct
     filter
 
   (* Collect every variable name mentioned anywhere in [p] (binders
-     and free references). Used by [Distinct.distinct] so that
-     freshly-generated names cannot collide with a name introduced
-     by a deeper binder; without the subtree scan, two independent
-     renames could pick the same fresh name and the second rename's
-     subst would capture references the first rename had placed
-     there. *)
+     and free references). [vars_distinct] seeds its fresh-name pool
+     with this so a renamed binder cannot collide with any other name
+     in the term. *)
   let mentioned : t -> Variable.Set.t =
     let n = Exp.n_free_names in
     let b = Exp.b_free_names in
@@ -293,91 +290,93 @@ module Code = struct
     in
     go Variable.Set.empty
 
-  module Distinct = struct
-    open State.Syntax
-
-    type 'a state = (Variable.Set.t, 'a) State.t
-
-    (* Check if variable is already used *)
-    let is_used (x : Variable.t) : bool state =
-      let* vars = State.get in
-      return (Variable.Set.mem x vars)
-
-    (* Add variable to used set *)
-    let add_var (x : Variable.t) : unit state =
-      State.update (Variable.Set.add x)
-
-    (* Generate a fresh name for [x] that avoids both the names
-       bound on the path from the root (the state) and every name
-       mentioned in [subtree]. The subtree set must include any
-       binder that lives inside [subtree], because otherwise a
-       freshly-picked name could shadow that binder and a later
-       rename of that binder would re-substitute the fresh name. *)
-    let fresh_var ~(subtree : Variable.Set.t) (x : Variable.t) :
-        Variable.t state =
-      let* vars = State.get in
-      let new_x = Variable.fresh (Variable.Set.union vars subtree) x in
-      let* () = add_var new_x in
-      return new_x
-
-    let rec distinct : t -> t state = function
-      | (Access _ | Skip | Sync _ | Assert _) as p -> return p
+  (* Alpha-rename binders so every bound variable is globally unique,
+     in a single top-down pass. [bound] holds the names bound on the
+     path so far (seeded with the caller's [vars]); a binder whose name
+     is already in [bound] is renamed. [taken] is every name a fresh one
+     must avoid — seeded once with every name in the whole term so a
+     fresh name cannot collide with a deeper binder — and grows as fresh
+     names are minted. [env] maps a renamed binder's old name to its
+     replacement and is applied to references at the leaves. This
+     replaces an earlier per-binder [mentioned] subtree scan plus a
+     per-binder full-subtree [subst], which was quadratic on
+     inline-heavy kernels. *)
+  let vars_distinct ?(vars = Variable.Set.empty) (root : t) : t =
+    let module R = Subst.ReplaceVars in
+    let empty (env : Subst.Vars.t) : bool = Variable.Map.is_empty env in
+    let ns env e = if empty env then e else R.n_subst env e in
+    let bs env b = if empty env then b else R.b_subst env b in
+    let as_ env a = if empty env then a else R.a_subst env a in
+    let rs env r = if empty env then r else R.r_subst env r in
+    let enter (env : Subst.Vars.t) (bound : Variable.Set.t)
+        (taken : Variable.Set.t) (x : Variable.t) :
+        Variable.t * Subst.Vars.t * Variable.Set.t * Variable.Set.t =
+      if Variable.Set.mem x bound then
+        let x' = Variable.fresh taken x in
+        ( x',
+          Variable.Map.add x (Exp.Var x') env,
+          Variable.Set.add x' bound,
+          Variable.Set.add x' taken )
+      else (x, env, Variable.Set.add x bound, taken)
+    in
+    let rec go (env : Subst.Vars.t) (bound : Variable.Set.t)
+        (taken : Variable.Set.t) :
+        t -> t * Variable.Set.t * Variable.Set.t = function
+      | Skip -> (Skip, bound, taken)
+      | Access a -> (Access (as_ env a), bound, taken)
+      | Assert b -> (Assert (Assert.map (bs env) b), bound, taken)
+      | Sync s ->
+          ( Sync
+              {
+                s with
+                id = ns env s.id;
+                participants = Option.map (ns env) s.participants;
+              },
+            bound,
+            taken )
+      | If (b, p, q) ->
+          let b = bs env b in
+          let p, bound, taken = go env bound taken p in
+          let q, bound, taken = go env bound taken q in
+          (If (b, p, q), bound, taken)
+      | Seq (p, q) ->
+          let p, bound, taken = go env bound taken p in
+          let q, bound, taken = go env bound taken q in
+          (Seq (p, q), bound, taken)
+      | Assign a ->
+          let data = ns env a.data in
+          (* [a.var] binds over the body but is never renamed by this
+             pass; drop any inherited rename of that name so the body's
+             references resolve to this binder. *)
+          let body, bound, taken =
+            go (Variable.Map.remove a.var env) bound taken a.body
+          in
+          (Assign { a with data; body }, bound, taken)
+      | Decl (d, p) ->
+          let d = Decl.map (ns env) d in
+          let x, env, bound, taken = enter env bound taken d.var in
+          let p, bound, taken = go env bound taken p in
+          (Decl ({ d with var = x }, p), bound, taken)
+      | For (r, p) ->
+          let r = rs env r in
+          let x, env, bound, taken = enter env bound taken (Range.var r) in
+          let p, bound, taken = go env bound taken p in
+          (For ({ r with var = x }, p), bound, taken)
       | Call (c, p) ->
-          let* c, p =
+          let c = Call.map (ns env) c in
+          let result, env, bound, taken =
             match c.result with
             | Some (x, ty) ->
-                let* used = is_used x in
-                if used then
-                  let* new_x = fresh_var ~subtree:(mentioned p) x in
-                  let p = subst (x, Var new_x) p in
-                  return ({ c with result = Some (new_x, ty) }, p)
-                else
-                  let* () = add_var x in
-                  return (c, p)
-            | None -> return (c, p)
+                let x, env, bound, taken = enter env bound taken x in
+                (Some (x, ty), env, bound, taken)
+            | None -> (None, env, bound, taken)
           in
-          let* p = distinct p in
-          return (Call (c, p))
-      | Seq (p, q) ->
-          let* p = distinct p in
-          let* q = distinct q in
-          return (Seq (p, q))
-      | If (b, p, q) ->
-          let* p = distinct p in
-          let* q = distinct q in
-          return (If (b, p, q))
-      | Assign a ->
-          let* body = distinct a.body in
-          return (Assign { a with body })
-      | Decl (d, p) ->
-          let x = d.var in
-          let* used = is_used x in
-          if used then
-            let* new_x = fresh_var ~subtree:(mentioned p) x in
-            let p = subst (x, Var new_x) p in
-            let* p = distinct p in
-            return (Decl ({ d with var = new_x }, p))
-          else
-            let* () = add_var x in
-            let* p = distinct p in
-            return (Decl (d, p))
-      | For (r, p) ->
-          let x = Range.var r in
-          let* used = is_used x in
-          if used then
-            let* new_x = fresh_var ~subtree:(mentioned p) x in
-            let p = subst (x, Var new_x) p in
-            let* p = distinct p in
-            return (For ({ r with var = new_x }, p))
-          else
-            let* () = add_var x in
-            let* p = distinct p in
-            return (For (r, p))
-  end
-
-  (* Helper functions for variable distinctness state monad *)
-  let vars_distinct ?(vars = Variable.Set.empty) : t -> t =
-   fun p -> State.run_result (Distinct.distinct p) vars
+          let p, bound, taken = go env bound taken p in
+          (Call ({ c with result }, p), bound, taken)
+    in
+    let taken0 = Variable.Set.union vars (mentioned root) in
+    let root, _, _ = go Variable.Map.empty vars taken0 root in
+    root
 
   (* Rewrite assigns that cannot be represented as lets *)
   let fix_assigns : t -> t =

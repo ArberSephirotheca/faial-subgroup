@@ -82,26 +82,26 @@ module ReplacePair = SubstMake (Subst.SubstPair)
 let subst = ReplacePair.subst
 
 let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
-  let n_subst (st : Subst.SubstAssoc.t) (n : Exp.nexp) : Exp.nexp =
-    if Subst.SubstAssoc.is_empty st then n else Subst.ReplaceAssoc.n_subst st n
+  let n_subst (st : Subst.Vars.t) (n : Exp.nexp) : Exp.nexp =
+    if Subst.Vars.is_empty st then n else Subst.ReplaceVars.n_subst st n
   in
-  let b_subst (st : Subst.SubstAssoc.t) (b : Exp.bexp) : Exp.bexp =
-    if Subst.SubstAssoc.is_empty st then b else Subst.ReplaceAssoc.b_subst st b
+  let b_subst (st : Subst.Vars.t) (b : Exp.bexp) : Exp.bexp =
+    if Subst.Vars.is_empty st then b else Subst.ReplaceVars.b_subst st b
   in
-  let a_subst (st : Subst.SubstAssoc.t) (a : Access.t) : Access.t =
-    if Subst.SubstAssoc.is_empty st then a else Subst.ReplaceAssoc.a_subst st a
+  let a_subst (st : Subst.Vars.t) (a : Access.t) : Access.t =
+    if Subst.Vars.is_empty st then a else Subst.ReplaceVars.a_subst st a
   in
-  let r_subst (st : Subst.SubstAssoc.t) (r : Range.t) : Range.t =
-    if Subst.SubstAssoc.is_empty st then r else Subst.ReplaceAssoc.r_subst st r
+  let r_subst (st : Subst.Vars.t) (r : Range.t) : Range.t =
+    if Subst.Vars.is_empty st then r else Subst.ReplaceVars.r_subst st r
   in
-  let rec inline (known : Variable.Set.t) (st : Subst.SubstAssoc.t)
+  let rec inline (known : Variable.Set.t) (st : Subst.Vars.t)
       (i : Scoped.Code.t) : t =
     let add_var (x : Variable.t) :
-        Variable.t * Variable.Set.t * Subst.SubstAssoc.t =
+        Variable.t * Variable.Set.t * Subst.Vars.t =
       let x, st =
         if Variable.Set.mem x known then
           let new_x = Variable.fresh known x in
-          (new_x, Subst.SubstAssoc.put st x (Var new_x))
+          (new_x, Subst.Vars.put st x (Var new_x))
         else (x, st)
       in
       let known = Variable.Set.add x known in
@@ -125,7 +125,7 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
     | Decl ({ var = x; init = Some n; _ }, p)
     | Assign { var = x; data = n; body = p; _ } ->
         let n = n_subst st n in
-        let st = Subst.SubstAssoc.put st x n in
+        let st = Subst.Vars.put st x n in
         inline known st p
     | Decl ({ var; init = None; ty }, p) ->
         Decl { var; ty; body = inline known st p }
@@ -135,5 +135,4 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
         For ({ r with var = x }, inline known st p)
     | Seq (p1, p2) -> Seq (inline known st p1, inline known st p2)
   in
-  fun p ->
-    p |> Scoped.Code.vars_distinct |> inline known (Subst.SubstAssoc.make [])
+  fun p -> p |> Scoped.Code.vars_distinct |> inline known (Subst.Vars.make [])
