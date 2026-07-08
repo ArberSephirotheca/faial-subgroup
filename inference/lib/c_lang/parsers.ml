@@ -549,10 +549,13 @@ and parse_decl (j : json) : c_decl option j_result =
         true
     | _ -> false
   in
-  (* A block-scope [namespace a = b;] is a NamespaceAliasDecl: it has no
-     [type] and no runtime effect, so skip it like a tag decl. *)
-  let is_namespace_alias = k = "NamespaceAliasDecl" in
-  if is_invalid o || is_tag_decl || is_namespace_alias then Ok None
+  (* Block-scope declaration statements that introduce no runtime value
+     carry no [type] field: [using X::y;] (UsingDecl), [using namespace
+     foo;] (UsingDirectiveDecl), [namespace a = b;] (NamespaceAliasDecl),
+     and the like. A real variable declaration always has a [type], so
+     skip any typeless decl like a tag decl. *)
+  let has_no_type = not (List.mem_assoc "type" o) in
+  if is_invalid o || is_tag_decl || has_no_type then Ok None
   else
     let* name = parse_variable j in
     let* ty = get_field "type" o in

@@ -159,6 +159,10 @@ let tests =
      and no runtime effect; parse_decl skips it rather than failing on
      the missing field. *)
     ("drf-namespace-alias.cu", [], 0);
+    (* A block-scope using-declaration ([using foo::bar;]) is a UsingDecl
+     with no [type], from the same no-runtime-effect family; parse_decl
+     skips any typeless block-scope decl. *)
+    ("drf-using-decl.cu", [], 0);
     (* Same lambda shape but the body writes [d[0]] from every thread, so
      the invocation collides: racy. Pinning that the lambda body is
      actually analysed, not dropped (a dropped body would false-negative
