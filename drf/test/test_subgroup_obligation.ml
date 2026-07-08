@@ -946,6 +946,51 @@ let test_symbolic_launch_evidence_rewrites_source_width () : unit =
     "removes concrete row-local k fact" false
     (Stage0.Common.contains ~substring:"k == 32" rendered)
 
+let test_symbolic_launch_evidence_rewrites_source_width_unguarded () : unit =
+  let memory_effect =
+    ordinary_effect
+      ~source_conditions:
+        [
+          Exp.n_eq (Exp.Var (var "k")) (Exp.Num 128);
+          Exp.n_eq (Exp.Var (var "n")) (Exp.Num 64);
+        ]
+      ()
+  in
+  let rewrite =
+    Symbolic_launch_evidence.rewrite_ordinary_memory_effects
+      ~domain_mode:Symbolic_launch_evidence.Unguarded_family_domain
+      LC.solve_tri_symbolic_dimension_carrier [ memory_effect ]
+    |> expect_ok
+  in
+  Alcotest.(check int)
+    "rewrite count" 1
+    rewrite.Symbolic_launch_evidence.source_width_rewrite_count;
+  let rewritten_effect =
+    match rewrite.source_launch_ordinary_memory_effects with
+    | [ memory_effect ] -> memory_effect
+    | memory_effects ->
+        Alcotest.fail
+          (Printf.sprintf "expected one rewritten effect, got %d"
+             (List.length memory_effects))
+  in
+  let rendered =
+    Exp.b_and_ex rewritten_effect.Source.source_conditions |> Exp.b_to_string
+  in
+  let facts = String.concat "\n" rewrite.source_launch_fact_lines in
+  Alcotest.(check bool)
+    "rewrites exact source width outside production candidates" true
+    (Stage0.Common.contains ~substring:"k == K" rendered);
+  Alcotest.(check bool)
+    "keeps semantic positive K guard" true
+    (Stage0.Common.contains ~substring:"K > 0" rendered);
+  Alcotest.(check bool)
+    "omits finite candidate domain" false
+    (Stage0.Common.contains ~substring:"K == 32" rendered);
+  Alcotest.(check bool)
+    "records omitted candidate domain" true
+    (Stage0.Common.contains ~substring:"omitted_for_s488_unguarded_frontier"
+       facts)
+
 let test_symbolic_launch_evidence_requires_source_width_fact () : unit =
   let memory_effect =
     ordinary_effect
@@ -1040,6 +1085,9 @@ let tests : unit Alcotest.test_case list =
     ( "symbolic launch evidence rewrites source width",
       `Quick,
       test_symbolic_launch_evidence_rewrites_source_width );
+    ( "symbolic launch evidence rewrites source width unguarded",
+      `Quick,
+      test_symbolic_launch_evidence_rewrites_source_width_unguarded );
     ( "symbolic launch evidence requires source width fact",
       `Quick,
       test_symbolic_launch_evidence_requires_source_width_fact );

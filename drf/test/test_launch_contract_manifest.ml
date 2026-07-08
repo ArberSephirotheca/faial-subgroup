@@ -782,7 +782,7 @@ let test_launch_contract_rows_match_manifest () =
     (duplicate_values (List.map row_id rows));
   let contract_ids =
     Launch_contract.catalog_rows
-    |> List.map (fun row -> row.Launch_contract_rows.row_id)
+    |> List.map (fun row -> row.Launch_contract.row_id)
     |> sorted
   in
   Alcotest.(check (list string))
@@ -1163,8 +1163,7 @@ let test_l117_exact_production_promotion () =
   Alcotest.(check bool)
     "L117 is not an ordinary catalog row" false
     (Launch_contract.catalog_rows
-    |> List.exists (fun row ->
-        String.equal row.Launch_contract_rows.row_id "L117"));
+    |> List.exists (fun row -> String.equal row.Launch_contract.row_id "L117"));
   Alcotest.(check string)
     "canonical L117 DRF status" "verified"
     (string_field "drf_status" row);
@@ -1236,8 +1235,7 @@ let test_l118_exact_production_promotion () =
   Alcotest.(check bool)
     "L118 is not an ordinary catalog row" false
     (Launch_contract.catalog_rows
-    |> List.exists (fun row ->
-        String.equal row.Launch_contract_rows.row_id "L118"));
+    |> List.exists (fun row -> String.equal row.Launch_contract.row_id "L118"));
   Alcotest.(check string)
     "canonical L118 DRF status" "verified"
     (string_field "drf_status" row);
@@ -1861,10 +1859,15 @@ let test_s453_l012_carrier_row_facts_validate_fail_closed () =
     (facts.candidate_row_fact_missing_fact_if_any |> Option.value ~default:[]
     |> List.exists (fun missing ->
         string_contains missing "full preprocessing profile"));
+  Alcotest.(check bool)
+    "S453 does not add L012 to exact catalog rows" false
+    (Launch_contract.catalog_rows
+    |> List.exists (fun row -> String.equal row.Launch_contract.row_id "L012"));
   match Launch_contract.of_row_id "L012" with
-  | Error (Launch_contract.Unknown_row actual) ->
-      Alcotest.(check string) "S454 does not add L012 lookup row" "L012" actual
-  | Ok _ -> failf "S454 row-owned fact validation unexpectedly admitted L012"
+  | Ok contract ->
+      Alcotest.(check string)
+        "S480 owns current L012 lookup row" "op_clamp_kernel_l012_float"
+        contract.Launch_contract.parsed_kernel
   | Error error -> failf "%s" (Launch_contract.error_to_string error)
 
 let test_s453_l012_carrier_row_facts_fail_closed_on_schema_mismatch () =
@@ -2379,6 +2382,363 @@ let test_neighbor_rows_remain_unpromoted () =
       "L128";
     ]
 
+let test_s481_production_profile_ledger () =
+  let root = repo_root () in
+  let ledger_path =
+    "agent_results/rewrite/component_summaries/S481/production_profile_ledger.json"
+  in
+  let ledger = Json.from_file (repo_path root ledger_path) in
+  Alcotest.(check string) "task id" "S481" (string_field "task_id" ledger);
+  Alcotest.(check int)
+    "families attempted" 31
+    (int_field "families_attempted" ledger);
+  Alcotest.(check int) "rows attempted" 44 (int_field "rows_attempted" ledger);
+  Alcotest.(check int)
+    "extraction families" 1
+    (int_field "families_production_backed_extraction_verified" ledger);
+  Alcotest.(check int)
+    "profile families" 31
+    (int_field "families_production_backed_profile_verified" ledger);
+  Alcotest.(check int)
+    "source-slice remaining" 0
+    (int_field "families_source_slice_only_remaining" ledger);
+  Alcotest.(check bool)
+    "manifest verdicts unchanged" false
+    (bool_field "manifest_verdict_fields_changed" ledger);
+  check_count_assoc "S481 status counts"
+    [
+      ("blocked", 0);
+      ("production_backed_extraction_verified", 1);
+      ("production_backed_profile_verified", 31);
+    ]
+    (ledger |> field "status_counts" |> int_assoc);
+  Alcotest.(check int)
+    "blocked results" 0
+    (List.length (list_field "blocked_results" ledger));
+  let profiles = list_field "profile_results" ledger in
+  Alcotest.(check int) "profile result count" 31 (List.length profiles);
+  List.iter
+    (fun profile ->
+      let family_id = string_field "family_id" profile in
+      Alcotest.(check string)
+        ("profile status " ^ family_id)
+        "production_backed_profile_verified"
+        (string_field "production_profile_status" profile);
+      Alcotest.(check string)
+        ("profile faial status " ^ family_id)
+        "drf"
+        (string_field "faial_status" profile);
+      Alcotest.(check int)
+        ("profile unknown count " ^ family_id)
+        0
+        (int_field "unknown_count" profile);
+      Alcotest.(check int)
+        ("profile error count " ^ family_id)
+        0
+        (int_field "error_count" profile);
+      assert_existing_repo_file root
+        ("profile artifact " ^ family_id)
+        (string_field "profile_artifact" profile);
+      let rerun = field "rerun_artifacts" profile in
+      List.iter
+        (fun key ->
+          assert_existing_repo_file root
+            (key ^ " artifact " ^ family_id)
+            (string_field key rerun))
+        [ "command"; "stdout"; "stderr"; "status" ];
+      Alcotest.(check string)
+        ("rerun status " ^ family_id)
+        "0"
+        (String.trim (read_file (repo_path root (string_field "status" rerun))));
+      let stdout_json =
+        Json.from_string
+          (read_file (repo_path root (string_field "stdout" rerun)))
+      in
+      let kernel =
+        match list_field "kernels" stdout_json with
+        | [ kernel ] -> kernel
+        | kernels ->
+            failf "expected one S481 kernel result, got %d"
+              (List.length kernels)
+      in
+      Alcotest.(check string)
+        ("rerun stdout status " ^ family_id)
+        "drf"
+        (string_field "status" kernel);
+      Alcotest.(check int)
+        ("rerun stdout unknowns " ^ family_id)
+        0
+        (List.length (list_field "unknowns" kernel));
+      Alcotest.(check int)
+        ("rerun stdout errors " ^ family_id)
+        0
+        (List.length (list_field "errors" kernel)))
+    profiles;
+  let find_profile family_id =
+    profiles
+    |> List.find (fun profile ->
+        String.equal (string_field "family_id" profile) family_id)
+  in
+  Alcotest.(check bool)
+    "F016 is production-backed by source file" true
+    (string_contains
+       (string_field "family_key" (find_profile "F016"))
+       "conv2d-dw.cu");
+  Alcotest.(check bool)
+    "F089 is production-backed by source file" true
+    (string_contains
+       (string_field "family_key" (find_profile "F089"))
+       "unary.cu")
+
+let test_s482_fill_exact_launch_contract_ledger () =
+  let root = repo_root () in
+  let ledger_path =
+    "agent_results/rewrite/component_summaries/S482/exact_launch_contract_ledger.json"
+  in
+  let ledger = Json.from_file (repo_path root ledger_path) in
+  Alcotest.(check string) "task id" "S482" (string_field "task_id" ledger);
+  Alcotest.(check string)
+    "evidence level" "exact_launch_contract_consumes_production_profile"
+    (string_field "evidence_level" ledger);
+  Alcotest.(check int)
+    "families attempted" 1
+    (int_field "families_attempted" ledger);
+  Alcotest.(check int) "rows attempted" 2 (int_field "rows_attempted" ledger);
+  Alcotest.(check int)
+    "families exact verified" 1
+    (int_field "families_exact_launch_contract_verified" ledger);
+  Alcotest.(check int)
+    "rows exact verified" 2
+    (int_field "rows_exact_launch_contract_verified" ledger);
+  Alcotest.(check int)
+    "manifest promotions" 0
+    (int_field "exact_manifest_promotions" ledger);
+  Alcotest.(check bool)
+    "manifest verdict fields unchanged" false
+    (bool_field "manifest_verdict_fields_changed" ledger);
+  let result =
+    match list_field "results" ledger with
+    | [ result ] -> result
+    | results -> failf "expected one S482 result, got %d" (List.length results)
+  in
+  Alcotest.(check string) "family id" "F050" (string_field "family_id" result);
+  Alcotest.(check string)
+    "profile consumed" "consumed_by_exact_launch_contract"
+    (string_field "production_profile_status" result);
+  assert_existing_repo_file root "S482 input profile"
+    (string_field "input_profile" result);
+  let rows = list_field "rows" result in
+  Alcotest.(check int) "S482 row count" 2 (List.length rows);
+  List.iter
+    (fun row ->
+      let row_id = string_field "manifest_row" row in
+      assert_existing_repo_file root
+        (row_id ^ " extraction artifact")
+        (string_field "artifact" row);
+      assert_existing_repo_file root
+        (row_id ^ " command artifact")
+        (string_field "command_artifact" row);
+      assert_existing_repo_file root
+        (row_id ^ " stdout artifact")
+        (string_field "stdout_artifact" row);
+      assert_existing_repo_file root
+        (row_id ^ " status artifact")
+        (string_field "status_artifact" row);
+      Alcotest.(check string)
+        (row_id ^ " status artifact")
+        "0"
+        (String.trim
+           (read_file (repo_path root (string_field "status_artifact" row))));
+      Alcotest.(check string)
+        (row_id ^ " faial status") "drf"
+        (string_field "faial_status" row);
+      Alcotest.(check int)
+        (row_id ^ " unknown count")
+        0
+        (int_field "unknown_count" row);
+      Alcotest.(check int)
+        (row_id ^ " error count") 0
+        (int_field "error_count" row);
+      let contract =
+        Launch_contract.of_row_id row_id |> function
+        | Ok contract -> contract
+        | Error error -> Alcotest.fail (Launch_contract.error_to_string error)
+      in
+      Alcotest.(check string)
+        (row_id ^ " contract parsed kernel")
+        (string_field "parsed_kernel" row)
+        contract.Launch_contract.parsed_kernel;
+      Alcotest.(check bool)
+        (row_id ^ " is lookup-only")
+        false
+        (Launch_contract.catalog_rows
+        |> List.exists (fun contract ->
+            String.equal contract.Launch_contract.row_id row_id));
+      let stdout_json =
+        Json.from_string
+          (read_file (repo_path root (string_field "stdout_artifact" row)))
+      in
+      let kernel =
+        match list_field "kernels" stdout_json with
+        | [ kernel ] -> kernel
+        | kernels ->
+            failf "expected one S482 row result, got %d" (List.length kernels)
+      in
+      Alcotest.(check string)
+        (row_id ^ " stdout status")
+        "drf"
+        (string_field "status" kernel);
+      Alcotest.(check int)
+        (row_id ^ " stdout unknowns")
+        0
+        (List.length (list_field "unknowns" kernel));
+      Alcotest.(check int)
+        (row_id ^ " stdout errors")
+        0
+        (List.length (list_field "errors" kernel)))
+    rows;
+  let manifest_rows = load_manifest root |> manifest_rows in
+  List.iter
+    (fun row_id ->
+      let row = find_row manifest_rows row_id in
+      Alcotest.(check string)
+        (row_id ^ " manifest remains not attempted")
+        "not_attempted"
+        (string_field "drf_status" row);
+      Alcotest.(check string)
+        (row_id ^ " manifest artifact unchanged")
+        "none"
+        (string_field "artifact_status" row))
+    [ "L067"; "L068" ]
+
+let test_s483_profile_exact_launch_contract_ledger () =
+  let root = repo_root () in
+  let ledger_path =
+    "agent_results/rewrite/component_summaries/S483/exact_launch_contract_ledger.json"
+  in
+  let ledger = Json.from_file (repo_path root ledger_path) in
+  Alcotest.(check string) "task id" "S483" (string_field "task_id" ledger);
+  Alcotest.(check string)
+    "evidence level" "exact_launch_contract_consumes_production_profile"
+    (string_field "evidence_level" ledger);
+  Alcotest.(check int)
+    "families attempted" 5
+    (int_field "families_attempted" ledger);
+  Alcotest.(check int) "rows attempted" 5 (int_field "rows_attempted" ledger);
+  Alcotest.(check int)
+    "families exact verified" 5
+    (int_field "families_exact_launch_contract_verified" ledger);
+  Alcotest.(check int)
+    "rows exact verified" 5
+    (int_field "rows_exact_launch_contract_verified" ledger);
+  Alcotest.(check int)
+    "manifest promotions" 0
+    (int_field "exact_manifest_promotions" ledger);
+  Alcotest.(check bool)
+    "manifest verdict fields unchanged" false
+    (bool_field "manifest_verdict_fields_changed" ledger);
+  let expected_rows = [ "L076"; "L135"; "L136"; "L137"; "L138" ] in
+  let results = list_field "results" ledger in
+  Alcotest.(check int) "S483 result count" 5 (List.length results);
+  let seen_rows =
+    results
+    |> List.concat_map (fun result ->
+        Alcotest.(check string)
+          ("profile consumed " ^ string_field "family_id" result)
+          "consumed_by_exact_launch_contract"
+          (string_field "production_profile_status" result);
+        assert_existing_repo_file root
+          ("S483 input profile " ^ string_field "family_id" result)
+          (string_field "input_profile" result);
+        result |> list_field "rows"
+        |> List.map (fun row ->
+            let row_id = string_field "manifest_row" row in
+            assert_existing_repo_file root
+              (row_id ^ " extraction artifact")
+              (string_field "artifact" row);
+            assert_existing_repo_file root
+              (row_id ^ " command artifact")
+              (string_field "command_artifact" row);
+            assert_existing_repo_file root
+              (row_id ^ " stdout artifact")
+              (string_field "stdout_artifact" row);
+            assert_existing_repo_file root
+              (row_id ^ " status artifact")
+              (string_field "status_artifact" row);
+            Alcotest.(check string)
+              (row_id ^ " status artifact")
+              "0"
+              (String.trim
+                 (read_file
+                    (repo_path root (string_field "status_artifact" row))));
+            Alcotest.(check string)
+              (row_id ^ " faial status") "drf"
+              (string_field "faial_status" row);
+            Alcotest.(check int)
+              (row_id ^ " unknown count")
+              0
+              (int_field "unknown_count" row);
+            Alcotest.(check int)
+              (row_id ^ " error count") 0
+              (int_field "error_count" row);
+            let contract =
+              Launch_contract.of_row_id row_id |> function
+              | Ok contract -> contract
+              | Error error ->
+                  Alcotest.fail (Launch_contract.error_to_string error)
+            in
+            Alcotest.(check string)
+              (row_id ^ " contract parsed kernel")
+              (string_field "parsed_kernel" row)
+              contract.Launch_contract.parsed_kernel;
+            Alcotest.(check bool)
+              (row_id ^ " is lookup-only")
+              false
+              (Launch_contract.catalog_rows
+              |> List.exists (fun contract ->
+                  String.equal contract.Launch_contract.row_id row_id));
+            let stdout_json =
+              Json.from_string
+                (read_file
+                   (repo_path root (string_field "stdout_artifact" row)))
+            in
+            let kernel =
+              match list_field "kernels" stdout_json with
+              | [ kernel ] -> kernel
+              | kernels ->
+                  failf "expected one S483 row result, got %d"
+                    (List.length kernels)
+            in
+            Alcotest.(check string)
+              (row_id ^ " stdout status")
+              "drf"
+              (string_field "status" kernel);
+            Alcotest.(check int)
+              (row_id ^ " stdout unknowns")
+              0
+              (List.length (list_field "unknowns" kernel));
+            Alcotest.(check int)
+              (row_id ^ " stdout errors")
+              0
+              (List.length (list_field "errors" kernel));
+            row_id))
+  in
+  Alcotest.(check (list string))
+    "S483 exact rows" expected_rows (sorted seen_rows);
+  let manifest_rows = load_manifest root |> manifest_rows in
+  List.iter
+    (fun row_id ->
+      let row = find_row manifest_rows row_id in
+      Alcotest.(check string)
+        (row_id ^ " manifest remains not attempted")
+        "not_attempted"
+        (string_field "drf_status" row);
+      Alcotest.(check string)
+        (row_id ^ " manifest artifact unchanged")
+        "none"
+        (string_field "artifact_status" row))
+    expected_rows
+
 let test_readme_lists_current_launch_contract_rows () =
   let root = repo_root () in
   let readme = read_file (repo_path root "faial/drf/README.md") in
@@ -2387,10 +2747,73 @@ let test_readme_lists_current_launch_contract_rows () =
       Alcotest.(check bool)
         ("README lists " ^ row_id) true
         (string_contains readme ("`" ^ row_id ^ "`")))
-    [ "L072"; "L073"; "L117"; "L118"; "L143"; "L144"; "L145"; "L146" ];
+    [
+      "L012";
+      "L018";
+      "L019";
+      "L020";
+      "L021";
+      "L024";
+      "L025";
+      "L026";
+      "L027";
+      "L028";
+      "L029";
+      "L030";
+      "L031";
+      "L032";
+      "L033";
+      "L034";
+      "L035";
+      "L036";
+      "L037";
+      "L038";
+      "L039";
+      "L040";
+      "L041";
+      "L042";
+      "L043";
+      "L046";
+      "L047";
+      "L048";
+      "L049";
+      "L050";
+      "L051";
+      "L052";
+      "L053";
+      "L054";
+      "L055";
+      "L056";
+      "L067";
+      "L068";
+      "L074";
+      "L075";
+      "L076";
+      "L072";
+      "L073";
+      "L117";
+      "L118";
+      "L135";
+      "L136";
+      "L137";
+      "L138";
+      "L143";
+      "L144";
+      "L145";
+      "L146";
+    ];
   Alcotest.(check bool)
     "README documents WKV campaign guard" true
     (string_contains readme "exact WKV row set");
+  Alcotest.(check bool)
+    "README documents data-driven shape contracts" true
+    (string_contains readme "Launch_contract_generator.shape_contract"
+    && string_contains readme "does not branch on a row family");
+  Alcotest.(check bool)
+    "README documents profile launch context" true
+    (string_contains readme "Launch_contract_generator.profile_launch_context"
+    && string_contains readme "Profile_bounded"
+    && string_contains readme "Unknown_blocker");
   Alcotest.(check bool)
     "README documents L117 subgroup promotion" true
     (string_contains readme "S404 promotes only canonical `L117`");
@@ -2427,7 +2850,76 @@ let test_readme_lists_current_launch_contract_rows () =
        "S447 adds a non-admission generic candidate carrier");
   Alcotest.(check bool)
     "README documents S454 row-owned fact validation" true
-    (string_contains readme "S454 validates populated row-owned carrier facts")
+    (string_contains readme "S454 validates populated row-owned carrier facts");
+  Alcotest.(check bool)
+    "README documents S478 positive-shape carrier" true
+    (string_contains readme "S478 adds the typed positive-shape guard frontier");
+  Alcotest.(check bool)
+    "README documents S479 positive-shape verification" true
+    (string_contains readme
+       "S479 records the verification sweep over those 33 positive-shape \
+        families");
+  Alcotest.(check bool)
+    "README documents S479 non-promotion boundary" true
+    (string_contains readme "zero exact production"
+    && string_contains readme "row promotions");
+  Alcotest.(check bool)
+    "README documents S480 production-backed carrier" true
+    (string_contains readme
+       "Launch_contract.positive_shape_production_promotion_carrier");
+  Alcotest.(check bool)
+    "README documents S480 L012 boundary" true
+    (string_contains readme "full ggml host translation unit"
+    && string_contains readme "change manifest verdict fields");
+  Alcotest.(check bool)
+    "README documents S481 production profiles" true
+    (string_contains readme "S481 consumes the remaining S479"
+    && string_contains readme "31 production-profile");
+  Alcotest.(check bool)
+    "README documents S482 exact fill consumption" true
+    (string_contains readme "S482 consumes the first S481 profile family"
+    && string_contains readme "`L067` and `L068`");
+  Alcotest.(check bool)
+    "README documents S483 exact profile consumption" true
+    (string_contains readme "S483 consumes five more S481"
+    && string_contains readme "`F057/L076 divide_by_count<float>`"
+    && string_contains readme "`F089/L138 leaky_relu_kernel`");
+  Alcotest.(check bool)
+    "README documents S485 dequantize consumption" true
+    (string_contains readme "S485 consumes the regular S481 dequantize"
+    && string_contains readme "`L026`-`L043`"
+    && string_contains readme "does not change manifest verdict fields");
+  Alcotest.(check bool)
+    "README documents S486-A q8 need_check consumption" true
+    (string_contains readme
+       "S486-A consumes the S481 `F020` q8 dequantize profile"
+    && string_contains readme "`L024` and `L025`"
+    && string_contains readme "`need_check=false`"
+    && string_contains readme "`need_check=true`"
+    && string_contains readme "does not change manifest verdict fields");
+  Alcotest.(check bool)
+    "README documents S486-B conv/cpy consumption" true
+    (string_contains readme "S486-B consumes the S481 conv/cpy profile blockers"
+    && string_contains readme "`L018`-`L021`"
+    && string_contains readme "`L046`-`L056`"
+    && string_contains readme "does not change manifest verdict fields");
+  Alcotest.(check bool)
+    "README documents S486-C im2col symbolic block consumption" true
+    (string_contains readme "S486-C consumes the S481 im2col profile blockers"
+    && string_contains readme "`L074` and `L075`"
+    && string_contains readme "`--all-dims`"
+    && string_contains readme "bounded symbolic `blockDim.x`");
+  Alcotest.(check bool)
+    "README documents S487 exact-evidence manifest policy" true
+    (string_contains readme
+       "S487 defines the exact-evidence manifest promotion policy"
+    && string_contains readme
+         "Launch_contract.exact_evidence_manifest_promotion_policy_carrier"
+    && string_contains readme "`drf_exact_row`"
+    && string_contains readme "`guarded_symbolic_family_proof`"
+    && string_contains readme "source-slice-only DRF"
+    && string_contains readme "production-profile evidence without"
+    && string_contains readme "53 exact row-local DRF rows")
 
 let tests =
   [
@@ -2498,6 +2990,15 @@ let tests =
     ( "neighbor rows remain unpromoted",
       `Quick,
       test_neighbor_rows_remain_unpromoted );
+    ( "S481 production profile ledger",
+      `Quick,
+      test_s481_production_profile_ledger );
+    ( "S482 fill exact launch-contract ledger",
+      `Quick,
+      test_s482_fill_exact_launch_contract_ledger );
+    ( "S483 profile exact launch-contract ledger",
+      `Quick,
+      test_s483_profile_exact_launch_contract_ledger );
     ( "README lists current launch-contract rows",
       `Quick,
       test_readme_lists_current_launch_contract_rows );

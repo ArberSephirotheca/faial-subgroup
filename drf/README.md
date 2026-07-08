@@ -66,12 +66,74 @@ kernel directly. A launch contract appends source preconditions to
 variables, and merges required integer template parameters before the
 ordinary MAP pipeline runs.
 
-The current verified launch-contract manifest rows are the ggml-cuda GLA rows,
-the two selected solve-tri subgroup rows, the first two WKV6 rows, and the
-first two WKV7 rows:
+Launch-shape behavior is data-driven through
+`Launch_contract_generator.shape_contract`. The generator owns the row facts:
+which integer globals must be injected, which symbolic precondition facts hold,
+and whether the row requires an explicit subgroup route. `lib/launch_contract.ml`
+interprets those facts into MAP expressions and fail-closed option checks; it
+does not branch on a row family to decide the precondition or subgroup route.
+Executable lookup/catalog rows are also generator-owned
+`Launch_contract_generator.launch_contract_row` records. `Launch_contract_rows.t`
+is kept as a seed/manifest-compatibility representation for the generated
+GLA/WKV/WKV7 catalog only; `lib/launch_contract.ml` does not adapt
+`Launch_contract_rows.t` directly.
+
+The current executable launch-contract rows include the ggml-cuda GLA rows,
+the `L012` clamp finite type-template row, the conv/cpy profile rows, the
+q8/regular dequantize block profile rows, the first exact fill profile
+consumption rows, the im2col bounded symbolic blockDim rows, the first S483
+profile-backed scalar/unary rows, the two selected solve-tri subgroup rows, the
+first two WKV6 rows, and the first two WKV7 rows:
+
+Production-profile launch facts pass through a separate context boundary before
+they become executable rows. `Launch_contract_generator.profile_launch_context`
+classifies each row-owned fact as `Fixed_by_launch`,
+`Fixed_by_model_or_template`, `User_symbolic`, `Derived`, `Equal_to`,
+`Profile_bounded`, or `Unknown_blocker`. Exact launch-contract materialization
+is admitted only when no role is `Profile_bounded` or `Unknown_blocker`. This
+keeps model/template-fixed facts, user-controlled positive dimensions, derived
+launch expressions, and equality facts explicit while preventing an observed
+profile bound from silently becoming a proof precondition. The current admitted
+context-backed rows are `L012`, `L018`, `L019`, `L020`, `L021`, `L024`,
+`L025`, `L026`, `L027`, `L028`, `L029`, `L030`, `L031`, `L032`, `L033`,
+`L034`, `L035`, `L036`, `L037`, `L038`, `L039`, `L040`, `L041`, `L042`,
+`L043`, `L046`, `L047`, `L048`, `L049`, `L050`, `L051`, `L052`, `L053`,
+`L054`, `L055`, `L056`, `L067`, `L068`, `L076`, `L135`, `L136`, `L137`, and
+`L138`. The im2col bounded symbolic blockDim lookup rows are `L074` and
+`L075`. Their soundness boundary remains production-backed DRF ownership
+extraction or profile evidence, not full host translation-unit parsing and not
+numeric equivalence.
 
 - `L072`: `gated_linear_attn_f32<64>`
 - `L073`: `gated_linear_attn_f32<128>`
+- `L012`: `op_clamp_kernel<T>`, with finite type domain `T in {half,float}`
+- `L018`: `conv2d_dw_kernel<float, whcn_layout>`
+- `L019`: `conv2d_dw_kernel<float, cwhn_layout>`
+- `L020`: `conv2d_transpose_kernel<half>`
+- `L021`: `conv2d_transpose_kernel<float>`
+- `L024`: `dequantize_block_q8_0_f16<need_check>`, false branch
+- `L025`: `dequantize_block_q8_0_f16<need_check>`, true branch
+- `L026`-`L043`: exact dequantize block profile rows from `convert.cu`
+- `L046`: `cpy_f32_q<cpy_blck_f32_q8_0, QK8_0>`
+- `L047`: `cpy_q_f32<cpy_blck_q8_0_f32, QK8_0>`
+- `L048`: `cpy_f32_q<cpy_blck_f32_q4_0, QK4_0>`
+- `L049`: `cpy_q_f32<cpy_blck_q_f32<dequantize_q4_0, QK4_0>, QK4_0>`
+- `L050`: `cpy_f32_q<cpy_blck_f32_q4_1, QK4_1>`
+- `L051`: `cpy_q_f32<cpy_blck_q_f32<dequantize_q4_1, QK4_1>, QK4_1>`
+- `L052`: `cpy_f32_q<cpy_blck_f32_q5_0, QK5_0>`
+- `L053`: `cpy_q_f32<cpy_blck_q_f32<dequantize_q5_0, QK5_0>, QK5_0>`
+- `L054`: `cpy_f32_q<cpy_blck_f32_q5_1, QK5_1>`
+- `L055`: `cpy_q_f32<cpy_blck_q_f32<dequantize_q5_1, QK5_1>, QK5_1>`
+- `L056`: `cpy_f32_q<cpy_blck_f32_iq4_nl, QK4_NL>`
+- `L067`: `fill_kernel<T>`, F32 dispatch, with finite type domain `T=float`
+- `L068`: `fill_kernel<T>`, F16 dispatch, with finite type domain `T=half`
+- `L074`: `im2col_kernel<T>`, bounded symbolic `blockDim.x`
+- `L075`: `im2col_3d_kernel<T>`, bounded symbolic `blockDim.x`
+- `L076`: `divide_by_count<float>`, exact single-block/single-thread scalar row
+- `L135`: `swiglu_oai_kernel<T>`, with finite type domain `T=float`
+- `L136`: `xielu_kernel<T>`, with finite type domain `T in {half,float}`
+- `L137`: `silu_back_kernel<T>`, with finite type domain `T in {half,float}`
+- `L138`: `leaky_relu_kernel<T>`, with finite type domain `T in {half,float}`
 - `L117`: `solve_tri_f32_fast<64, 32>`
 - `L118`: `solve_tri_f32_fast<64, 16>`
 - `L143`: `rwkv_wkv_f32<CUDA_WKV_BLOCK_SIZE>`
@@ -79,10 +141,36 @@ first two WKV7 rows:
 - `L145`: `rwkv_wkv7_f32<CUDA_WKV_BLOCK_SIZE>`
 - `L146`: `rwkv_wkv7_f32<CUDA_WKV_BLOCK_SIZE * 2>`
 
-`L117` and `L118` are different from the ordinary GLA/WKV/WKV7 catalog rows.
-They remain solve-tri lookup rows routed through the subgroup/matrix analyzer
-under explicit `--subgroup-size 32`, and their accepted evidence is row-local:
-H516 plus S404 for `L117`, and S408 plus S409 for `L118`. They are not ordinary
+`L012`, `L018`-`L021`, `L024`-`L043`, `L046`-`L056`, `L067`, `L068`, `L074`,
+`L075`, `L076`, `L117`, `L118`, and `L135`-`L138` are different from the
+ordinary GLA/WKV/WKV7 catalog rows. `L012`
+is a finite type-template
+lookup row: the launch contract records the finite host dispatch domain
+`T in {half,float}`, the checked production-backed extraction kernel
+`op_clamp_kernel_l012_float`, block dimension `[256,1,1]`, the symbolic grid
+source `(k + 255) / 256`, and the positive guard `k > 0`. `L067` and `L068`
+consume the S481 production-backed `fill_kernel` profile as exact executable
+launch-contract rows. They both use `CUDA_FILL_BLOCK_SIZE = 256`, symbolic grid
+source `(k + 255) / 256`, positive guard `k > 0`, and the checked DRF ownership
+shape `write dst[i] under i < k`. The `L068` extraction abstracts element
+bitwidth because this proof concerns address ownership and race freedom, not
+numeric F16 equivalence. `L024` and `L025` consume the S481
+`dequantize_block_q8_0_f16<need_check>` profile by resolving the branch-local
+finite bool template facts `need_check=false` and `need_check=true`.
+`L026`-`L043` consume the S481 regular dequantize block profiles whose launch
+block size is concrete (`32` or `64`) and whose block/lane ownership writes one
+destination lane per block. These rows verify address ownership only; they do
+not claim numeric dequantization equivalence or full host-template parsing.
+`L076` consumes the `divide_by_count<float>` profile
+with exact launch shape `gridDim=[1,1,1]` and `blockDim=[1,1,1]`; this exact
+grid fact is required because the profile reads and writes `result[0]`.
+`L135`-`L138` consume one-dimensional unary S481 profiles with block dimension
+`[256,1,1]`, symbolic positive `gridDim.x`, positive guard `k > 0`, and
+per-thread destination ownership under `i < k`. `L117` and `L118` remain
+solve-tri lookup rows routed through the subgroup/matrix analyzer under
+explicit `--subgroup-size 32`, and their accepted evidence is row-local: H516
+plus S404 for `L117`, and S408 plus S409 for `L118`. These lookup rows are not
+ordinary
 `Launch_contract.catalog_rows` entries.
 
 The GLA rows require `--kernel gated_linear_attn_f32` and supply `HEAD_SIZE`.
@@ -248,6 +336,240 @@ pre-solver runs, zero guarded-family admissions, no lookup rows, and no
 manifest verdict-field changes. It also requires
 `shortcut_keying_used = false`, so row IDs, kernel names, task IDs, fixture
 shapes, and expected output counts cannot stand in for row-owned facts.
+
+S475 adds a typed template-argument resolution carrier for the S470
+launch-template blocker class. It records the S475 artifact ledger, the S470
+input blocker ledger, the exact row/family counts, and the resolution taxonomy:
+48 of 79 rows and 33 of 54 families have known template-argument status; 31
+rows and 21 families remain blocked by dependent or unresolved template
+arguments. The carrier is exposed through `Launch_contract` and validated by
+`validate_template_argument_resolution_carrier`, but it is still pre-proof
+evidence. It does not emit memory events, generate obligations, run a solver or
+pre-solver, admit guarded families, add lookup rows, change manifest verdict
+fields, or promote any launch row. The next proof-input frontier must consume
+the 33 S475-known families and move them to their next checked dependency,
+while the 21 S475-blocked families remain fail-closed until their host-template
+domains are extracted.
+
+S477 adds the next typed launch-branch frontier carrier. It records that the
+S477 frontier consumed the S476 ledger and inspected the 33
+`launch_branch_status` families: 45 of 46 rows, covering 32 families, now have
+row-local selected launch branch/profile evidence; the remaining `L013`
+`common.cuh :: kernel` helper remains fail-closed because the launched callee is
+an indirect `Kernel kernel` parameter. The carrier is exposed through
+`Launch_contract.launch_branch_frontier_carrier` and validated by
+`validate_launch_branch_frontier_carrier`. It is still pre-proof evidence: it
+does not emit memory events, generate obligations, run solver work, admit
+guarded families, add lookup rows, change manifest verdict fields, or promote
+any row. The next proof-input task must consume the 32 branch-known families at
+`positive_shape_guard_status` and keep the indirect launch helper blocked until
+its specialization is extracted.
+
+S478 adds the typed positive-shape guard frontier carrier for the next proof
+input boundary. It consumes the S477 family frontier and records the 33
+families / 57 rows currently blocked at `positive_shape_guard_status`: 32
+families / 45 rows came from S477-selected launch branches, while the
+preexisting `solve_tri_f32_fast` family contributes 12 rows from the guarded
+family boundary. The carrier is exposed through
+`Launch_contract.positive_shape_guard_carrier` and validated by
+`validate_positive_shape_guard_carrier`. It owns the row/family set and the
+required shape facts (`row_domain`, positive block/grid domains, dynamic shared
+memory domain, zero-work exclusions, covered/excluded rows, source profile, and
+memory-event list), but it is still pre-proof evidence. It does not emit memory
+events, generate obligations, run solver or pre-solver work, admit guarded
+families, add lookup rows, change manifest verdict fields, or promote any row.
+The next proof-input task must derive executable positive block/grid guards and
+zero-work exclusions per family before `Memory_event` or
+`Subgroup_obligation` construction.
+
+S479 records the verification sweep over those 33 positive-shape families as a
+target-owned evidence carrier:
+`Launch_contract.positive_shape_verification_carrier`. The sweep verifies all
+33 attempted families at the current source-slice/guarded-family evidence
+level: 32 families are verifier-facing generated source slices with
+`faial_status = drf`, and the remaining family is the existing guarded
+symbolic `solve_tri_f32_fast<N,K>` proof. The carrier records 57 attempted
+rows, 32 source-slice artifacts, zero blocked families, zero exact production
+row promotions, and no manifest verdict-field changes. This is real DRF
+evidence for the S478 positive-shape frontier, but it is not a broad production
+ggml-cuda claim: generated source slices still need row-owned extraction
+profiles or exact launch-contract rows before they can become manifest
+promotions.
+
+S480 starts that production-backed promotion path with `L012`,
+`clamp.cu :: op_clamp_kernel<T>`. The target-owned
+`Launch_contract.positive_shape_production_promotion_carrier` records the real
+source/launch facts: `CUDA_CLAMP_BLOCK_SIZE = 256`, block dimension
+`[256,1,1]`, grid expression `(k + 255) / 256`, dynamic shared memory `0`,
+finite host dispatch domain `T in {half,float}`, positive shape guard `k > 0`,
+and the production memory effects `x[i]` read and `dst[i]` write under
+`i < k`. The verifier-facing extraction
+`L012_op_clamp_kernel_production_backed.cu` checks the representative
+`T=float` memory behavior and returns DRF with no unknowns or errors. This
+moves `F011/L012` from source-slice-only evidence to
+production-backed-extraction evidence. The `--launch-contract L012` lookup row
+now consumes that finite type-domain carrier data and injects the launch-shape
+precondition for the checked extraction kernel. It still does not parse the
+full ggml host translation unit or change manifest verdict fields.
+
+S481 consumes the remaining S479 source-slice-only families and converts them to
+production-backed DRF ownership profiles. The S481 ledger records 31 attempted
+families / 44 rows, all profile-verified with fresh reruns that return DRF with
+zero unknowns and zero errors. Each profile artifact binds the S479 source slice
+to row-owned production facts from the CUDA launch manifest: `ggml-cuda` source
+file, concrete launch row IDs, kernel/template name, launch site, block/grid
+source, dynamic shared memory, and the checked memory-ownership shape. This
+leaves zero S479 source-slice-only families. It still does not claim numeric
+equivalence, full host-header parsing, exact manifest promotion, or new
+`--launch-contract` rows for those 31 families. The production-backed evidence
+frontier is therefore: one extraction family (`L012`), 31 production-profile
+families, and the existing guarded symbolic solve-tri family.
+
+S482 consumes the first S481 profile family into exact executable
+launch-contract rows: `F050 fill.cu :: fill_kernel`, covering `L067` and
+`L068`. Both rows verify with `--launch-contract` and return DRF with zero
+unknowns and zero errors. This is stronger than S481 profile evidence because
+the row-specific production profile is now connected to the executable launch
+contract path. It still does not change manifest verdict fields or claim a full
+host translation-unit parse.
+
+S483 consumes five more S481 production-backed profiles into exact executable
+launch-contract rows: `F057/L076 divide_by_count<float>`,
+`F086/L135 swiglu_oai_kernel`, `F087/L136 xielu_kernel`,
+`F088/L137 silu_back_kernel`, and `F089/L138 leaky_relu_kernel`. All five rows
+verify with `--launch-contract` and return DRF with zero unknowns and zero
+errors. `L076` uses exact grid and block facts for the single-thread scalar
+profile; the unary rows use finite type domains only where F16 and F32 share the
+same DRF address-ownership shape. S483 still does not change manifest verdict
+fields, prove numeric equivalence, or parse the full host translation unit.
+
+S485 consumes the regular S481 dequantize block profiles from `convert.cu` into
+exact executable launch-contract rows `L026`-`L043`. These rows use the concrete
+production block sizes recorded in the launch manifest (`32` or `64`), keep
+`gridDim.x` symbolic and positive, add the positive block-count guard
+`nblocks > 0`, and verify the source-slice ownership shape
+`dst[block * blockDim.x + lane]` under `block < nblocks`. S485 does not consume
+the remaining conv/copy/im2col profile families. S485 does not change manifest
+verdict fields, does not prove numeric dequantization equivalence, and does not
+parse the full host translation unit.
+
+S486-A consumes the S481 `F020` q8 dequantize profile into exact executable
+launch-contract rows `L024` and `L025`. The only additional launch/template
+fact relative to the S485 regular dequantize rows is the branch-local finite
+bool template domain: `L024` records `need_check=false` from the aligned branch,
+and `L025` records `need_check=true` from the fallback branch. Both rows keep
+`blockDim.x = WARP_SIZE = 32`, symbolic positive `gridDim.x = num_blocks`,
+dynamic shared memory `0`, and the same block/lane ownership shape. S486-A
+does not change manifest verdict fields, does not prove numeric q8
+dequantization equivalence, and does not parse the full host translation unit.
+
+S486-B consumes the S481 conv/cpy profile blockers into exact executable
+launch-contract rows. The conv rows are `F016/L018-L019` for
+`conv2d_dw_kernel<float, layout>` and `F017/L020-L021` for
+`conv2d_transpose_kernel<T>`. The cpy rows are `F041/L046,L048,L050,L052,L054,L056`
+for `cpy_f32_q<helper,QK>` and `F042/L047,L049,L051,L053,L055` for
+`cpy_q_f32<helper,QK>`. These rows preserve the production finite layout/type
+or helper/QK branch, inject the row-local positive extent guard (`total > 0` or
+`num_blocks > 0`), keep `gridDim.x` symbolic and positive, and verify the
+linearized ownership shape from the S481 production profile. S486-B covers
+`L018`-`L021` and `L046`-`L056`, returns DRF with zero unknowns/errors for all
+15 commands, and does not change manifest verdict fields, prove numeric
+convolution/quantization equivalence, or parse the full host translation unit.
+
+S486-C consumes the S481 im2col profile blockers into bounded symbolic
+block-dimension launch-contract rows `L074` and `L075`. These rows do not
+hardcode the earlier profile command's `blockDim.x = 256`. Instead they require
+`--all-dims` and inject the production launch guard
+`0 < blockDim.x <= local_extent`, `blockDim.x <= CUDA_IM2COL_BLOCK_SIZE`,
+`CUDA_IM2COL_BLOCK_SIZE = 256`, `blockDim.y = blockDim.z = 1`, and positive
+`gridDim.{x,y,z}`. This over-approximates the production expression
+`MIN(local_extent, CUDA_IM2COL_BLOCK_SIZE)` while preserving the DRF ownership
+property. Both `L074` and `L075` verify with zero unknowns/errors under the
+bounded symbolic `blockDim.x` contract. S486-C still does not change manifest
+verdict fields, prove numeric im2col equivalence, or parse the full host
+translation unit.
+
+S487 defines the exact-evidence manifest promotion policy without mutating the
+manifest. The policy is owned by
+`Launch_contract.exact_evidence_manifest_promotion_policy_carrier` and records
+which evidence can become row-local coverage status: an exact
+`--launch-contract` command, structured DRF JSON with zero unknowns/errors,
+row-owned launch/profile/source facts, and an explicit soundness boundary. The
+row-local status name is `drf_exact_row`. The existing solve-tri symbolic proof
+remains a separate `guarded_symbolic_family_proof` status, because family-level
+guarded proof is not the same thing as exact row-local launch-contract evidence.
+
+The same S487 policy also records what must not promote: source-slice-only DRF
+evidence, production-profile evidence without an executable launch-contract
+command, row/family similarity, stale or missing artifacts, and numeric
+equivalence claims that the DRF proof did not establish. Current policy
+accounting records 53 exact row-local DRF rows, one guarded symbolic family
+proof, zero source-slice/profile-only rows admitted to manifest promotion, and
+preserves the remaining boundaries as 21 host-template/dependent-local blockers,
+one indirect launch helper blocker, and eight unsupported-boundary families.
+Manifest verdict fields remain unchanged; applying this policy to the manifest
+is a separate step.
+
+S488 is the next family-level frontier: unguarded symbolic family exploration.
+The goal is to stop treating exact row-local proofs as the default proof unit
+for new families. For each family, the verifier should attempt to generate the
+broadest symbolic obligations it can while preserving semantic well-formedness
+constraints such as positive CUDA dimensions, explicit subgroup configuration,
+known source/launch relations, memory-space facts, alias/address-space facts,
+and supported synchronization/subgroup semantics. The first solver result is
+then classified as `unguarded_unsat`, `production_reachable_race`,
+`invalid_counterexample_needs_guard`, `timeout`, `unsupported`, or
+`extraction_blocked`.
+
+S488 separates exploration from admission. An unguarded `unsat` result is
+stronger than a production-guarded proof if the symbolic obligation really
+over-approximates the production family. A `sat`/racy result is not promoted or
+reported as a production bug until the counterexample is classified against the
+launch/profile/source facts. Invalid shapes, missing source/launch relations, or
+unsupported semantics become guard/extraction tasks, while production-reachable
+counterexamples become race candidates. Coverage still flows through the S487
+policy: source-slice/profile-only evidence and unclassified counterexamples do
+not update manifest status.
+
+S489 is the executable frontier runner for the S488 model over the full
+ggml-cuda family inventory. `Launch_contract_generator` imports the 95-family,
+146-row S474 frontier into target-owned OCaml data, preserving each family's
+baseline blocked/unsupported stage and first blocker. `FAIAL_S489_ALL_FAMILY_FRONTIER_OUT`
+emits `ocaml-s489-all-family-unguarded-frontier-v1`: one tabular row per
+imported family, the first classification reached, the strongest artifact
+status, the first blocker, and an explicit non-admission status. Current proof
+evidence is an overlay on top of that baseline: S490 structural builders can
+upgrade supported exact/profile-backed families to `unguarded_unsat`, and a
+fresh solve-tri symbolic proof can upgrade F082 from imported blocker to the
+solver's S488 classification. Imported blockers and unsupported boundaries
+remain non-admitted.
+
+S490 adds the first reusable broad-obligation builders to that frontier. These
+builders are selected from row-owned exact launch/profile context, not from
+family-name shortcuts. The current structural builders cover one-dimensional
+elementwise ownership, linearized output ownership, block/lane ownership,
+single-block copy ownership, single-thread scalar ownership, and bounded
+symbolic `blockDim.x` ownership. With a fresh solve-tri report, the current
+full-family frontier classifies 33 families as `unguarded_unsat`, keeps 54 as
+`extraction_blocked`, and keeps eight as `unsupported`. Without the solve-tri
+report, the count is 32 `unguarded_unsat`, 55 `extraction_blocked`, and eight
+`unsupported`. The soundness boundary is intentionally narrow: S490 proves DRF
+ownership for the recorded memory-shape class and exact launch/profile facts.
+It does not prove numeric equivalence, full host translation-unit parsing,
+unsupported atomics/CUB/inline assembly, or manifest promotion.
+
+S491 is the blocker-retirement frontier over the current S489 results.
+`FAIAL_S491_BLOCKER_RETIREMENT_OUT` emits
+`ocaml-s491-blocker-retirement-frontier-v1`: one row per family that remains
+`extraction_blocked` after the S488/S490 overlays, with the imported blocker
+class, first blocker, priority, next action, and retirement status. With a
+fresh solve-tri report, the current worklist contains 54 blocked families:
+22 `launch_template`, 28 `preprocessing`, three
+`row_derived_symbolic_family_guard`, and one `subgroup_config`. S491 selects
+the 22 `launch_template` families as the first retirement target. It does not
+promote coverage or change manifest status; a selected family still needs fresh
+events, obligations, and solver or pre-solver classification before it can move
+out of the blocker list.
 
 S455 adds the next pure proof-boundary classifier for those validated
 candidate facts. The classifier is owned by
