@@ -515,21 +515,25 @@ let main =
         ~cbor ~stop_at
     in
     let ui = if output_json then Jui.render else Tui.render in
-    if list_kernels then
-      app.kernels
-      |> List.iter (fun k ->
-        if show_signature
-        then print_endline (Protocols.Kernel.signature_string k)
-        else print_endline (Protocols.Kernel.name k))
-    else if Option.is_some stop_at then
-      (* Run the pipeline for its printing side effects (each
-         [show_or_stop] dumps the IR at its stage when matched), but
-         skip the UI render — an empty Analysis report from the
-         [Stop_at_stage] catch in [App.run] would otherwise print as
-         "Kernel ... is DRF!", which is misleading when no analysis
-         actually ran. *)
-      let _ = App.run app in ()
-    else App.run app |> ui;
-    Ok ()
+    let run () =
+      if list_kernels then
+        app.kernels
+        |> List.iter (fun k ->
+          if show_signature
+          then print_endline (Protocols.Kernel.signature_string k)
+          else print_endline (Protocols.Kernel.name k))
+      else if Option.is_some stop_at then
+        (* Run the pipeline for its printing side effects (each
+           [show_or_stop] dumps the IR at its stage when matched), but
+           skip the UI render — an empty Analysis report from the
+           [Stop_at_stage] catch in [App.run] would otherwise print as
+           "Kernel ... is DRF!", which is misleading when no analysis
+           actually ran. *)
+        let _ = App.run app in ()
+      else App.run app |> ui
+    in
+    (try run (); Ok ()
+     with App.Kernel_not_found name ->
+       Error (Printf.sprintf "kernel '%s' not found!" name))
 
 let () = exit (Cmd.eval_result main)

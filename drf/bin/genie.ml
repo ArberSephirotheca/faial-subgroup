@@ -1331,6 +1331,7 @@ let main =
       ~cbor:true
       ~stop_at:None
   in
+  try
   if list_kernels then begin
     app.kernels
     |> List.iter (fun k ->
@@ -1374,5 +1375,7 @@ let main =
     in
     if output_json then report_json app v else report_prose v;
     Ok ()
+  with App.Kernel_not_found name ->
+    Error (Printf.sprintf "kernel '%s' not found!" name)
 
 let () = exit (Cmd.eval_result main)

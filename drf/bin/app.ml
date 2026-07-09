@@ -49,6 +49,12 @@ end
    further work. *)
 exception Stop_at_stage
 
+(* Raised by [only_kernel] when [--only-kernel NAME] matches no kernel
+   in the translation unit. It is an argument error, so the CLI layer
+   ([main]/[genie]) catches it and reports it through cmdliner's
+   [Error msg] channel rather than letting it exit as a raw failure. *)
+exception Kernel_not_found of string
+
 (* CLI re-export; the type and driver mapping live in [Delinearize.Algo]. *)
 module Delin_algo = Delinearize.Algo
 
@@ -457,9 +463,7 @@ let only_kernel (a : t) (ks : Protocols.Kernel.t list) : Protocols.Kernel.t list
   match a.only_kernel with
   | Some name ->
       let ks = ks |> List.filter (fun k -> Protocols.Kernel.name k = name) in
-      if ks = [] then (
-        Logger.Colors.error (fun () -> "kernel '" ^ name ^ "' not found!");
-        exit (-1))
+      if ks = [] then raise (Kernel_not_found name)
       else ks
   | None -> ks
 
