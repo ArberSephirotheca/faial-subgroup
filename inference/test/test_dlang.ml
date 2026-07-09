@@ -349,6 +349,67 @@ let test_nested_scalar_assignment_in_expression () : unit =
         "expected [idx %% 6] as the value expression; got: %s"
         (D_lang.Expr.to_string other)
 
+let subscript (base : C_lang.Expr.t) (idx : C_lang.Expr.t) : C_lang.Expr.t =
+  ArraySubscriptExpr
+    { lhs = base; rhs = idx; ty = ptr_int_ty; location = Location.empty }
+
+let ternary (c : C_lang.Expr.t) (t : C_lang.Expr.t) (e : C_lang.Expr.t) :
+    C_lang.Expr.t =
+  ConditionalOperator { cond = c; then_expr = t; else_expr = e; ty = ptr_int_ty }
+
+let lt (l : C_lang.Expr.t) (r : C_lang.Expr.t) : C_lang.Expr.t =
+  BinaryOperator { opcode = "<"; lhs = l; rhs = r; ty = J_type.bool }
+
+let and_c (l : C_lang.Expr.t) (r : C_lang.Expr.t) : C_lang.Expr.t =
+  BinaryOperator { opcode = "&&"; lhs = l; rhs = r; ty = J_type.bool }
+
+(* Find the guard carried by the hoisted read of [array]. Outer option:
+   whether a matching ReadAccessStmt was found; inner: its guard. *)
+let read_guard (array : string) (e : C_lang.Expr.t) :
+    D_lang.Expr.t option option =
+  let stmt, _ = D_lang.run0 (D_lang.rewrite_exp e) in
+  let rec walk : D_lang.Stmt.t -> D_lang.Expr.t option option = function
+    | ReadAccessStmt { source; guard; _ }
+      when Variable.name source.name = array ->
+        Some guard
+    | Seq (a, b) -> ( match walk a with Some _ as r -> r | None -> walk b)
+    | _ -> None
+  in
+  walk stmt
+
+(* A read hoisted out of a ?: operand keeps the ternary condition as a
+   guard on the access. *)
+let test_ternary_read_is_guarded () : unit =
+  let e =
+    ternary
+      (lt (ident "tid") (ident "n"))
+      (subscript (ident "s") (ident "tid"))
+      (IntegerLiteral 0)
+  in
+  match read_guard "s" e with
+  | Some (Some (BinaryOperator { opcode = "<"; lhs; rhs; _ }))
+    when ident_name lhs = Some "tid" && ident_name rhs = Some "n" ->
+      ()
+  | Some (Some other) ->
+      Alcotest.failf "s[tid] read guarded by unexpected expr: %s"
+        (D_lang.Expr.to_string other)
+  | Some None ->
+      Alcotest.fail "s[tid] read from a ?: is unguarded (expected tid < n)"
+  | None -> Alcotest.fail "expected a ReadAccessStmt for s"
+
+(* The right operand of a short-circuit && is only evaluated when the
+   left operand holds, so a read there is guarded by the left operand. *)
+let test_and_rhs_read_is_guarded () : unit =
+  let e = and_c (ident "x") (subscript (ident "a") (ident "i")) in
+  match read_guard "a" e with
+  | Some (Some g) when ident_name g = Some "x" -> ()
+  | Some (Some other) ->
+      Alcotest.failf "a[i] read in (x && a[i]) guarded by unexpected expr: %s"
+        (D_lang.Expr.to_string other)
+  | Some None ->
+      Alcotest.fail "a[i] read in (x && a[i]) is unguarded (expected x)"
+  | None -> Alcotest.fail "expected a ReadAccessStmt for a"
+
 let tests : unit Alcotest.test_case list =
   [
     ("last + skip_last", `Quick, test_last_and_skip_last);
@@ -379,6 +440,12 @@ let tests : unit Alcotest.test_case list =
     ( "nested scalar [(x = e) op v]: lift the assign as a side-effect",
       `Quick,
       test_nested_scalar_assignment_in_expression );
+    ( "ternary read [(tid < n) ? s[tid] : 0]: access guarded by tid < n",
+      `Quick,
+      test_ternary_read_is_guarded );
+    ( "short-circuit [x && a[i]]: RHS read guarded by x",
+      `Quick,
+      test_and_rhs_read_is_guarded );
   ]
 
 let () = Alcotest.run "D_lang" [ ("dlang", tests) ]

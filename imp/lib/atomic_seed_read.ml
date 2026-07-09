@@ -198,11 +198,11 @@ let rec rewrite_with
   | LocationAlias _ | Call _ | Break | Continue | Return _ | Decl _
   | Assign _ ->
       s
-  | Read { target = Some (ty, t); array; index } as r -> (
+  | Read { target = Some (ty, t); array; index; guard } as r -> (
       let key = address_key array index in
       match Common.StringMap.find_opt key seeds with
       | Some (seed_set, atomic) when VarSet.mem t seed_set ->
-          Atomic { target = t; ty; atomic; array; index }
+          Atomic { target = t; ty; atomic; array; index; guard }
       | _ -> r)
   | Read _ as r -> r (* read with no target — no seed to match *)
   | Seq (a, b) -> Seq (rew a, rew b)

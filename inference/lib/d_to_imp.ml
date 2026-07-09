@@ -436,14 +436,16 @@ module Make (L : Logger) = struct
             w.target.name |> Variable.set_location w.target.location
           in
           let index = List.map infer_expr w.target.index in
-          Infer_stmt.Write { array; index; payload = w.payload }
+          let guard = Option.map infer_expr w.guard in
+          Infer_stmt.Write { array; index; payload = w.payload; guard }
       | ReadAccessStmt r ->
           let array =
             r.source.name |> Variable.set_location r.source.location
           in
           let index = List.map infer_expr r.source.index in
           let ty = r.ty |> resolve |> C_type.strip_array in
-          Infer_stmt.Read { target = Some (ty, r.target); array; index }
+          let guard = Option.map infer_expr r.guard in
+          Infer_stmt.Read { target = Some (ty, r.target); array; index; guard }
       | AtomicAccessStmt r ->
           let array =
             r.source.name |> Variable.set_location r.source.location
@@ -451,6 +453,7 @@ module Make (L : Logger) = struct
           let index = List.map infer_expr r.source.index in
           let ty = r.ty |> resolve |> C_type.strip_array in
           let atomic = Atomic.map infer_expr r.atomic in
+          let guard = Option.map infer_expr r.guard in
           Infer_stmt.Atomic
             {
               target = r.target;
@@ -458,6 +461,7 @@ module Make (L : Logger) = struct
               array;
               index;
               ty;
+              guard;
             }
       | IfStmt { cond; then_stmt; else_stmt } ->
           Imp.Infer_stmt.If (infer_expr cond, infer then_stmt, infer else_stmt)

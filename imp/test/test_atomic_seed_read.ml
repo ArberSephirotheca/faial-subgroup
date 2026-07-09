@@ -17,6 +17,7 @@ let read_int ~target ~array : t =
       target = Some (C_type.int, var target);
       array = var array;
       index = [ Infer_exp.NExp (Num 0) ];
+      guard = None;
     }
 
 let atomic_with ~target ~array ~atomic () : t =
@@ -27,6 +28,7 @@ let atomic_with ~target ~array ~atomic () : t =
       atomic;
       array = var array;
       index = [ Infer_exp.NExp (Num 0) ];
+      guard = None;
     }
 
 (* CAS atomic with [expected] folded into the operation, mirroring

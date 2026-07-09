@@ -254,6 +254,10 @@ let tests =
      alongside the primary template; every specialisation must be
      parsed as a separate kernel, not collapsed into the primary. *)
     ("drf-template-instances.cu", [], 0);
+    (* A read hoisted out of a ?: keeps the ternary condition as a guard,
+     so the guarded read of s[tid] stays disjoint from the write to
+     s[tid-1]; without the guard the read is unconditional and races. *)
+    ("drf-ternary-guarded-read.cu", [], 0);
     (* Variadic-template kernel: the [vals...] parameter-pack expansion
      in the primary template body must be preserved through parsing
      rather than collapsed away. *)

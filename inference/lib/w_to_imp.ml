@@ -433,7 +433,7 @@ module Expressions = struct
           let array = r.array in
           let target = Option.map (fun (ty, x) -> (Types.tr ty, x)) r.target in
           let index = List.map to_i_exp r.index in
-          Infer_stmt.Read { index; array; target })
+          Infer_stmt.Read { index; array; target; guard = None })
         reads
     in
     (* generate all of the statements *)
@@ -631,7 +631,8 @@ module Statements = struct
                     match value with NExp (Num n) -> Some n | _ -> None
                   in
                   return
-                    (Infer_stmt.Write { array = a.array.var; index; payload })))
+                    (Infer_stmt.Write
+                       { array = a.array.var; index; payload; guard = None })))
         | Atomic { pointer = e; fun_; value; result; location } ->
             let* a = NDAccess.from_expression location e in
             Some
@@ -692,6 +693,7 @@ module Statements = struct
                          ty = Types.tr result.ty;
                          atomic;
                          target = result.var;
+                         guard = None;
                        })))
         | Store { pointer = Ident { ty; _ } as i; value }
           when W_lang.Type.is_int ty ->

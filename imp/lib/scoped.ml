@@ -210,6 +210,12 @@ module Code = struct
         when Variable.Set.mem array read_only ->
           let call = Exp.NCall (uniform_read_name array, index) in
           Seq (acc, Decl ({ d with init = Some call }, rewrite rest))
+      | Seq
+          ( If (_, (Access { array; index; mode = Read } as acc), Skip),
+            Decl ((({ init = None; _ } : Decl.t) as d), rest) )
+        when Variable.Set.mem array read_only ->
+          let call = Exp.NCall (uniform_read_name array, index) in
+          Seq (acc, Decl ({ d with init = Some call }, rewrite rest))
       | Seq (p, q) -> Seq (rewrite p, rewrite q)
       | If (b, p, q) -> If (b, rewrite p, rewrite q)
       | For (r, p) -> For (r, rewrite p)
@@ -501,6 +507,7 @@ module Code = struct
       | Seq (Read e, s) ->
           let* s = imp_to_scoped s in
           let rd = Access { array = e.array; index = e.index; mode = Read } in
+          let rd = match e.guard with Some g -> If (g, rd, Skip) | None -> rd in
           return
             (match e.target with
             | Some (ty, x) -> Seq (rd, Decl (Decl.unset ~ty x, s))
@@ -510,6 +517,7 @@ module Code = struct
           let a =
             Access { array = e.array; index = e.index; mode = Atomic e.atomic }
           in
+          let a = match e.guard with Some g -> If (g, a, Skip) | None -> a in
           let s = Seq (Assert (atomic_result_marker e), s) in
           return (Seq (a, Decl (Decl.unset ~ty:e.ty e.target, s)))
       | Seq (Call c, s) ->
@@ -521,8 +529,10 @@ module Code = struct
           return (Seq (s1, s2))
       | Sync s -> return (Sync s)
       | Write e ->
-          return
-            (Access { array = e.array; index = e.index; mode = Write e.payload })
+          let a =
+            Access { array = e.array; index = e.index; mode = Write e.payload }
+          in
+          return (match e.guard with Some g -> If (g, a, Skip) | None -> a)
       | Assert b -> return (Assert b)
       | Call c -> return (Call (c, Skip))
       | If (b, s1, s2) ->

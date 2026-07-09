@@ -30,9 +30,9 @@ let body_decrement_input : For.t * Stmt.t =
   let body =
     Stmt.from_list
       [
-        Stmt.Write { array = var "A"; index = [ Var k ]; payload = None };
+        Stmt.Write { array = var "A"; index = [ Var k ]; payload = None; guard = None };
         Stmt.assign C_type.int k (n_minus (Var k) (Num 1));
-        Stmt.Write { array = var "A"; index = [ Var k ]; payload = None };
+        Stmt.Write { array = var "A"; index = [ Var k ]; payload = None; guard = None };
         Stmt.assign C_type.int k (n_minus (Var k) (Num 1));
       ]
   in
@@ -55,9 +55,9 @@ let body_increment_input : For.t * Stmt.t =
   let body =
     Stmt.from_list
       [
-        Stmt.Write { array = var "A"; index = [ Var i ]; payload = None };
+        Stmt.Write { array = var "A"; index = [ Var i ]; payload = None; guard = None };
         Stmt.assign C_type.int i (n_plus (Var i) (Num 1));
-        Stmt.Write { array = var "A"; index = [ Var i ]; payload = None };
+        Stmt.Write { array = var "A"; index = [ Var i ]; payload = None; guard = None };
         Stmt.assign C_type.int i (n_plus (Var i) (Num 1));
       ]
   in
@@ -212,7 +212,7 @@ let test_mixed_inc_and_body_sums () =
   let body =
     Stmt.from_list
       [
-        Stmt.Write { array = var "A"; index = [ Var i ]; payload = None };
+        Stmt.Write { array = var "A"; index = [ Var i ]; payload = None; guard = None };
         Stmt.assign C_type.int i (n_plus (Var i) (Num 1));
       ]
   in

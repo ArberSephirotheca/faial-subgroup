@@ -55,6 +55,7 @@ type t =
       target : (C_type.t * Variable.t) option;
       array : Variable.t;
       index : Infer_exp.t list;
+      guard : Infer_exp.t option;
     }
   | Atomic of {
       target : Variable.t;
@@ -62,11 +63,13 @@ type t =
       atomic : Infer_exp.t Atomic.t;
       array : Variable.t;
       index : Infer_exp.t list;
+      guard : Infer_exp.t option;
     }
   | Write of {
       array : Variable.t;
       index : Infer_exp.t list;
       payload : int option;
+      guard : Infer_exp.t option;
     }
   | LocationAlias of {
       source : Variable.t;
@@ -125,19 +128,22 @@ let rec to_stmt : t -> Stmt.t =
          let id = List.fold_left Exp.n_plus (Exp.Var array) index in
          return (Stmt.Sync { mode; id; participants = None; loc }))
   | Assert e -> ret_assert e Global
-  | Read { array; target; index } ->
+  | Read { array; target; index; guard } ->
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
-         return (Stmt.Read { target; array; index }))
-  | Atomic { target; ty; atomic; array; index } ->
+         let* guard = State.option_map to_bexp guard in
+         return (Stmt.Read { target; array; index; guard }))
+  | Atomic { target; ty; atomic; array; index; guard } ->
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
          let* atomic = Atomic.map_state to_nexp atomic in
-         return (Stmt.Atomic { target; atomic; array; index; ty }))
-  | Write { array; index; payload } ->
+         let* guard = State.option_map to_bexp guard in
+         return (Stmt.Atomic { target; atomic; array; index; ty; guard }))
+  | Write { array; index; payload; guard } ->
       Infer_exp.unknowns
         (let* index = State.list_map to_nexp index in
-         return (Stmt.Write { array; index; payload }))
+         let* guard = State.option_map to_bexp guard in
+         return (Stmt.Write { array; index; payload; guard }))
   | LocationAlias { source; target; offset } ->
       Infer_exp.unknowns
         (let* offset = to_nexp offset in

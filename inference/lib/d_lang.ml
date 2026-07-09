@@ -460,15 +460,22 @@ type d_write = {
      payload. This particular value is propagated to MAPs.
      *)
   payload : int option;
+  guard : Expr.t option;
 }
 
-type d_read = { target : Variable.t; source : d_subscript; ty : C_type.t }
+type d_read = {
+  target : Variable.t;
+  source : d_subscript;
+  ty : C_type.t;
+  guard : Expr.t option;
+}
 
 type d_atomic = {
   target : Variable.t;
   source : d_subscript;
   atomic : Expr.t Atomic.t;
   ty : C_type.t;
+  guard : Expr.t option;
 }
 
 module Stmt = struct
@@ -537,7 +544,7 @@ module Stmt = struct
       (* If it's an array get the elements type *)
       |> C_type.strip_array
     in
-    ReadAccessStmt { target; source; ty }
+    ReadAccessStmt { target; source; ty; guard = None }
 
   let atomic_access (target : Variable.t) (source : d_subscript)
       (atomic : Expr.t Atomic.t) : t =
@@ -547,7 +554,7 @@ module Stmt = struct
       (* If it's an array get the elements type *)
       |> C_type.strip_array
     in
-    AtomicAccessStmt { target; source; atomic; ty }
+    AtomicAccessStmt { target; source; atomic; ty; guard = None }
 
   (* Build [assert(<cond>);] as a statement. [d_to_imp] recognises
      calls to [assert] and lifts them to [Imp.Stmt.Assert] with
@@ -760,14 +767,17 @@ module Stmt = struct
     | WriteAccessStmt w ->
         let* target = map_subscript w.target in
         let* source = f w.source in
-        return (WriteAccessStmt { w with target; source })
+        let* guard = State.option_map f w.guard in
+        return (WriteAccessStmt { w with target; source; guard })
     | ReadAccessStmt r ->
         let* source = map_subscript r.source in
-        return (ReadAccessStmt { r with source })
+        let* guard = State.option_map f r.guard in
+        return (ReadAccessStmt { r with source; guard })
     | AtomicAccessStmt a ->
         let* source = map_subscript a.source in
         let* atomic = Atomic.map_state f a.atomic in
-        return (AtomicAccessStmt { a with source; atomic })
+        let* guard = State.option_map f a.guard in
+        return (AtomicAccessStmt { a with source; atomic; guard })
     | ReturnStmt e ->
         let* e = State.option_map f e in
         return (ReturnStmt e)
@@ -1012,7 +1022,7 @@ module AccessState = struct
       Variable.t state =
     let wr x =
       Stmt.WriteAccessStmt
-        { target = a; source = Ident { x with ty = a.ty }; payload }
+        { target = a; source = Ident { x with ty = a.ty }; payload; guard = None }
     in
     match source with
     | Ident x ->
@@ -1064,6 +1074,27 @@ let curand_read : Variable.Set.t =
   ]
   |> List.map Variable.from_name
   |> Variable.Set.of_list
+
+let not_ (e : Expr.t) : Expr.t =
+  Expr.UnaryOperator { opcode = "!"; child = e; ty = J_type.bool }
+
+let and_ (a : Expr.t) (b : Expr.t) : Expr.t =
+  Expr.BinaryOperator { opcode = "&&"; lhs = a; rhs = b; ty = J_type.bool }
+
+let conj (g : Expr.t) : Expr.t option -> Expr.t option = function
+  | None -> Some g
+  | Some existing -> Some (and_ existing g)
+
+let rec stamp_guard (g : Expr.t) (s : Stmt.t) : Stmt.t =
+  let open Stmt in
+  match s with
+  | Seq (a, b) -> Seq (stamp_guard g a, stamp_guard g b)
+  | ReadAccessStmt r -> ReadAccessStmt { r with guard = conj g r.guard }
+  | WriteAccessStmt w -> WriteAccessStmt { w with guard = conj g w.guard }
+  | AtomicAccessStmt a -> AtomicAccessStmt { a with guard = conj g a.guard }
+  | s -> s
+
+let capture (m : 'a state) : Stmt.t * 'a = State.run m Stmt.Skip
 
 let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   let open Expr in
@@ -1218,14 +1249,26 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       rewrite_read a
   | SizeOfExpr ty -> return (SizeOfExpr ty)
   | RecoveryExpr ty -> return (RecoveryExpr ty)
+  | BinaryOperator { lhs; rhs; opcode = "&&"; ty } ->
+      let* lhs = rewrite_exp lhs in
+      let rhs_pre, rhs = capture (rewrite_exp rhs) in
+      let* () = AccessState.add (stamp_guard lhs rhs_pre) in
+      return (BinaryOperator { lhs; rhs; opcode = "&&"; ty })
+  | BinaryOperator { lhs; rhs; opcode = "||"; ty } ->
+      let* lhs = rewrite_exp lhs in
+      let rhs_pre, rhs = capture (rewrite_exp rhs) in
+      let* () = AccessState.add (stamp_guard (not_ lhs) rhs_pre) in
+      return (BinaryOperator { lhs; rhs; opcode = "||"; ty })
   | BinaryOperator { lhs; rhs; opcode; ty } ->
       let* lhs = rewrite_exp lhs in
       let* rhs = rewrite_exp rhs in
       return (BinaryOperator { lhs; rhs; opcode; ty })
   | ConditionalOperator { cond; then_expr; else_expr; ty } ->
       let* cond = rewrite_exp cond in
-      let* then_expr = rewrite_exp then_expr in
-      let* else_expr = rewrite_exp else_expr in
+      let then_pre, then_expr = capture (rewrite_exp then_expr) in
+      let else_pre, else_expr = capture (rewrite_exp else_expr) in
+      let* () = AccessState.add (stamp_guard cond then_pre) in
+      let* () = AccessState.add (stamp_guard (not_ cond) else_pre) in
       return (ConditionalOperator { cond; then_expr; else_expr; ty })
   | CXXNewExpr { arg; ty } ->
       let* arg = rewrite_exp arg in

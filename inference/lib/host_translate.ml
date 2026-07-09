@@ -59,12 +59,17 @@ let rec subst_in_stmt (var : Variable.t) (e_new : D_lang.Expr.t)
   | Seq (a, b) ->
       Seq (subst_in_stmt var e_new a, subst_in_stmt var e_new b)
   | ReadAccessStmt r ->
-      ReadAccessStmt { r with source = subst_subscript r.source }
+      ReadAccessStmt
+        { r with source = subst_subscript r.source;
+                 guard = Option.map subst r.guard }
   | WriteAccessStmt w ->
       WriteAccessStmt
-        { w with target = subst_subscript w.target; source = subst w.source }
+        { w with target = subst_subscript w.target; source = subst w.source;
+                 guard = Option.map subst w.guard }
   | AtomicAccessStmt a ->
-      AtomicAccessStmt { a with source = subst_subscript a.source }
+      AtomicAccessStmt
+        { a with source = subst_subscript a.source;
+                 guard = Option.map subst a.guard }
   | DeclStmt ds -> DeclStmt (List.map subst_decl ds)
   | SExpr e -> SExpr (subst e)
   | _ -> stmt
