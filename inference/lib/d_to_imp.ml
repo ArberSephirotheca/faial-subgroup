@@ -188,6 +188,15 @@ module Make (L : Logger) = struct
     | UnaryOperator u when u.opcode = "!" ->
         let b = infer_expr u.child in
         BExp (BNot b)
+    (* A single-argument vector copy-constructor [uintN(v)] is just the
+       value of [v]; keep its variable identity so a by-value vector
+       argument resolves to the caller's variable rather than an opaque
+       unknown. *)
+    | CXXConstructExpr { args = [ Ident v ]; ty }
+      when J_type.to_c_type_res ty |> Result.to_option
+           |> (fun c -> Option.bind c C_type.vector_lanes)
+           |> Option.is_some ->
+        NExp (Var v.name)
     | RecoveryExpr _ | CXXConstructExpr _ | MemberExpr _ | CallExpr _
     | UnaryOperator _ | CXXOperatorCallExpr _ | UnresolvedLookupExpr _ ->
         let lbl = D_lang.Expr.to_string e in
@@ -239,6 +248,10 @@ module Make (L : Logger) = struct
       |> Option.value ~default:(Infer_stmt.Arg.Unsupported ty)
     else if C_type.is_int ty then
       (* Handle scalars *)
+      Scalar (infer_expr e)
+    else if C_type.vector_lanes ty |> Option.is_some then
+      (* A vector argument is carried as its variable so the inliner can
+         bind the callee's per-lane parameter reads to it. *)
       Scalar (infer_expr e)
     else Unsupported ty
 
@@ -365,21 +378,10 @@ module Make (L : Logger) = struct
       axes_of_arity (Char.code name.[String.length name - 1] - Char.code '0')
     else None
 
-  (* Recognise a CUDA vector type ([uint2], [int3], [float4], ...) by its
-     scalar base plus trailing lane count, returning the lane axes. *)
+  (* Lane axes of a CUDA vector type ([uint2], [const uint3], ...). *)
   let vector_type_axes (ty : J_type.t) : string list option =
-    let name = J_type.to_string ty in
-    let bases =
-      [ "char"; "uchar"; "short"; "ushort"; "int"; "uint"; "long"; "ulong";
-        "longlong"; "ulonglong"; "float"; "double" ]
-    in
-    List.find_map
-      (fun base ->
-        let bl = String.length base in
-        if String.length name = bl + 1 && String.sub name 0 bl = base then
-          axes_of_arity (Char.code name.[bl] - Char.code '0')
-        else None)
-      bases
+    J_type.to_c_type_res ty |> Result.to_option |> fun c ->
+    Option.bind c C_type.vector_lanes
 
   let infer_stmt (ctx : Context.t) : D_lang.Stmt.t -> Imp.Infer_stmt.t =
     let resolve ty = Context.resolve ty ctx in

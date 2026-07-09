@@ -119,6 +119,30 @@ let array_elements (c : t) : t option =
 
 let strip_array (c : t) : t = array_elements c |> Option.value ~default:c
 
+(* CUDA vector types ([uint2], [int3], [float4], ...) name their lanes
+   [x], [y], [z], [w] in order. Returns the lane names for a vector type
+   (leading [const] ignored), or [None] otherwise. *)
+let vector_lanes (c : t) : string list option =
+  let name = strip_const c |> to_string in
+  let bases =
+    [ "char"; "uchar"; "short"; "ushort"; "int"; "uint"; "long"; "ulong";
+      "longlong"; "ulonglong"; "float"; "double" ]
+  in
+  let axes = function
+    | 1 -> Some [ "x" ]
+    | 2 -> Some [ "x"; "y" ]
+    | 3 -> Some [ "x"; "y"; "z" ]
+    | 4 -> Some [ "x"; "y"; "z"; "w" ]
+    | _ -> None
+  in
+  List.find_map
+    (fun base ->
+      let bl = String.length base in
+      if String.length name = bl + 1 && String.sub name 0 bl = base then
+        axes (Char.code name.[bl] - Char.code '0')
+      else None)
+    bases
+
 let sizeof (x : t) : int option =
   let x = to_string x in
   if String.ends_with ~suffix:"*" x then Some 8

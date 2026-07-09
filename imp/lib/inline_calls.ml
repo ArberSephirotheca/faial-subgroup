@@ -104,17 +104,28 @@ module Inline = struct
          (fun ((x, ty), a) s ->
            let open Scoped.Code in
            let open Arg in
-           match a with
-           | Scalar e ->
-               let x, s = rename_param vars x s in
-               decl_set ~ty x e s
-           | Unsupported _ ->
-               let x, s = rename_param vars x s in
-               decl_unset ~ty x s
-           | Array u ->
-               Scoped.Code.loc_subst
-                 { target = x; source = u.array; offset = u.offset }
-                 s)
+           match (C_type.vector_lanes ty, a) with
+           (* A vector argument [v] passed to a vector parameter [x]:
+              bind each lane [x.axis := v.axis] so the callee's
+              per-lane reads resolve to the caller's value. *)
+           | Some axes, Scalar (Protocols.Exp.Var v) ->
+               List.fold_left
+                 (fun s axis ->
+                   let lane = Variable.update_name (fun n -> n ^ "." ^ axis) in
+                   decl_set (lane x) (Protocols.Exp.Var (lane v)) s)
+                 s axes
+           | _ -> (
+               match a with
+               | Scalar e ->
+                   let x, s = rename_param vars x s in
+                   decl_set ~ty x e s
+               | Unsupported _ ->
+                   let x, s = rename_param vars x s in
+                   decl_unset ~ty x s
+               | Array u ->
+                   Scoped.Code.loc_subst
+                     { target = x; source = u.array; offset = u.offset }
+                     s))
          (Common.zip (K.ParameterList.to_c_type k.parameters) args)
     (* then add inside the child, meaning that the free-variables of the
        outer-context are preserved  *)
