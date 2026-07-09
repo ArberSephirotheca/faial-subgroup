@@ -350,6 +350,37 @@ module Make (L : Logger) = struct
         Variable.from_name "__requires";
       ]
 
+  (* CUDA vector lanes are named [x], [y], [z], [w] in argument order. *)
+  let axes_of_arity : int -> string list option = function
+    | 1 -> Some [ "x" ]
+    | 2 -> Some [ "x"; "y" ]
+    | 3 -> Some [ "x"; "y"; "z" ]
+    | 4 -> Some [ "x"; "y"; "z"; "w" ]
+    | _ -> None
+
+  (* A CUDA vector constructor [make_<type><N>] initialises components
+     [x]..[w] from its [N] arguments in order. *)
+  let vector_ctor_fields (name : string) : string list option =
+    if String.starts_with ~prefix:"make_" name then
+      axes_of_arity (Char.code name.[String.length name - 1] - Char.code '0')
+    else None
+
+  (* Recognise a CUDA vector type ([uint2], [int3], [float4], ...) by its
+     scalar base plus trailing lane count, returning the lane axes. *)
+  let vector_type_axes (ty : J_type.t) : string list option =
+    let name = J_type.to_string ty in
+    let bases =
+      [ "char"; "uchar"; "short"; "ushort"; "int"; "uint"; "long"; "ulong";
+        "longlong"; "ulonglong"; "float"; "double" ]
+    in
+    List.find_map
+      (fun base ->
+        let bl = String.length base in
+        if String.length name = bl + 1 && String.sub name 0 bl = base then
+          axes_of_arity (Char.code name.[bl] - Char.code '0')
+        else None)
+      bases
+
   let infer_stmt (ctx : Context.t) : D_lang.Stmt.t -> Imp.Infer_stmt.t =
     let resolve ty = Context.resolve ty ctx in
 
@@ -395,21 +426,40 @@ module Make (L : Logger) = struct
     let infer_call ?(result = None) (func : D_lang.Expr.t)
         (args : D_lang.Expr.t list) : Infer_stmt.t =
       let arg_count = List.length args in
-      match Context.lookup_sig func arg_count ctx with
-      | Some s when List.length s.params = arg_count ->
-          let open Imp.Infer_stmt in
-          Call
-            {
-              result;
-              kernel = s.kernel;
-              ty = s.ty;
-              args = List.map infer_arg args;
-            }
-      (* Either no signature found, or the matched signature has a
-         different param count — happens with variadic-template /
-         pack-expansion specialisations whose ty-string aliases a
-         stored entry. Skip rather than abort the whole analysis. *)
-      | Some _ | None -> Skip
+      match (func, result) with
+      (* Model [v = make_uintN(a, ...)] as per-component assignments
+         [v.x := a; ...] so downstream member reads [v.x] resolve,
+         instead of leaving [v] an opaque call result. *)
+      | Ident { name = f; _ }, Some (var, _)
+        when (match vector_ctor_fields (Variable.name f) with
+              | Some fields -> List.length fields = arg_count
+              | None -> false) ->
+          let fields = Option.get (vector_ctor_fields (Variable.name f)) in
+          List.map2
+            (fun field arg ->
+              let member =
+                Variable.update_name (fun n -> n ^ "." ^ field) var
+              in
+              Infer_stmt.Assign
+                { var = member; ty = C_type.int; data = infer_expr arg })
+            fields args
+          |> Infer_stmt.from_list
+      | _ -> (
+          match Context.lookup_sig func arg_count ctx with
+          | Some s when List.length s.params = arg_count ->
+              let open Imp.Infer_stmt in
+              Call
+                {
+                  result;
+                  kernel = s.kernel;
+                  ty = s.ty;
+                  args = List.map infer_arg args;
+                }
+          (* Either no signature found, or the matched signature has a
+             different param count — happens with variadic-template /
+             pack-expansion specialisations whose ty-string aliases a
+             stored entry. Skip rather than abort the whole analysis. *)
+          | Some _ | None -> Skip)
     in
 
     let rec infer : D_lang.Stmt.t -> Imp.Infer_stmt.t = function
@@ -483,6 +533,25 @@ module Make (L : Logger) = struct
                    registry into an [NCall]-init decl. *)
                 let ty = infer_type d.ty in
                 Some (infer_call ~result:(Some (d.var, ty)) func args)
+            (* Detect a by-value vector copy [uintN v = w]: bind each
+               lane [v.x := w.x; ...] so the caller's component reads
+               resolve through the temporary the compiler introduces
+               for a by-value struct result. *)
+            | { ty; init = Some (IExpr (Ident src)); _ }
+              when vector_type_axes ty |> Option.is_some ->
+                let axes = Option.get (vector_type_axes ty) in
+                Some
+                  (List.map
+                     (fun axis ->
+                       let lane = Variable.update_name (fun n -> n ^ "." ^ axis) in
+                       Infer_stmt.Assign
+                         {
+                           var = lane d.var;
+                           ty = C_type.int;
+                           data = NExp (Var (lane src.name));
+                         })
+                     axes
+                  |> Infer_stmt.from_list)
             (* Detect array alias: *)
             | { ty; init = Some (IExpr rhs); _ }
               when J_type.matches
@@ -521,6 +590,17 @@ module Make (L : Logger) = struct
           let rhs = infer_expr rhs in
           let ty = J_type.to_c_type ~default:C_type.int ty |> resolve in
           Infer_stmt.Assign { var; ty; data = rhs }
+      | SExpr
+          (BinaryOperator
+             { opcode = "=";
+               lhs = MemberExpr { base = Ident base; name = field; _ };
+               rhs; ty; _ }) ->
+          let var =
+            base.name |> Variable.update_name (fun n -> n ^ "." ^ field)
+          in
+          let rhs = infer_expr rhs in
+          let ty = J_type.to_c_type ~default:C_type.int ty |> resolve in
+          Infer_stmt.Assign { var; ty; data = rhs }
       (* [++x] / [--x] / [x++] / [x--] as a statement-expression. Clang
          normalises these to [x = x + 1] inside [for]-loop inc slots
          before c-to-json sees them, but they survive in other
@@ -547,6 +627,25 @@ module Make (L : Logger) = struct
       | ContinueStmt -> Continue
       | BreakStmt -> Break
       | GotoStmt -> Skip
+      (* A vector-constructor return [return make_uintN(a, ...)] cannot
+         be a single scalar return value, so lower it to per-lane
+         assignments on a synthetic return variable and return that
+         variable; the inliner then binds the caller's lanes from it. *)
+      | ReturnStmt
+          (Some (CallExpr { func = Ident { name = f; _ }; args; _ }))
+        when (match vector_ctor_fields (Variable.name f) with
+              | Some fields -> List.length fields = List.length args
+              | None -> false) ->
+          let fields = Option.get (vector_ctor_fields (Variable.name f)) in
+          let retvar = Variable.from_name "@vec_return" in
+          List.map2
+            (fun field arg ->
+              let lane = Variable.update_name (fun n -> n ^ "." ^ field) retvar in
+              Infer_stmt.Assign
+                { var = lane; ty = C_type.int; data = infer_expr arg })
+            fields args
+          @ [ Infer_stmt.Return (Some (NExp (Var retvar))) ]
+          |> Infer_stmt.from_list
       | ReturnStmt e -> Return (Option.map infer_expr e)
       | SExpr _ -> Skip
       | ForStmt s ->
@@ -616,7 +715,8 @@ module Make (L : Logger) = struct
   let from_j_error (e : Rjson.j_error) : d_error =
     RootCause (Rjson.error_to_string e)
 
-  let parse_param (ctx : Context.t) (p : Param.t) : Kernel.Parameter.t =
+  let parse_param ~(expand_vectors : bool) (ctx : Context.t) (p : Param.t) :
+      Kernel.Parameter.t list =
     let mk_array (h : Mem_hierarchy.t) (ty : C_type.t) : Memory.t =
       {
         hierarchy = h;
@@ -632,15 +732,29 @@ module Make (L : Logger) = struct
     in
     let x = p.ty_var.name in
     if Context.is_enum ty ctx then
-      Kernel.Parameter.enum x (Context.get_enum ty ctx)
-    else if Context.is_int ty ctx then Kernel.Parameter.scalar x ty
+      [ Kernel.Parameter.enum x (Context.get_enum ty ctx) ]
+    else if Context.is_int ty ctx then [ Kernel.Parameter.scalar x ty ]
     else if C_type.is_array ty then
       let h =
         if p.is_shared then Mem_hierarchy.SharedMemory
         else Mem_hierarchy.GlobalMemory
       in
-      Kernel.Parameter.array x (mk_array h ty)
-    else Kernel.Parameter.unsupported x ty
+      [ Kernel.Parameter.array x (mk_array h ty) ]
+    else
+      match (if expand_vectors then vector_type_axes p.ty_var.ty else None) with
+      (* A vector param [uintN v] exposes each lane [v.x], [v.y], ... as
+         a uniform scalar parameter, so component reads resolve to a
+         per-launch value rather than a thread-divergent free var. Only
+         top-level kernels expand: a device function's vector params are
+         bound through inlining, where lane-splitting would break the
+         call's argument arity. *)
+      | Some axes ->
+          List.map
+            (fun axis ->
+              let lane = Variable.update_name (fun n -> n ^ "." ^ axis) x in
+              Kernel.Parameter.scalar lane C_type.int)
+            axes
+      | None -> [ Kernel.Parameter.unsupported x ty ]
 
   let parse_shared (ctx : Context.t) (s : D_lang.Stmt.t) :
       (Variable.t * Memory.t) list =
@@ -702,7 +816,12 @@ module Make (L : Logger) = struct
         ctx (parse_shared ctx k.code)
     in
     (* Parse kernel parameters *)
-    let parameters = List.map (parse_param ctx) k.params in
+    let expand_vectors =
+      match k.attribute with KernelAttr.Default -> true | _ -> false
+    in
+    let parameters =
+      List.concat_map (parse_param ~expand_vectors ctx) k.params
+    in
     (* type parameters become global variables because c-t-j doesn't represent
      type instantiations.
     *)

@@ -41,8 +41,37 @@ module Inline = struct
               k.body;
               x := k.return;
             }
-            *)
-          decl_set ~ty var data s
+            When the callee returns a bare struct variable [r] (e.g. a
+            vector-typed return), its fields are mangled [r.field]
+            locals; the scalar copy [x := r] does not connect them to
+            the caller's [x.field] reads, so bind each field
+            [x.field := r.field] instead.
+          *)
+          let fields =
+            match data with
+            | Protocols.Exp.Var r ->
+                let base = Variable.name r in
+                let prefix = base ^ "." in
+                Scoped.Code.mentioned k.code
+                |> Variable.Set.elements
+                |> List.filter_map (fun m ->
+                     let name = Variable.name m in
+                     if String.starts_with ~prefix name then
+                       Some
+                         ( m,
+                           String.sub name (String.length base)
+                             (String.length name - String.length base) )
+                     else None)
+            | _ -> []
+          in
+          (match fields with
+           | [] -> decl_set ~ty var data s
+           | _ ->
+               List.fold_left
+                 (fun s (m, suffix) ->
+                   let dst = Variable.update_name (fun n -> n ^ suffix) var in
+                   decl_set dst (Protocols.Exp.Var m) s)
+                 s fields)
       (* TODO: | Some (var, ty), None -> *)
       | _, _ -> s
     in

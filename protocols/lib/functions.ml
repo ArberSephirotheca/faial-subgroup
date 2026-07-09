@@ -92,8 +92,19 @@ let all : t list =
         | [ Num k ] when k > 0 -> Num (31 - log2_floor k)
         | args -> NCall ("__clz", args)) }
   in
+  let umulhi : t =
+    (* CUDA's [__umulhi(a, b)] is the high 32 bits of the 64-bit
+       product. Its exact value is not derivable symbolically (nor
+       useful for race checks), but as a pure function of its two
+       arguments the UF default gives it cross-thread consistency:
+       two threads passing equal arguments get the same result. This
+       is what stops the reciprocal-multiply divide used by ggml's
+       fastdiv from fabricating thread-divergent indices. *)
+    { name = "__umulhi";
+      body = (fun args -> NCall ("__umulhi", args)) }
+  in
   [ div_up; min_fn; max_fn;
-    log2_fn; log_fn; sqrt_fn; ffs; clz ]
+    log2_fn; log_fn; sqrt_fn; ffs; clz; umulhi ]
 
 let all_db : t StringMap.t =
   List.fold_left (fun m (e : t) -> StringMap.add e.name e m) StringMap.empty all
