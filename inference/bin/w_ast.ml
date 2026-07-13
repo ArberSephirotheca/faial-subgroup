@@ -8,15 +8,28 @@ let parse (j : Yojson.Basic.t) : W_lang.Program.t =
       Rjson.print_error e;
       exit (-1)
 
+let section (title : string) : unit =
+  print_endline
+    (Printf.sprintf
+       "\n-------------------------------------- %s --------------------------------------\n"
+       title)
+
 let main (fname : string) : unit =
   let j = Wgsl_to_json.wgsl_to_json fname in
   let p = parse j |> W_lang.Program.map_expression W_lang.Expression.simplify in
   print_string (W_lang.Program.to_string p);
-  print_endline
-    "\n\
-     -------------------------------------- IMP \
-     --------------------------------------\n";
-  p |> W_to_imp.translate |> List.iter Imp.Kernel.print;
+  let imp = W_to_imp.translate p in
+  section "IMP";
+  List.iter Imp.Kernel.print imp;
+  let scoped = List.map Imp.Scoped.Kernel.from_imp imp in
+  section "Scoped";
+  List.iter Imp.Scoped.Kernel.print scoped;
+  let inlined = Imp.Inline_calls.inline_calls scoped in
+  section "Scoped, calls inlined";
+  List.iter Imp.Scoped.Kernel.print inlined;
+  let proto = List.map Imp.Compiler.compile inlined in
+  section "Protocols";
+  List.iter Protocols.Kernel.print proto;
   ()
 
 open Cmdliner

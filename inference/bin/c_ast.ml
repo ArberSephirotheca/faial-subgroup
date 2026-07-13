@@ -164,6 +164,24 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
         ((not only_global) || Imp.Kernel.is_global k)
         && not (StringSet.mem k.Imp.Kernel.name stdlib_kernel_names))
   in
+  let scoped = List.map Imp.Scoped.Kernel.from_imp k3 in
+  let inlined = Imp.Inline_calls.inline_calls scoped in
+  let proto = List.map Imp.Compiler.compile inlined in
+  let keep_named (name : string) (is_global : bool) : bool =
+    ((not only_global) || is_global)
+    && not (StringSet.mem name stdlib_kernel_names)
+  in
+  let scoped_filter =
+    List.filter (fun k ->
+        keep_named k.Imp.Scoped.Kernel.name (Imp.Scoped.Kernel.is_global k))
+  in
+  let scoped_filtered = scoped_filter scoped in
+  let inlined_filtered = scoped_filter inlined in
+  let proto_filtered =
+    proto
+    |> List.filter (fun k ->
+        keep_named (Protocols.Kernel.name k) (Protocols.Kernel.is_global k))
+  in
   if silent then ()
   else (
     print_endline "\n==================== STAGE 1: C\n";
@@ -173,7 +191,13 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
     D_lang.Program.print k2_filtered;
     print_endline "==================== STAGE 3: IMP\n";
     List.iter Imp.Kernel.print k3_filtered;
-    print_endline "==================== STAGE 4: stats\n");
+    print_endline "==================== STAGE 4: Scoped\n";
+    List.iter Imp.Scoped.Kernel.print scoped_filtered;
+    print_endline "==================== STAGE 5: Scoped, calls inlined\n";
+    List.iter Imp.Scoped.Kernel.print inlined_filtered;
+    print_endline "==================== STAGE 6: Protocols\n";
+    List.iter Protocols.Kernel.print proto_filtered;
+    print_endline "==================== STAGE 7: stats\n");
   if json then print_json_summary k1 k2 k3
 
 open Cmdliner

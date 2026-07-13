@@ -613,4 +613,17 @@ module Kernel = struct
       grid_dim = k.grid_dim;
       block_dim = k.block_dim;
     }
+
+  let is_global (k : t) : bool = k.visibility = Visibility.Global
+
+  let to_string (k : t) : string =
+    Printf.sprintf "%s %s (%s)\nglobal {arrays: %s} {scalars: %s}\n{\n%s}\n"
+      (Visibility.to_string k.visibility)
+      k.name
+      (ParameterList.to_string k.parameters)
+      (Memory.map_to_string k.global_arrays)
+      (Params.to_string k.global_variables)
+      (Code.to_string k.code)
+
+  let print (k : t) : unit = print_string (to_string k)
 end
