@@ -150,12 +150,31 @@ let bound_orders ~globals b =
 
 let show_orders os = os |> List.map (String.concat " ; ") |> String.concat "  |  "
 
+let is_disjunction = function
+  | BRel (B_rel.BOr, _, _) | Bool false -> true
+  | _ -> false
+
+(* The bound is [AND (order-disjunction, pv >= 1 guards)]. Peel the two apart:
+   the single [OR] conjunct is the ordering disjunction, the rest are the
+   per-place-value [pv >= 1] guards. *)
+let order_disjunction b =
+  match List.filter is_disjunction (b_conjuncts b) with [ d ] -> d | _ -> b
+
+let guard_atoms ~globals b =
+  b_conjuncts b
+  |> List.filter (fun x -> not (is_disjunction x))
+  |> List.map (atom_str ~globals)
+  |> List.sort compare
+
 let check_bound ~globals ~msg actual expected =
-  let a = bound_orders ~globals actual and e = bound_orders ~globals expected in
+  let a = bound_orders ~globals (order_disjunction actual)
+  and e = bound_orders ~globals (order_disjunction expected) in
+  let ag = guard_atoms ~globals actual and eg = guard_atoms ~globals expected in
   assert_bool
-    (Printf.sprintf "%s\n  expected %s\n  actual   %s" msg (show_orders e)
-       (show_orders a))
-    (a = e)
+    (Printf.sprintf "%s\n  expected %s  [pv guards: %s]\n  actual   %s  [pv guards: %s]"
+       msg (show_orders e) (String.concat " ; " eg) (show_orders a)
+       (String.concat " ; " ag))
+    (a = e && ag = eg)
 
 let pipeline_tests =
   [ ( "single access: subscripts + nesting bound" >:: fun _ ->
@@ -165,7 +184,10 @@ let pipeline_tests =
         (subs_eq ~globals:g subs [ [ v "i"; v "j"; num 0 ] ]);
       let s1 = norm ~globals:g (v "s1") and s2 = norm ~globals:g (v "s2") in
       let expected =
-        b_or_ex [ n_eq (n_umod s2 s1) (num 0); n_eq (n_umod s1 s2) (num 0) ]
+        b_and_ex
+          [ b_or_ex [ n_eq (n_umod s2 s1) (num 0); n_eq (n_umod s1 s2) (num 0) ];
+            n_ge s1 (num 1);
+            n_ge s2 (num 1) ]
       in
       check_bound ~globals:g ~msg:"bound" bound expected );
     ( "single access: --in-range adds the digit span" >:: fun _ ->
@@ -176,17 +198,20 @@ let pipeline_tests =
       in
       let s1 = norm ~globals:g (v "s1") and s2 = norm ~globals:g (v "s2") in
       let expected =
-        b_or_ex
-          [ b_and_ex
-              [ n_eq (n_umod s2 s1) (num 0);
-                n_lt (num 0) (v "s1");
-                n_le (num 0) (v "i" * v "s1");
-                n_lt (v "i" * v "s1") (v "s2") ];
-            b_and_ex
-              [ n_eq (n_umod s1 s2) (num 0);
-                n_lt (num 0) (v "s2");
-                n_le (num 0) (v "j" * v "s2");
-                n_lt (v "j" * v "s2") (v "s1") ] ]
+        b_and_ex
+          [ b_or_ex
+              [ b_and_ex
+                  [ n_eq (n_umod s2 s1) (num 0);
+                    n_lt (num 0) (v "s1");
+                    n_le (num 0) (v "i" * v "s1");
+                    n_lt (v "i" * v "s1") (v "s2") ];
+                b_and_ex
+                  [ n_eq (n_umod s1 s2) (num 0);
+                    n_lt (num 0) (v "s2");
+                    n_le (num 0) (v "j" * v "s2");
+                    n_lt (v "j" * v "s2") (v "s1") ] ];
+            n_ge s1 (num 1);
+            n_ge s2 (num 1) ]
       in
       check_bound ~globals:g ~msg:"in-range bound" bound expected );
     ( "two accesses share a frame" >:: fun _ ->
@@ -209,7 +234,10 @@ let pipeline_tests =
       let _subs, bound = Pv_decomp.make ~globals:g [ flat ] in
       let s2 = norm ~globals:g (v "s2") and s3 = norm ~globals:g (v "s3") in
       let expected =
-        b_or_ex [ n_eq (n_umod s3 s2) (num 0); n_eq (n_umod s2 s3) (num 0) ]
+        b_and_ex
+          [ b_or_ex [ n_eq (n_umod s3 s2) (num 0); n_eq (n_umod s2 s3) (num 0) ];
+            n_ge s2 (num 1);
+            n_ge s3 (num 1) ]
       in
       check_bound ~globals:g ~msg:"getrows bound" bound expected )
   ]
