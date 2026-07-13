@@ -260,10 +260,21 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~assume_delin ~rewrite_delin ~delin_elide ~delin_algo
     ~delin_check_vacuosity ~delin_weak_in_range ~delin_weak_in_range_for
     ~assumes ~assume_dims ~assume_launch ~check_pre_sat
-    ~memory_model ~cbor ~stop_at : t =
+    ~memory_model ~cbor ~stop_at ~rules_file : t =
+  let rules =
+    match rules_file with
+    | None -> Imp.Idiom_rewrite.all
+    | Some path -> (
+        let text = In_channel.with_open_text path In_channel.input_all in
+        match Imp.Idiom_rewrite.parse text with
+        | Ok rs -> Imp.Idiom_rewrite.all @ rs
+        | Error msg ->
+            prerr_endline ("--rules " ^ path ^ ": " ^ msg);
+            exit 2)
+  in
   let parsed =
     Phase_timer.measure "inference" (fun () ->
-      Protocol_parser.Silent.to_proto
+      Protocol_parser.Silent.to_proto ~rules
         ~abort_on_parsing_failure:(not ignore_parsing_errors)
         ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
         ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor

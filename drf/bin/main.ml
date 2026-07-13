@@ -411,6 +411,15 @@ let main =
              called kernel's parameters and demotes the original \
              kernel to __device__ for inlining. Off by default; only \
              the parsed launch metadata is used.")
+  and+ rules_file =
+    Arg.(
+      value
+      & opt (some file) None
+      & info [ "rules" ]
+          ~doc:
+            "Load additional idiom rewrite rules from FILE (one rule per \
+             line, [pattern => replacement ; assumptions] with $-prefixed \
+             holes). Appended to the built-in rules.")
   and+ check_pre_sat =
     Arg.(
       value & flag
@@ -519,7 +528,7 @@ let main =
         ~delin_weak_in_range ~delin_weak_in_range_for
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
-        ~cbor ~stop_at
+        ~cbor ~stop_at ~rules_file
     in
     let ui = if output_json then Jui.render else Tui.render in
     let run () =

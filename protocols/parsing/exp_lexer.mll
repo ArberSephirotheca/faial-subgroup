@@ -73,6 +73,8 @@ rule read = parse
   | "int"                 { CAST_INT }
   | "bool"                { CAST_BOOL }
 
+  | "bvumul_noovfl"       { BVUMUL }
+
   (* Identifiers (C-style + dots + dollar signs) *)
   | ['a'-'z' 'A'-'Z' '_' '$']['a'-'z' 'A'-'Z' '_' '.' '$' '0'-'9']* as id { IDENT(id) }
 

@@ -18,6 +18,9 @@ type t =
 let decl ?(ty = C_type.int) (var : Variable.t) (body : t) : t =
   Decl { var; ty; body }
 
+let seq (p : t) (q : t) : t =
+  match (p, q) with Skip, s | s, Skip -> s | _, _ -> Seq (p, q)
+
 let to_string : t -> string =
   let rec to_s : t -> Indent.t list = function
     | Skip -> [ Line "skip;" ]

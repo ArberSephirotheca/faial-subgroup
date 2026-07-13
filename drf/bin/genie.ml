@@ -1331,7 +1331,7 @@ let main =
       ~check_pre_sat:false
       ~memory_model:Memory_model.default
       ~cbor:true
-      ~stop_at:None
+      ~stop_at:None ~rules_file:None
   in
   try
   if list_kernels then begin
