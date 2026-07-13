@@ -137,3 +137,13 @@ let dot (a : t list) (b : t list) : t =
 
 let linear_combination (ps : t list) (weights : int list) : t =
   List.fold_left2 (fun acc p n -> acc + scale n p) zero ps weights
+
+module OT = struct
+  type t' = t
+  type t = t'
+
+  let compare = compare
+end
+
+module Set = Set.Make (OT)
+module Map = Map.Make (OT)

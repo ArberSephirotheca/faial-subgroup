@@ -1323,6 +1323,7 @@ let main =
       ~delin_elide:true
       ~delin_algo:App.Delin_algo.Ics15_opt
       ~delin_check_vacuosity:false
+      ~delin_weak_in_range:false
       ~assumes:extra_assumes
       ~assume_dims:false
       ~assume_launch:true

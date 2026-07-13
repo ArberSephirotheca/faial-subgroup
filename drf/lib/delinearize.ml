@@ -355,6 +355,7 @@ module Algo = struct
     | Ics15
     | Ics15_opt
     | Cramer
+    | Weak
 
   let default = Ics15_opt
 
@@ -363,6 +364,7 @@ module Algo = struct
     | Ics15 -> "ics15"
     | Ics15_opt -> "ics15-opt"
     | Cramer -> "cramer"
+    | Weak -> "weak"
 
   (* Name/value pairs for [Cmdliner.Arg.enum]. *)
   let enum =
@@ -371,6 +373,7 @@ module Algo = struct
       ("ics15", Ics15);
       ("ics15-opt", Ics15_opt);
       ("cramer", Cramer);
+      ("weak", Weak);
     ]
 
   let to_module : t -> (module Algorithm.S) = function
@@ -378,42 +381,45 @@ module Algo = struct
     | Ics15 -> (module Ics15)
     | Ics15_opt -> (module Ics15_opt)
     | Cramer -> (module Cramer)
+    | Weak -> failwith "Algo.to_module: weak has no Algorithm.S"
 end
 
 (* Entry point from the DRF pipeline. *)
 let translate ~(enabled : bool) ~(rewrite : bool) ~(elide : bool)
-    ~(check_vacuosity : bool) ~(algo : Algo.t)
+    ~(check_vacuosity : bool) ~(algo : Algo.t) ~(weak_in_range : bool)
     (kernels : Aligned.Kernel.t Stage0.Streamutil.stream) :
     Aligned.Kernel.t Stage0.Streamutil.stream =
   if not enabled then kernels
   else
-    let algo_mod : (module Algorithm.S) = Algo.to_module algo in
-    let bg : (module BoundGenerator) =
-      if elide then (module Maslov) else (module AllBounds)
+    let rewrite_kernel : check:bound_oracle -> Aligned.Kernel.t -> Aligned.Kernel.t =
+      match algo with
+      | Algo.Weak ->
+        fun ~check kernel ->
+          Delinearize_weak.rewrite_kernel ~rewrite_access:rewrite
+            ~in_range:weak_in_range ~check kernel
+      | _ ->
+        let module A = (val Algo.to_module algo) in
+        let bg : (module BoundGenerator) =
+          if elide then (module Maslov) else (module AllBounds)
+        in
+        let module G = (val bg) in
+        let module M = Make (A) (G) in
+        fun ~check kernel ->
+          M.rewrite_kernel ~rewrite_access:rewrite ~assume:enabled ~check kernel
     in
-    let module A = (val algo_mod) in
-    let module G = (val bg) in
-    let module M = Make (A) (G) in
-    let rewrite_one =
+    let rewrite_one (kernel : Aligned.Kernel.t) =
       if check_vacuosity then
-        (* When checking for vacuosity, we test the generated bounds until
-            we find the first non-vacuous one. *)
-        fun (kernel : Aligned.Kernel.t) ->
-          let open Exp in
-          let runtime =
-            Params.to_bexp
-              (Params.union_left kernel.global_variables kernel.local_variables)
+        let open Exp in
+        let runtime =
+          Params.to_bexp
+            (Params.union_left kernel.global_variables kernel.local_variables)
+        in
+        let base = b_and kernel.pre runtime in
+        Gen_z3.CachedSolver.with_assertion base (fun s ->
+          let check ~scope ~bound =
+            Gen_z3.CachedSolver.is_possible s (b_and (b_and_ex scope) bound)
           in
-          let base = b_and kernel.pre runtime in
-          Gen_z3.CachedSolver.with_assertion base (fun s ->
-            let check ~scope ~bound =
-              Gen_z3.CachedSolver.is_possible s (b_and (b_and_ex scope) bound)
-            in
-            M.rewrite_kernel ~rewrite_access:rewrite ~assume:enabled ~check kernel)
-      else
-        (* Default: no vacuosity checks are done. *)
-        fun (kernel : Aligned.Kernel.t) ->
-          M.rewrite_kernel ~rewrite_access:rewrite ~assume:enabled
-            ~check:trivially_true_oracle kernel
+          rewrite_kernel ~check kernel)
+      else rewrite_kernel ~check:trivially_true_oracle kernel
     in
     Stage0.Streamutil.map rewrite_one kernels

@@ -340,7 +340,23 @@ let main =
              search (Grosser et al.'s optimistic delinearization). \
              $(b,ics15-opt): same results as $(b,ics15) with a pruned \
              search. $(b,cramer): exact integer linear-algebra solve. \
+             $(b,weak): for opaque runtime strides that cannot be factored \
+             (e.g. ggml tensor $(b,nb) strides); reads the strides straight \
+             off the index and assumes they nest, disjoined over every stride \
+             ordering and vacuity-guarded. Unsound in general, assume-only. \
              Default $(b,ics15-opt).")
+  and+ delin_weak_in_range =
+    Arg.(
+      value & flag
+      & info [ "delin-weak-in-range" ]
+          ~doc:
+            "For $(b,--delin-algo weak): also assert each digit's in-range span \
+             [0 <= i_k*nb_k < nb_{k+1}] on top of the stride nesting. Off by \
+             default, because the nesting alone already clears the \
+             multidimensional access, while the span multiplies div/mod index \
+             digits by opaque strides and makes Z3 blow up on indices with \
+             div/mod coordinates. Enable for the extra assumed soundness at a \
+             large solver cost.")
   and+ no_rewrite_delin =
     Arg.(
       value & flag
@@ -510,6 +526,7 @@ let main =
         ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
         ~rewrite_delin:(not no_rewrite_delin)
         ~delin_elide:(not no_delin_elide) ~delin_algo ~delin_check_vacuosity
+        ~delin_weak_in_range
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at

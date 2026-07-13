@@ -56,7 +56,7 @@ module Infer : Algorithm.Infer = struct
           | _ :: tl -> List.for_all (fun a -> Option.is_some (lookup a)) tl
         in
         indets
-        |> permutations
+        |> Stage0.Common.permutations_seq
         |> Seq.filter survives
         |> Seq.map (fun perm ->
              let tail = match perm with [] -> [] | _ :: tl -> tl in

@@ -1,6 +1,6 @@
 (tests
- (names test_delin test_cramer test_vspace test_flag)
- (modules test_delin test_cramer test_vspace test_flag)
+ (names test_delin test_cramer test_vspace test_flag test_pv_decomp)
+ (modules test_delin test_cramer test_vspace test_flag test_pv_decomp)
  (libraries protocols delin oUnit))
 
 ; Slow differential benchmark for the ICS15 drivers. Not attached to

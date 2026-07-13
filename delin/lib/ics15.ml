@@ -47,16 +47,6 @@ let params_in_size_params (sp : Mono.t list) : Indet.t list =
       if Indet.is_parameter a then Some a else None))
   |> List.sort_uniq Indet.compare
 
-(* All orderings of a list, as a lazy sequence. *)
-let rec permutations : 'a list -> 'a list Seq.t = function
-  | [] -> Seq.return []
-  | xs ->
-    List.mapi (fun i x -> (i, x)) xs
-    |> List.to_seq
-    |> Seq.concat_map (fun (i, x) ->
-        let rest = List.filteri (fun j _ -> j <> i) xs in
-        Seq.map (fun p -> x :: p) (permutations rest))
-
 (* Reference shape inference: for each ordering of the candidate
    parameters, derive the affine offsets (Algorithm 2) and propose the
    shape [build_dims perm alphas]. *)
@@ -91,7 +81,7 @@ module Infer : Algorithm.Infer = struct
     List.to_seq accesses
     |> Seq.concat_map (fun expr ->
          params_in_size_params size_params
-         |> permutations
+         |> Stage0.Common.permutations_seq
          |> Seq.filter_map (fun perm ->
               let coefs = Coefficient.of_poly ~params:perm expr in
               let f0 = Coefficient.find coefs perm in

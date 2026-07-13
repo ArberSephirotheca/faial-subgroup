@@ -236,3 +236,22 @@ let get_line offset filename =
   match get_lines filename ~offset ~count:1 with
   | [ l ] -> l
   | _ -> failwith "Unexpected output"
+
+let rec permutations_seq : 'a list -> 'a list Seq.t = function
+  | [] -> Seq.return []
+  | xs ->
+    List.mapi (fun i x -> (i, x)) xs
+    |> List.to_seq
+    |> Seq.concat_map (fun (i, x) ->
+         List.filteri (fun j _ -> j <> i) xs
+         |> permutations_seq
+         |> Seq.map (fun p -> x :: p))
+
+let rec permutations : 'a list -> 'a list list = function
+  | [] -> [ [] ]
+  | xs ->
+    List.mapi (fun i x -> (i, x)) xs
+    |> List.concat_map (fun (i, x) ->
+         List.filteri (fun j _ -> j <> i) xs
+         |> permutations
+         |> List.map (fun p -> x :: p))

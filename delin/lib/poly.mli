@@ -30,3 +30,6 @@ val scale : int -> t -> t
 val indets : t -> Indet.t list
 val dot : t list -> t list -> t
 val linear_combination : t list -> int list -> t
+
+module Set : Set.S with type elt = t
+module Map : Map.S with type key = t
