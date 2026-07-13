@@ -330,8 +330,8 @@ let main =
              on.")
   and+ delin_algo =
     Arg.(
-      value
-      & opt (enum App.Delin_algo.enum) App.Delin_algo.default
+      last
+      & opt_all (enum App.Delin_algo.enum) [ App.Delin_algo.default ]
       & info [ "delin-algo" ] ~docv:"ALGO"
           ~doc:
             "Strategy [--assume-delin] uses to recover each array's \
@@ -344,7 +344,7 @@ let main =
              (e.g. ggml tensor $(b,nb) strides); reads the strides straight \
              off the index and assumes they nest, disjoined over every stride \
              ordering and vacuity-guarded. Unsound in general, assume-only. \
-             Default $(b,ics15-opt).")
+             Default $(b,ics15-opt). May be repeated; the last one wins.")
   and+ delin_weak_in_range =
     Arg.(
       value & flag
