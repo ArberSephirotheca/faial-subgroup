@@ -41,41 +41,19 @@ let conv_int_list =
 (* [--assume "BEXP"] or [--assume "KERNEL:BEXP"]. The optional prefix
    targets a single kernel by name; without it, the clause applies to
    every kernel whose declared params plus the launch-config dims
-   cover the clause's free variables. The prefix must look like a C
-   identifier (letters / digits / underscore); a [:] inside the BEXP
-   itself never matches because the bexp grammar uses no [:] tokens. *)
+   cover the clause's free variables. See [Drf.Assume_scope] for the
+   scope-vs-expression split. *)
 let conv_assume =
-  let looks_like_ident s =
-    s <> ""
-    && String.for_all (fun c ->
-      (c >= 'a' && c <= 'z')
-      || (c >= 'A' && c <= 'Z')
-      || (c >= '0' && c <= '9')
-      || c = '_')
-      s
-  in
   let parse_bexp s =
     match Parsers.BExpParser.of_string s with
     | Ok b -> Ok b
     | Error msg -> Error (`Msg msg)
   in
   let parse s =
-    match String.index_opt s ':' with
-    | None ->
-      (match parse_bexp s with
-       | Ok b -> Ok (None, b)
-       | Error e -> Error e)
-    | Some i ->
-      let prefix = String.sub s 0 i |> String.trim in
-      let rest = String.sub s (i + 1) (String.length s - i - 1) in
-      if looks_like_ident prefix then
-        match parse_bexp rest with
-        | Ok b -> Ok (Some prefix, b)
-        | Error e -> Error e
-      else
-        (match parse_bexp s with
-         | Ok b -> Ok (None, b)
-         | Error e -> Error e)
+    let scope, rest = Drf.Assume_scope.split s in
+    match parse_bexp rest with
+    | Ok b -> Ok (scope, b)
+    | Error e -> Error e
   in
   let print ppf = function
     | (Some n, b) ->
@@ -357,6 +335,18 @@ let main =
              digits by opaque strides and makes Z3 blow up on indices with \
              div/mod coordinates. Enable for the extra assumed soundness at a \
              large solver cost.")
+  and+ delin_weak_in_range_for =
+    Arg.(
+      value & opt_all string []
+      & info [ "delin-weak-in-range-for" ] ~docv:"KERNEL"
+          ~doc:
+            "Force $(b,--delin-weak-in-range) on for a single kernel named \
+             $(docv), leaving it off for the rest. Use to enable the in-range \
+             span for one kernel of a multi-kernel file without paying its \
+             solver cost everywhere. The name is the uniquified kernel name \
+             (see $(b,--list-kernels)), including any $(b,@)-suffixed launch \
+             pseudo-kernel name. May be repeated; unset kernels fall back to \
+             the global $(b,--delin-weak-in-range).")
   and+ no_rewrite_delin =
     Arg.(
       value & flag
@@ -526,7 +516,7 @@ let main =
         ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
         ~rewrite_delin:(not no_rewrite_delin)
         ~delin_elide:(not no_delin_elide) ~delin_algo ~delin_check_vacuosity
-        ~delin_weak_in_range
+        ~delin_weak_in_range ~delin_weak_in_range_for
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at

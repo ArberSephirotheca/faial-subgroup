@@ -1324,6 +1324,7 @@ let main =
       ~delin_algo:App.Delin_algo.Ics15_opt
       ~delin_check_vacuosity:false
       ~delin_weak_in_range:false
+      ~delin_weak_in_range_for:[]
       ~assumes:extra_assumes
       ~assume_dims:false
       ~assume_launch:true
