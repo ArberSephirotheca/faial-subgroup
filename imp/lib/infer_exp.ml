@@ -71,6 +71,51 @@ let bool (b : bool) : t = BExp (Bool b)
 let unknown (lbl : string) : t = Unknown lbl
 let true_ : t = bool true
 
+let rec subst (f : Variable.t -> t option) (e : t) : t =
+  match e with
+  | NExp (Var x) -> (match f x with Some e -> e | None -> e)
+  | NExp n -> NExp (subst_n f n)
+  | BExp b -> BExp (subst_b f b)
+  | Unknown _ -> e
+
+and subst_n (f : Variable.t -> t option) : n -> n = function
+  | Var _ as n -> n
+  | Num _ as n -> n
+  | Unary (o, e) -> Unary (o, subst f e)
+  | Binary (o, e1, e2) -> Binary (o, subst f e1, subst f e2)
+  | NCall (o, es) -> NCall (o, List.map (subst f) es)
+  | NIf (e1, e2, e3) -> NIf (subst f e1, subst f e2, subst f e3)
+
+and subst_b (f : Variable.t -> t option) : b -> b = function
+  | Bool _ as b -> b
+  | NRel (o, e1, e2) -> NRel (o, subst f e1, subst f e2)
+  | BRel (o, e1, e2) -> BRel (o, subst f e1, subst f e2)
+  | BNot e -> BNot (subst f e)
+  | Pred (o, es) -> Pred (o, List.map (subst f) es)
+  | ThreadUnif e -> ThreadUnif (subst f e)
+
+let rec free_names (e : t) (acc : Variable.Set.t) : Variable.Set.t =
+  match e with
+  | NExp n -> free_names_n n acc
+  | BExp b -> free_names_b b acc
+  | Unknown _ -> acc
+
+and free_names_n (n : n) (acc : Variable.Set.t) : Variable.Set.t =
+  match n with
+  | Var x -> Variable.Set.add x acc
+  | Num _ -> acc
+  | Unary (_, e) -> free_names e acc
+  | Binary (_, e1, e2) -> free_names e1 (free_names e2 acc)
+  | NCall (_, es) -> List.fold_left (fun acc e -> free_names e acc) acc es
+  | NIf (e1, e2, e3) -> free_names e1 (free_names e2 (free_names e3 acc))
+
+and free_names_b (b : b) (acc : Variable.Set.t) : Variable.Set.t =
+  match b with
+  | Bool _ -> acc
+  | NRel (_, e1, e2) | BRel (_, e1, e2) -> free_names e1 (free_names e2 acc)
+  | BNot e | ThreadUnif e -> free_names e acc
+  | Pred (_, es) -> List.fold_left (fun acc e -> free_names e acc) acc es
+
 type 'a state = (Variable.Set.t, 'a) State.t
 
 let make_unknown (label : string) : Variable.t state =

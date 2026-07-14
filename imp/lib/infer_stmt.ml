@@ -184,9 +184,167 @@ let rec to_stmt : t -> Stmt.t =
   | Continue -> Skip
   | Return _ -> Skip
 
+(** If-conversion of conditional assignments: a scalar reassigned inside a
+    straight-line [If] branch is lifted to a single [NIf]-valued assignment after
+    the branch, so its value is preserved on both paths. Memory effects stay
+    guarded in place; only [If] whose arms have no nested control flow are
+    converted, everything else is left untouched. *)
+module Convert_assigns = struct
+  module IE = Infer_exp
+
+  type arm = {
+    residual : t;
+    env : IE.t Variable.Map.t;
+    local : Variable.Set.t;
+    reads : C_type.t Variable.Map.t;
+    assigned : C_type.t Variable.Map.t;
+  }
+
+  let empty : arm =
+    {
+      residual = Skip;
+      env = Variable.Map.empty;
+      local = Variable.Set.empty;
+      reads = Variable.Map.empty;
+      assigned = Variable.Map.empty;
+    }
+
+  let subst (env : IE.t Variable.Map.t) (e : IE.t) : IE.t =
+    if Variable.Map.is_empty env then e
+    else IE.subst (fun x -> Variable.Map.find_opt x env) e
+
+  let subst_arg (env : IE.t Variable.Map.t) : Arg.t -> Arg.t = function
+    | Arg.Scalar e -> Arg.Scalar (subst env e)
+    | Arg.Array { array; offset } ->
+        Arg.Array { array; offset = subst env offset }
+    | Arg.Unsupported _ as a -> a
+
+  let keep (a : arm) (s : t) : arm = { a with residual = seq a.residual s }
+
+  let bind_target (a : arm) : (C_type.t * Variable.t) option -> arm = function
+    | Some (ty, x) ->
+        { a with
+          reads = Variable.Map.add x ty a.reads;
+          env = Variable.Map.remove x a.env }
+    | None -> a
+
+  let rec fold (a : arm) (s : t) : arm option =
+    let ( let* ) = Option.bind in
+    match s with
+    | Skip -> Some a
+    | Seq (p, q) ->
+        let* a = fold a p in
+        fold a q
+    | Assign { var; data; ty } ->
+        let data = subst a.env data in
+        let assigned =
+          if Variable.Set.mem var a.local then a.assigned
+          else Variable.Map.add var ty a.assigned
+        in
+        Some { a with env = Variable.Map.add var data a.env; assigned }
+    | Decl { var; ty = _; init = Some e } ->
+        Some
+          { a with
+            env = Variable.Map.add var (subst a.env e) a.env;
+            local = Variable.Set.add var a.local }
+    | Decl { var; ty; init = None } ->
+        Some
+          (keep
+             { a with
+               local = Variable.Set.add var a.local;
+               env = Variable.Map.remove var a.env }
+             (Decl { var; ty; init = None }))
+    | Assert e -> Some (keep a (Assert (subst a.env e)))
+    | Sync _ -> Some (keep a s)
+    | SyncOp { mode; array; index; loc } ->
+        Some
+          (keep a
+             (SyncOp { mode; array; index = List.map (subst a.env) index; loc }))
+    | LocationAlias { source; target; offset } ->
+        Some
+          (keep a
+             (LocationAlias { source; target; offset = subst a.env offset }))
+    | Read { target; array; index; guard } ->
+        let index = List.map (subst a.env) index in
+        let guard = Option.map (subst a.env) guard in
+        Some (keep (bind_target a target) (Read { target; array; index; guard }))
+    | Write { array; index; payload; guard } ->
+        let index = List.map (subst a.env) index in
+        let guard = Option.map (subst a.env) guard in
+        Some (keep a (Write { array; index; payload; guard }))
+    | Atomic { target; ty; atomic; array; index; guard } ->
+        let index = List.map (subst a.env) index in
+        let guard = Option.map (subst a.env) guard in
+        let atomic = Atomic.map (subst a.env) atomic in
+        Some
+          (keep
+             (bind_target a (Some (ty, target)))
+             (Atomic { target; ty; atomic; array; index; guard }))
+    | Call { result; kernel; ty; args } ->
+        let args = List.map (subst_arg a.env) args in
+        let a = bind_target a (Option.map (fun (x, ty) -> (ty, x)) result) in
+        Some (keep a (Call { result; kernel; ty; args }))
+    | If _ | While _ | DoWhile _ | For _ | Break | Continue | Return _ -> None
+
+  let convert (cond : IE.t) (p : t) (q : t) : t =
+    match (fold empty p, fold empty q) with
+    | Some ap, Some aq ->
+        let merge_vars =
+          Variable.Map.union (fun _ ty _ -> Some ty) ap.assigned aq.assigned
+        in
+        if Variable.Map.is_empty merge_vars then If (cond, p, q)
+        else
+          let value (a : arm) (v : Variable.t) : IE.t =
+            match Variable.Map.find_opt v a.env with
+            | Some e -> e
+            | None -> IE.NExp (IE.Var v)
+          in
+          let merges =
+            Variable.Map.fold
+              (fun v ty acc ->
+                let data = IE.NExp (IE.NIf (cond, value ap v, value aq v)) in
+                Assign { var = v; ty; data } :: acc)
+              merge_vars []
+          in
+          let merge_free =
+            List.fold_left
+              (fun acc -> function
+                | Assign { data; _ } -> IE.free_names data acc
+                | _ -> acc)
+              Variable.Set.empty merges
+          in
+          let reads =
+            Variable.Map.union (fun _ ty _ -> Some ty) ap.reads aq.reads
+          in
+          let hoisted =
+            Variable.Map.fold
+              (fun x ty acc ->
+                if Variable.Set.mem x merge_free then
+                  Decl { var = x; ty; init = None } :: acc
+                else acc)
+              reads []
+          in
+          from_list (hoisted @ (If (cond, ap.residual, aq.residual) :: merges))
+    | _ -> If (cond, p, q)
+
+  let rec rewrite (s : t) : t =
+    match s with
+    | Seq (a, b) -> seq (rewrite a) (rewrite b)
+    | If (c, p, q) -> convert c (rewrite p) (rewrite q)
+    | While (c, s) -> While (c, rewrite s)
+    | DoWhile (c, s) -> DoWhile (c, rewrite s)
+    | For { init; cond; inc; body } ->
+        For { init = rewrite init; cond; inc = rewrite inc; body = rewrite body }
+    | Skip | Sync _ | SyncOp _ | Assert _ | Read _ | Atomic _ | Write _
+    | LocationAlias _ | Decl _ | Assign _ | Call _ | Break | Continue | Return _
+      ->
+        s
+end
+
 (** The infer function generates the Stmt.t code as well the value being
     returned if any. *)
 let infer (s : t) : Stmt.t * Exp.nexp option =
+  let s = Convert_assigns.rewrite s in
   let code = skip_last s in
   let post, ret =
     match last s with

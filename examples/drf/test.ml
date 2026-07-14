@@ -383,6 +383,11 @@ let tests =
     ("racy-loop-comma-in-cond.cu", [], 1);
     (* support for inlining functions which return values *)
     ("drf-inline-var.cu", [], 0);
+    (* if-conversion of a conditional scalar assignment: [idx] is reassigned
+     inside an [if], and its post-branch value is [flag ? i + n : i], injective
+     in the thread id on both arms, so the write is DRF. Without if-conversion
+     [idx] is dropped after the branch and the write aliases. *)
+    ("drf-cond-assign.cu", [], 0);
     (* Regression for a bug in [drf/lib/delinearize.ml]'s
      [Expr.( - )] polynomial-subtraction primitive that mis-signed
      remainder terms when delinearising indices containing
