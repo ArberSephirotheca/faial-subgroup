@@ -84,6 +84,25 @@ module ReplacePair = SubstMake (Subst.SubstPair)
 
 let subst = ReplacePair.subst
 
+let rec has_nif : Exp.nexp -> bool = function
+  | NIf _ -> true
+  | Var _ | Num _ -> false
+  | Unary (_, e) -> has_nif e
+  | Binary (_, e1, e2) -> has_nif e1 || has_nif e2
+  | NCall (_, es) -> List.exists has_nif es
+  | CastInt b -> has_nif_b b
+
+and has_nif_b : Exp.bexp -> bool = function
+  | Bool _ -> false
+  | CastBool e -> has_nif e
+  | NRel (_, e1, e2) -> has_nif e1 || has_nif e2
+  | BRel (_, b1, b2) -> has_nif_b b1 || has_nif_b b2
+  | BNot b -> has_nif_b b
+  | Pred (_, es) -> List.exists has_nif es
+  | Distinct es -> List.exists has_nif es
+  | ThreadUnif e -> has_nif e
+  | AtomicResult _ -> false
+
 let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
   let n_subst (st : Subst.Vars.t) (n : Exp.nexp) : Exp.nexp =
     if Subst.Vars.is_empty st then n else Subst.ReplaceVars.n_subst st n
@@ -110,6 +129,27 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
       let known = Variable.Set.add x known in
       (x, known, st)
     in
+    let name_or_inline (x : Variable.t) (ty : C_type.t) (n : Exp.nexp)
+        (p : Scoped.Code.t) : t =
+      let n = n_subst st n in
+      if has_nif n then
+        let x' = Variable.fresh known x in
+        let known = Variable.Set.add x' known in
+        let st = Subst.Vars.put st x (Var x') in
+        Decl
+          {
+            var = x';
+            ty;
+            body =
+              seq
+                (Assert
+                   (Assert.make (Exp.n_eq (Var x') n) Assert.Visibility.Local))
+                (inline known st p);
+          }
+      else
+        let st = Subst.Vars.put st x n in
+        inline known st p
+    in
     match i with
     | Sync l ->
         Sync
@@ -125,11 +165,8 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
     | If (b, p1, p2) ->
         let b = b_subst st b in
         If (b, inline known st p1, inline known st p2)
-    | Decl ({ var = x; init = Some n; _ }, p)
-    | Assign { var = x; data = n; body = p; _ } ->
-        let n = n_subst st n in
-        let st = Subst.Vars.put st x n in
-        inline known st p
+    | Decl ({ var = x; init = Some n; ty }, p) -> name_or_inline x ty n p
+    | Assign { var = x; data = n; ty; body = p } -> name_or_inline x ty n p
     | Decl ({ var; init = None; ty }, p) ->
         Decl { var; ty; body = inline known st p }
     | For (r, p) ->

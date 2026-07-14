@@ -388,6 +388,13 @@ let tests =
      in the thread id on both arms, so the write is DRF. Without if-conversion
      [idx] is dropped after the branch and the write aliases. *)
     ("drf-cond-assign.cu", [], 0);
+    (* Blowup guard for if-conversion: a chain of conditional self-updates
+     [if (i < k) i = i + n;] each if-converts to [i = (i < k) ? i + n : i],
+     referencing [i] on every arm. Inlining the chain without naming the merged
+     value expanded the write index to a term exponential in the chain length
+     (16 levels timed out / exhausted memory before SMT). Encode_assigns now
+     names each conditional value, so this completes quickly. *)
+    ("racy-cond-assign-chain.cu", [], 1);
     (* Regression for a bug in [drf/lib/delinearize.ml]'s
      [Expr.( - )] polynomial-subtraction primitive that mis-signed
      remainder terms when delinearising indices containing
