@@ -420,6 +420,19 @@ let main =
             "Load additional idiom rewrite rules from FILE (one rule per \
              line, [pattern => replacement ; assumptions] with $-prefixed \
              holes). Appended to the built-in rules.")
+  and+ infer_cond_bound =
+    Arg.(
+      value
+      & opt int Imp.Encode_assigns.default_infer_cond_bound
+      & info [ "infer-cond-bound" ]
+          ~doc:
+            "Maximum inlined size, in expression nodes, of an inferred scalar \
+             value before it is abstracted to an unconstrained value. Chained \
+             self-referential assignments (a conditional $(b,x = c ? f x : x) \
+             or a multiplicative $(b,s = s*s*v)) otherwise inline to a term \
+             exponential in the chain length; a value over the bound is \
+             replaced by an unknown, which is sound but loses precision. Raise \
+             it to keep more precision at higher cost.")
   and+ check_pre_sat =
     Arg.(
       value & flag
@@ -528,7 +541,7 @@ let main =
         ~delin_weak_in_range ~delin_weak_in_range_for
         ~assumes ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
-        ~cbor ~stop_at ~rules_file
+        ~cbor ~stop_at ~infer_cond_bound ~rules_file
     in
     let ui = if output_json then Jui.render else Tui.render in
     let run () =

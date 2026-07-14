@@ -4,8 +4,8 @@ module Params = Protocols.Params
 module Exp = Protocols.Exp
 open Exp
 
-let compile ?(rules = Idiom_rewrite.all) (k : Scoped.Kernel.t) :
-    Protocols.Kernel.t =
+let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
+    (k : Scoped.Kernel.t) : Protocols.Kernel.t =
   (* Merge globally-defined arrays and arrays defined in parameters. *)
   let arrays =
     k.global_arrays
@@ -21,7 +21,8 @@ let compile ?(rules = Idiom_rewrite.all) (k : Scoped.Kernel.t) :
          Scoped.Code.bind_uniform_reads read_only c)
     |> Scoped.Code.fix_assigns
     (* Inline local variable assignment and ensure variables are distinct*)
-    |> Encode_assigns.from_scoped (ParameterList.to_set k.parameters)
+    |> Encode_assigns.from_scoped ?infer_cond_bound
+         (ParameterList.to_set k.parameters)
     |> Idiom_rewrite.rewrite rules
     |> Encode_asserts.from_encode_assigns
   in
@@ -55,7 +56,7 @@ let compile ?(rules = Idiom_rewrite.all) (k : Scoped.Kernel.t) :
   }
 
 let compile_all ?(rules = Idiom_rewrite.all) ?(inline_calls = true)
-    (l : Kernel.t list) : Protocols.Kernel.t list =
+    ?infer_cond_bound (l : Kernel.t list) : Protocols.Kernel.t list =
   let l = List.map Scoped.Kernel.from_imp l in
   let l = if inline_calls then Inline_calls.inline_calls l else l in
-  List.map (compile ~rules) l
+  List.map (compile ~rules ?infer_cond_bound) l

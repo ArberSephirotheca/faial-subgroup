@@ -1331,6 +1331,7 @@ let main =
       ~check_pre_sat:false
       ~memory_model:Memory_model.default
       ~cbor:true
+      ~infer_cond_bound:Imp.Encode_assigns.default_infer_cond_bound
       ~stop_at:None ~rules_file:None
   in
   try

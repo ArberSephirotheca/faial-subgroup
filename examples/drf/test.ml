@@ -390,17 +390,16 @@ let tests =
     ("drf-cond-assign.cu", [], 0);
     (* Blowup guard for if-conversion: a chain of conditional self-updates
      [if (i < k) i = i + n;] each if-converts to [i = (i < k) ? i + n : i],
-     referencing [i] on every arm. Inlining the chain without naming the merged
-     value expanded the write index to a term exponential in the chain length
-     (16 levels timed out / exhausted memory before SMT). Encode_assigns now
-     names each conditional value, so this completes quickly. *)
+     referencing [i] on every arm, so inlining the chain expands the write index
+     to a term exponential in the chain length (16 levels timed out / exhausted
+     memory before SMT). Encode_assigns bounds the inlined size
+     ([--infer-cond-bound]) and abstracts an over-budget value to an unknown, so
+     this stays flat; the index is then unconstrained, hence racy. *)
     ("racy-cond-assign-chain.cu", [], 1);
-    (* Companion guard for the substitution DAG traversal: a loop-carried scalar
-     [s] repeatedly self-multiplied [s = s * s * v] holds an if-value from the
-     loop merge, so [s] is shared in the substituted term. Testing for that
-     if-value on the substituted value walked the shared DAG as a tree,
-     exponential in the chain length; Encode_assigns tests the pre-substitution
-     value instead, so this stays flat. *)
+    (* Companion guard for a non-conditional chain: a loop-carried scalar [s]
+     repeatedly self-multiplied [s = s * s * v] doubles the inlined term at every
+     step. The same inlined-size bound abstracts [s] once it exceeds the budget,
+     so this stays flat. *)
     ("drf-loop-mul-chain.cu", [], 0);
     (* Regression for a bug in [drf/lib/delinearize.ml]'s
      [Expr.( - )] polynomial-subtraction primitive that mis-signed
