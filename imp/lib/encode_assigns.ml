@@ -129,10 +129,10 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
       let known = Variable.Set.add x known in
       (x, known, st)
     in
-    let name_or_inline (x : Variable.t) (ty : C_type.t) (n : Exp.nexp)
+    let name_or_inline (x : Variable.t) (ty : C_type.t) (data : Exp.nexp)
         (p : Scoped.Code.t) : t =
-      let n = n_subst st n in
-      if has_nif n then
+      let n = n_subst st data in
+      if has_nif data then
         let x' = Variable.fresh known x in
         let known = Variable.Set.add x' known in
         let st = Subst.Vars.put st x (Var x') in

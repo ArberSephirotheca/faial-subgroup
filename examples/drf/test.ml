@@ -395,6 +395,13 @@ let tests =
      (16 levels timed out / exhausted memory before SMT). Encode_assigns now
      names each conditional value, so this completes quickly. *)
     ("racy-cond-assign-chain.cu", [], 1);
+    (* Companion guard for the substitution DAG traversal: a loop-carried scalar
+     [s] repeatedly self-multiplied [s = s * s * v] holds an if-value from the
+     loop merge, so [s] is shared in the substituted term. Testing for that
+     if-value on the substituted value walked the shared DAG as a tree,
+     exponential in the chain length; Encode_assigns tests the pre-substitution
+     value instead, so this stays flat. *)
+    ("drf-loop-mul-chain.cu", [], 0);
     (* Regression for a bug in [drf/lib/delinearize.ml]'s
      [Expr.( - )] polynomial-subtraction primitive that mis-signed
      remainder terms when delinearising indices containing
