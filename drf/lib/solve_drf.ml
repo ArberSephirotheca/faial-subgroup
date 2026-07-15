@@ -13,6 +13,14 @@ module FuncDecl = Z3.FuncDecl
 module BitVector = Z3.BitVector
 module StringMap = Common.StringMap
 
+let gc_alloc_threshold : int64 =
+  let mb =
+    match Option.bind (Sys.getenv_opt "FAIAL_GC_MB") int_of_string_opt with
+    | Some n -> n
+    | None -> Defaults.gc_mb
+  in
+  Int64.mul (Int64.of_int mb) 1_000_000L
+
 type json = Yojson.Basic.t
 
 module Environ = struct
@@ -411,6 +419,12 @@ module Solution = struct
      | _ -> ());
     Streamutil.map
       (fun (p : Symbexp.Proof.t) ->
+        if
+          Int64.compare
+            (Z3.Statistics.get_estimated_alloc_size ())
+            gc_alloc_threshold
+          > 0
+        then Gc.full_major ();
         let want_core = extras <> [] in
         let options =
           [ ("model", "true"); ("proof", "false") ]
@@ -463,6 +477,8 @@ module Solution = struct
               extras;
           s
         in
+        let rec attempt tries =
+        try
         let enc, s =
           let initial = Encoder.initial ~logic in
           try (initial, solve_with initial)
@@ -520,6 +536,18 @@ module Solution = struct
               | None -> failwith "INVALID")
           | UNKNOWN -> Unknown
         in
-        { proof = p; outcome = r; logic = enc.logic })
+        { proof = p; outcome = r; logic = enc.logic }
+        with Z3.Error msg ->
+          if tries > 0 then (
+            Gc.full_major ();
+            attempt (tries - 1))
+          else (
+            prerr_endline
+              (Printf.sprintf
+                 "WARNING: Z3 error on proof %d (%s); treating as unknown" p.id
+                 msg);
+            { proof = p; outcome = Outcome.Unknown; logic = None })
+        in
+        attempt 1)
       ps
 end

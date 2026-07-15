@@ -76,7 +76,18 @@ let conv_tactic =
 
 let main =
   let doc = "Verify if CUDA file is free from data races." in
-  let info = Cmd.info "faial-drf" ~doc in
+  let info =
+    Cmd.info "faial-drf" ~doc
+      ~envs:
+        [ Cmd.Env.info "FAIAL_GC_MB"
+            ~doc:
+              (Printf.sprintf
+                 "Force a major collection to release Z3 memory once Z3's \
+                  global allocation exceeds this many megabytes (default %d). \
+                  Bounds peak memory on large multi-array kernels; lower it to \
+                  cap memory at some speed cost, raise it to collect less often."
+                 Drf.Defaults.gc_mb) ]
+  in
   Cmd.v info
   @@
   let open Cmdliner.Term.Syntax in
