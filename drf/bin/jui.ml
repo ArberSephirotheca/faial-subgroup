@@ -1,9 +1,10 @@
 open Stage0
 open Protocols
+module App_analysis = Analysis
 open Drf
 open Solve_drf
 
-let render_ordinary (analysis : Analysis.ordinary) : Yojson.Basic.t =
+let render_ordinary (analysis : App_analysis.ordinary) : Yojson.Basic.t =
   let kernel_name = analysis.kernel.name in
   let solutions = analysis.report in
   let unknowns, errors =
@@ -37,7 +38,7 @@ let render_ordinary (analysis : Analysis.ordinary) : Yojson.Basic.t =
       ("kernel_name", `String kernel_name);
       ( "status",
         `String
-          (Analysis.Verdict.to_string (Analysis.ordinary_verdict analysis)) );
+          (App_analysis.Verdict.to_string (App_analysis.ordinary_verdict analysis)) );
       ("unknowns", `List (List.map Symbexp.Proof.to_json unknowns));
       ("logics", `List logics);
       ( "errors",
@@ -65,12 +66,12 @@ let subgroup_counts_to_json (counts : Drf.Subgroup_solver.Counts.t) :
       ("pre_solver_unsat", `Int counts.pre_solver_unsat);
     ]
 
-let render_subgroup (analysis : Analysis.subgroup) : Yojson.Basic.t =
+let render_subgroup (analysis : App_analysis.subgroup) : Yojson.Basic.t =
   let module Solver = Drf.Subgroup_solver in
   let module Uniformity = Drf.Subgroup_uniformity in
   let memory_verdict = Solver.memory_verdict analysis.memory in
   let subgroup_verdict = Uniformity.function_verdict analysis.uniformity in
-  let full_verdict = Analysis.subgroup_full_verdict analysis in
+  let full_verdict = App_analysis.subgroup_full_verdict analysis in
   `Assoc
     [
       ("kernel_name", `String analysis.kernel.name);
@@ -92,12 +93,12 @@ let render_subgroup (analysis : Analysis.subgroup) : Yojson.Basic.t =
              (Solver.memory_evidence_lines analysis.memory)) );
     ]
 
-let render (output : Analysis.t list) : unit =
+let render (output : App_analysis.t list) : unit =
   let kernels =
     output
     |> List.map (function
-      | Analysis.Ordinary analysis -> render_ordinary analysis
-      | Analysis.Subgroup analysis -> render_subgroup analysis)
+      | App_analysis.Ordinary analysis -> render_ordinary analysis
+      | App_analysis.Subgroup analysis -> render_subgroup analysis)
   in
   `Assoc
     [

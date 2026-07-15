@@ -40,7 +40,6 @@ let default_include_dirs () : string list =
 let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
     ?(macros = []) ?(launch_params = false) ?(cbor = false) (fname : string) :
     (Yojson.Basic.t, int * string) Result.t =
-  let includes = default_include_dirs () @ includes in
   let includes = List.map (fun x -> "-I" ^ x) includes in
   let macros = List.map (fun x -> "-D" ^ x) macros in
   let extra =

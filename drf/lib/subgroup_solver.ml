@@ -251,14 +251,14 @@ let modulus_matches_stride ~(stride : int) : Exp.nexp -> bool = function
 let numeric_expr_is_index_minus_thread (expr : Exp.nexp) ~(index : Exp.nexp)
     ~(thread_index_x : Variable.t) : bool =
   match expr with
-  | Exp.Binary (N_binary.Minus, lhs, Exp.Var rhs) ->
+  | Exp.Binary (N_binary.Minus _, lhs, Exp.Var rhs) ->
       lhs = index && Variable.equal rhs thread_index_x
   | _ -> false
 
 let numeric_expr_is_strided_owner_mod (expr : Exp.nexp) ~(index : Exp.nexp)
     ~(thread_index_x : Variable.t) ~(stride : int) : bool =
   match expr with
-  | Exp.Binary (N_binary.Mod, dividend, modulus) ->
+  | Exp.Binary (N_binary.Mod _, dividend, modulus) ->
       modulus_matches_stride ~stride modulus
       && numeric_expr_is_index_minus_thread dividend ~index ~thread_index_x
   | _ -> false
@@ -289,10 +289,10 @@ let strided_owner_index_shapes (index : Exp.nexp) :
   let shape owned_index shared_offset = { owned_index; shared_offset } in
   match index with
   | Exp.Var _ -> [ shape index (Exp.Num 0) ]
-  | Exp.Binary (N_binary.Plus, Exp.Var owner, offset)
-  | Exp.Binary (N_binary.Plus, offset, Exp.Var owner) ->
+  | Exp.Binary (N_binary.Plus _, Exp.Var owner, offset)
+  | Exp.Binary (N_binary.Plus _, offset, Exp.Var owner) ->
       [ shape (Exp.Var owner) offset ]
-  | Exp.Binary (N_binary.Minus, Exp.Var owner, offset) ->
+  | Exp.Binary (N_binary.Minus _, Exp.Var owner, offset) ->
       [ shape (Exp.Var owner) (Exp.n_uminus offset) ]
   | _ -> []
 
@@ -322,14 +322,14 @@ let rec nexp_equiv (left : Exp.nexp) (right : Exp.nexp) : bool =
       && nexp_equiv left_rhs right_rhs
   | Exp.Unary (left_op, left_expr), Exp.Unary (right_op, right_expr) ->
       left_op = right_op && nexp_equiv left_expr right_expr
-  | Exp.NCall (left_name, left_arg), Exp.NCall (right_name, right_arg) ->
-      String.equal left_name right_name && nexp_equiv left_arg right_arg
+  | Exp.NCall (left_name, left_args), Exp.NCall (right_name, right_args) ->
+      String.equal left_name right_name
+      && List.equal nexp_equiv left_args right_args
   | ( Exp.NIf (left_cond, left_then, left_else),
       Exp.NIf (right_cond, right_then, right_else) ) ->
       left_cond = right_cond
       && nexp_equiv left_then right_then
       && nexp_equiv left_else right_else
-  | Exp.Other left, Exp.Other right -> nexp_equiv left right
   | Exp.CastInt left, Exp.CastInt right -> left = right
   | _, _ -> false
 
@@ -355,7 +355,7 @@ let rec expr_eval_with_constants (constants : int Variable.Map.t)
       | _ -> None)
   | Exp.Unary (op, expr) ->
       expr_eval_with_constants constants expr |> Option.map (N_unary.eval op)
-  | Exp.NCall _ | Exp.NIf _ | Exp.Other _ | Exp.CastInt _ -> None
+  | Exp.NCall _ | Exp.NIf _ | Exp.CastInt _ -> None
 
 let expr_proven_constant (terms : Exp.bexp list) (expr : Exp.nexp) : int option
     =
@@ -377,7 +377,7 @@ let expression_is_multiple_of ~(factor : int) (terms : Exp.bexp list)
     | Some value -> value mod factor = 0
     | None -> (
         match expr with
-        | Exp.Binary (N_binary.Mult, lhs, rhs) -> loop lhs || loop rhs
+        | Exp.Binary (N_binary.Mult _, lhs, rhs) -> loop lhs || loop rhs
         | _ -> false)
   in
   loop expr
@@ -420,7 +420,7 @@ let term_has_left_relation (terms : Exp.bexp list) ~(op : N_rel.t)
 
 let term_has_eq_mod_zero (terms : Exp.bexp list) ~(dividend : Exp.nexp)
     ~(modulus : Exp.nexp) : bool =
-  let mod_expr = Exp.Binary (N_binary.Mod, dividend, modulus) in
+  let mod_expr = Exp.Binary (N_binary.Mod Signedness.Signed, dividend, modulus) in
   List.exists
     (function
       | Exp.NRel (N_rel.Eq, lhs, rhs) ->
@@ -430,10 +430,10 @@ let term_has_eq_mod_zero (terms : Exp.bexp list) ~(dividend : Exp.nexp)
     terms
 
 let add_terms (expr : Exp.nexp) : Exp.nexp list =
-  Exp.n_bin_split N_binary.Plus expr
+  Exp.n_bin_split (N_binary.Plus Signedness.Signed) expr
 
 let mult_terms (expr : Exp.nexp) : Exp.nexp list =
-  Exp.n_bin_split N_binary.Mult expr
+  Exp.n_bin_split (N_binary.Mult Signedness.Signed) expr
 
 let sum_terms (terms : Exp.nexp list) : Exp.nexp =
   List.fold_left Exp.n_plus (Exp.Num 0) terms
@@ -513,8 +513,8 @@ let lane_vector_owner_matches (terms : Exp.bexp list) ~(task : Task.t)
         let mod_expr = if expr_is_zero lhs then rhs else lhs in
         match mod_expr with
         | Exp.Binary
-            ( N_binary.Mod,
-              Exp.Binary (N_binary.Minus, Exp.Var elem, lane_scaled),
+            ( N_binary.Mod _,
+              Exp.Binary (N_binary.Minus _, Exp.Var elem, lane_scaled),
               stride )
           when Variable.equal elem elem_base -> (
             match match_var_times_int lane_scaled with
@@ -530,13 +530,13 @@ let lane_vector_owner_matches (terms : Exp.bexp list) ~(task : Task.t)
                               ( N_rel.Eq,
                                 Exp.Var lhs,
                                 Exp.Binary
-                                  ( N_binary.Mod,
+                                  ( N_binary.Mod _,
                                     thread_candidate,
                                     subgroup_candidate ) )
                           | Exp.NRel
                               ( N_rel.Eq,
                                 Exp.Binary
-                                  ( N_binary.Mod,
+                                  ( N_binary.Mod _,
                                     thread_candidate,
                                     subgroup_candidate ),
                                 Exp.Var lhs )
@@ -549,9 +549,11 @@ let lane_vector_owner_matches (terms : Exp.bexp list) ~(task : Task.t)
                     in
                     if
                       has_lane_id
-                      && term_has_relation terms ~op:N_rel.Le ~lhs:lane_base
+                      && term_has_relation terms
+                           ~op:(N_rel.Le Signedness.Signed) ~lhs:lane_base
                            ~rhs:(Exp.Var elem_base)
-                      && term_has_left_relation terms ~op:N_rel.Lt
+                      && term_has_left_relation terms
+                           ~op:(N_rel.Lt Signedness.Signed)
                            ~lhs:(Exp.Var elem_base)
                     then Some { lane; width; subgroup }
                     else None
@@ -765,8 +767,8 @@ let lane_owner_for_index (terms : Exp.bexp list) ~(task : Task.t)
         let mod_expr = if expr_is_zero lhs then rhs else lhs in
         match mod_expr with
         | Exp.Binary
-            ( N_binary.Mod,
-              Exp.Binary (N_binary.Minus, Exp.Var owned, Exp.Var lane),
+            ( N_binary.Mod _,
+              Exp.Binary (N_binary.Minus _, Exp.Var owned, Exp.Var lane),
               subgroup )
           when Variable.equal owned index ->
             let lane_expr = Exp.Var lane in
@@ -777,12 +779,12 @@ let lane_owner_for_index (terms : Exp.bexp list) ~(task : Task.t)
                       ( N_rel.Eq,
                         Exp.Var lhs,
                         Exp.Binary
-                          (N_binary.Mod, thread_candidate, subgroup_candidate)
+                          (N_binary.Mod _, thread_candidate, subgroup_candidate)
                       )
                   | Exp.NRel
                       ( N_rel.Eq,
                         Exp.Binary
-                          (N_binary.Mod, thread_candidate, subgroup_candidate),
+                          (N_binary.Mod _, thread_candidate, subgroup_candidate),
                         Exp.Var lhs )
                     when Variable.equal lhs lane ->
                       nexp_equiv subgroup_candidate subgroup
@@ -793,7 +795,8 @@ let lane_owner_for_index (terms : Exp.bexp list) ~(task : Task.t)
             in
             if
               has_lane_id
-              && term_has_relation terms ~op:N_rel.Le ~lhs:lane_expr
+              && term_has_relation terms ~op:(N_rel.Le Signedness.Signed)
+                   ~lhs:lane_expr
                    ~rhs:(Exp.Var index)
             then Some (lane, subgroup)
             else None
@@ -807,10 +810,10 @@ let warp_owner_for_thread (terms : Exp.bexp list) ~(task : Task.t)
       | Exp.NRel
           ( N_rel.Eq,
             Exp.Var lhs,
-            Exp.Binary (N_binary.Div, thread_candidate, subgroup_candidate) )
+            Exp.Binary (N_binary.Div _, thread_candidate, subgroup_candidate) )
       | Exp.NRel
           ( N_rel.Eq,
-            Exp.Binary (N_binary.Div, thread_candidate, subgroup_candidate),
+            Exp.Binary (N_binary.Div _, thread_candidate, subgroup_candidate),
             Exp.Var lhs )
         when Variable.equal lhs warp ->
           nexp_equiv subgroup_candidate subgroup
@@ -828,8 +831,8 @@ let head_block_owner_matches (terms : Exp.bexp list) ~(task : Task.t)
         let mod_expr = if expr_is_zero lhs then rhs else lhs in
         match mod_expr with
         | Exp.Binary
-            ( N_binary.Mod,
-              Exp.Binary (N_binary.Minus, Exp.Var block, warp_base),
+            ( N_binary.Mod _,
+              Exp.Binary (N_binary.Minus _, Exp.Var block, warp_base),
               step )
           when Variable.equal block head_block -> (
             match match_var_times_int warp_base with
@@ -837,9 +840,10 @@ let head_block_owner_matches (terms : Exp.bexp list) ~(task : Task.t)
               when Int.equal tile_cols_factor tile_cols_value
                    && expr_proven_as ~value:head_step_value terms step
                    && warp_owner_for_thread terms ~task ~warp ~subgroup ->
-                term_has_relation terms ~op:N_rel.Le ~lhs:warp_base
+                term_has_relation terms ~op:(N_rel.Le Signedness.Signed)
+                  ~lhs:warp_base
                   ~rhs:(Exp.Var head_block)
-                && term_has_relation terms ~op:N_rel.Lt
+                && term_has_relation terms ~op:(N_rel.Lt Signedness.Signed)
                      ~lhs:(Exp.Var head_block) ~rhs:head_dim
             | _ -> false)
         | _ -> false)
@@ -863,7 +867,7 @@ let wmma_tile_rows_from_elem_bound (terms : Exp.bexp list)
     ~(elem_idx : Variable.t) ~(tile_cols_value : int) : int option =
   terms
   |> List.find_map (function
-    | Exp.NRel (N_rel.Lt, lhs, rhs) when nexp_equiv lhs (Exp.Var elem_idx) -> (
+    | Exp.NRel (N_rel.Lt _, lhs, rhs) when nexp_equiv lhs (Exp.Var elem_idx) -> (
         match expr_proven_positive_constant terms rhs with
         | Some limit when limit mod tile_cols_value = 0 ->
             Some (limit / tile_cols_value)
@@ -896,7 +900,8 @@ let wmma_tile_descriptors (terms : Exp.bexp list) ~(task : Task.t)
   | Exp.Var tile_index ->
       wmma_tile_index_alias_shapes terms ~tile_index
       |> List.map (fun tile_shape ->
-          equality_var_to_binary terms ~var:tile_shape.elem ~op:N_binary.Mod
+          equality_var_to_binary terms ~var:tile_shape.elem
+            ~op:(N_binary.Mod Signedness.Signed)
           |> List.map (fun (elem_idx, tile_cols) ->
               match elem_idx with
               | Exp.Var elem_idx -> (
@@ -906,7 +911,7 @@ let wmma_tile_descriptors (terms : Exp.bexp list) ~(task : Task.t)
                         nexp_equiv row_elem_idx (Exp.Var elem_idx)
                         && nexp_equiv row_tile_cols tile_cols)
                       (equality_var_to_binary terms ~var:tile_shape.tile_row
-                         ~op:N_binary.Div)
+                         ~op:(N_binary.Div Signedness.Signed))
                   in
                   if not has_row_decomposition then []
                   else
@@ -1020,7 +1025,13 @@ let wmma_tile_row_lane_ownership_matches ?(globals = Variable.Set.empty)
 
 let numeric_relation_is_negation (left : N_rel.t) (right : N_rel.t) : bool =
   match (left, right) with
-  | Eq, Neq | Neq, Eq | Lt, Ge | Ge, Lt | Gt, Le | Le, Gt -> true
+  | Eq, Neq
+  | Neq, Eq
+  | Lt _, Ge _
+  | Ge _, Lt _
+  | Gt _, Le _
+  | Le _, Gt _ ->
+      true
   | _ -> false
 
 let normalized_condition_terms (condition : Exp.bexp) : Exp.bexp list =

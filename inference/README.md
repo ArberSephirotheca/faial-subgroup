@@ -53,10 +53,10 @@ Each stage provides an `is_global` helper function for consistent filtering and 
 - **JSON input** from c-to-json tool (LLVM AST dump)
 - **Memory extraction** via state monad in `d_lang.ml`
 - **CUDA include shims** in `inference/cuda_include/` are parser-only
-  declarations added to the local `cu-to-json` invocation by
-  `Cu_to_json.cu_to_json_res`. The WMMA shim (`mma.h`) lets Clang capture
-  focused `nvcuda::wmma` declarations and calls, but it does not add DRF
-  semantics.
+  declarations added only by subgroup-aware analyzer/artifact entry points.
+  Ordinary `Cu_to_json.cu_to_json_res` calls keep the upstream include list.
+  The WMMA shim (`mma.h`) lets Clang capture focused `nvcuda::wmma`
+  declarations and calls, but it does not add DRF semantics.
 
 ### CUDA WMMA Source Surface
 
@@ -73,21 +73,18 @@ explicitly rather than falling back to guessed workgroup-only semantics.
 
 ### CUDA Dependency Preservation
 
-The `D_lang` to `Imp` boundary preserves focused scalar, loop, helper, and
-constant dependencies that feed later subgroup/matrix analysis:
+Ordinary `D_lang` to `Imp` lowering is the upstream Faial implementation. The
+subgroup route does not add helper summaries, source rejection, or pointer
+rules to that shared lowering. Instead, `Subgroup_source` directly records the
+scalar aliases, loop facts, warp helpers, shuffles, and matrix operations that
+its event and uniformity models need. This keeps extension precision from
+changing ordinary MAP obligations.
 
-- scalar helper calls such as `min`, `max`, `fminf`, `fmaxf`, `divUp`, and the
-  existing Faial predicate helpers are lowered to expression dependencies;
-- focused conversion and warp helper calls such as `__half2float`,
-  `__float2half_rn`, `warp_sum`, `warp_max`, `warp_reduce_sum`,
-  `warp_reduce_max`, `__shfl_sync`, and `__shfl_down_sync` are kept as
-  explicit dependency summaries instead of being silently dropped;
-- global `const int` declarations and loop bounds/steps remain visible in the
-  generated `Imp` preamble and loop ranges.
-
-Subgroup-only operations also route through the subgroup/matrix carrier when
-the required target configuration is present. For example, `__syncwarp` is not
-treated as a workgroup barrier or a no-op in ordinary `Imp` lowering.
+With explicit subgroup configuration, focused calls such as `warp_sum`,
+`warp_max`, `warp_reduce_sum`, `warp_reduce_max`, `__shfl_sync`,
+`__shfl_down_sync`, and `__syncwarp` become subgroup sites. Without subgroup
+configuration the CLI deliberately follows upstream lowering; that
+compatibility path is not a subgroup-aware proof of kernels using those calls.
 
 ### CUDA Pointer Alias Boundary
 
@@ -100,14 +97,19 @@ subgroup/matrix work needs:
 - `__restrict__`-qualified pointer parameters are still recognized as pointer
   array parameters by the ordinary `Imp` intake, but the current workgroup DRF
   path does not attach a no-alias semantic guarantee to that qualifier;
-- WMMA calls are still rejected before ordinary `Imp` lowering, and the
-  unsupported boundary keeps the call text, including matrix pointer arguments
-  such as `tile_base + d`, available in diagnostics.
+- subgroup extraction preserves matrix pointer expressions such as
+  `tile_base + d` in its own diagnostics and footprint records.
+
+Array declarations remain storage declarations even when Clang serializes
+their implicit initialization as an empty constructor expression, for example
+`half KQ[4224]` as `half[4224]()`. Only pointer or `auto` declarations enter
+the subgroup pointer-alias table; array declarations are never reinterpreted
+as aliases to their initializer.
 
 Conditional pointer aliases require source-parameter-aware alias resolution.
-Until the first-class subgroup/matrix representation owns that path, unresolved
-forms such as `KV_OVERLAP ? K : V` fail with `Unsupported_source` rather than
-falling back to a guessed base pointer.
+When such an alias is needed by subgroup extraction, unresolved forms fail
+explicitly rather than falling back to a guessed base pointer. Ordinary
+`D_to_imp` keeps upstream behavior and does not inherit this strict check.
 
 ### Subgroup/Matrix Representation Boundary
 
@@ -145,6 +147,11 @@ carrier:
   focused WMMA calls route to `Subgroup_matrix` and require an explicit target
   configuration, currently CUDA x-contiguous
   `threadIdx.x / subgroup_size`;
+- a launch wrapper that calls a subgroup kernel is rejected explicitly until
+  the router can inline the callee while preserving launch assertions and
+  argument substitution. It is never analyzed as an empty ordinary wrapper,
+  which previously allowed contradictory launch assumptions to produce a
+  vacuous result;
 - the supported focused WMMA call shapes are exact:
   `fill_fragment(fragment, value)`, `load_matrix_sync(fragment, pointer, ldm)`,
   `mma_sync(d, a, b, c)`, and

@@ -1,3 +1,4 @@
+module App_analysis = Analysis
 open Drf
 open Protocols
 open Stage0
@@ -181,7 +182,7 @@ end
 
 let print_box : PrintBox.t -> unit = PrintBox_text.output stdout
 
-let render_ordinary (solution : Analysis.ordinary) : bool =
+let render_ordinary (solution : App_analysis.ordinary) : bool =
   let kernel_name = solution.kernel.name in
   let errors =
     solution.report
@@ -249,25 +250,25 @@ let render_ordinary (solution : Analysis.ordinary) : bool =
   let unk, errs = Common.either_split errors in
   let errs = List.split errs |> snd in
   let err_count = List.length errs in
-  match Analysis.ordinary_verdict solution with
-  | Analysis.Verdict.Vacuous ->
+  match App_analysis.ordinary_verdict solution with
+  | App_analysis.Verdict.Vacuous ->
       T.print_string
         [ T.Bold; T.Foreground T.Yellow ]
         ("Kernel '" ^ kernel_name
        ^ "' is vacuous (precondition is unsatisfiable; race pipeline skipped).\n");
-      (match solution.Analysis.vacuous with
+      (match solution.App_analysis.vacuous with
       | Some pre ->
           T.print_string [ T.Bold ] "Precondition:\n";
           print_string (Indent.to_string (Exp.b_to_s pre));
           print_endline ""
       | None -> ());
       true
-  | Analysis.Verdict.Drf ->
+  | App_analysis.Verdict.Drf ->
       T.print_string
         [ T.Bold; T.Foreground T.Green ]
         ("Kernel '" ^ kernel_name ^ "' is DRF!\n");
       false
-  | Analysis.Verdict.Timeout ->
+  | App_analysis.Verdict.Timeout ->
       let n = List.length unk |> string_of_int in
       T.print_string
         [ T.Bold; T.Foreground T.Yellow ]
@@ -275,7 +276,7 @@ let render_ordinary (solution : Analysis.ordinary) : bool =
        ^ (if n = "1" then "" else "s")
        ^ "; verdict is inconclusive. Try increasing the timeout.\n");
       true
-  | Analysis.Verdict.Racy ->
+  | App_analysis.Verdict.Racy ->
       let err_count_s = string_of_int err_count in
       let dr = "data-race" ^ if err_count = 1 then "" else "s" in
       T.print_string
@@ -289,18 +290,18 @@ let render_ordinary (solution : Analysis.ordinary) : bool =
       else ();
       true
 
-let render_subgroup (solution : Analysis.subgroup) : bool =
+let render_subgroup (solution : App_analysis.subgroup) : bool =
   Drf.Subgroup_solver.summary_lines ~uniformity:solution.uniformity
     solution.memory
   |> List.iter print_endline;
-  not (Analysis.subgroup_is_safe solution)
+  not (App_analysis.subgroup_is_safe solution)
 
-let render (output : Analysis.t list) : unit =
+let render (output : App_analysis.t list) : unit =
   let total = ref 0 in
   output
   |> List.iter (function
-    | Analysis.Ordinary solution ->
+    | App_analysis.Ordinary solution ->
         if render_ordinary solution then total := !total + 1
-    | Analysis.Subgroup solution ->
+    | App_analysis.Subgroup solution ->
         if render_subgroup solution then total := !total + 1);
   if !total > 0 then exit 1 else ()

@@ -154,12 +154,14 @@ let subscript ?(ty = J_type.int) (name : string) (index : D_lang.Expr.t list) :
     ~location:Stage0.Location.empty
 
 let read_stmt ?(target = "tmp") (source : D_lang.d_subscript) : D_lang.Stmt.t =
-  D_lang.Stmt.ReadAccessStmt { target = var target; source; ty = C_type.int }
+  D_lang.Stmt.ReadAccessStmt
+    { target = var target; source; ty = C_type.int; guard = None }
 
 let write_stmt ?payload (target : D_lang.d_subscript) : D_lang.Stmt.t =
-  D_lang.Stmt.WriteAccessStmt { target; source = ident "value"; payload }
+  D_lang.Stmt.WriteAccessStmt
+    { target; source = ident "value"; payload; guard = None }
 
-let atomic_add () : Atomic.t =
+let atomic_add () : D_lang.Expr.t Atomic.t =
   match Atomic.from_name (var "atomicAdd") with
   | Some atomic -> atomic
   | None -> Alcotest.fail "atomicAdd should be a known Faial atomic"
@@ -167,7 +169,13 @@ let atomic_add () : Atomic.t =
 let atomic_stmt ?(target = "old") (source : D_lang.d_subscript) : D_lang.Stmt.t
     =
   D_lang.Stmt.AtomicAccessStmt
-    { target = var target; source; atomic = atomic_add (); ty = C_type.int }
+    {
+      target = var target;
+      source;
+      atomic = atomic_add ();
+      ty = C_type.int;
+      guard = None;
+    }
 
 let expect_single_site_control (name : string) (code : D_lang.Stmt.t) :
     Source.site_control =
@@ -209,6 +217,7 @@ let test_non_wmma_routes_to_ordinary_imp_without_subgroup_config () : unit =
             ~ty:J_type.int ~location:Stage0.Location.empty;
         source = ident "tid";
         payload = None;
+        guard = None;
       }
   in
   match
@@ -226,6 +235,45 @@ let test_missing_config_fails_only_on_subgroup_path () : unit =
       Alcotest.(check string) "subgroup kernel name" "syncwarp" kernel
   | Ok _ -> Alcotest.fail "subgroup path unexpectedly accepted missing config"
   | Error error -> Alcotest.fail (Source.error_to_string error)
+
+let test_launch_wrapper_for_subgroup_kernel_fails_explicitly () : unit =
+  let callee =
+    kernel ~attribute:D_lang.KernelAttr.Auxiliary "warp_body"
+      (D_lang.Stmt.SExpr (call_expr "__syncwarp" []))
+  in
+  let wrapper =
+    kernel "warp_body@launch"
+      (D_lang.Stmt.SExpr (call_expr "warp_body" []))
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel callee; D_lang.Def.Kernel wrapper ]
+  with
+  | Error
+      (Source.Subgroup_callee_requires_inlining
+        { kernel = actual_kernel; callee = actual_callee }) ->
+      Alcotest.(check string)
+        "wrapper name" "warp_body@launch" actual_kernel;
+      Alcotest.(check string) "callee name" "warp_body" actual_callee
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+  | Ok _ -> Alcotest.fail "subgroup launch wrapper was analyzed in isolation"
+
+let test_array_default_initializer_is_not_a_pointer_alias () : unit =
+  let array_ty = ty "half[4224]" in
+  let array_init =
+    D_lang.Expr.CXXConstructExpr { args = []; ty = array_ty }
+  in
+  let code =
+    D_lang.Stmt.from_list
+      [ DeclStmt [ decl ~ty:array_ty "KQ" array_init ]; syncwarp_stmt ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "array_default_init" code) ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix _ ] -> ()
+  | _ -> Alcotest.fail "array default initializer did not stay on subgroup route"
 
 let test_wmma_source_generates_site_summary () : unit =
   let frag_a = ident ~ty:matrix_a_fragment_type "frag_a" in
@@ -1821,6 +1869,12 @@ let tests : unit Alcotest.test_case list =
     ( "missing config fails only on subgroup path",
       `Quick,
       test_missing_config_fails_only_on_subgroup_path );
+    ( "subgroup launch wrapper fails before isolated routing",
+      `Quick,
+      test_launch_wrapper_for_subgroup_kernel_fails_explicitly );
+    ( "array default initializer is not a pointer alias",
+      `Quick,
+      test_array_default_initializer_is_not_a_pointer_alias );
     ( "WMMA source generates site summary",
       `Quick,
       test_wmma_source_generates_site_summary );

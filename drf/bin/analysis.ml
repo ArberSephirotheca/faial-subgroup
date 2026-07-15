@@ -1,5 +1,6 @@
 module Subgroup_solver = Drf.Subgroup_solver
 module Subgroup_uniformity = Drf.Subgroup_uniformity
+module Solve_drf = Drf.Solve_drf
 
 module Verdict = struct
   type t = Drf | Racy | Timeout | Vacuous

@@ -197,10 +197,10 @@ let rec nexp_is_subgroup_uniform ~(config : SM.Target_config.t)
       Ok
         (is_known_subgroup_uniform_builtin x
         || is_explicit_uniform_var ~uniform_vars x)
-  | Binary (Div, Var x, Num size) when Variable.equal x Variable.tid_x ->
+  | Binary (Div _, Var x, Num size) when Variable.equal x Variable.tid_x ->
       let* subgroup_size = require_subgroup_size config in
       Ok (Int.equal size subgroup_size)
-  | Binary (Mod, Var x, _) when Variable.equal x Variable.tid_x -> Ok false
+  | Binary (Mod _, Var x, _) when Variable.equal x Variable.tid_x -> Ok false
   | Binary (_, left, right) -> both left right
   | Unary (_, expr) ->
       nexp_is_subgroup_uniform ~config ~uniform_vars ~varying_vars expr
@@ -210,8 +210,6 @@ let rec nexp_is_subgroup_uniform ~(config : SM.Target_config.t)
       in
       if not cond then Ok false else both left right
   | NCall _ -> Ok false
-  | Other expr ->
-      nexp_is_subgroup_uniform ~config ~uniform_vars ~varying_vars expr
   | CastInt cond ->
       bexp_is_subgroup_uniform ~config ~uniform_vars ~varying_vars cond
 
@@ -249,6 +247,7 @@ and bexp_is_subgroup_uniform ~(config : SM.Target_config.t)
              else
                nexp_is_subgroup_uniform ~config ~uniform_vars ~varying_vars expr)
            (Ok true)
+  | AtomicResult _ | ThreadUnif _ -> Ok false
 
 let control_is_subgroup_uniform ~(config : SM.Target_config.t)
     ~(uniform_vars : Variable.Set.t) ~(varying_vars : Variable.Set.t)

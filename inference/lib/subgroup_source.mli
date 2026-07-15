@@ -2,6 +2,7 @@ type error =
   | Missing_subgroup_config of { kernel : string }
   | Unsupported_expression of { context : string; expr : string }
   | Unsupported_matrix_call of { op : string; reason : string; expr : string }
+  | Subgroup_callee_requires_inlining of { kernel : string; callee : string }
   | Ordinary_imp_error of string
 
 type routed_kernel =

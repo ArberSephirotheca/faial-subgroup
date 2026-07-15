@@ -52,6 +52,7 @@ module Ordinary_phase = struct
     approx_local_variables : Variable.Set.t;
     precondition : bexp;
     events : Ordinary_event.t list;
+    flat_kernel : Flatacc.Kernel.t;
   }
 
   let locals (phase : t) : Variable.Set.t =
@@ -76,78 +77,25 @@ module Ordinary_phase = struct
       approx_local_variables = kernel.approx_local_variables;
       precondition = kernel.pre;
       events;
+      flat_kernel = kernel;
     }
 end
 
 module Ordinary_obligation = struct
-  let project_event_access (locals : Variable.Set.t) (task : Task.t)
-      (event : Ordinary_event.t) : Flatacc.CondAccess.t =
-    event |> Ordinary_event.to_cond_access |> Symbexp.project_access locals task
-
-  let event_to_bexp ?(assign_index = true) (locals : Variable.Set.t)
-      (task : Task.t) (event : Ordinary_event.t) : bexp =
-    let projected = project_event_access locals task event in
-    Symbexp.Gen.assign_access_id task event.id
-    :: projected.cond
-    :: Symbexp.Gen.assign_mode task projected.access.mode
-    ::
-    (if assign_index then
-       List.mapi (Symbexp.Gen.assign_index N_rel.Eq task) projected.access.index
-     else [])
-    |> b_and_ex
-
-  let task_choices ?(assign_index = true) (phase : Ordinary_phase.t)
-      (task : Task.t) : bexp =
-    let locals = Ordinary_phase.locals phase in
-    phase.events
-    |> List.map (event_to_bexp ~assign_index locals task)
-    |> b_or_ex
-
-  let goal ?(assign_index = true) (arch : Architecture.t)
-      (phase : Ordinary_phase.t) : bexp =
-    let access_order =
-      n_le (Symbexp.Gen.access_id Task.Task1) (Symbexp.Gen.access_id Task.Task2)
-    in
-    b_and_ex
-      [
-        task_choices ~assign_index phase Task.Task1;
-        task_choices ~assign_index phase Task.Task2;
-        access_order;
-        Ordinary_phase.dim phase |> Symbexp.Gen.assign_dim;
-        Symbexp.Gen.mode_spec arch;
-      ]
-    |> b_and phase.precondition
-
-  let access_summaries (phase : Ordinary_phase.t) : Symbexp.AccessSummary.t list
-      =
-    let locals = Ordinary_phase.locals phase in
-    let pre_fns = Exp.b_free_names phase.precondition Variable.Set.empty in
-    List.map
-      (fun (event : Ordinary_event.t) ->
-        let cond_fns = Exp.b_free_names event.guard Variable.Set.empty in
-        let data_fns = Access.free_names event.access Variable.Set.empty in
-        let ctrl_fns = Variable.Set.union pre_fns cond_fns in
-        let all_fns = Variable.Set.union data_fns ctrl_fns in
-        {
-          Symbexp.AccessSummary.access = event.access;
-          condition = Ordinary_event.condition event;
-          variables = all_fns;
-          globals = Variable.Set.diff all_fns locals;
-          data_approx = Variable.Set.inter phase.approx_local_variables data_fns;
-          control_approx =
-            Variable.Set.inter phase.approx_local_variables ctrl_fns;
-        })
-      phase.events
-
-  let to_proof ?(assign_index = true) (arch : Architecture.t)
+  (* Ordinary events are an ownership/classification boundary only. Keep MAP's
+     canonical proof encoder as the single source of truth so upstream changes
+     to conflict, atomic, or memory-model axioms cannot drift here. *)
+  let to_proof ?(memory_model = Memory_model.default) ?(assign_index = true)
+      (arch : Architecture.t)
       (phase : Ordinary_phase.t) : Symbexp.Proof.t =
-    Symbexp.Proof.make ~id:phase.phase_id ~kernel_name:phase.kernel_name
-      ~array_name:phase.array_name ~accesses:(access_summaries phase)
-      ~goal:(goal ~assign_index arch phase)
+    Symbexp.Proof.from_flat ~memory_model ~assign_index arch phase.phase_id
+      phase.flat_kernel
 
-  let from_flat ?(assign_index = true) (arch : Architecture.t) (phase_id : int)
-      (kernel : Flatacc.Kernel.t) : Symbexp.Proof.t =
-    kernel |> Ordinary_phase.from_flat ~phase_id |> to_proof ~assign_index arch
+  let from_flat ?(memory_model = Memory_model.default) ?(assign_index = true)
+      (arch : Architecture.t) (phase_id : int) (kernel : Flatacc.Kernel.t) :
+      Symbexp.Proof.t =
+    kernel |> Ordinary_phase.from_flat ~phase_id
+    |> to_proof ~memory_model ~assign_index arch
 end
 
 module Subgroup_event = struct
@@ -901,10 +849,9 @@ module Subgroup_obligation = struct
       | Var x -> Var (project_var task x)
       | Unary (op, expr) -> Unary (op, project_n expr)
       | Binary (op, left, right) -> Binary (op, project_n left, project_n right)
-      | NCall (name, expr) -> NCall (name, project_n expr)
+      | NCall (name, exprs) -> NCall (name, List.map project_n exprs)
       | NIf (cond, left, right) ->
           NIf (project_b cond, project_n left, project_n right)
-      | Other expr -> Other (project_n expr)
       | CastInt cond -> CastInt (project_b cond)
     and project_b (cond : Exp.bexp) : Exp.bexp =
       match cond with
@@ -912,9 +859,18 @@ module Subgroup_obligation = struct
       | NRel (op, left, right) -> NRel (op, project_n left, project_n right)
       | BRel (op, left, right) -> BRel (op, project_b left, project_b right)
       | BNot cond -> BNot (project_b cond)
-      | Pred (name, expr) -> Pred (name, project_n expr)
+      | Pred (name, exprs) -> Pred (name, List.map project_n exprs)
       | CastBool expr -> CastBool (project_n expr)
       | Distinct exprs -> Distinct (List.map project_n exprs)
+      | AtomicResult { target; array; index; operation } ->
+          AtomicResult
+            {
+              target;
+              array;
+              index = List.map project_n index;
+              operation = Atomic.Operation.map project_n operation;
+            }
+      | ThreadUnif expr -> ThreadUnif (project_n expr)
     in
     project_n expr
 
@@ -1115,10 +1071,10 @@ module Subgroup_obligation = struct
       (Exp.b_to_string obligation.goal)
 end
 
-let translate (arch : Architecture.t)
+let translate ?(memory_model = Memory_model.default) (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) :
     Symbexp.Proof.t Streamutil.stream =
-  Streamutil.mapi (Ordinary_obligation.from_flat arch) stream
+  Streamutil.mapi (Ordinary_obligation.from_flat ~memory_model arch) stream
 
 let sanity_check (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) :

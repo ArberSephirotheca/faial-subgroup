@@ -47,7 +47,8 @@ let parse_args () : unit =
 
 let parse_source (fname : string) : D_lang.Program.t =
   match
-    Cu_to_json.cu_to_json_res ~exe:!cu_to_json ~includes:(List.rev !includes)
+    Cu_to_json.cu_to_json_res ~exe:!cu_to_json
+      ~includes:(Cu_to_json.default_include_dirs () @ List.rev !includes)
       ~macros:(List.rev !macros) fname
   with
   | Error (status, msg) ->
@@ -68,7 +69,7 @@ let split_context_and_kernel (name : string) (program : D_lang.Program.t) :
         | D_lang.Def.Kernel kernel when String.equal kernel.name name ->
             (context_rev, Some kernel)
         | D_lang.Def.Kernel _ -> (context_rev, target)
-        | D_lang.Def.Declaration _ | Typedef _ | Enum _ ->
+        | D_lang.Def.Declaration _ | Typedef _ | Enum _ | LaunchParam _ ->
             (def :: context_rev, target))
       ([], None) program
   in

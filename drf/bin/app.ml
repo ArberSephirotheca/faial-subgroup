@@ -1,5 +1,6 @@
 open Stage0
 open Protocols
+module App_analysis = Analysis
 open Drf
 open Inference
 module SM = Subgroup_matrix
@@ -10,6 +11,48 @@ module Subgroup_obligation = Drf.Memory_event.Subgroup_obligation
 type kernel =
   | Ordinary_kernel of Protocols.Kernel.t
   | Subgroup_kernel of Subgroup_source.subgroup_kernel
+
+let kernel_name : kernel -> string = function
+  | Ordinary_kernel kernel -> Protocols.Kernel.name kernel
+  | Subgroup_kernel kernel -> kernel.matrix_kernel.name
+
+let with_kernel_name (name : string) : kernel -> kernel = function
+  | Ordinary_kernel kernel -> Ordinary_kernel { kernel with name }
+  | Subgroup_kernel kernel ->
+      let matrix_kernel =
+        SM.Kernel.make ~target_config:kernel.matrix_kernel.target_config ~name
+          kernel.matrix_kernel.body
+      in
+      Subgroup_kernel { kernel with matrix_kernel }
+
+(* Kernel enumeration and [--kernel] selection must use one identifier space.
+   Apply the same collision policy to ordinary and subgroup kernels in source
+   order so a token printed by [--list-kernels] always replays exactly. *)
+let uniquify_kernel_names (kernels : kernel list) : kernel list =
+  let module SS = Common.StringSet in
+  let initial =
+    List.fold_left
+      (fun names kernel -> SS.add (kernel_name kernel) names)
+      SS.empty kernels
+  in
+  let used = ref SS.empty in
+  List.map
+    (fun kernel ->
+      let name = kernel_name kernel in
+      if not (SS.mem name !used) then (
+        used := SS.add name !used;
+        kernel)
+      else
+        let rec fresh suffix =
+          let candidate = Printf.sprintf "%s_%d" name suffix in
+          if SS.mem candidate !used || SS.mem candidate initial then
+            fresh (suffix + 1)
+          else candidate
+        in
+        let name = fresh 2 in
+        used := SS.add name !used;
+        with_kernel_name name kernel)
+    kernels
 
 (* The pipeline stages [--stop-at] can target. Mirrors the order in
    [translate]: each stage prints what's left after its own
@@ -271,7 +314,7 @@ let to_string (app : t) : string =
       ^ "\n"
 
 let launch_contract_error (error : Launch_contract.error) : 'a =
-  Logger.Colors.error (Launch_contract.error_to_string error);
+  Logger.Colors.error (fun () -> Launch_contract.error_to_string error);
   exit 2
 
 let require_ok (result : ('a, Launch_contract.error) result) : 'a =
@@ -302,8 +345,8 @@ let checked_source_options ~block_dim ~grid_dim (filename : string) :
   let options : Gv_parser.t =
     match Gv_parser.parse filename with
     | Some gv ->
-        Logger.Colors.info
-          ("Found GPUVerify args in source file: " ^ Gv_parser.to_string gv);
+        Logger.Colors.info (fun () ->
+            "Found GPUVerify args in source file: " ^ Gv_parser.to_string gv);
         gv
     | None -> Gv_parser.make ()
   in
@@ -313,58 +356,55 @@ let checked_source_options ~block_dim ~grid_dim (filename : string) :
     grid_dim = (match grid_dim with Some g -> g | None -> options.grid_dim);
   }
 
-let parse_cuda_program ~abort_on_parsing_failure ~block_dim ~grid_dim ~includes
-    ~macros ~cu_to_json ~ignore_asserts:_ ~launch_params ~cbor
-    (filename : string) :
-    Gv_parser.t * D_lang.Program.t =
-  let json =
-    Cu_to_json.cu_to_json
-      ~ignore_fail:(not abort_on_parsing_failure)
-      ~on_error:(fun _ -> exit 2)
-      ~includes ~macros ~exe:cu_to_json ~launch_params ~cbor filename
+let load_cjson ~exit_status (filename : string) : Yojson.Basic.t =
+  let raw =
+    Phase_timer.measure "inference/cjson-load" (fun () ->
+        try In_channel.with_open_text filename In_channel.input_all
+        with Sys_error error ->
+          prerr_endline ("cjson: " ^ error);
+          exit exit_status)
   in
-  let options = checked_source_options ~block_dim ~grid_dim filename in
+  Phase_timer.measure "inference/yojson-parse" (fun () ->
+      try Yojson.Basic.from_string raw
+      with Yojson.Json_error error ->
+        prerr_endline ("cjson: invalid JSON in " ^ filename ^ ": " ^ error);
+        exit exit_status)
+
+let parse_cuda_json ~assume_launch (json : Yojson.Basic.t) :
+    D_lang.Program.t =
   match C_lang.Program.parse json with
-  | Ok program -> (options, D_lang.rewrite_program program)
+  | Ok program ->
+      let program = D_lang.rewrite_program program in
+      if assume_launch then Synthesise_launches.rewrite_program program
+      else program
   | Error error ->
       Rjson.print_error error;
       exit 2
+
+let parse_cuda_program ~abort_on_parsing_failure ~block_dim ~grid_dim ~includes
+    ~macros ~cu_to_json ~ignore_asserts:_ ~launch_params ~cbor
+    (filename : string) : Gv_parser.t * D_lang.Program.t =
+  let json, options =
+    if String.ends_with ~suffix:".cjson" filename then
+      ( load_cjson ~exit_status:2 filename,
+        checked_source_options ~block_dim ~grid_dim filename )
+    else
+      let json =
+        Cu_to_json.cu_to_json
+          ~ignore_fail:(not abort_on_parsing_failure)
+          ~on_error:(fun _ -> exit 2)
+          ~includes ~macros ~exe:cu_to_json ~launch_params ~cbor filename
+      in
+      (json, checked_source_options ~block_dim ~grid_dim filename)
+  in
+  (options, parse_cuda_json ~assume_launch:launch_params json)
 
 let subgroup_target_config (subgroup_size : int) : SM.Target_config.t =
   match SM.Target_config.subgroup_size subgroup_size with
   | Ok size -> SM.Target_config.cuda_x_contiguous size
   | Error error ->
-      Logger.Colors.error (SM.Target_config.error_to_string error);
+      Logger.Colors.error (fun () -> SM.Target_config.error_to_string error);
       exit 2
-
-let split_context_and_kernel (name : string) (program : D_lang.Program.t) :
-    D_lang.Def.t list * D_lang.Kernel.t =
-  let context_rev, target =
-    List.fold_left
-      (fun (context_rev, target) def ->
-        match def with
-        | D_lang.Def.Kernel kernel when String.equal kernel.name name ->
-            (context_rev, Some kernel)
-        | D_lang.Def.Kernel _ -> (context_rev, target)
-        | D_lang.Def.Declaration _ | Typedef _ | Enum _ ->
-            (def :: context_rev, target))
-      ([], None) program
-  in
-  match target with
-  | Some kernel -> (List.rev context_rev, kernel)
-  | None ->
-      Logger.Colors.error ("kernel '" ^ name ^ "' not found!");
-      exit (-1)
-
-let route_program ?target_config ~(only_kernel : string option)
-    (program : D_lang.Program.t) :
-    (Subgroup_source.routed_kernel list, Subgroup_source.error) result =
-  match only_kernel with
-  | Some name ->
-      let context_defs, kernel = split_context_and_kernel name program in
-      Subgroup_source.route_kernel ?target_config ~context_defs kernel
-      |> Result.map (fun kernel -> [ kernel ])
-  | None -> Subgroup_source.route_program ?target_config program
 
 let compile_ordinary_kernels ~(inline_calls : bool) ~(ignore_asserts : bool)
     (kernels : Imp.Kernel.t list) : kernel list =
@@ -377,16 +417,6 @@ let compile_ordinary_kernels ~(inline_calls : bool) ~(ignore_asserts : bool)
   |> List.filter Protocols.Kernel.is_global
   |> List.map (fun kernel -> Ordinary_kernel kernel)
 
-let compile_ordinary_program ~(inline_calls : bool) ~(ignore_asserts : bool)
-    (program : D_lang.Program.t) : kernel list =
-  let kernels =
-    try D_to_imp.Silent.parse_program program
-    with D_to_imp.Unsupported_source msg ->
-      Logger.Colors.error msg;
-      exit 2
-  in
-  compile_ordinary_kernels ~inline_calls ~ignore_asserts kernels
-
 let kernels_of_routed ~(inline_calls : bool) ~(ignore_asserts : bool)
     (kernel : Subgroup_source.routed_kernel) : kernel list =
   match kernel with
@@ -396,11 +426,12 @@ let kernels_of_routed ~(inline_calls : bool) ~(ignore_asserts : bool)
 
 let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
     ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json ~ignore_asserts
-    ~assume_launch ~cbor ~only_kernel ~(subgroup_size : int) : parsed =
+    ~assume_launch ~cbor ~(subgroup_size : int) : parsed =
   if String.ends_with ~suffix:".wgsl" filename then (
-    Logger.Colors.error
-      "--subgroup-size is only supported for CUDA subgroup/matrix analysis.";
+    Logger.Colors.error (fun () ->
+        "--subgroup-size is only supported for CUDA subgroup/matrix analysis.");
     exit 2);
+  let includes = Cu_to_json.default_include_dirs () @ includes in
   let options, program =
     parse_cuda_program
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
@@ -409,9 +440,9 @@ let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
       filename
   in
   let target_config = subgroup_target_config subgroup_size in
-  match route_program ~target_config ~only_kernel program with
+  match Subgroup_source.route_program ~target_config program with
   | Error error ->
-      Logger.Colors.error (Subgroup_source.error_to_string error);
+      Logger.Colors.error (fun () -> Subgroup_source.error_to_string error);
       exit 2
   | Ok routed ->
       {
@@ -422,61 +453,21 @@ let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
           |> List.concat;
       }
 
-let subgroup_kernel_without_config (only_kernel : string option)
-    (program : D_lang.Program.t) : string option =
-  let context_defs =
-    List.filter
-      (function
-        | D_lang.Def.Kernel _ -> false
-        | Declaration _ | Typedef _ | Enum _ -> true)
-      program
-  in
-  program
-  |> List.find_map (function
-    | D_lang.Def.Kernel kernel
-      when Option.fold ~none:true
-             ~some:(fun name -> String.equal name kernel.name)
-             only_kernel -> (
-        match Subgroup_source.route_kernel ~context_defs kernel with
-        | Error (Subgroup_source.Missing_subgroup_config _) -> Some kernel.name
-        | Ok _ | Error _ -> None)
-    | D_lang.Def.Kernel _ | Declaration _ | Typedef _ | Enum _ -> None)
-
 let parse_without_subgroup_config ~filename ~block_dim ~grid_dim ~includes
     ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json ~ignore_asserts
-    ~assume_launch ~cbor ~only_kernel : parsed =
-  if String.ends_with ~suffix:".wgsl" filename then
-    let parsed =
+    ~assume_launch ~cbor : parsed =
+  let parsed =
+    Phase_timer.measure "inference" (fun () ->
       Protocol_parser.Silent.to_proto
         ~abort_on_parsing_failure:(not ignore_parsing_errors)
         ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
         ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor
-        filename
-    in
-    {
-      options = parsed.options;
-      kernels = List.map (fun kernel -> Ordinary_kernel kernel) parsed.kernels;
-    }
-  else
-    let options, program =
-      parse_cuda_program
-        ~abort_on_parsing_failure:(not ignore_parsing_errors)
-        ~block_dim ~grid_dim ~includes ~macros ~cu_to_json ~ignore_asserts
-        ~launch_params:assume_launch ~cbor
-        filename
-    in
-    begin match subgroup_kernel_without_config only_kernel program with
-    | None -> ()
-    | Some kernel ->
-        Logger.Colors.error
-          (Subgroup_source.error_to_string
-             (Subgroup_source.Missing_subgroup_config { kernel }));
-        exit 2
-    end;
-    {
-      options;
-      kernels = compile_ordinary_program ~inline_calls ~ignore_asserts program;
-    }
+        filename)
+  in
+  {
+    options = parsed.options;
+    kernels = List.map (fun kernel -> Ordinary_kernel kernel) parsed.kernels;
+  }
 
 let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc ~show_symbexp
@@ -501,35 +492,11 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     | None ->
         parse_without_subgroup_config ~filename ~block_dim ~grid_dim ~includes
           ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json
-          ~ignore_asserts ~assume_launch ~cbor ~only_kernel
+          ~ignore_asserts ~assume_launch ~cbor
     | Some subgroup_size ->
         parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
           ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json
-          ~ignore_asserts ~assume_launch ~cbor ~only_kernel ~subgroup_size
-  in
-  (* Uniquify duplicate kernel names so that the user-facing flag
-     [--assume "K:BEXP"], the [--list-kernels] output, the per-kernel
-     [assumes] map, and the genie verdict JSON all address each
-     kernel by a distinct identifier. *)
-  let uniquify_mixed_kernels (kernels : kernel list) : kernel list =
-    let legacy =
-      kernels
-      |> List.filter_map (function
-        | Ordinary_kernel kernel -> Some kernel
-        | Subgroup_kernel _ -> None)
-      |> Protocols.Kernel.uniquify_names
-    in
-    let rec rebuild legacy kernels =
-      match (legacy, kernels) with
-      | _, [] -> []
-      | kernel :: legacy, Ordinary_kernel _ :: kernels ->
-          Ordinary_kernel kernel :: rebuild legacy kernels
-      | legacy, Subgroup_kernel kernel :: kernels ->
-          Subgroup_kernel kernel :: rebuild legacy kernels
-      | [], Ordinary_kernel _ :: _ ->
-          failwith "internal error: missing uniquified legacy kernel"
-    in
-    rebuild legacy kernels
+          ~ignore_asserts ~assume_launch ~cbor ~subgroup_size
   in
   let kernels =
     match launch_contract with
@@ -576,7 +543,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
                   (Launch_contract.Subgroup_kernel_unsupported
                      kernel.matrix_kernel.name))
   in
-  let kernels = uniquify_mixed_kernels kernels in
+  let kernels = uniquify_kernel_names kernels in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
   let block_dim =
     match launch_contract with
@@ -781,10 +748,6 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Flat_acc
        ~show:a.show_flat_acc Flatacc.print_kernels
 
-let kernel_name : kernel -> string = function
-  | Ordinary_kernel kernel -> Protocols.Kernel.name kernel
-  | Subgroup_kernel kernel -> kernel.matrix_kernel.name
-
 let only_kernel (a : t) (ks : kernel list) : kernel list =
   match a.only_kernel with
   | Some name ->
@@ -793,14 +756,14 @@ let only_kernel (a : t) (ks : kernel list) : kernel list =
       else ks
   | None -> ks
 
-let run (a : t) : Analysis.t list =
+let run (a : t) : App_analysis.t list =
   let check_ordinary_kernel arch (kernel : Protocols.Kernel.t) :
-      Analysis.ordinary =
+      App_analysis.ordinary =
     let report =
       kernel |> translate arch a
-      |> Memory_event.translate arch
-      |> Symbexp.add_rel_index N_rel.Le a.le_index
-      |> Symbexp.add_rel_index N_rel.Ge a.ge_index
+      |> Symbexp.translate ~memory_model:a.memory_model arch
+      |> Symbexp.add_rel_index (N_rel.Le Signedness.Signed) a.le_index
+      |> Symbexp.add_rel_index (N_rel.Ge Signedness.Signed) a.ge_index
       |> Symbexp.add_rel_index N_rel.Eq a.eq_index
       |> Symbexp.add ~tid:a.thread_idx_1 ~bid:a.block_idx_1
       |> Symbexp.add ~tid:a.thread_idx_2 ~bid:a.block_idx_2
@@ -815,14 +778,15 @@ let run (a : t) : Analysis.t list =
           Solve_drf.Solution.solve ~timeout:a.timeout
             ~show_proofs:a.show_proofs ~logic:a.logic
             ~solve_tactic:a.solve_tactic ~extras:kernel_extras
+            ~pre_solver:(Option.is_some a.launch_contract)
             ?block_dim:a.block_dim ps)
       |> Phase_timer.boundary "solve"
       |> Streamutil.to_list
     in
-    Analysis.{ kernel; report; vacuous = None }
+    App_analysis.{ kernel; report; vacuous = None }
   in
   let check_subgroup_kernel (subgroup : Subgroup_source.subgroup_kernel) :
-      Analysis.subgroup =
+      App_analysis.subgroup =
     let kernel = subgroup.matrix_kernel in
     let config =
       Subgroup_solver.solver_config ?timeout_ms:a.timeout ?logic:a.logic ()
@@ -834,7 +798,7 @@ let run (a : t) : Analysis.t list =
      with
     | Ok () -> ()
     | Error error ->
-        Logger.Colors.error error;
+        Logger.Colors.error (fun () -> error);
         exit 2);
     let memory =
       let globals = subgroup.memory_globals in
@@ -862,16 +826,16 @@ let run (a : t) : Analysis.t list =
       with
       | Ok result -> result
       | Error error ->
-          Logger.Colors.error
-            ("subgroup uniformity configuration error: "
-            ^ Subgroup_uniformity.error_to_string error);
+          Logger.Colors.error (fun () ->
+              "subgroup uniformity configuration error: "
+              ^ Subgroup_uniformity.error_to_string error);
           exit 2
     in
-    Analysis.{ kernel; memory; uniformity }
+    App_analysis.{ kernel; memory; uniformity }
   in
   a.kernels |> only_kernel a
   |> List.map (function
-    | Subgroup_kernel kernel -> Analysis.Subgroup (check_subgroup_kernel kernel)
+    | Subgroup_kernel kernel -> App_analysis.Subgroup (check_subgroup_kernel kernel)
     | Ordinary_kernel kernel ->
         let vacuous : Exp.bexp option =
           if not a.check_pre_sat then None
@@ -888,17 +852,17 @@ let run (a : t) : Analysis.t list =
             | [] -> None
         in
         match vacuous with
-        | Some _ -> Analysis.Ordinary { kernel; report = []; vacuous }
+        | Some _ -> App_analysis.Ordinary { kernel; report = []; vacuous }
         | None -> (
-        let rec check_until (archs : Architecture.t list) : Analysis.t =
+        let rec check_until (archs : Architecture.t list) : App_analysis.t =
           match archs with
-          | [] -> Analysis.Ordinary { kernel; report = []; vacuous = None }
-          | [ arch ] -> Analysis.Ordinary (check_ordinary_kernel arch kernel)
+          | [] -> App_analysis.Ordinary { kernel; report = []; vacuous = None }
+          | [ arch ] -> App_analysis.Ordinary (check_ordinary_kernel arch kernel)
           | arch :: archs ->
               let ordinary = check_ordinary_kernel arch kernel in
-              if Analysis.ordinary_is_safe ordinary then check_until archs
-              else Analysis.Ordinary ordinary
+              if App_analysis.ordinary_is_safe ordinary then check_until archs
+              else App_analysis.Ordinary ordinary
         in
         try check_until a.archs
         with Stop_at_stage ->
-          Analysis.Ordinary { kernel; report = []; vacuous = None }))
+          App_analysis.Ordinary { kernel; report = []; vacuous = None }))

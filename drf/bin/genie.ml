@@ -1,6 +1,7 @@
 open Stage0
 open Protocols
 open Protocols_parsing
+module App_analysis = Analysis
 open Drf
 open Drf_genie
 open Cmdliner
@@ -91,11 +92,40 @@ let bexp_signedness (sign : Variable.t -> Signedness.t) (b : Exp.bexp)
     | _, _ -> Signedness.Signed)
     fvs Signedness.Signed
 
-let all_safe (rs : Analysis.t list) : bool =
-  List.for_all Analysis.is_safe rs
+let all_safe (rs : App_analysis.t list) : bool =
+  List.for_all App_analysis.is_safe rs
+
+let ordinary_kernel_exn : App.kernel -> Kernel.t = function
+  | App.Ordinary_kernel kernel -> kernel
+  | App.Subgroup_kernel _ ->
+      invalid_arg "faial-genie does not support subgroup/matrix kernels"
+
+let ordinary_kernels (app : App.t) : Kernel.t list =
+  app.kernels |> App.only_kernel app |> List.map ordinary_kernel_exn
+
+let wrap_ordinary_kernels (kernels : Kernel.t list) : App.kernel list =
+  List.map (fun kernel -> App.Ordinary_kernel kernel) kernels
+
+let ordinary_analysis_exn : App_analysis.t -> App_analysis.ordinary = function
+  | App_analysis.Ordinary ordinary -> ordinary
+  | App_analysis.Subgroup _ ->
+      invalid_arg "faial-genie received a subgroup/matrix analysis"
+
+let ordinary_drf_analysis_exn (analysis : App_analysis.t) : Drf.Analysis.t =
+  let ordinary = ordinary_analysis_exn analysis in
+  Drf.Analysis.
+    {
+      kernel = ordinary.kernel;
+      report = ordinary.report;
+      vacuous = ordinary.vacuous;
+    }
+
+let ordinary_drf_analyses_exn (analyses : App_analysis.t list) :
+    Drf.Analysis.t list =
+  List.map ordinary_drf_analysis_exn analyses
 
 let access_set_of (app : App.t) : Reachability.AccessSet.t =
-  app.kernels |> App.only_kernel app
+  ordinary_kernels app
   |> List.concat_map (fun k ->
     k
     |> Reachability.prepare_kernel
@@ -135,7 +165,7 @@ let t1_stream_of (arch : Architecture.t) (app : App.t)
    already includes any user [--assume]s and any abductive Φ folded
    in by [app_with_extras]). *)
 let coreach_pairs_of (app : App.t) : Co_reach.pair list =
-  app.kernels |> App.only_kernel app
+  ordinary_kernels app
   |> List.concat_map (fun (k : Kernel.t) ->
     List.concat_map (fun arch ->
       coreach_stream_of arch app k
@@ -151,7 +181,7 @@ let coreach_pairs_of (app : App.t) : Co_reach.pair list =
    many phase splits but few race-candidate fragments). *)
 let coreach_pairs_restricted_of (baseline_keys : Co_reach.KeySet.t)
     (app : App.t) : Co_reach.pair list =
-  app.kernels |> App.only_kernel app
+  ordinary_kernels app
   |> List.concat_map (fun (k : Kernel.t) ->
     List.concat_map (fun arch ->
       coreach_stream_of arch app k
@@ -165,7 +195,7 @@ let coreach_pairs_restricted_of (baseline_keys : Co_reach.KeySet.t)
    is "every baseline key remains T1-SAT". *)
 let t1_keys_restricted_of (baseline_keys : Co_reach.KeySet.t)
     (app : App.t) : Co_reach.KeySet.t =
-  app.kernels |> App.only_kernel app
+  ordinary_kernels app
   |> List.fold_left (fun acc (k : Kernel.t) ->
     List.fold_left (fun acc arch ->
       t1_stream_of arch app k
@@ -220,7 +250,7 @@ let gate_holds_simple (_baseline : Reachability.AccessSet.t)
     (app : App.t) : bool =
   Phase_timer.measure "genie/gate" (fun () ->
     Stats.incr "gate_checks";
-    app.kernels |> App.only_kernel app
+    ordinary_kernels app
     |> List.for_all (fun k ->
       k
       |> Reachability.prepare_kernel
@@ -274,7 +304,7 @@ end
 
 let gate_holds_cached (cache : Gate_cache.t)
     (_baseline : Reachability.AccessSet.t) (app : App.t) : bool =
-  app.kernels |> App.only_kernel app
+  ordinary_kernels app
   |> List.for_all (fun k ->
     let slot =
       Gate_cache.get_or_init cache
@@ -365,7 +395,7 @@ let merge_extras (first : per_kernel_extras) (second : per_kernel_extras)
   List.map (fun kn -> (kn, lookup first kn @ lookup second kn))
     (names_in_first @ names_only_in_second)
 
-let run_assuming (extras : per_kernel_extras) (app : App.t) : Analysis.t list =
+let run_assuming (extras : per_kernel_extras) (app : App.t) : App_analysis.t list =
   Phase_timer.measure "genie/race" (fun () ->
     Stats.incr "race_queries";
     app |> app_with_extras extras |> App.run)
@@ -428,11 +458,12 @@ let shrink_via_core (_baseline : 'a) (app : App.t)
     let analyses = App.run { app with core_extras } in
     if not (all_safe analyses) then None
     else
-      (* Group cores by kernel: each [Analysis.t]'s proofs share a
+      (* Group cores by kernel: each [App_analysis.t]'s proofs share a
          kernel, so their cores all live in the same ID space. *)
       let per_kernel_needed : (string * IntSet.t) list =
         analyses
-        |> List.map (fun (a : Analysis.t) ->
+        |> List.map (fun analysis ->
+          let a = ordinary_analysis_exn analysis in
           let ids =
             a.report
             |> List.concat_map (fun (s : Solve_drf.Solution.t) ->
@@ -505,7 +536,8 @@ let weaken_for_gate
     (extras : per_kernel_extras) : per_kernel_extras =
   Phase_timer.measure "genie/weaken" (fun () ->
     let kernel_by_name (kn : string) : Kernel.t option =
-      List.find_opt (fun (k : Kernel.t) -> Kernel.name k = kn) app.kernels
+      List.find_opt (fun (k : Kernel.t) -> Kernel.name k = kn)
+        (ordinary_kernels app)
     in
     List.map (fun (kn, bs) ->
       match kernel_by_name kn with
@@ -562,7 +594,7 @@ let abductive_loop
     (app : App.t)
     (baseline : 'baseline)
     : per_kernel_extras option =
-  let kernels = App.only_kernel app app.kernels in
+  let kernels = ordinary_kernels app in
   if kernels = [] then None
   else
     let session =
@@ -594,18 +626,23 @@ let abductive_loop
     if all_safe baseline_result then Some []
     else
       let racy_names =
-        List.filter_map (fun (a : Analysis.t) ->
-          if Analysis.is_safe a then None
-          else Some (Protocols.Kernel.name a.kernel))
+        List.filter_map (fun analysis ->
+          if App_analysis.is_safe analysis then None
+          else
+            let a = ordinary_analysis_exn analysis in
+            Some (Protocols.Kernel.name a.kernel))
           baseline_result
       in
       Stats.set "racy_kernels" (List.length racy_names);
       Stats.set "drf_kernels" (List.length kernels - List.length racy_names);
       let app_for_drf =
-        { app with kernels =
-            List.filter (fun k ->
-              List.mem (Protocols.Kernel.name k) racy_names)
-              app.kernels }
+        let kernels =
+          kernels
+          |> List.filter (fun k ->
+                 List.mem (Protocols.Kernel.name k) racy_names)
+          |> wrap_ordinary_kernels
+        in
+        { app with kernels }
       in
       let drf_and_gate (extras : per_kernel_extras) =
         let app' = app_with_extras extras app in
@@ -635,7 +672,7 @@ let abductive_loop
         | None ->
           fun extras ->
             let app' = app_with_extras extras app in
-            app'.kernels |> App.only_kernel app'
+            ordinary_kernels app'
             |> List.exists (fun k ->
               k
               |> Reachability.prepare_kernel
@@ -675,7 +712,9 @@ let abductive_loop
                  | None -> None
                  | Some new_extras -> loop (iter + 1) new_extras)
           else
-            let added = Abduction.add_all result session in
+            let added =
+              Abduction.add_all (ordinary_drf_analyses_exn result) session
+            in
             Stats.incr ~by:added "samples_added";
             if added = 0 then None
             else
@@ -686,7 +725,9 @@ let abductive_loop
       (* Seed the session with the baseline racy witnesses, then solve
          once to pick the first abductive candidate before entering
          the loop body at iter 1. *)
-      let added = Abduction.add_all baseline_result session in
+      let added =
+        Abduction.add_all (ordinary_drf_analyses_exn baseline_result) session
+      in
       Stats.incr ~by:added "samples_added";
       if added = 0 then None
       else
@@ -702,7 +743,7 @@ let blanket_extras (app : App.t) : per_kernel_extras =
     Variable.bdim_x; Variable.bdim_y; Variable.bdim_z;
     Variable.gdim_x; Variable.gdim_y; Variable.gdim_z;
   ] in
-  app.kernels
+  ordinary_kernels app
   |> List.map (fun (k : Kernel.t) ->
     let params = int_params k in
     let sign v = Abduction.signedness_of k v in
@@ -877,7 +918,7 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
     let scopes =
       List.map (fun (k : Kernel.t) ->
         (Kernel.name k, Access_partition.abductive_scope k))
-        (App.only_kernel app app.kernels)
+        (ordinary_kernels app)
     in
     let scope_of (kn : string) : Variable.Set.t option =
       List.assoc_opt kn scopes
@@ -894,7 +935,7 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
         let table =
           List.map (fun (k : Kernel.t) ->
             (Kernel.name k, Access_partition.accessed_dims k))
-            (App.only_kernel app app.kernels)
+            (ordinary_kernels app)
         in
         Some (fun kn -> List.assoc_opt kn table)
       else None
@@ -931,7 +972,7 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
           (Kernel.name k,
            Reachability.make_any_access_slot
              ~timeout:prune_timeout_ms prepared))
-          (App.only_kernel app app.kernels))
+          (ordinary_kernels app))
     in
     let prune_candidate (kn : string) (b : Exp.bexp) : bool =
       match List.assoc_opt kn slots with
@@ -952,7 +993,7 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
        baseline. That matches the slot-less fallback's behaviour for
        a kernel the proposed Φ does not touch. *)
     let non_trivial (extras : per_kernel_extras) : bool =
-      App.only_kernel app app.kernels
+      ordinary_kernels app
       |> List.exists (fun k ->
         let kn = Protocols.Kernel.name k in
         let delta_clauses =
@@ -1018,7 +1059,7 @@ let compute_verdict_legacy ~(use_core_shrink : bool) ~(iter_cap : int)
     let scopes =
       List.map (fun (k : Kernel.t) ->
         (Kernel.name k, Access_partition.abductive_scope k))
-        (App.only_kernel app app.kernels)
+        (ordinary_kernels app)
     in
     let scope_of (kn : string) : Variable.Set.t option =
       List.assoc_opt kn scopes
@@ -1028,7 +1069,7 @@ let compute_verdict_legacy ~(use_core_shrink : bool) ~(iter_cap : int)
         let table =
           List.map (fun (k : Kernel.t) ->
             (Kernel.name k, Access_partition.accessed_dims k))
-            (App.only_kernel app app.kernels)
+            (ordinary_kernels app)
         in
         Some (fun kn -> List.assoc_opt kn table)
       else None
@@ -1050,7 +1091,7 @@ let compute_verdict_legacy ~(use_core_shrink : bool) ~(iter_cap : int)
           in
           let app' = app_with_extras minimal app in
           let blanket_non_trivial =
-            app'.kernels |> App.only_kernel app'
+            ordinary_kernels app'
             |> List.exists (fun k ->
               k
               |> Reachability.prepare_kernel
@@ -1124,7 +1165,7 @@ let report_json (app : App.t) (v : verdict) : unit =
   in
   let status = match v with Racy -> "racy" | _ -> "drf" in
   let kernels =
-    App.only_kernel app app.kernels
+    ordinary_kernels app
     |> List.map (fun (k : Kernel.t) ->
       `Assoc [
         ("kernel_name", `String k.name);
@@ -1331,10 +1372,12 @@ let main =
       ~memory_model:Memory_model.default
       ~cbor:true
       ~stop_at:None
+      ~subgroup_size:None
+      ~launch_contract:None
   in
   try
   if list_kernels then begin
-    app.kernels
+    ordinary_kernels app
     |> List.iter (fun k ->
       if show_signature
       then print_endline (Protocols.Kernel.signature_string k)
@@ -1352,23 +1395,24 @@ let main =
          and contribute an empty pin list, preserving the [(name, [])]
          entry shape that [report_json]'s [assumes] consumer expects. *)
       let selected_names =
-        App.only_kernel app app.kernels
+        ordinary_kernels app
         |> List.map Protocols.Kernel.name
       in
+      let all_kernels = List.map ordinary_kernel_exn app.kernels in
       let kernels_with_pins =
         List.map (fun k ->
           if List.mem (Protocols.Kernel.name k) selected_names then
             usage_constrained_kernel ~gate_timeout_ms ~params:app.params k
           else
             (k, []))
-          app.kernels
+          all_kernels
       in
       let kernels = List.map fst kernels_with_pins in
       let pins =
         List.map (fun (k, ps) -> (Protocols.Kernel.name k, ps))
           kernels_with_pins
       in
-      { app with kernels }, pins
+      { app with kernels = wrap_ordinary_kernels kernels }, pins
     in
     let v =
       compute_verdict ~use_core_shrink ~iter_cap ~cached_gate ~legacy_gate

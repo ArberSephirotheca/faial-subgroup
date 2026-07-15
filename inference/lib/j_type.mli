@@ -26,6 +26,5 @@ val desugared_matches : (C_type.t -> bool) -> t -> bool
 (* Type conversion *)
 val to_c_type_res : t -> C_type.t Rjson.j_result
 val to_c_type : ?default:C_type.t -> t -> C_type.t
-val to_desugared_c_type_res : t -> C_type.t Rjson.j_result
-val to_desugared_c_type : ?default:C_type.t -> t -> C_type.t
+val to_desugared_c_type : t -> C_type.t
 val to_string : t -> string

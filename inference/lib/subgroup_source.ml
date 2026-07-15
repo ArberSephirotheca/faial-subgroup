@@ -1,12 +1,14 @@
 open Protocols
 module SM = Subgroup_matrix
 module StringMap = Stage0.Common.StringMap
+module StringSet = Stage0.Common.StringSet
 module IntMap = Stage0.Common.IntMap
 
 type error =
   | Missing_subgroup_config of { kernel : string }
   | Unsupported_expression of { context : string; expr : string }
   | Unsupported_matrix_call of { op : string; reason : string; expr : string }
+  | Subgroup_callee_requires_inlining of { kernel : string; callee : string }
   | Ordinary_imp_error of string
 
 type routed_kernel =
@@ -60,6 +62,11 @@ let error_to_string : error -> string = function
       Printf.sprintf "unsupported expression in %s: %s" context expr
   | Unsupported_matrix_call { op; reason; expr } ->
       Printf.sprintf "unsupported matrix call '%s': %s in %s" op reason expr
+  | Subgroup_callee_requires_inlining { kernel; callee } ->
+      Printf.sprintf
+        "kernel '%s' calls subgroup kernel '%s'; subgroup launch-wrapper \
+         inlining is required to preserve launch assertions and arguments"
+        kernel callee
   | Ordinary_imp_error msg -> msg
 
 let call_name : D_lang.Expr.t -> string option = function
@@ -114,13 +121,19 @@ let rec nexp_of_expr ~(context : string) (expr : D_lang.Expr.t) :
   | IntegerLiteral n | CharacterLiteral n -> Ok (Exp.Num n)
   | FloatingLiteral n -> Ok (Exp.Num (Float.to_int n))
   | MemberExpr _ -> Ok (Exp.Var (Variable.from_name (expr_to_string expr)))
-  | BinaryOperator { opcode = "+"; lhs; rhs; _ } -> binary Plus lhs rhs
-  | BinaryOperator { opcode = "-"; lhs; rhs; _ } -> binary Minus lhs rhs
-  | BinaryOperator { opcode = "*"; lhs; rhs; _ } -> binary Mult lhs rhs
-  | BinaryOperator { opcode = "/"; lhs; rhs; _ } -> binary Div lhs rhs
-  | BinaryOperator { opcode = "%"; lhs; rhs; _ } -> binary Mod lhs rhs
+  | BinaryOperator { opcode = "+"; lhs; rhs; _ } ->
+      binary (Plus Signedness.Signed) lhs rhs
+  | BinaryOperator { opcode = "-"; lhs; rhs; _ } ->
+      binary (Minus Signedness.Signed) lhs rhs
+  | BinaryOperator { opcode = "*"; lhs; rhs; _ } ->
+      binary (Mult Signedness.Signed) lhs rhs
+  | BinaryOperator { opcode = "/"; lhs; rhs; _ } ->
+      binary (Div Signedness.Signed) lhs rhs
+  | BinaryOperator { opcode = "%"; lhs; rhs; _ } ->
+      binary (Mod Signedness.Signed) lhs rhs
   | BinaryOperator { opcode = "<<"; lhs; rhs; _ } -> binary LeftShift lhs rhs
-  | BinaryOperator { opcode = ">>"; lhs; rhs; _ } -> binary RightShift lhs rhs
+  | BinaryOperator { opcode = ">>"; lhs; rhs; _ } ->
+      binary (RightShift Signedness.Signed) lhs rhs
   | BinaryOperator { opcode = "&"; lhs; rhs; _ } -> binary BitAnd lhs rhs
   | BinaryOperator { opcode = "|"; lhs; rhs; _ } -> binary BitOr lhs rhs
   | BinaryOperator { opcode = "^"; lhs; rhs; _ } -> binary BitXOr lhs rhs
@@ -141,7 +154,7 @@ let rec nexp_of_expr ~(context : string) (expr : D_lang.Expr.t) :
          || Option.equal String.equal (call_name func) (Some "__float2half_rn")
     ->
       let* value = nexp_of_expr ~context value in
-      Ok (Exp.NCall (Option.get (call_name func), value))
+      Ok (Exp.NCall (Option.get (call_name func), [ value ]))
   | UnaryOperator { opcode = "-"; child; _ } ->
       let* child = nexp_of_expr ~context child in
       Ok (Exp.n_uminus child)
@@ -151,10 +164,10 @@ let rec nexp_of_expr ~(context : string) (expr : D_lang.Expr.t) :
 let n_rel_of_opcode : string -> N_rel.t option = function
   | "==" -> Some N_rel.Eq
   | "!=" -> Some N_rel.Neq
-  | "<" -> Some N_rel.Lt
-  | "<=" -> Some N_rel.Le
-  | ">" -> Some N_rel.Gt
-  | ">=" -> Some N_rel.Ge
+  | "<" -> Some (N_rel.Lt Signedness.Signed)
+  | "<=" -> Some (N_rel.Le Signedness.Signed)
+  | ">" -> Some (N_rel.Gt Signedness.Signed)
+  | ">=" -> Some (N_rel.Ge Signedness.Signed)
   | _ -> None
 
 let b_rel_of_opcode : string -> B_rel.t option = function
@@ -546,17 +559,17 @@ let rec nexp_is_source_uniform (state : collect_state) : Exp.nexp -> bool =
       Option.is_some (target_subgroup_size_value state)
   | Var x ->
       is_source_uniform_builtin x || is_explicit_source_uniform_var state x
-  | Binary (Div, Var x, Num size)
+  | Binary (Div _, Var x, Num size)
     when Variable.equal x Variable.tid_x
          || Variable.Set.mem x state.thread_x_coordinate_vars ->
       Option.equal Int.equal (target_subgroup_size_value state) (Some size)
-  | Binary (Mod, Var x, _)
+  | Binary (Mod _, Var x, _)
     when Variable.equal x Variable.tid_x
          || Variable.Set.mem x state.thread_x_coordinate_vars ->
       false
   | Binary (_, lhs, rhs) ->
       nexp_is_source_uniform state lhs && nexp_is_source_uniform state rhs
-  | Unary (_, expr) | Other expr -> nexp_is_source_uniform state expr
+  | Unary (_, expr) -> nexp_is_source_uniform state expr
   | NIf (cond, then_expr, else_expr) ->
       bexp_is_source_uniform state cond
       && nexp_is_source_uniform state then_expr
@@ -574,6 +587,7 @@ and bexp_is_source_uniform (state : collect_state) : Exp.bexp -> bool = function
   | Pred _ -> false
   | CastBool expr -> nexp_is_source_uniform state expr
   | Distinct exprs -> List.for_all (nexp_is_source_uniform state) exprs
+  | AtomicResult _ | ThreadUnif _ -> false
 
 let control_stack_is_source_uniform (state : collect_state) : bool =
   List.for_all (bexp_is_source_uniform state) state.control_stack
@@ -615,7 +629,7 @@ let rec nexp_is_memory_global (state : collect_state) : Exp.nexp -> bool =
   | Var x -> is_memory_global_builtin x || is_explicit_memory_global_var state x
   | Binary (_, lhs, rhs) ->
       nexp_is_memory_global state lhs && nexp_is_memory_global state rhs
-  | Unary (_, expr) | Other expr -> nexp_is_memory_global state expr
+  | Unary (_, expr) -> nexp_is_memory_global state expr
   | NIf (cond, then_expr, else_expr) ->
       bexp_is_memory_global state cond
       && nexp_is_memory_global state then_expr
@@ -633,6 +647,7 @@ and bexp_is_memory_global (state : collect_state) : Exp.bexp -> bool = function
   | Pred _ -> false
   | CastBool expr -> nexp_is_memory_global state expr
   | Distinct exprs -> List.for_all (nexp_is_memory_global state) exprs
+  | AtomicResult _ | ThreadUnif _ -> false
 
 let control_stack_is_memory_global (state : collect_state) : bool =
   List.for_all (bexp_is_memory_global state) state.control_stack
@@ -1105,18 +1120,18 @@ let condition_free_names (conditions : Exp.bexp list) : Variable.Set.t =
 let rec nexp_definedness_conditions (expr : Exp.nexp) : Exp.bexp list =
   match expr with
   | Num _ | Var _ -> []
-  | Binary ((Div | Mod), lhs, rhs) ->
+  | Binary ((Div _ | Mod _), lhs, rhs) ->
       nexp_definedness_conditions lhs
       @ nexp_definedness_conditions rhs
       @ [ Exp.n_neq rhs (Exp.Num 0) ]
   | Binary (_, lhs, rhs) ->
       nexp_definedness_conditions lhs @ nexp_definedness_conditions rhs
-  | Unary (_, expr) | Other expr -> nexp_definedness_conditions expr
+  | Unary (_, expr) -> nexp_definedness_conditions expr
   | NIf (cond, then_expr, else_expr) ->
       bexp_definedness_conditions cond
       @ nexp_definedness_conditions then_expr
       @ nexp_definedness_conditions else_expr
-  | NCall (_, expr) -> nexp_definedness_conditions expr
+  | NCall (_, exprs) -> List.concat_map nexp_definedness_conditions exprs
   | CastInt cond -> bexp_definedness_conditions cond
 
 and bexp_definedness_conditions (condition : Exp.bexp) : Exp.bexp list =
@@ -1127,8 +1142,15 @@ and bexp_definedness_conditions (condition : Exp.bexp) : Exp.bexp list =
   | BRel (_, lhs, rhs) ->
       bexp_definedness_conditions lhs @ bexp_definedness_conditions rhs
   | BNot condition -> bexp_definedness_conditions condition
-  | Pred (_, expr) | CastBool expr -> nexp_definedness_conditions expr
+  | Pred (_, exprs) -> List.concat_map nexp_definedness_conditions exprs
+  | CastBool expr -> nexp_definedness_conditions expr
   | Distinct exprs -> List.concat_map nexp_definedness_conditions exprs
+  | AtomicResult { index; operation; _ } ->
+      List.concat_map nexp_definedness_conditions index
+      @ Atomic.Operation.fold
+          (fun expr acc -> nexp_definedness_conditions expr @ acc)
+          operation []
+  | ThreadUnif expr -> nexp_definedness_conditions expr
 
 let access_definedness_conditions (access : Access.t) : Exp.bexp list =
   List.concat_map nexp_definedness_conditions access.index
@@ -1210,6 +1232,54 @@ let record_ordinary_memory_effect ~(kind : ordinary_memory_kind)
       ordinary_memory_effects_rev =
         memory_effect :: state.ordinary_memory_effects_rev;
     }
+
+let atomic_operation_of_source ~(context : string)
+    (atomic : D_lang.Expr.t Atomic.t) : (Exp.nexp Atomic.t, error) result =
+  let ( let* ) = Result.bind in
+  let map_operand = function
+    | None -> Ok None
+    | Some expr ->
+        let* expr = nexp_of_expr ~context expr in
+        Ok (Some expr)
+  in
+  let* operation =
+    match atomic.operation with
+    | Atomic.Operation.Add expr ->
+        let* expr = map_operand expr in
+        Ok (Atomic.Operation.Add expr)
+    | Atomic.Operation.Sub expr ->
+        let* expr = map_operand expr in
+        Ok (Atomic.Operation.Sub expr)
+    | Atomic.Operation.Inc expr ->
+        let* expr = map_operand expr in
+        Ok (Atomic.Operation.Inc expr)
+    | Atomic.Operation.Dec expr ->
+        let* expr = map_operand expr in
+        Ok (Atomic.Operation.Dec expr)
+    | Atomic.Operation.And expr ->
+        let* expr = map_operand expr in
+        Ok (Atomic.Operation.And expr)
+    | Atomic.Operation.Or expr ->
+        let* expr = map_operand expr in
+        Ok (Atomic.Operation.Or expr)
+    | Atomic.Operation.Xor expr ->
+        let* expr = map_operand expr in
+        Ok (Atomic.Operation.Xor expr)
+    | Atomic.Operation.Min expr ->
+        let* expr = map_operand expr in
+        Ok (Atomic.Operation.Min expr)
+    | Atomic.Operation.Max expr ->
+        let* expr = map_operand expr in
+        Ok (Atomic.Operation.Max expr)
+    | Atomic.Operation.Exch expr ->
+        let* expr = map_operand expr in
+        Ok (Atomic.Operation.Exch expr)
+    | Atomic.Operation.CAS { expected; new_val } ->
+        let* expected = map_operand expected in
+        let* new_val = map_operand new_val in
+        Ok (Atomic.Operation.CAS { expected; new_val })
+  in
+  Ok { atomic with operation }
 
 let wmma_stmt (state : collect_state) (kind : D_lang.Wmma_call.kind)
     (func : D_lang.Expr.t) (args : D_lang.Expr.t list) :
@@ -1496,8 +1566,116 @@ let rec stmt_requires_subgroup : D_lang.Stmt.t -> bool = function
   | ReadAccessStmt read -> List.exists expr_requires_subgroup read.source.index
   | AtomicAccessStmt atomic ->
       List.exists expr_requires_subgroup atomic.source.index
-  | Skip | BreakStmt | GotoStmt | ReturnStmt None | ContinueStmt -> false
+  | LambdaDecl { captures; body; _ } ->
+      List.exists (fun (_, expr) -> expr_requires_subgroup expr) captures
+      || stmt_requires_subgroup body
+  | Skip | BreakStmt | GotoStmt | ReturnStmt None | ContinueStmt | AsmStmt _
+  | BarrierOp _ ->
+      false
   | ReturnStmt (Some expr) -> expr_requires_subgroup expr
+
+let rec first_map (f : 'a -> 'b option) : 'a list -> 'b option = function
+  | [] -> None
+  | value :: rest -> (
+      match f value with Some _ as found -> found | None -> first_map f rest)
+
+let first_some (left : 'a option) (right : 'a option) : 'a option =
+  match left with Some _ -> left | None -> right
+
+let rec expr_subgroup_callee (subgroup_kernels : StringSet.t) :
+    D_lang.Expr.t -> string option = function
+  | CallExpr { func; args; _ } | CXXOperatorCallExpr { func; args; _ } -> (
+      match call_name func with
+      | Some callee when StringSet.mem callee subgroup_kernels -> Some callee
+      | Some _ | None ->
+          first_some
+            (expr_subgroup_callee subgroup_kernels func)
+            (first_map (expr_subgroup_callee subgroup_kernels) args))
+  | BinaryOperator { lhs; rhs; _ } ->
+      first_some
+        (expr_subgroup_callee subgroup_kernels lhs)
+        (expr_subgroup_callee subgroup_kernels rhs)
+  | ConditionalOperator { cond; then_expr; else_expr; _ } ->
+      first_some
+        (expr_subgroup_callee subgroup_kernels cond)
+        (first_some
+           (expr_subgroup_callee subgroup_kernels then_expr)
+           (expr_subgroup_callee subgroup_kernels else_expr))
+  | UnaryOperator { child; _ }
+  | MemberExpr { base = child; _ }
+  | CXXNewExpr { arg = child; _ }
+  | CXXDeleteExpr { arg = child; _ } ->
+      expr_subgroup_callee subgroup_kernels child
+  | CXXConstructExpr { args; _ } ->
+      first_map (expr_subgroup_callee subgroup_kernels) args
+  | SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _ | CXXBoolLiteralExpr _
+  | FloatingLiteral _ | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _ ->
+      None
+
+let decl_subgroup_callee (subgroup_kernels : StringSet.t)
+    (decl : D_lang.Decl.t) : string option =
+  match decl.init with
+  | Some init ->
+      first_map (expr_subgroup_callee subgroup_kernels)
+        (D_lang.Init.to_exp init)
+  | None -> None
+
+let rec stmt_subgroup_callee (subgroup_kernels : StringSet.t) :
+    D_lang.Stmt.t -> string option = function
+  | SExpr expr | ReturnStmt (Some expr) ->
+      expr_subgroup_callee subgroup_kernels expr
+  | DeclStmt decls -> first_map (decl_subgroup_callee subgroup_kernels) decls
+  | Seq (left, right) ->
+      first_some
+        (stmt_subgroup_callee subgroup_kernels left)
+        (stmt_subgroup_callee subgroup_kernels right)
+  | IfStmt { cond; then_stmt; else_stmt } ->
+      first_some
+        (expr_subgroup_callee subgroup_kernels cond)
+        (first_some
+           (stmt_subgroup_callee subgroup_kernels then_stmt)
+           (stmt_subgroup_callee subgroup_kernels else_stmt))
+  | ForStmt { init; cond; inc; body } ->
+      let init_callee =
+        match init with
+        | Some (D_lang.ForInit.Decls decls) ->
+            first_map (decl_subgroup_callee subgroup_kernels) decls
+        | Some (Expr expr) -> expr_subgroup_callee subgroup_kernels expr
+        | None -> None
+      in
+      first_some init_callee
+        (first_some
+           (Option.bind cond (expr_subgroup_callee subgroup_kernels))
+           (first_some
+              (stmt_subgroup_callee subgroup_kernels inc)
+              (stmt_subgroup_callee subgroup_kernels body)))
+  | WhileStmt { cond; body }
+  | DoStmt { cond; body }
+  | SwitchStmt { cond; body } ->
+      first_some
+        (expr_subgroup_callee subgroup_kernels cond)
+        (stmt_subgroup_callee subgroup_kernels body)
+  | CaseStmt { case; body } ->
+      first_some
+        (expr_subgroup_callee subgroup_kernels case)
+        (stmt_subgroup_callee subgroup_kernels body)
+  | DefaultStmt body -> stmt_subgroup_callee subgroup_kernels body
+  | WriteAccessStmt write ->
+      first_map (expr_subgroup_callee subgroup_kernels)
+        (write.source :: write.target.index)
+  | ReadAccessStmt read ->
+      first_map (expr_subgroup_callee subgroup_kernels) read.source.index
+  | AtomicAccessStmt atomic ->
+      first_map (expr_subgroup_callee subgroup_kernels) atomic.source.index
+  | LambdaDecl { captures; body; _ } ->
+      first_some
+        (first_map
+           (fun (_, expr) -> expr_subgroup_callee subgroup_kernels expr)
+           captures)
+        (stmt_subgroup_callee subgroup_kernels body)
+  | Skip | BreakStmt | GotoStmt | ReturnStmt None | ContinueStmt | AsmStmt _
+  | BarrierOp _ ->
+      None
 
 let rec stmt_records_ordinary_memory_effect : D_lang.Stmt.t -> bool = function
   | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _ -> true
@@ -1520,7 +1698,7 @@ let rec stmt_records_ordinary_memory_effect : D_lang.Stmt.t -> bool = function
   | DefaultStmt body ->
       stmt_records_ordinary_memory_effect body
   | SExpr _ | DeclStmt _ | Skip | BreakStmt | GotoStmt | ReturnStmt _
-  | ContinueStmt ->
+  | ContinueStmt | AsmStmt _ | BarrierOp _ | LambdaDecl _ ->
       false
 
 let expr_updates_scalar_facts : D_lang.Expr.t -> bool = function
@@ -1557,7 +1735,8 @@ let rec stmt_updates_scalar_facts : D_lang.Stmt.t -> bool = function
   | DefaultStmt body ->
       stmt_updates_scalar_facts body
   | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _ | Skip | BreakStmt
-  | GotoStmt | ReturnStmt _ | ContinueStmt ->
+  | GotoStmt | ReturnStmt _ | ContinueStmt | AsmStmt _ | BarrierOp _
+  | LambdaDecl _ ->
       false
 
 let expr_updates_pointer_facts : D_lang.Expr.t -> bool = function
@@ -1592,7 +1771,8 @@ let rec stmt_updates_pointer_facts : D_lang.Stmt.t -> bool = function
   | DefaultStmt body ->
       stmt_updates_pointer_facts body
   | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _ | Skip | BreakStmt
-  | GotoStmt | ReturnStmt _ | ContinueStmt ->
+  | GotoStmt | ReturnStmt _ | ContinueStmt | AsmStmt _ | BarrierOp _
+  | LambdaDecl _ ->
       false
 
 let stmt_updates_source_facts (stmt : D_lang.Stmt.t) : bool =
@@ -1719,7 +1899,7 @@ let rec collect_expr ?result (state : collect_state) (expr : D_lang.Expr.t) :
 let collect_decl (state : collect_state) (decl : D_lang.Decl.t) :
     (collect_state, error) result =
   match decl.init with
-  | Some (IExpr rhs) when j_type_is_pointer_like decl.ty ->
+  | Some (IExpr rhs) when j_type_is_pointer_decl decl.ty ->
       let ( let* ) = Result.bind in
       let* source, offset =
         pointer_base_offset state ~context:"pointer alias initializer" rhs
@@ -1920,9 +2100,13 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
           collect_expr state expr)
         (Ok state) read.source.index
   | AtomicAccessStmt atomic ->
+      let* atomic_op =
+        atomic_operation_of_source ~context:"ordinary atomic operation"
+          atomic.atomic
+      in
       let* state =
         record_ordinary_memory_effect ~kind:Ordinary_atomic
-          ~mode:(Atomic atomic.atomic) ~context:"ordinary atomic access index"
+          ~mode:(Atomic atomic_op) ~context:"ordinary atomic access index"
           atomic.source state
       in
       List.fold_left
@@ -1930,22 +2114,20 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
           let* state = state in
           collect_expr state expr)
         (Ok state) atomic.source.index
-  | Skip | BreakStmt | GotoStmt | ReturnStmt None | ContinueStmt -> Ok state
+  | Skip | BreakStmt | GotoStmt | ReturnStmt None | ContinueStmt | AsmStmt _
+  | BarrierOp _ | LambdaDecl _ ->
+      Ok state
   | ReturnStmt (Some expr) -> collect_expr state expr
 
 let ordinary_imp_of_kernel (context_defs : D_lang.Def.t list)
     (kernel : D_lang.Kernel.t) : (Imp.Kernel.t, error) result =
-  try
-    match
-      D_to_imp.Silent.parse_program (context_defs @ [ D_lang.Def.Kernel kernel ])
-    with
-    | [ kernel ] -> Ok kernel
-    | kernels ->
-        Error
-          (Ordinary_imp_error
-             (Printf.sprintf "expected one ordinary Imp kernel, got %d"
-                (List.length kernels)))
-  with D_to_imp.Unsupported_source msg -> Error (Ordinary_imp_error msg)
+  match D_to_imp.Silent.parse_program (context_defs @ [ D_lang.Def.Kernel kernel ]) with
+  | [ kernel ] -> Ok kernel
+  | kernels ->
+      Error
+        (Ordinary_imp_error
+           (Printf.sprintf "expected one ordinary Imp kernel, got %d"
+              (List.length kernels)))
 
 let type_aliases_of_defs (context_defs : D_lang.Def.t list) :
     C_type.t StringMap.t =
@@ -1953,7 +2135,8 @@ let type_aliases_of_defs (context_defs : D_lang.Def.t list) :
     (fun aliases -> function
       | D_lang.Def.Typedef typedef ->
           StringMap.add typedef.name typedef.ty aliases
-      | D_lang.Def.Declaration _ | D_lang.Def.Kernel _ | D_lang.Def.Enum _ ->
+      | D_lang.Def.Declaration _ | D_lang.Def.Kernel _ | D_lang.Def.Enum _
+      | D_lang.Def.LaunchParam _ ->
           aliases)
     StringMap.empty context_defs
 
@@ -1967,7 +2150,7 @@ let seed_context_declaration_facts (state : collect_state)
   List.fold_left
     (fun state -> function
       | D_lang.Def.Declaration decl -> add_decl_facts state decl
-      | Typedef _ | Enum _ | Kernel _ -> state)
+      | Typedef _ | Enum _ | Kernel _ | LaunchParam _ -> state)
     state context_defs
 
 let subgroup_kernel_of_kernel (context_defs : D_lang.Def.t list)
@@ -2008,11 +2191,39 @@ let route_kernel ?(target_config = SM.Target_config.missing_cuda)
 let route_program ?target_config (program : D_lang.Program.t) :
     (routed_kernel list, error) result =
   let ( let* ) = Result.bind in
+  let direct_subgroup_kernels =
+    List.fold_left
+      (fun names -> function
+        | D_lang.Def.Kernel kernel when stmt_requires_subgroup kernel.code ->
+            StringSet.add kernel.name names
+        | D_lang.Def.Kernel _ | Declaration _ | Typedef _ | Enum _
+        | LaunchParam _ ->
+            names)
+      StringSet.empty program
+  in
+  let rec close_subgroup_dependencies names =
+    let expanded =
+      List.fold_left
+        (fun names -> function
+          | D_lang.Def.Kernel kernel
+            when Option.is_some (stmt_subgroup_callee names kernel.code) ->
+              StringSet.add kernel.name names
+          | D_lang.Def.Kernel _ | Declaration _ | Typedef _ | Enum _
+          | LaunchParam _ ->
+              names)
+        names program
+    in
+    if StringSet.equal names expanded then names
+    else close_subgroup_dependencies expanded
+  in
+  let subgroup_kernels =
+    close_subgroup_dependencies direct_subgroup_kernels
+  in
   let context_defs =
     List.filter
       (function
         | D_lang.Def.Kernel _ -> false
-        | Declaration _ | Typedef _ | Enum _ -> true)
+        | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> true)
       program
   in
   program
@@ -2020,10 +2231,18 @@ let route_program ?target_config (program : D_lang.Program.t) :
        (fun routed def ->
          let* routed = routed in
          match def with
-         | D_lang.Def.Kernel kernel ->
-             let* kernel = route_kernel ?target_config ~context_defs kernel in
-             Ok (kernel :: routed)
-         | Declaration _ | Typedef _ | Enum _ -> Ok routed)
+         | D_lang.Def.Kernel kernel -> (
+             match stmt_subgroup_callee subgroup_kernels kernel.code with
+             | Some callee when not (stmt_requires_subgroup kernel.code) ->
+                 Error
+                   (Subgroup_callee_requires_inlining
+                      { kernel = kernel.name; callee })
+             | Some _ | None ->
+                 let* kernel =
+                   route_kernel ?target_config ~context_defs kernel
+                 in
+                 Ok (kernel :: routed))
+         | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> Ok routed)
        (Ok [])
   |> Result.map List.rev
 

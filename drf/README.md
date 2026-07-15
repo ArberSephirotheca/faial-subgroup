@@ -31,29 +31,32 @@ subgroup/matrix memory obligations. For ordinary kernels, it consumes
 splitting, location splitting, and flat-access generation have already run.
 The adapter records ordinary memory events with access id, phase id, access
 mode, source guard, runtime condition, and source location from the access
-array variable. It then builds the same ordinary proof shape as
-`Symbexp.Proof.from_flat`: projected task choices, access-id ordering,
-index equality, non-negative index constraints, mode-conflict rules, runtime
-guards, preconditions, and access summaries.
+array variable. Ordinary proof construction delegates to the canonical
+`Symbexp.Proof.from_flat` encoder rather than copying its rules. This preserves
+the original MAP task projection, conflict rules, atomic axioms, selected
+memory-model assumptions, preconditions, and access summaries as upstream
+Faial evolves.
 
-This boundary now owns ordinary public proof construction for non-subgroup kernels:
-`App.run` routes flat-access streams through `Memory_event.translate`, and
-`--unreachable` routes through `Memory_event.sanity_check`. Downstream
-`Symbexp` proof decoration, CLI text/JSON output, and solver behavior still
-use the existing workgroup-oriented entry points. At this seam, workgroup
+This boundary does not replace ordinary public proof construction. `App.run`
+routes ordinary flat-access streams directly through canonical
+`Symbexp.translate`; `Memory_event.translate` remains an internal parity and
+extension adapter. At this seam, workgroup
 barriers are represented by the existing phase separation rather than by
 stable barrier-site event records; tasks that need barrier-site identity must
 move the event input earlier than `Flatacc`.
 
-`lib/flatacc.ml` also owns the projection boundary for phase-level loop ranges
-produced by phase splitting. Lifted range binders are local to the checked
-thread execution, so Flatacc keeps those binders in the local-variable set and
-attaches their `Range.to_cond` facts to each flattened access guard. The
-ordinary symbolic proof then projects them as `t$T1` and `t$T2` instead of
-using one shared symbolic induction variable. This preserves source loop
-scoping; it is not a DRF proof rule by itself. Ownership reasoning for
-specific shapes such as `base + threadIdx.x + k * stride` remains a separate,
-guarded solver or pre-solver concern.
+Mixed ordinary/subgroup parsing assigns user-facing kernel identifiers once,
+after routing. The same collision-free ordered list backs both
+`--list-kernels` and `--kernel`; selection is never applied to pre-compilation
+D-AST names. Consequently every emitted token either selects exactly one
+kernel on replay or fails during the same full-program routing step that
+prevented enumeration.
+
+`lib/flatacc.ml` keeps upstream local-variable classification. The subgroup
+extension does not reinterpret ordinary MAP loop binders. Ownership reasoning
+for recognized shapes such as `base + threadIdx.x + k * stride` remains a
+separate guarded pre-solver concern and is enabled only by an explicit launch
+contract.
 
 ## Launch Contracts
 
@@ -928,10 +931,22 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   x-contiguous subgroup/matrix route for CUDA kernels whose source contains
   subgroup or WMMA operations. The public route now builds subgroup/matrix
   memory obligations through `Memory_event.Subgroup_obligation` before handing
-  them to `Subgroup_solver`. Without this option, the ordinary non-WMMA
-  source-to-`Imp` path remains the default, but CUDA subgroup/matrix source is
-  rejected by `Subgroup_source` before ordinary `Imp` lowering so it cannot
-  silently fall back to workgroup-only semantics.
+  them to `Subgroup_solver`. Without this option, parsing, MAP construction,
+  symbolic obligations, and Z3 dispatch use the upstream Faial path unchanged.
+  Therefore a no-flag result for source containing subgroup/matrix operations
+  is only an upstream-compatibility result, not a subgroup-aware verdict.
+- A synthesized launch wrapper that calls a subgroup kernel currently fails
+  explicitly with both wrapper and callee names. Sound support requires
+  inlining the callee into the subgroup carrier while retaining launch
+  assertions and substituting actual arguments; isolated wrapper analysis is
+  forbidden because it can make `--assume-dims` contradict the real launch and
+  yield a vacuous precondition.
+- Cached CUDA JSON inputs (`*.cjson`) are accepted by the same public analyzer
+  route as live CUDA source. When `--assume-launch` is present, cached
+  `LaunchParam` entries are rewritten by the launch-synthesis pass before the
+  MAP pipeline runs. This keeps cached-AST comparisons aligned with live
+  `cu-to-json --launch-params` runs without treating a stale or launch-free
+  JSON artifact as proof evidence.
 - `--subgroup-size` validates `N` as a positive subgroup size and records the
   target as `cuda-like(threadIdx.x-contiguous(size=N))`. The model still does
   not infer warp size or lane mapping from the source.
@@ -962,6 +977,9 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   `faial-drf --cu-to-json=./bin/cu-to-json examples/drf/drf-saxpy.cu` still
   reports `Kernel 'saxpy' is DRF!` and does not require subgroup
   configuration.
+- The ordinary ownership pre-solver is also opt-in. `Solve_drf` invokes it only
+  when `--launch-contract` supplies the guarded source/launch facts; standard
+  Faial commands send canonical `Symbexp` obligations directly to Z3.
 - The focused Flash Attention analyzer path is not final Rust/OCaml semantic
   parity. The command reaches the subgroup pipeline, preserves the deterministic
   subgroup/matrix artifact, turns ordinary shared/global source effects into
