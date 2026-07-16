@@ -839,6 +839,7 @@ module Kernel = struct
     name : string;
     code : Stmt.t;
     type_params : Ty_param.t list;
+    template_args : C_lang.TemplateArgument.t list;
     params : Param.t list;
     attribute : KernelAttr.t;
   }
@@ -852,12 +853,18 @@ module Kernel = struct
         "[" ^ list_to_s Ty_param.to_string k.type_params ^ "]"
       else ""
     in
+    let targs =
+      let open C_lang in
+      if k.template_args <> [] then
+        "<" ^ list_to_s TemplateArgument.to_string k.template_args ^ ">"
+      else ""
+    in
     let open Indent in
     [
       (let open C_lang in
        Line
          (KernelAttr.to_string k.attribute
-         ^ " " ^ k.name ^ " " ^ tps ^ "("
+         ^ " " ^ k.name ^ targs ^ " " ^ tps ^ "("
          ^ list_to_s Param.to_string k.params
          ^ ") {"));
       Block (Stmt.to_s k.code);
@@ -1793,6 +1800,7 @@ let rewrite_kernel (k : C_lang.Kernel.t) : Kernel.t =
     code = rewrite_stmt k.code;
     params = k.params;
     type_params = k.type_params;
+    template_args = k.template_args;
     attribute = k.attribute;
   }
 

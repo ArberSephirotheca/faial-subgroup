@@ -350,6 +350,7 @@ let test_source_thread_x_guard_reaches_uniformity_checker () : unit =
             else_stmt = Skip;
           };
       type_params = [];
+      template_args = [];
       params = [];
       attribute = D_lang.KernelAttr.Default;
     }
@@ -388,6 +389,7 @@ let check_source_guarded_syncwarp_rejects (name : string) (code : D_lang.Stmt.t)
       name;
       code;
       type_params = [];
+      template_args = [];
       params = [];
       attribute = D_lang.KernelAttr.Default;
     }
@@ -437,6 +439,7 @@ let test_source_uniform_kernel_param_member_control_accepts () : unit =
             body = syncwarp_stmt;
           };
       type_params = [];
+      template_args = [];
       params = [ kernel_param "params" ];
       attribute = D_lang.KernelAttr.Default;
     }
@@ -490,6 +493,7 @@ let subgroup_id_alias_program ~(warp_size : int) : D_lang.Program.t =
         name = "subgroup_id_alias_syncwarp";
         code;
         type_params = [];
+        template_args = [];
         params = [];
         attribute = D_lang.KernelAttr.Default;
       };
@@ -557,6 +561,7 @@ let stale_subgroup_id_alias_program () : D_lang.Program.t =
         name = "stale_subgroup_alias_syncwarp";
         code;
         type_params = [];
+        template_args = [];
         params = [];
         attribute = D_lang.KernelAttr.Default;
       };
@@ -598,6 +603,7 @@ let non_uniform_control_assignment_program () : D_lang.Program.t =
         name = "divergent_assignment_syncwarp";
         code;
         type_params = [];
+        template_args = [];
         params = [];
         attribute = D_lang.KernelAttr.Default;
       };
@@ -640,6 +646,7 @@ let mixed_branch_subgroup_id_alias_program () : D_lang.Program.t =
         name = "mixed_branch_subgroup_alias_syncwarp";
         code;
         type_params = [];
+        template_args = [];
         params = [];
         attribute = D_lang.KernelAttr.Default;
       };
@@ -682,6 +689,7 @@ let one_path_branch_introduced_alias_program () : D_lang.Program.t =
         name = "one_path_branch_introduced_alias_syncwarp";
         code;
         type_params = [];
+        template_args = [];
         params = [];
         attribute = D_lang.KernelAttr.Default;
       };
@@ -724,6 +732,7 @@ let else_branch_site_snapshot_program () : D_lang.Program.t =
         name = "else_branch_site_snapshot_syncwarp";
         code;
         type_params = [];
+        template_args = [];
         params = [];
         attribute = D_lang.KernelAttr.Default;
       };
@@ -766,6 +775,7 @@ let loop_readded_subgroup_id_alias_program () : D_lang.Program.t =
         name = "loop_readded_subgroup_alias_syncwarp";
         code;
         type_params = [];
+        template_args = [];
         params = [];
         attribute = D_lang.KernelAttr.Default;
       };
@@ -804,6 +814,7 @@ let one_path_loop_introduced_alias_program () : D_lang.Program.t =
         name = "one_path_loop_introduced_alias_syncwarp";
         code;
         type_params = [];
+        template_args = [];
         params = [];
         attribute = D_lang.KernelAttr.Default;
       };
@@ -842,6 +853,7 @@ let one_path_loop_increment_alias_program () : D_lang.Program.t =
         name = "one_path_loop_increment_alias_syncwarp";
         code;
         type_params = [];
+        template_args = [];
         params = [];
         attribute = D_lang.KernelAttr.Default;
       };

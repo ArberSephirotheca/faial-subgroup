@@ -3,6 +3,17 @@ type error =
   | Unsupported_expression of { context : string; expr : string }
   | Unsupported_matrix_call of { op : string; reason : string; expr : string }
   | Subgroup_callee_requires_inlining of { kernel : string; callee : string }
+  | Launch_wrapper_inlining_error of {
+      kernel : string;
+      callee : string option;
+      reason : string;
+    }
+  | Conflicting_launch_dimension of {
+      kernel : string;
+      dimension : string;
+      previous : Protocols.Exp.nexp;
+      next : Protocols.Exp.nexp;
+    }
   | Ordinary_imp_error of string
 
 type routed_kernel =
@@ -47,6 +58,8 @@ and subgroup_kernel = {
   uniform_vars : Protocols.Variable.Set.t;
   memory_globals : Protocols.Variable.Set.t;
   ordinary_memory_effects : ordinary_memory_effect list;
+  launch_precondition : Protocols.Exp.bexp;
+  launch_dimensions : Protocols.Exp.nexp Protocols.Variable.Map.t;
 }
 
 val error_to_string : error -> string
@@ -62,6 +75,8 @@ val route_kernel :
 
 val route_program :
   ?target_config:Subgroup_matrix.Target_config.t ->
+  ?only_kernel:string ->
+  ?launch_wrappers:Stage0.Common.StringSet.t ->
   D_lang.Program.t ->
   (routed_kernel list, error) result
 

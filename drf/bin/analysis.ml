@@ -22,6 +22,7 @@ type subgroup = {
   kernel : Inference.Subgroup_matrix.Kernel.t;
   memory : Subgroup_solver.memory_outcome;
   uniformity : Subgroup_uniformity.function_result;
+  vacuous : Protocols.Exp.bexp option;
 }
 
 type t = Ordinary of ordinary | Subgroup of subgroup
@@ -61,9 +62,12 @@ let subgroup_full_verdict (a : subgroup) : Subgroup_uniformity.full_verdict =
     (Subgroup_uniformity.function_verdict a.uniformity)
 
 let subgroup_is_safe (a : subgroup) : bool =
-  match subgroup_full_verdict a with
-  | Subgroup_uniformity.Drf_full -> true
-  | Subgroup_uniformity.Not_drf -> false
+  match a.vacuous with
+  | Some _ -> false
+  | None -> (
+      match subgroup_full_verdict a with
+      | Subgroup_uniformity.Drf_full -> true
+      | Subgroup_uniformity.Not_drf -> false)
 
 let is_safe : t -> bool = function
   | Ordinary ordinary -> ordinary_is_safe ordinary

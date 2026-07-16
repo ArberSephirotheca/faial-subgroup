@@ -456,6 +456,7 @@ module Subgroup_obligation = struct
     | Missing_block_dim_for_subgroup_ordering
     | Invalid_block_dim of Dim3.t
     | Invalid_symbolic_checked_block_dim of string
+    | Incomplete_launch_checked_block_dim of string list
     | Conflicting_checked_block_dim_inputs
     | Ordinary_effect_target_config_mismatch of {
         expected : string;
@@ -473,6 +474,9 @@ module Subgroup_obligation = struct
           (Dim3.to_string block_dim)
     | Invalid_symbolic_checked_block_dim reason ->
         "invalid symbolic checked block dimensions: " ^ reason
+    | Incomplete_launch_checked_block_dim dimensions ->
+        "incomplete launch-derived checked block dimensions: missing "
+        ^ String.concat ", " dimensions
     | Conflicting_checked_block_dim_inputs ->
         "provide either concrete checked block dimensions or symbolic checked \
          block dimensions, not both"
@@ -607,6 +611,53 @@ module Subgroup_obligation = struct
             concrete_checked_dimension ~variable:Variable.bdim_z
               ~value:block_dim.z ~source:"concrete Dim3.z";
         }
+
+  let launch_checked_dimension ~(variable : Variable.t) (value : Exp.nexp) :
+      checked_dimension =
+    {
+      checked_dimension_variable = variable;
+      checked_dimension_value = value;
+      checked_dimension_upper_bound = value;
+      checked_dimension_source = "synthesized launch assertion";
+      checked_dimension_positive_guard = Some (Exp.n_gt value (Exp.Num 0));
+    }
+
+  let checked_block_dim_of_launch_dimensions
+      (dimensions : Exp.nexp Variable.Map.t) :
+      (checked_block_dim option, error) result =
+    let axes =
+      [
+        ("blockDim.x", Variable.bdim_x);
+        ("blockDim.y", Variable.bdim_y);
+        ("blockDim.z", Variable.bdim_z);
+      ]
+    in
+    let present =
+      List.filter_map
+        (fun (name, variable) ->
+          Variable.Map.find_opt variable dimensions
+          |> Option.map (fun value -> (name, variable, value)))
+        axes
+    in
+    match present with
+    | [] -> Ok None
+    | _ when List.length present <> List.length axes ->
+        let missing =
+          axes
+          |> List.filter_map (fun (name, variable) ->
+                 if Variable.Map.mem variable dimensions then None
+                 else Some name)
+        in
+        Error (Incomplete_launch_checked_block_dim missing)
+    | [ (_, _, x); (_, _, y); (_, _, z) ] ->
+        Ok
+          (Some
+             {
+               checked_dim_x = launch_checked_dimension ~variable:Variable.bdim_x x;
+               checked_dim_y = launch_checked_dimension ~variable:Variable.bdim_y y;
+               checked_dim_z = launch_checked_dimension ~variable:Variable.bdim_z z;
+             })
+    | _ -> failwith "checked block dimension axis accounting"
 
   let symbolic_checked_dimension ~(variable : Variable.t) ~(parameter : string)
       ~(source : string) ~(candidate_values : int list)
@@ -793,6 +844,8 @@ module Subgroup_obligation = struct
   let subgroup_kernel ?config ?(site_controls = [])
       ?(memory_globals = Variable.Set.empty)
       ?(uniform_vars = Variable.Set.empty) ?(ordinary_memory_effects = [])
+      ?(launch_precondition = Exp.Bool true)
+      ?(launch_dimensions = Variable.Map.empty)
       (kernel : SM.Kernel.t) : SS.subgroup_kernel =
     let matrix_kernel =
       match config with
@@ -805,6 +858,8 @@ module Subgroup_obligation = struct
       uniform_vars;
       memory_globals;
       ordinary_memory_effects;
+      launch_precondition;
+      launch_dimensions;
     }
 
   let unified_events_of_kernel ?config ?site_controls ?memory_globals
@@ -888,6 +943,16 @@ module Subgroup_obligation = struct
     in
     Exp.b_or_ex (List.map neq Variable.tid_list)
 
+  let block_index_domain_condition : Exp.bexp =
+    List.map2
+      (fun block_idx grid_dim ->
+        let block_idx = Exp.Var block_idx in
+        Exp.b_and
+          (Exp.n_ge block_idx (Exp.Num 0))
+          (Exp.n_lt block_idx (Exp.Var grid_dim)))
+      Variable.bid_list Variable.gdim_list
+    |> Exp.b_and_ex
+
   let checked_invocation_domain_condition
       (checked_block_dim : checked_block_dim) : (Exp.bexp, error) result =
     let dimensions = checked_block_dim_dimensions checked_block_dim in
@@ -903,6 +968,9 @@ module Subgroup_obligation = struct
       |> List.filter_map (fun dimension ->
           dimension.checked_dimension_positive_guard)
     in
+    let checked_precondition =
+      Exp.b_and_ex (block_dim_facts @ positive_guards)
+    in
     let task_bounds task =
       List.map2
         (fun thread_idx dimension ->
@@ -914,8 +982,17 @@ module Subgroup_obligation = struct
     in
     Ok
       (Exp.b_and_ex
-         (block_dim_facts @ positive_guards @ task_bounds Task.Task1
+         (checked_precondition :: task_bounds Task.Task1
         @ task_bounds Task.Task2))
+
+  let checked_block_dim_precondition (checked_block_dim : checked_block_dim) :
+      Exp.bexp =
+    checked_block_dim_dimensions checked_block_dim
+    |> List.concat_map (fun dimension ->
+           Exp.n_eq (Exp.Var dimension.checked_dimension_variable)
+             dimension.checked_dimension_value
+           :: Option.to_list dimension.checked_dimension_positive_guard)
+    |> Exp.b_and_ex
 
   let invocation_domain_condition ?checked_block_dim ?block_dim
       (left : conditional_access) (right : conditional_access) :
@@ -982,6 +1059,7 @@ module Subgroup_obligation = struct
       (Exp.b_and_ex
          [
            invocation_domain;
+           block_index_domain_condition;
            projected_thread_distinct;
            left_condition;
            right_condition;

@@ -198,6 +198,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     name;
     code = body;
     type_params = [];
+    template_args = lp.template_args;
     params;
     attribute = C_lang.KernelAttr.Default;
   }

@@ -371,19 +371,36 @@ let load_cjson ~exit_status (filename : string) : Yojson.Basic.t =
         exit exit_status)
 
 let parse_cuda_json ~assume_launch (json : Yojson.Basic.t) :
-    D_lang.Program.t =
+    D_lang.Program.t * Common.StringSet.t =
   match C_lang.Program.parse json with
   | Ok program ->
       let program = D_lang.rewrite_program program in
-      if assume_launch then Synthesise_launches.rewrite_program program
-      else program
+      let launch_wrappers =
+        if not assume_launch then Common.StringSet.empty
+        else
+          List.fold_left
+            (fun names -> function
+              | D_lang.Def.LaunchParam launch ->
+                  Common.StringSet.add
+                    (Synthesise_launches.synth_name launch)
+                    names
+              | D_lang.Def.Kernel _ | Declaration _ | Typedef _ | Enum _ ->
+                  names)
+            Common.StringSet.empty program
+      in
+      let program =
+        if assume_launch then Synthesise_launches.rewrite_program program
+        else program
+      in
+      (program, launch_wrappers)
   | Error error ->
       Rjson.print_error error;
       exit 2
 
 let parse_cuda_program ~abort_on_parsing_failure ~block_dim ~grid_dim ~includes
     ~macros ~cu_to_json ~ignore_asserts:_ ~launch_params ~cbor
-    (filename : string) : Gv_parser.t * D_lang.Program.t =
+    (filename : string) :
+    Gv_parser.t * D_lang.Program.t * Common.StringSet.t =
   let json, options =
     if String.ends_with ~suffix:".cjson" filename then
       ( load_cjson ~exit_status:2 filename,
@@ -397,7 +414,10 @@ let parse_cuda_program ~abort_on_parsing_failure ~block_dim ~grid_dim ~includes
       in
       (json, checked_source_options ~block_dim ~grid_dim filename)
   in
-  (options, parse_cuda_json ~assume_launch:launch_params json)
+  let program, launch_wrappers =
+    parse_cuda_json ~assume_launch:launch_params json
+  in
+  (options, program, launch_wrappers)
 
 let subgroup_target_config (subgroup_size : int) : SM.Target_config.t =
   match SM.Target_config.subgroup_size subgroup_size with
@@ -426,13 +446,13 @@ let kernels_of_routed ~(inline_calls : bool) ~(ignore_asserts : bool)
 
 let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
     ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json ~ignore_asserts
-    ~assume_launch ~cbor ~(subgroup_size : int) : parsed =
+    ~assume_launch ~cbor ~only_kernel ~(subgroup_size : int) : parsed =
   if String.ends_with ~suffix:".wgsl" filename then (
     Logger.Colors.error (fun () ->
         "--subgroup-size is only supported for CUDA subgroup/matrix analysis.");
     exit 2);
   let includes = Cu_to_json.default_include_dirs () @ includes in
-  let options, program =
+  let options, program, launch_wrappers =
     parse_cuda_program
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
       ~block_dim ~grid_dim ~includes ~macros ~cu_to_json ~ignore_asserts
@@ -440,7 +460,10 @@ let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
       filename
   in
   let target_config = subgroup_target_config subgroup_size in
-  match Subgroup_source.route_program ~target_config program with
+  match
+    Subgroup_source.route_program ~target_config ?only_kernel ~launch_wrappers
+      program
+  with
   | Error error ->
       Logger.Colors.error (fun () -> Subgroup_source.error_to_string error);
       exit 2
@@ -496,7 +519,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     | Some subgroup_size ->
         parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
           ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json
-          ~ignore_asserts ~assume_launch ~cbor ~subgroup_size
+          ~ignore_asserts ~assume_launch ~cbor ~only_kernel ~subgroup_size
   in
   let kernels =
     match launch_contract with
@@ -788,8 +811,56 @@ let run (a : t) : App_analysis.t list =
   let check_subgroup_kernel (subgroup : Subgroup_source.subgroup_kernel) :
       App_analysis.subgroup =
     let kernel = subgroup.matrix_kernel in
+    let checked_block_dim =
+      match a.block_dim with
+      | Some _ -> None
+      | None ->
+          Subgroup_obligation.checked_block_dim_of_launch_dimensions
+            subgroup.launch_dimensions
+          |> (function
+               | Ok checked -> checked
+               | Error error ->
+                   Logger.Colors.error (fun () ->
+                       Subgroup_obligation.error_to_string error);
+                   exit 2)
+    in
     let config =
       Subgroup_solver.solver_config ?timeout_ms:a.timeout ?logic:a.logic ()
+    in
+    let vacuous =
+      if not a.check_pre_sat then None
+      else
+        let checked_for_pre_sat =
+          match (checked_block_dim, a.block_dim) with
+          | Some checked, None -> Some checked
+          | None, Some block_dim ->
+              Subgroup_obligation.checked_block_dim_of_dim3 block_dim
+              |> (function
+                   | Ok checked -> Some checked
+                   | Error error ->
+                       Logger.Colors.error (fun () ->
+                           Subgroup_obligation.error_to_string error);
+                       exit 2)
+          | None, None -> None
+          | Some _, Some _ ->
+              Logger.Colors.error (fun () ->
+                  Subgroup_obligation.error_to_string
+                    Subgroup_obligation.Conflicting_checked_block_dim_inputs);
+              exit 2
+        in
+        let checked_precondition =
+          checked_for_pre_sat
+          |> Option.map Subgroup_obligation.checked_block_dim_precondition
+          |> Option.value ~default:(Exp.Bool true)
+        in
+        let precondition =
+          Exp.b_and subgroup.launch_precondition checked_precondition
+        in
+        if
+          Phase_timer.measure "pre-sat" (fun () ->
+              Gen_z3.is_unsat ~timeout:a.timeout ~logic:a.logic precondition)
+        then Some precondition
+        else None
     in
     (match
        Drf.Symbolic_launch_evidence.maybe_write_artifacts ~filename:a.filename
@@ -803,7 +874,8 @@ let run (a : t) : App_analysis.t list =
     let memory =
       let globals = subgroup.memory_globals in
       kernel
-      |> Subgroup_obligation.obligations ~globals ?block_dim:a.block_dim
+      |> Subgroup_obligation.obligations ~globals ?checked_block_dim
+           ?block_dim:a.block_dim
            ~site_controls:subgroup.site_controls
            ~ordinary_memory_effects:subgroup.ordinary_memory_effects
       |> Subgroup_solver.solve_obligation_result ~config ~globals
@@ -831,7 +903,7 @@ let run (a : t) : App_analysis.t list =
               ^ Subgroup_uniformity.error_to_string error);
           exit 2
     in
-    App_analysis.{ kernel; memory; uniformity }
+    App_analysis.{ kernel; memory; uniformity; vacuous }
   in
   a.kernels |> only_kernel a
   |> List.map (function

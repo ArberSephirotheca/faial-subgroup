@@ -291,10 +291,21 @@ let render_ordinary (solution : App_analysis.ordinary) : bool =
       true
 
 let render_subgroup (solution : App_analysis.subgroup) : bool =
-  Drf.Subgroup_solver.summary_lines ~uniformity:solution.uniformity
-    solution.memory
-  |> List.iter print_endline;
-  not (App_analysis.subgroup_is_safe solution)
+  match solution.vacuous with
+  | Some precondition ->
+      T.print_string
+        [ T.Bold; T.Foreground T.Yellow ]
+        ("Kernel '" ^ solution.kernel.name
+       ^ "' is vacuous (subgroup launch precondition is unsatisfiable).\n");
+      T.print_string [ T.Bold ] "Precondition:\n";
+      print_string (Indent.to_string (Exp.b_to_s precondition));
+      print_endline "";
+      true
+  | None ->
+      Drf.Subgroup_solver.summary_lines ~uniformity:solution.uniformity
+        solution.memory
+      |> List.iter print_endline;
+      not (App_analysis.subgroup_is_safe solution)
 
 let render (output : App_analysis.t list) : unit =
   let total = ref 0 in

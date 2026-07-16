@@ -21,7 +21,19 @@ let call_expr (name : string) (args : D_lang.Expr.t list) : D_lang.Expr.t =
       ty = J_type.void;
     }
 
+let typed_call_expr ~(ty : J_type.t) (name : string)
+    (args : D_lang.Expr.t list) : D_lang.Expr.t =
+  CallExpr
+    {
+      func = ident ~kind:Decl_expr.Kind.Function ~ty name;
+      args;
+      ty;
+    }
+
 let var (name : string) : Variable.t = Variable.from_name name
+
+let synthetic_var (name : string) : Variable.t =
+  Variable.from_name name |> Variable.set_label ("synthetic " ^ name)
 
 let ty_var ?(ty = J_type.int) (name : string) : Ty_variable.t =
   Ty_variable.make ~name:(var name) ~ty
@@ -37,9 +49,9 @@ let undef_decl ?(ty = J_type.int) (name : string) : D_lang.Decl.t =
   D_lang.Decl.from_undef (ty_var ~ty name)
 
 let kernel ?(attribute = D_lang.KernelAttr.Default) ?(params = [])
-    ?(type_params = []) ?(ty = "void ()") (name : string) (code : D_lang.Stmt.t)
-    : D_lang.Kernel.t =
-  { ty; name; code; type_params; params; attribute }
+    ?(type_params = []) ?(template_args = []) ?(ty = "void ()")
+    (name : string) (code : D_lang.Stmt.t) : D_lang.Kernel.t =
+  { ty; name; code; type_params; template_args; params; attribute }
 
 let pointer_ty : J_type.t = ty "float *"
 let half_pointer_ty : J_type.t = ty "half *"
@@ -257,6 +269,289 @@ let test_launch_wrapper_for_subgroup_kernel_fails_explicitly () : unit =
       Alcotest.(check string) "callee name" "warp_body" actual_callee
   | Error error -> Alcotest.fail (Source.error_to_string error)
   | Ok _ -> Alcotest.fail "subgroup launch wrapper was analyzed in isolation"
+
+let launch_dim_assert (dimension : string) (value : int) : D_lang.Stmt.t =
+  D_lang.Stmt.assert_stmt
+    (bin ~ty:J_type.bool (ident dimension) "=="
+       (D_lang.Expr.IntegerLiteral value))
+
+let test_marked_launch_wrapper_inlines_subgroup_callee () : unit =
+  let template_args = [ C_lang.TemplateArgument.TArgIntegral 64 ] in
+  let type_params =
+    [
+      D_lang.Ty_param.NonTypeTemplate
+        { name = var "WIDTH"; ty = J_type.int };
+    ]
+  in
+  let templated_index = bin (ident "WIDTH") "+" (ident "threadIdx.x") in
+  let callee =
+    kernel ~attribute:D_lang.KernelAttr.Auxiliary
+      ~params:[ kernel_param ~ty:pointer_ty "dst" ] ~type_params ~template_args
+      "warp_body"
+      (D_lang.Stmt.from_list
+         [
+           write_stmt (subscript "dst" [ templated_index ]);
+           syncwarp_stmt;
+           read_stmt (subscript "dst" [ templated_index ]);
+         ])
+  in
+  let other_specialization =
+    kernel ~attribute:D_lang.KernelAttr.Auxiliary
+      ~params:[ kernel_param ~ty:pointer_ty "dst" ]
+      ~type_params
+      ~template_args:[ C_lang.TemplateArgument.TArgIntegral 128 ] "warp_body"
+      D_lang.Stmt.Skip
+  in
+  let actual_dst =
+    D_lang.Expr.BinaryOperator
+      {
+        lhs = ident ~ty:pointer_ty "tile";
+        opcode = "+";
+        rhs = D_lang.Expr.IntegerLiteral 4;
+        ty = pointer_ty;
+      }
+  in
+  let wrapper =
+    kernel ~params:[ kernel_param ~ty:pointer_ty "tile" ] ~template_args
+      "warp_body@launch"
+      (D_lang.Stmt.from_list
+         [
+           launch_dim_assert "blockDim.x" 64;
+           launch_dim_assert "blockDim.y" 1;
+           launch_dim_assert "blockDim.z" 1;
+           D_lang.Stmt.SExpr (call_expr "warp_body" [ actual_dst ]);
+         ])
+  in
+  let launch_wrappers =
+    Stage0.Common.StringSet.singleton "warp_body@launch"
+  in
+  let routed =
+    Source.route_program ~target_config:(subgroup_config ()) ~launch_wrappers
+      [
+        D_lang.Def.Kernel callee;
+        D_lang.Def.Kernel other_specialization;
+        D_lang.Def.Kernel wrapper;
+      ]
+    |> expect_route_ok
+  in
+  let subgroup =
+    routed
+    |> List.find_map (function
+         | Source.Subgroup_matrix subgroup
+           when String.equal subgroup.matrix_kernel.name "warp_body@launch" ->
+             Some subgroup
+         | Source.Subgroup_matrix _ | Source.Ordinary_imp _ -> None)
+    |> Option.get
+  in
+  Alcotest.(check int)
+    "callee memory effects retained" 2
+    (List.length subgroup.ordinary_memory_effects);
+  let first_effect = List.hd subgroup.ordinary_memory_effects in
+  Alcotest.(check bool)
+    "pointer base retained" true
+    (Variable.equal first_effect.access.array (var "tile"));
+  let index =
+    first_effect.access.index |> List.map Exp.n_to_string
+    |> String.concat ", "
+  in
+  Alcotest.(check bool)
+    "pointer offset retained" true
+    (Stage0.Common.contains ~substring:"4" index);
+  let conditions =
+    first_effect.source_conditions |> List.map Exp.b_to_string
+    |> String.concat "\n"
+  in
+  Alcotest.(check bool)
+    "template parameter binding retained" true
+    (Stage0.Common.contains ~substring:"@faial_inline_0:WIDTH == 64"
+       conditions);
+  Alcotest.(check bool)
+    "launch assertion retained" true
+    (Stage0.Common.contains ~substring:"blockDim.x == 64"
+       (Exp.b_to_string subgroup.launch_precondition));
+  Alcotest.(check int)
+    "three checked launch dimensions" 3
+    (List.length (Variable.Map.bindings subgroup.launch_dimensions));
+  Alcotest.(check int)
+    "subgroup operation retained" 1
+    (List.length subgroup.matrix_kernel.body)
+
+let test_linked_wrapper_accepts_resolved_function_template_argument () : unit
+    =
+  let template_args =
+    [
+      C_lang.TemplateArgument.TArgDecl "op_add";
+      C_lang.TemplateArgument.TArgType J_type.float;
+      C_lang.TemplateArgument.TArgPack [];
+    ]
+  in
+  let type_params =
+    [
+      D_lang.Ty_param.NonTypeTemplate
+        { name = var "op"; ty = ty "float (*)(float, float)" };
+      D_lang.Ty_param.TemplateType (var "T");
+      D_lang.Ty_param.TemplateType (var "Rest");
+    ]
+  in
+  let callee =
+    kernel ~attribute:D_lang.KernelAttr.Auxiliary ~type_params ~template_args
+      "warp_body" syncwarp_stmt
+  in
+  let wrapper =
+    kernel ~template_args "warp_body@launch"
+      (D_lang.Stmt.SExpr (call_expr "warp_body" []))
+  in
+  let launch_wrappers =
+    Stage0.Common.StringSet.singleton "warp_body@launch"
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ()) ~launch_wrappers
+      [ D_lang.Def.Kernel callee; D_lang.Def.Kernel wrapper ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] ->
+      Alcotest.(check string)
+        "linked wrapper name" "warp_body@launch" subgroup.matrix_kernel.name
+  | _ ->
+      Alcotest.fail
+        "resolved declaration-valued template argument was not linked"
+
+let test_linked_wrapper_accepts_global_cooperative_launch_target () : unit =
+  let callee = kernel "cooperative_body" syncwarp_stmt in
+  let wrapper =
+    kernel "cooperative_body@launch"
+      (D_lang.Stmt.SExpr (call_expr "cooperative_body" []))
+  in
+  let launch_wrappers =
+    Stage0.Common.StringSet.singleton "cooperative_body@launch"
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      ~only_kernel:"cooperative_body@launch" ~launch_wrappers
+      [ D_lang.Def.Kernel callee; D_lang.Def.Kernel wrapper ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] ->
+      Alcotest.(check string)
+        "linked wrapper name" "cooperative_body@launch"
+        subgroup.matrix_kernel.name
+  | _ -> Alcotest.fail "global cooperative launch target was not linked"
+
+let test_linked_wrapper_rejects_unresolved_function_template_argument () :
+    unit =
+  let template_args = [ C_lang.TemplateArgument.TArgDecl "op_add" ] in
+  let type_params =
+    [
+      D_lang.Ty_param.NonTypeTemplate
+        { name = var "op"; ty = ty "float (*)(float, float)" };
+    ]
+  in
+  let unresolved_call =
+    D_lang.Expr.CallExpr
+      {
+        func =
+          ident ~kind:Decl_expr.Kind.NonTypeTemplateParm
+            ~ty:(ty "float (*)(float, float)") "op";
+        args = [ D_lang.Expr.IntegerLiteral 1; IntegerLiteral 2 ];
+        ty = J_type.float;
+      }
+  in
+  let callee =
+    kernel ~attribute:D_lang.KernelAttr.Auxiliary ~type_params ~template_args
+      "warp_body"
+      (D_lang.Stmt.from_list [ SExpr unresolved_call; syncwarp_stmt ])
+  in
+  let wrapper =
+    kernel ~template_args "warp_body@launch"
+      (D_lang.Stmt.SExpr (call_expr "warp_body" []))
+  in
+  let launch_wrappers =
+    Stage0.Common.StringSet.singleton "warp_body@launch"
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ()) ~launch_wrappers
+      [ D_lang.Def.Kernel callee; D_lang.Def.Kernel wrapper ]
+  with
+  | Error
+      (Source.Launch_wrapper_inlining_error
+        { kernel; callee = Some callee; reason }) ->
+      Alcotest.(check string) "wrapper name" "warp_body@launch" kernel;
+      Alcotest.(check string) "callee name" "warp_body" callee;
+      Alcotest.(check bool)
+        "unresolved binding reason" true
+        (Stage0.Common.contains ~substring:"unresolved specialization binding"
+           reason)
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+  | Ok _ -> Alcotest.fail "unresolved function template argument was accepted"
+
+let test_selected_kernel_routes_before_unrelated_subgroup_failure () : unit =
+  let selected = kernel "selected_plain" D_lang.Stmt.Skip in
+  let unrelated =
+    kernel "unrelated_malformed_wmma"
+      (D_lang.Stmt.SExpr (call_expr "load_matrix_sync" []))
+  in
+  let broken_wrapper =
+    kernel "unrelated@launch"
+      (D_lang.Stmt.SExpr (call_expr "missing_kernel" []))
+  in
+  let launch_wrappers =
+    Stage0.Common.StringSet.singleton "unrelated@launch"
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      ~only_kernel:"selected_plain" ~launch_wrappers
+      [
+        D_lang.Def.Kernel selected;
+        D_lang.Def.Kernel unrelated;
+        D_lang.Def.Kernel broken_wrapper;
+      ]
+    |> expect_route_ok
+  with
+  | [ Source.Ordinary_imp kernel ] ->
+      Alcotest.(check string)
+        "selected kernel name" "selected_plain" kernel.name
+  | _ -> Alcotest.fail "selected ordinary kernel did not route alone"
+
+let test_selected_kernel_uses_stable_duplicate_suffix () : unit =
+  let duplicate = kernel "duplicate" D_lang.Stmt.Skip in
+  match
+    Source.route_program ~only_kernel:"duplicate_2"
+      [ D_lang.Def.Kernel duplicate; D_lang.Def.Kernel duplicate ]
+    |> expect_route_ok
+  with
+  | [ Source.Ordinary_imp kernel ] ->
+      Alcotest.(check string) "stable duplicate name" "duplicate_2" kernel.name
+  | _ -> Alcotest.fail "suffixed duplicate kernel was not selected"
+
+let test_linked_wrapper_rejects_conflicting_launch_dimensions () : unit =
+  let callee =
+    kernel ~attribute:D_lang.KernelAttr.Auxiliary "warp_body" syncwarp_stmt
+  in
+  let wrapper =
+    kernel "warp_body@launch"
+      (D_lang.Stmt.from_list
+         [
+           launch_dim_assert "blockDim.x" 64;
+           launch_dim_assert "blockDim.x" 32;
+           D_lang.Stmt.SExpr (call_expr "warp_body" []);
+         ])
+  in
+  let launch_wrappers =
+    Stage0.Common.StringSet.singleton "warp_body@launch"
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ()) ~launch_wrappers
+      [ D_lang.Def.Kernel callee; D_lang.Def.Kernel wrapper ]
+  with
+  | Error
+      (Source.Conflicting_launch_dimension
+        { kernel; dimension; previous; next }) ->
+      Alcotest.(check string) "wrapper name" "warp_body@launch" kernel;
+      Alcotest.(check string) "dimension" "blockDim.x" dimension;
+      Alcotest.(check string) "previous value" "64" (Exp.n_to_string previous);
+      Alcotest.(check string) "next value" "32" (Exp.n_to_string next)
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+  | Ok _ -> Alcotest.fail "conflicting launch dimensions were accepted"
 
 let test_array_default_initializer_is_not_a_pointer_alias () : unit =
   let array_ty = ty "half[4224]" in
@@ -1817,6 +2112,222 @@ let test_loop_and_switch_controls_record_site_control () : unit =
     && Stage0.Common.contains ~substring:"% 32" (site_control_text case_control)
     )
 
+let test_subgroup_memory_excludes_thread_private_arrays () : unit =
+  let private_array =
+    D_lang.Decl.from_undef (ty_var ~ty:(ty "float [4]") "private_tile")
+  in
+  let shared_array =
+    D_lang.Decl.from_undef ~attrs:[ C_lang.c_attr_shared ]
+      (ty_var ~ty:(ty "float [4]") "shared_tile")
+  in
+  let code =
+    D_lang.Stmt.from_list
+      [
+        DeclStmt [ private_array; shared_array ];
+        write_stmt
+          (subscript ~ty:J_type.float "private_tile"
+             [ member_expr "threadIdx" "x" ]);
+        write_stmt
+          (subscript ~ty:J_type.float "shared_tile"
+             [ member_expr "threadIdx" "x" ]);
+        write_stmt
+          (subscript ~ty:J_type.float "dst"
+             [ member_expr "threadIdx" "x" ]);
+        syncwarp_stmt;
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "private_array_memory" code) ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] ->
+      let arrays =
+        subgroup.ordinary_memory_effects
+        |> List.map (fun (memory_effect : Source.ordinary_memory_effect) ->
+               Variable.name memory_effect.access.array)
+      in
+      Alcotest.(check (list string))
+        "only inter-thread address spaces remain" [ "shared_tile"; "dst" ]
+        arrays
+  | _ -> Alcotest.fail "private-array test did not use subgroup routing"
+
+let test_subgroup_memory_recovers_nested_aggregate_indices () : unit =
+  let aggregate_value = synthetic_var "aggregate_value" in
+  let aggregate_field = synthetic_var "aggregate_field" in
+  let aggregate_read =
+    D_lang.Stmt.ReadAccessStmt
+      {
+        target = aggregate_value;
+        source = subscript "y" [ ident "ib" ];
+        ty = C_type.make "struct block_q8_1";
+        guard = None;
+      }
+  in
+  let field_decl =
+    D_lang.Decl.from_expr
+      (Ty_variable.make ~name:aggregate_field ~ty:(ty "signed char [32]"))
+      (D_lang.Expr.MemberExpr
+         {
+           base =
+             D_lang.Expr.Ident
+               (Decl_expr.from_name ~ty:(ty "struct block_q8_1")
+                  aggregate_value);
+           name = "qs";
+           ty = ty "signed char [32]";
+         })
+  in
+  let field_write =
+    D_lang.Stmt.WriteAccessStmt
+      {
+        target =
+          D_lang.make_subscript ~name:aggregate_field ~index:[ ident "iqs" ]
+            ~ty:J_type.char ~location:Stage0.Location.empty;
+        source = ident "value";
+        payload = None;
+        guard = None;
+      }
+  in
+  let code =
+    D_lang.Stmt.from_list
+      [ aggregate_read; DeclStmt [ field_decl ]; field_write; syncwarp_stmt ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "aggregate_projection" code) ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] ->
+      let field_effect =
+        subgroup.ordinary_memory_effects
+        |> List.find_opt (fun (memory_effect : Source.ordinary_memory_effect) ->
+               String.equal (Variable.name memory_effect.access.array) "y.qs")
+      in
+      begin match field_effect with
+      | Some memory_effect ->
+          Alcotest.(check int)
+            "outer and inner indices" 2
+            (List.length memory_effect.access.index);
+          Alcotest.(check string)
+            "nested aggregate index" "[ib, iqs]"
+            (Access.index_to_string memory_effect.access.index)
+      | None -> Alcotest.fail "nested aggregate access did not retain y.qs"
+      end
+  | _ -> Alcotest.fail "aggregate test did not use subgroup routing"
+
+let test_pure_device_helper_result_is_memory_global () : unit =
+  let uint2_ty = ty "uint2" in
+  let fastdiv =
+    kernel ~attribute:D_lang.KernelAttr.Auxiliary
+      ~params:[ kernel_param "n"; kernel_param "m" ] "fastdiv"
+      (D_lang.Stmt.ReturnStmt
+         (Some
+            (typed_call_expr ~ty:J_type.int "__umulhi"
+               [ ident "n"; ident "m" ])))
+  in
+  let fast_div_modulo =
+    kernel ~attribute:D_lang.KernelAttr.Auxiliary
+      ~params:[ kernel_param "n"; kernel_param "m" ] "fast_div_modulo"
+      (D_lang.Stmt.ReturnStmt
+         (Some
+            (typed_call_expr ~ty:uint2_ty "make_uint2"
+               [
+                 typed_call_expr ~ty:J_type.int "fastdiv"
+                   [ ident "n"; ident "m" ];
+                 ident "n";
+               ])))
+  in
+  let code =
+    D_lang.Stmt.from_list
+      [
+        IfStmt
+          {
+            cond =
+              bin ~ty:J_type.bool (member_expr "threadIdx" "x") ">="
+                (ident "width");
+            then_stmt = D_lang.Stmt.ReturnStmt None;
+            else_stmt = D_lang.Stmt.Skip;
+          };
+        DeclStmt
+          [
+            decl ~ty:uint2_ty "pair"
+              (typed_call_expr ~ty:uint2_ty "fast_div_modulo"
+                 [ member_expr "blockIdx" "x"; ident "shape" ]);
+            decl "batch_component" (member_expr "pair" "x");
+          ];
+        write_stmt (subscript "dst" [ ident "batch_component" ]);
+        syncwarp_stmt;
+      ]
+  in
+  let caller =
+    kernel ~params:[ kernel_param "shape"; kernel_param "width" ]
+      "pure_helper" code
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [
+        D_lang.Def.Kernel fastdiv;
+        D_lang.Def.Kernel fast_div_modulo;
+        D_lang.Def.Kernel caller;
+      ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] ->
+      Alcotest.(check bool)
+        "aggregate helper result is task invariant" true
+        (variable_set_has "pair" subgroup.memory_globals);
+      Alcotest.(check bool)
+        "component derived from helper result is task invariant" true
+        (variable_set_has "batch_component" subgroup.memory_globals)
+  | _ -> Alcotest.fail "pure-helper test did not use subgroup routing"
+
+let test_low_bit_mask_condition_normalizes_to_modulo () : unit =
+  let mask = bin (ident "WARP_SIZE") "-" (D_lang.Expr.IntegerLiteral 1) in
+  let condition =
+    bin ~ty:J_type.bool (bin (ident "owner") "&" mask) "=="
+      (member_expr "threadIdx" "x")
+  in
+  let code =
+    D_lang.Stmt.from_list
+      [
+        IfStmt
+          {
+            cond = condition;
+            then_stmt = write_stmt (subscript "ids" [ ident "slot" ]);
+            else_stmt = D_lang.Stmt.Skip;
+          };
+        syncwarp_stmt;
+      ]
+  in
+  let program =
+    [
+      D_lang.Def.Declaration (decl "WARP_SIZE" (D_lang.Expr.IntegerLiteral 32));
+      D_lang.Def.Kernel (kernel "bit_mask_memory" code);
+    ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ()) program
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] -> (
+      match subgroup.ordinary_memory_effects with
+      | [ memory_effect ] ->
+          let conditions =
+            memory_effect.source_conditions |> List.map Exp.b_to_string
+            |> String.concat "\n"
+          in
+          Alcotest.(check bool)
+            "power-of-two mask becomes solver arithmetic" true
+            (Stage0.Common.contains ~substring:"owner % 32" conditions);
+          Alcotest.(check bool)
+            "unsupported bit-and is eliminated" false
+            (Stage0.Common.contains ~substring:"owner &" conditions)
+      | effects ->
+          Alcotest.fail
+            (Printf.sprintf "expected one ids effect, got %d"
+               (List.length effects)))
+  | _ -> Alcotest.fail "bit-mask test did not use subgroup routing"
+
 let test_malformed_fill_fragment_and_mma_sync_fail () : unit =
   let frag_a = ident ~ty:matrix_a_fragment_type "frag_a" in
   let frag_c = ident ~ty:accumulator_fragment_type "frag_c" in
@@ -1872,6 +2383,27 @@ let tests : unit Alcotest.test_case list =
     ( "subgroup launch wrapper fails before isolated routing",
       `Quick,
       test_launch_wrapper_for_subgroup_kernel_fails_explicitly );
+    ( "marked launch wrapper inlines subgroup callee",
+      `Quick,
+      test_marked_launch_wrapper_inlines_subgroup_callee );
+    ( "linked wrapper accepts resolved function template argument",
+      `Quick,
+      test_linked_wrapper_accepts_resolved_function_template_argument );
+    ( "linked wrapper accepts global cooperative launch target",
+      `Quick,
+      test_linked_wrapper_accepts_global_cooperative_launch_target );
+    ( "linked wrapper rejects unresolved function template argument",
+      `Quick,
+      test_linked_wrapper_rejects_unresolved_function_template_argument );
+    ( "selected kernel routes before unrelated subgroup failure",
+      `Quick,
+      test_selected_kernel_routes_before_unrelated_subgroup_failure );
+    ( "selected kernel uses stable duplicate suffix",
+      `Quick,
+      test_selected_kernel_uses_stable_duplicate_suffix );
+    ( "linked wrapper rejects conflicting launch dimensions",
+      `Quick,
+      test_linked_wrapper_rejects_conflicting_launch_dimensions );
     ( "array default initializer is not a pointer alias",
       `Quick,
       test_array_default_initializer_is_not_a_pointer_alias );
@@ -1969,6 +2501,18 @@ let tests : unit Alcotest.test_case list =
     ( "loop and switch controls record site control",
       `Quick,
       test_loop_and_switch_controls_record_site_control );
+    ( "subgroup memory excludes thread-private arrays",
+      `Quick,
+      test_subgroup_memory_excludes_thread_private_arrays );
+    ( "subgroup memory recovers nested aggregate indices",
+      `Quick,
+      test_subgroup_memory_recovers_nested_aggregate_indices );
+    ( "pure device helper result is memory global",
+      `Quick,
+      test_pure_device_helper_result_is_memory_global );
+    ( "low-bit mask condition normalizes to modulo",
+      `Quick,
+      test_low_bit_mask_condition_normalizes_to_modulo );
     ( "malformed fill_fragment and mma_sync fail",
       `Quick,
       test_malformed_fill_fragment_and_mma_sync_fail );

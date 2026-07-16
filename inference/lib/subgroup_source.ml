@@ -9,6 +9,17 @@ type error =
   | Unsupported_expression of { context : string; expr : string }
   | Unsupported_matrix_call of { op : string; reason : string; expr : string }
   | Subgroup_callee_requires_inlining of { kernel : string; callee : string }
+  | Launch_wrapper_inlining_error of {
+      kernel : string;
+      callee : string option;
+      reason : string;
+    }
+  | Conflicting_launch_dimension of {
+      kernel : string;
+      dimension : string;
+      previous : Exp.nexp;
+      next : Exp.nexp;
+    }
   | Ordinary_imp_error of string
 
 type routed_kernel =
@@ -50,6 +61,8 @@ and subgroup_kernel = {
   uniform_vars : Variable.Set.t;
   memory_globals : Variable.Set.t;
   ordinary_memory_effects : ordinary_memory_effect list;
+  launch_precondition : Exp.bexp;
+  launch_dimensions : Exp.nexp Variable.Map.t;
 }
 
 let error_to_string : error -> string = function
@@ -67,6 +80,18 @@ let error_to_string : error -> string = function
         "kernel '%s' calls subgroup kernel '%s'; subgroup launch-wrapper \
          inlining is required to preserve launch assertions and arguments"
         kernel callee
+  | Launch_wrapper_inlining_error { kernel; callee; reason } ->
+      let callee =
+        callee
+        |> Option.map (Printf.sprintf " and callee '%s'")
+        |> Option.value ~default:""
+      in
+      Printf.sprintf "cannot inline launch wrapper '%s'%s: %s" kernel callee
+        reason
+  | Conflicting_launch_dimension { kernel; dimension; previous; next } ->
+      Printf.sprintf
+        "kernel '%s' has conflicting launch facts for %s: %s and %s" kernel
+        dimension (Exp.n_to_string previous) (Exp.n_to_string next)
   | Ordinary_imp_error msg -> msg
 
 let call_name : D_lang.Expr.t -> string option = function
@@ -106,6 +131,20 @@ let map_matrix_error ~(op : string) ~(expr : D_lang.Expr.t) :
   | Ok value -> Ok value
   | Error reason ->
       Error (Unsupported_matrix_call { op; reason; expr = expr_to_string expr })
+
+let n_rel_of_opcode : string -> N_rel.t option = function
+  | "==" -> Some N_rel.Eq
+  | "!=" -> Some N_rel.Neq
+  | "<" -> Some (N_rel.Lt Signedness.Signed)
+  | "<=" -> Some (N_rel.Le Signedness.Signed)
+  | ">" -> Some (N_rel.Gt Signedness.Signed)
+  | ">=" -> Some (N_rel.Ge Signedness.Signed)
+  | _ -> None
+
+let b_rel_of_opcode : string -> B_rel.t option = function
+  | "&&" -> Some B_rel.BAnd
+  | "||" -> Some B_rel.BOr
+  | _ -> None
 
 let rec nexp_of_expr ~(context : string) (expr : D_lang.Expr.t) :
     (Exp.nexp, error) result =
@@ -158,24 +197,15 @@ let rec nexp_of_expr ~(context : string) (expr : D_lang.Expr.t) :
   | UnaryOperator { opcode = "-"; child; _ } ->
       let* child = nexp_of_expr ~context child in
       Ok (Exp.n_uminus child)
+  | ConditionalOperator { cond; then_expr; else_expr; _ } ->
+      let* cond = bexp_of_expr ~context cond in
+      let* then_expr = nexp_of_expr ~context then_expr in
+      let* else_expr = nexp_of_expr ~context else_expr in
+      Ok (Exp.n_if cond then_expr else_expr)
   | BinaryOperator { opcode = ","; rhs; _ } -> nexp_of_expr ~context rhs
   | _ -> unsupported_expr ~context expr
 
-let n_rel_of_opcode : string -> N_rel.t option = function
-  | "==" -> Some N_rel.Eq
-  | "!=" -> Some N_rel.Neq
-  | "<" -> Some (N_rel.Lt Signedness.Signed)
-  | "<=" -> Some (N_rel.Le Signedness.Signed)
-  | ">" -> Some (N_rel.Gt Signedness.Signed)
-  | ">=" -> Some (N_rel.Ge Signedness.Signed)
-  | _ -> None
-
-let b_rel_of_opcode : string -> B_rel.t option = function
-  | "&&" -> Some B_rel.BAnd
-  | "||" -> Some B_rel.BOr
-  | _ -> None
-
-let rec bexp_of_expr ~(context : string) (expr : D_lang.Expr.t) :
+and bexp_of_expr ~(context : string) (expr : D_lang.Expr.t) :
     (Exp.bexp, error) result =
   let ( let* ) = Result.bind in
   match expr with
@@ -205,10 +235,16 @@ let rec bexp_of_expr ~(context : string) (expr : D_lang.Expr.t) :
 
 type pointer_alias = { source : Variable.t; offset : Exp.nexp }
 
+type aggregate_alias = {
+  aggregate_array : Variable.t;
+  aggregate_index : Exp.nexp list;
+}
+
 let pointer_alias_equal (lhs : pointer_alias) (rhs : pointer_alias) : bool =
   Variable.equal lhs.source rhs.source && lhs.offset = rhs.offset
 
 type collect_state = {
+  kernel_name : string;
   next_site_id : int;
   next_memory_site_id : int;
   next_source_order : int;
@@ -226,7 +262,12 @@ type collect_state = {
   constant_values : int Variable.Map.t;
   numeric_aliases : Exp.nexp Variable.Map.t;
   pointer_aliases : pointer_alias Variable.Map.t;
+  aggregate_aliases : aggregate_alias Variable.Map.t;
   invalid_pointer_aliases : Variable.Set.t;
+  private_arrays : Variable.Set.t;
+  uniform_preserving_calls : StringSet.t;
+  launch_preconditions_rev : Exp.bexp list;
+  launch_dimensions : Exp.nexp Variable.Map.t;
   type_aliases : C_type.t StringMap.t;
 }
 
@@ -237,6 +278,7 @@ type scalar_facts = {
   fact_constant_values : int Variable.Map.t;
   fact_numeric_aliases : Exp.nexp Variable.Map.t;
   fact_pointer_aliases : pointer_alias Variable.Map.t;
+  fact_aggregate_aliases : aggregate_alias Variable.Map.t;
   fact_invalid_pointer_aliases : Variable.Set.t;
 }
 
@@ -248,6 +290,7 @@ let scalar_facts_of (state : collect_state) : scalar_facts =
     fact_constant_values = state.constant_values;
     fact_numeric_aliases = state.numeric_aliases;
     fact_pointer_aliases = state.pointer_aliases;
+    fact_aggregate_aliases = state.aggregate_aliases;
     fact_invalid_pointer_aliases = state.invalid_pointer_aliases;
   }
 
@@ -261,6 +304,7 @@ let restore_scalar_facts (state : collect_state) (facts : scalar_facts) :
     constant_values = facts.fact_constant_values;
     numeric_aliases = facts.fact_numeric_aliases;
     pointer_aliases = facts.fact_pointer_aliases;
+    aggregate_aliases = facts.fact_aggregate_aliases;
     invalid_pointer_aliases = facts.fact_invalid_pointer_aliases;
   }
 
@@ -352,6 +396,17 @@ let join_scalar_facts (states : collect_state list) : scalar_facts =
               rest)
           state.numeric_aliases
       in
+      let aggregate_aliases =
+        Variable.Map.filter
+          (fun var alias ->
+            List.for_all
+              (fun (state : collect_state) ->
+                Option.equal ( = )
+                  (Variable.Map.find_opt var state.aggregate_aliases)
+                  (Some alias))
+              rest)
+          state.aggregate_aliases
+      in
       let pointer_aliases, invalid_pointer_aliases =
         join_pointer_facts states
       in
@@ -362,6 +417,7 @@ let join_scalar_facts (states : collect_state list) : scalar_facts =
         fact_constant_values = constant_values;
         fact_numeric_aliases = numeric_aliases;
         fact_pointer_aliases = pointer_aliases;
+        fact_aggregate_aliases = aggregate_aliases;
         fact_invalid_pointer_aliases = invalid_pointer_aliases;
       }
 
@@ -514,6 +570,14 @@ let is_explicit_memory_global_var (state : collect_state) (var : Variable.t) :
            (Variable.name var))
        state.memory_globals
 
+let call_is_uniform_preserving (state : collect_state)
+    (func : D_lang.Expr.t) : bool =
+  match call_name func with
+  | Some name ->
+      StringSet.mem name state.uniform_preserving_calls
+      || Functions.supported name || Predicates.supported name
+  | None -> false
+
 let rec expr_is_source_uniform (state : collect_state) : D_lang.Expr.t -> bool =
   function
   | CharacterLiteral _ | CXXBoolLiteralExpr _ | FloatingLiteral _
@@ -543,8 +607,10 @@ let rec expr_is_source_uniform (state : collect_state) : D_lang.Expr.t -> bool =
       expr_is_source_uniform state child
   | CXXConstructExpr { args; _ } ->
       List.for_all (expr_is_source_uniform state) args
-  | CallExpr _ | CXXOperatorCallExpr _ | RecoveryExpr _ | UnresolvedLookupExpr _
-    ->
+  | CallExpr { func; args; _ } when call_is_uniform_preserving state func ->
+      List.for_all (expr_is_source_uniform state) args
+  | CallExpr _ | CXXOperatorCallExpr _ | RecoveryExpr _
+  | UnresolvedLookupExpr _ ->
       false
 
 let rec nexp_is_source_uniform (state : collect_state) : Exp.nexp -> bool =
@@ -619,38 +685,11 @@ let rec expr_is_memory_global (state : collect_state) : D_lang.Expr.t -> bool =
       expr_is_memory_global state child
   | CXXConstructExpr { args; _ } ->
       List.for_all (expr_is_memory_global state) args
-  | CallExpr _ | CXXOperatorCallExpr _ | RecoveryExpr _ | UnresolvedLookupExpr _
-    ->
+  | CallExpr { func; args; _ } when call_is_uniform_preserving state func ->
+      List.for_all (expr_is_memory_global state) args
+  | CallExpr _ | CXXOperatorCallExpr _ | RecoveryExpr _
+  | UnresolvedLookupExpr _ ->
       false
-
-let rec nexp_is_memory_global (state : collect_state) : Exp.nexp -> bool =
-  function
-  | Num _ -> true
-  | Var x -> is_memory_global_builtin x || is_explicit_memory_global_var state x
-  | Binary (_, lhs, rhs) ->
-      nexp_is_memory_global state lhs && nexp_is_memory_global state rhs
-  | Unary (_, expr) -> nexp_is_memory_global state expr
-  | NIf (cond, then_expr, else_expr) ->
-      bexp_is_memory_global state cond
-      && nexp_is_memory_global state then_expr
-      && nexp_is_memory_global state else_expr
-  | NCall _ -> false
-  | CastInt cond -> bexp_is_memory_global state cond
-
-and bexp_is_memory_global (state : collect_state) : Exp.bexp -> bool = function
-  | Bool _ -> true
-  | NRel (_, lhs, rhs) ->
-      nexp_is_memory_global state lhs && nexp_is_memory_global state rhs
-  | BRel (_, lhs, rhs) ->
-      bexp_is_memory_global state lhs && bexp_is_memory_global state rhs
-  | BNot cond -> bexp_is_memory_global state cond
-  | Pred _ -> false
-  | CastBool expr -> nexp_is_memory_global state expr
-  | Distinct exprs -> List.for_all (nexp_is_memory_global state) exprs
-  | AtomicResult _ | ThreadUnif _ -> false
-
-let control_stack_is_memory_global (state : collect_state) : bool =
-  List.for_all (bexp_is_memory_global state) state.control_stack
 
 let init_is_source_uniform (state : collect_state) (init : D_lang.Init.t) : bool
     =
@@ -765,6 +804,7 @@ let remove_scalar_facts (var : Variable.t) (state : collect_state) :
     thread_x_coordinate_vars =
       Variable.Set.remove var state.thread_x_coordinate_vars;
     constant_values = Variable.Map.remove var state.constant_values;
+    aggregate_aliases = Variable.Map.remove var state.aggregate_aliases;
   }
 
 let expr_contains_var (var : Variable.t) (expr : Exp.nexp) : bool =
@@ -779,7 +819,6 @@ let numeric_alias_from_expr (var : Variable.t) (rhs : D_lang.Expr.t) :
 let update_scalar_facts_from_expr (state : collect_state) (var : Variable.t)
     (rhs : D_lang.Expr.t) : collect_state =
   let control_is_uniform = control_stack_is_source_uniform state in
-  let control_is_memory_global = control_stack_is_memory_global state in
   let is_thread_x = expr_is_thread_x_coordinate state rhs in
   let constant_value = int_constant_of_expr state rhs in
   let is_uniform = expr_is_source_uniform state rhs in
@@ -790,6 +829,9 @@ let update_scalar_facts_from_expr (state : collect_state) (var : Variable.t)
     match numeric_alias with
     | Some expr -> add_numeric_alias var expr state
     | None -> state
+  in
+  let state =
+    if is_memory_global then add_memory_global_var var state else state
   in
   if not control_is_uniform then state
   else
@@ -802,9 +844,7 @@ let update_scalar_facts_from_expr (state : collect_state) (var : Variable.t)
       | None -> state
     in
     let state = if is_uniform then add_uniform_var var state else state in
-    if control_is_memory_global && is_memory_global then
-      add_memory_global_var var state
-    else state
+    state
 
 let update_scalar_facts_from_init (state : collect_state) (decl : D_lang.Decl.t)
     : collect_state =
@@ -824,17 +864,44 @@ let update_scalar_facts_from_init (state : collect_state) (decl : D_lang.Decl.t)
   | Some _ ->
       let state = remove_scalar_facts decl.var state in
       let state =
+        if is_memory_global then add_memory_global_var decl.var state else state
+      in
+      let state =
         if control_is_uniform && is_uniform then add_uniform_var decl.var state
         else state
       in
-      if control_is_uniform && is_memory_global then
-        add_memory_global_var decl.var state
-      else state
+      state
   | None -> remove_scalar_facts decl.var state
 
 let add_decl_facts (state : collect_state) (decl : D_lang.Decl.t) :
     collect_state =
   update_scalar_facts_from_init state decl
+
+let decl_is_thread_private_array (decl : D_lang.Decl.t) : bool =
+  let ty = J_type.to_desugared_c_type decl.ty in
+  C_type.is_array ty
+  && not (List.mem C_lang.c_attr_shared decl.attrs)
+  && Option.is_none (Variable.label_opt decl.var)
+
+let add_local_decl_facts (state : collect_state) (decl : D_lang.Decl.t) :
+    collect_state =
+  let state = add_decl_facts state decl in
+  if decl_is_thread_private_array decl then
+    {
+      state with
+      private_arrays = Variable.Set.add decl.var state.private_arrays;
+    }
+  else state
+
+let access_array_is_private (state : collect_state) (array : Variable.t) : bool
+    =
+  Variable.Set.mem array state.private_arrays
+  || Variable.Set.exists
+       (fun root ->
+         String.starts_with
+           ~prefix:(Variable.name root ^ ".")
+           (Variable.name array))
+       state.private_arrays
 
 let resolve_type_alias (state : collect_state) (ty : C_type.t) : C_type.t =
   StringMap.find_opt (C_type.to_string ty) state.type_aliases
@@ -853,6 +920,36 @@ let add_pointer_alias (target : Variable.t) (alias : pointer_alias)
     invalid_pointer_aliases =
       Variable.Set.remove target state.invalid_pointer_aliases;
   }
+
+let add_aggregate_alias (target : Variable.t) (alias : aggregate_alias)
+    (state : collect_state) : collect_state =
+  {
+    state with
+    aggregate_aliases = Variable.Map.add target alias state.aggregate_aliases;
+  }
+
+let qualify_aggregate_field (field : string) (alias : aggregate_alias) :
+    aggregate_alias =
+  {
+    alias with
+    aggregate_array =
+      Variable.update_name (fun name -> name ^ "." ^ field)
+        alias.aggregate_array;
+  }
+
+let add_aggregate_member_alias_from_decl (state : collect_state)
+    (decl : D_lang.Decl.t) : collect_state =
+  match decl.init with
+  | Some
+      (IExpr
+        (MemberExpr
+          { base = Ident base; name = field; _ })) -> (
+      match Variable.Map.find_opt base.name state.aggregate_aliases with
+      | Some alias ->
+          add_aggregate_alias decl.var (qualify_aggregate_field field alias)
+            state
+      | None -> state)
+  | Some _ | None -> state
 
 let rec pointer_base_offset (state : collect_state) ~(context : string)
     (expr : D_lang.Expr.t) : (Variable.t * Exp.nexp, error) result =
@@ -1006,10 +1103,14 @@ let matrix_footprint (state : collect_state) ~(site : SM.Site.t)
       Unsupported_matrix_call
         { op = "wmma"; reason; expr = expr_to_string pointer })
 
-let empty_collect_state ~(target_config : SM.Target_config.t)
-    ~(uniform_vars : Variable.Set.t) (type_aliases : C_type.t StringMap.t) :
+let empty_collect_state ~(kernel_name : string)
+    ~(target_config : SM.Target_config.t)
+    ~(uniform_vars : Variable.Set.t)
+    ~(uniform_preserving_calls : StringSet.t)
+    (type_aliases : C_type.t StringMap.t) :
     collect_state =
   {
+    kernel_name;
     next_site_id = 0;
     next_memory_site_id = 0;
     next_source_order = 0;
@@ -1027,7 +1128,12 @@ let empty_collect_state ~(target_config : SM.Target_config.t)
     constant_values = Variable.Map.empty;
     numeric_aliases = Variable.Map.empty;
     pointer_aliases = Variable.Map.empty;
+    aggregate_aliases = Variable.Map.empty;
     invalid_pointer_aliases = Variable.Set.empty;
+    private_arrays = Variable.Set.empty;
+    uniform_preserving_calls;
+    launch_preconditions_rev = [];
+    launch_dimensions = Variable.Map.empty;
     type_aliases;
   }
 
@@ -1063,7 +1169,10 @@ let record_site_control ?memory_conditions (site : SM.Site.t)
     | None -> failwith "missing source order for subgroup/matrix site"
   in
   let conditions = List.rev state.control_stack in
-  let memory_conditions = Option.value memory_conditions ~default:conditions in
+  let memory_conditions =
+    List.rev state.launch_preconditions_rev
+    @ Option.value memory_conditions ~default:conditions
+  in
   {
     state with
     site_controls_rev =
@@ -1106,11 +1215,138 @@ let map_result_list (f : 'a -> ('b, 'e) result) (values : 'a list) :
       Ok (value :: values))
     values (Ok [])
 
-let access_of_subscript ~(mode : Access.Mode.t) ~(context : string)
+let rec constant_nexp_value (state : collect_state) (expr : Exp.nexp) :
+    int option =
+  let binary f lhs rhs =
+    match (constant_nexp_value state lhs, constant_nexp_value state rhs) with
+    | Some lhs, Some rhs -> f lhs rhs
+    | _ -> None
+  in
+  match expr with
+  | Exp.Num value -> Some value
+  | Exp.Var var -> Variable.Map.find_opt var state.constant_values
+  | Exp.Unary (N_unary.Negate, expr) ->
+      constant_nexp_value state expr |> Option.map Int.neg
+  | Exp.Unary _ -> None
+  | Exp.Binary (N_binary.Plus _, lhs, rhs) ->
+      binary (fun lhs rhs -> Some (lhs + rhs)) lhs rhs
+  | Exp.Binary (N_binary.Minus _, lhs, rhs) ->
+      binary (fun lhs rhs -> Some (lhs - rhs)) lhs rhs
+  | Exp.Binary (N_binary.Mult _, lhs, rhs) ->
+      binary (fun lhs rhs -> Some (lhs * rhs)) lhs rhs
+  | Exp.Binary (N_binary.Div _, lhs, rhs) ->
+      binary
+        (fun lhs rhs -> if rhs = 0 then None else Some (lhs / rhs))
+        lhs rhs
+  | Exp.Binary (N_binary.Mod _, lhs, rhs) ->
+      binary
+        (fun lhs rhs ->
+          if rhs = 0 then None else Some (Stage0.Common.modulo lhs rhs))
+        lhs rhs
+  | Exp.Binary _ | Exp.NIf _ | Exp.NCall _ | Exp.CastInt _ -> None
+
+let low_bit_mask_modulus (value : int) : int option =
+  if value < 0 || value = Int.max_int then None
+  else
+    let modulus = value + 1 in
+    if modulus land value = 0 then Some modulus else None
+
+let rec normalize_solver_nexp (state : collect_state) (expr : Exp.nexp) :
+    Exp.nexp =
+  let normalize = normalize_solver_nexp state in
+  match expr with
+  | Exp.Num _ | Exp.Var _ -> expr
+  | Exp.Unary (op, expr) -> Exp.Unary (op, normalize expr)
+  | Exp.Binary (N_binary.BitAnd, lhs, rhs) ->
+      let lhs = normalize lhs in
+      let rhs = normalize rhs in
+      begin
+        match
+          ( Option.bind (constant_nexp_value state lhs) low_bit_mask_modulus,
+            Option.bind (constant_nexp_value state rhs) low_bit_mask_modulus )
+        with
+        | _, Some modulus -> Exp.n_mod lhs (Exp.Num modulus)
+        | Some modulus, None -> Exp.n_mod rhs (Exp.Num modulus)
+        | None, None -> Exp.Binary (N_binary.BitAnd, lhs, rhs)
+      end
+  | Exp.Binary (op, lhs, rhs) -> Exp.Binary (op, normalize lhs, normalize rhs)
+  | Exp.NIf (cond, then_expr, else_expr) ->
+      Exp.NIf
+        ( normalize_solver_bexp state cond,
+          normalize then_expr,
+          normalize else_expr )
+  | Exp.NCall (name, args) -> Exp.NCall (name, List.map normalize args)
+  | Exp.CastInt cond -> Exp.CastInt (normalize_solver_bexp state cond)
+
+and normalize_solver_bexp (state : collect_state) (condition : Exp.bexp) :
+    Exp.bexp =
+  let normalize_n = normalize_solver_nexp state in
+  let normalize_b = normalize_solver_bexp state in
+  match condition with
+  | Exp.Bool _ -> condition
+  | Exp.NRel (op, lhs, rhs) -> Exp.NRel (op, normalize_n lhs, normalize_n rhs)
+  | Exp.BRel (op, lhs, rhs) -> Exp.BRel (op, normalize_b lhs, normalize_b rhs)
+  | Exp.BNot condition -> Exp.BNot (normalize_b condition)
+  | Exp.Pred (name, args) -> Exp.Pred (name, List.map normalize_n args)
+  | Exp.CastBool expr -> Exp.CastBool (normalize_n expr)
+  | Exp.Distinct exprs -> Exp.Distinct (List.map normalize_n exprs)
+  | Exp.AtomicResult { target; array; index; operation } ->
+      Exp.AtomicResult
+        {
+          target;
+          array;
+          index = List.map normalize_n index;
+          operation = Atomic.Operation.map normalize_n operation;
+        }
+  | Exp.ThreadUnif expr -> Exp.ThreadUnif (normalize_n expr)
+
+let access_of_subscript (state : collect_state) ~(mode : Access.Mode.t)
+    ~(context : string)
     (subscript : D_lang.d_subscript) : (Access.t, error) result =
   let ( let* ) = Result.bind in
   let* index = map_result_list (nexp_of_expr ~context) subscript.index in
-  Ok { Access.array = subscript.name; index; mode }
+  let index = List.map (normalize_solver_nexp state) index in
+  match Variable.Map.find_opt subscript.name state.aggregate_aliases with
+  | Some alias ->
+      Ok
+        {
+          Access.array = alias.aggregate_array;
+          index = alias.aggregate_index @ index;
+          mode;
+        }
+  | None ->
+      if Variable.Set.mem subscript.name state.invalid_pointer_aliases then
+        Error
+          (Unsupported_expression
+             {
+               context;
+               expr =
+                 D_lang.subscript_to_s subscript
+                 ^ " (pointer alias is path-dependent or invalidated)";
+             })
+      else
+        match Variable.Map.find_opt subscript.name state.pointer_aliases with
+        | None -> Ok { Access.array = subscript.name; index; mode }
+        | Some alias -> (
+            match (alias.offset, index) with
+            | Exp.Num 0, _ -> Ok { Access.array = alias.source; index; mode }
+            | offset, [ linear ] ->
+                Ok
+                  {
+                    Access.array = alias.source;
+                    index = [ Exp.n_plus linear offset ];
+                    mode;
+                  }
+            | _, _ ->
+                Error
+                  (Unsupported_expression
+                     {
+                       context;
+                       expr =
+                         D_lang.subscript_to_s subscript
+                         ^
+                         " (non-zero pointer offset on a non-linear subscript)";
+                     }))
 
 let condition_free_names (conditions : Exp.bexp list) : Variable.Set.t =
   List.fold_left
@@ -1200,38 +1436,44 @@ let record_ordinary_memory_effect ~(kind : ordinary_memory_kind)
     ~(mode : Access.Mode.t) ~(context : string) (subscript : D_lang.d_subscript)
     (state : collect_state) : (collect_state, error) result =
   let ( let* ) = Result.bind in
-  let* access = access_of_subscript ~mode ~context subscript in
-  let control_conditions = List.rev state.control_stack in
-  let alias_conditions =
-    relevant_numeric_alias_conditions state access control_conditions
-  in
-  let definedness_conditions =
-    access_definedness_conditions access
-    @ conditions_definedness_conditions control_conditions
-  in
-  let site, state =
-    make_ordinary_memory_site state ~kind ~location:subscript.location
-  in
-  let memory_effect =
-    {
-      kind;
-      site;
-      access;
-      source_conditions =
-        dedup_conditions
-          (alias_conditions @ definedness_conditions @ control_conditions);
-      runtime_condition = None;
-      phase =
-        { workgroup = state.workgroup_phase; subgroup = state.subgroup_phase };
-      target_config = state.target_config;
-    }
-  in
-  Ok
-    {
-      state with
-      ordinary_memory_effects_rev =
-        memory_effect :: state.ordinary_memory_effects_rev;
-    }
+  let* access = access_of_subscript state ~mode ~context subscript in
+  if access_array_is_private state access.array then Ok state
+  else
+    let memory_conditions =
+      List.rev state.launch_preconditions_rev @ List.rev state.control_stack
+      |> List.map (normalize_solver_bexp state)
+    in
+    let alias_conditions =
+      relevant_numeric_alias_conditions state access memory_conditions
+      |> List.map (normalize_solver_bexp state)
+    in
+    let definedness_conditions =
+      access_definedness_conditions access
+      @ conditions_definedness_conditions memory_conditions
+    in
+    let site, state =
+      make_ordinary_memory_site state ~kind ~location:subscript.location
+    in
+    let memory_effect =
+      {
+        kind;
+        site;
+        access;
+        source_conditions =
+          dedup_conditions
+            (alias_conditions @ definedness_conditions @ memory_conditions);
+        runtime_condition = None;
+        phase =
+          { workgroup = state.workgroup_phase; subgroup = state.subgroup_phase };
+        target_config = state.target_config;
+      }
+    in
+    Ok
+      {
+        state with
+        ordinary_memory_effects_rev =
+          memory_effect :: state.ordinary_memory_effects_rev;
+      }
 
 let atomic_operation_of_source ~(context : string)
     (atomic : D_lang.Expr.t Atomic.t) : (Exp.nexp Atomic.t, error) result =
@@ -1339,15 +1581,17 @@ let wmma_stmt (state : collect_state) (kind : D_lang.Wmma_call.kind)
           memory |> SM.Matrix.memory_effect_footprint
           |> SM.Matrix.indexed_access
         in
-        let control_conditions = List.rev state.control_stack in
+        let memory_conditions =
+          List.rev state.launch_preconditions_rev @ List.rev state.control_stack
+        in
         let definedness_conditions =
           access_definedness_conditions access
-          @ conditions_definedness_conditions control_conditions
+          @ conditions_definedness_conditions memory_conditions
         in
         Some
           (dedup_conditions
-             (relevant_numeric_alias_conditions state access control_conditions
-             @ definedness_conditions @ control_conditions))
+             (relevant_numeric_alias_conditions state access memory_conditions
+             @ definedness_conditions @ memory_conditions))
   in
   let state = record_site_control ?memory_conditions site state in
   Ok
@@ -1498,9 +1742,70 @@ let call_requires_subgroup (func : D_lang.Expr.t) (args : D_lang.Expr.t list) :
   || Option.is_some (subgroup_collective_call_of_call func args)
   || Option.equal String.equal (call_name func) (Some "__syncwarp")
 
+let is_assert_call (func : D_lang.Expr.t) : bool =
+  match call_name func with
+  | Some ("assert" | "static_assert") -> true
+  | Some _ | None -> false
+
+let launch_dimension_var (var : Variable.t) : bool =
+  List.exists (Variable.equal var)
+    (Variable.bdim_list @ Variable.gdim_list)
+
+let record_launch_dimension (state : collect_state) (dimension : Variable.t)
+    (value : Exp.nexp) : (collect_state, error) result =
+  match Variable.Map.find_opt dimension state.launch_dimensions with
+  | None ->
+      Ok
+        {
+          state with
+          launch_dimensions =
+            Variable.Map.add dimension value state.launch_dimensions;
+        }
+  | Some previous when previous = value -> Ok state
+  | Some previous ->
+      Error
+        (Conflicting_launch_dimension
+           {
+             kernel = state.kernel_name;
+             dimension = Variable.name dimension;
+             previous;
+             next = value;
+           })
+
+let record_launch_dimension_from_condition (state : collect_state)
+    (condition : Exp.bexp) : (collect_state, error) result =
+  match condition with
+  | Exp.NRel (N_rel.Eq, Exp.Var dimension, value)
+    when launch_dimension_var dimension ->
+      record_launch_dimension state dimension value
+  | Exp.NRel (N_rel.Eq, value, Exp.Var dimension)
+    when launch_dimension_var dimension ->
+      record_launch_dimension state dimension value
+  | _ -> Ok state
+
+let record_assertion (state : collect_state) (args : D_lang.Expr.t list) :
+    (collect_state, error) result =
+  match args with
+  | condition :: _ when state.control_stack = [] ->
+      let ( let* ) = Result.bind in
+      let* condition =
+        bexp_of_expr ~context:"launch/assert precondition" condition
+      in
+      let* state = record_launch_dimension_from_condition state condition in
+      let conditions = condition :: bexp_definedness_conditions condition in
+      Ok
+        {
+          state with
+          launch_preconditions_rev =
+            List.rev_append conditions state.launch_preconditions_rev;
+        }
+  | _ -> Ok state
+
 let classify_call ?result (state : collect_state) (func : D_lang.Expr.t)
     (args : D_lang.Expr.t list) : (collect_state, error) result =
-  match D_lang.Wmma_call.classify func args with
+  if is_assert_call func then record_assertion state args
+  else
+    match D_lang.Wmma_call.classify func args with
   | Some kind -> wmma_stmt state kind func args
   | None -> (
       match subgroup_collective_call_of_call func args with
@@ -1982,7 +2287,8 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
         (fun state decl ->
           let* state = state in
           let* state = collect_decl state decl in
-          Ok (add_decl_facts state decl))
+          let state = add_local_decl_facts state decl in
+          Ok (add_aggregate_member_alias_from_decl state decl))
         (Ok state) decls
   | Seq (left, right) ->
       let* state = collect_stmt state left in
@@ -2090,9 +2396,21 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
         (Ok state)
         (write.source :: write.target.index)
   | ReadAccessStmt read ->
+      let* aggregate_access =
+        access_of_subscript state ~mode:Read
+          ~context:"ordinary read aggregate projection" read.source
+      in
       let* state =
         record_ordinary_memory_effect ~kind:Ordinary_read ~mode:Read
           ~context:"ordinary read access index" read.source state
+      in
+      let state =
+        add_aggregate_alias read.target
+          {
+            aggregate_array = aggregate_access.array;
+            aggregate_index = aggregate_access.index;
+          }
+          state
       in
       List.fold_left
         (fun state expr ->
@@ -2154,19 +2472,28 @@ let seed_context_declaration_facts (state : collect_state)
     state context_defs
 
 let subgroup_kernel_of_kernel (context_defs : D_lang.Def.t list)
-    (target_config : SM.Target_config.t) (kernel : D_lang.Kernel.t) :
+    (target_config : SM.Target_config.t)
+    ~(uniform_preserving_calls : StringSet.t) (kernel : D_lang.Kernel.t) :
     (subgroup_kernel, error) result =
   let ( let* ) = Result.bind in
   match SM.Target_config.cuda_x_contiguous_subgroup_size target_config with
   | None -> Error (Missing_subgroup_config { kernel = kernel.name })
   | Some _ ->
       let state =
-        empty_collect_state ~target_config
+        empty_collect_state ~kernel_name:kernel.name ~target_config
           ~uniform_vars:(uniform_vars_of_kernel_params kernel)
+          ~uniform_preserving_calls
           (type_aliases_of_defs context_defs)
         |> fun state -> seed_context_declaration_facts state context_defs
       in
       let* state = collect_stmt state kernel.code in
+      let launch_precondition =
+        state.launch_preconditions_rev |> List.rev |> dedup_conditions
+        |> Exp.b_and_ex
+      in
+      let memory_globals =
+        Exp.b_free_names launch_precondition state.memory_globals
+      in
       Ok
         {
           matrix_kernel =
@@ -2174,23 +2501,721 @@ let subgroup_kernel_of_kernel (context_defs : D_lang.Def.t list)
               (List.rev state.stmts_rev);
           site_controls = List.rev state.site_controls_rev;
           uniform_vars = state.uniform_vars;
-          memory_globals = state.memory_globals;
+          memory_globals;
           ordinary_memory_effects = List.rev state.ordinary_memory_effects_rev;
+          launch_precondition;
+          launch_dimensions = state.launch_dimensions;
         }
 
-let route_kernel ?(target_config = SM.Target_config.missing_cuda)
-    ?(context_defs = []) (kernel : D_lang.Kernel.t) :
-    (routed_kernel, error) result =
+module Launch_wrapper_link = struct
+  type terminal_call = {
+    callee_name : string;
+    callee_ty : string;
+    args : D_lang.Expr.t list;
+  }
+
+  let terminal_call_of_kernel (kernel : D_lang.Kernel.t) :
+      terminal_call option =
+    match D_lang.Stmt.last kernel.code with
+    | D_lang.Stmt.SExpr (D_lang.Expr.CallExpr { func; args; _ }) ->
+        call_name func
+        |> Option.map (fun callee_name ->
+               {
+                 callee_name;
+                 callee_ty = J_type.to_string (D_lang.Expr.to_type func);
+                 args;
+               })
+    | _ -> None
+
+  let add_binder ~(inline_id : int) (bindings : Variable.t Variable.Map.t)
+      (var : Variable.t) : Variable.t Variable.Map.t =
+    if Variable.Map.mem var bindings then bindings
+    else
+      let fresh =
+        Variable.set_name
+          (Printf.sprintf "@faial_inline_%d:%s" inline_id
+             (Variable.name var))
+          var
+      in
+      Variable.Map.add var fresh bindings
+
+  let add_decl_binder ~(inline_id : int)
+      (bindings : Variable.t Variable.Map.t) (decl : D_lang.Decl.t) :
+      Variable.t Variable.Map.t =
+    add_binder ~inline_id bindings decl.var
+
+  let add_param_binder ~(inline_id : int)
+      (bindings : Variable.t Variable.Map.t) (param : D_lang.Param.t) :
+      Variable.t Variable.Map.t =
+    add_binder ~inline_id bindings (D_lang.Param.name param)
+
+  let add_type_param_binder ~(inline_id : int)
+      (bindings : Variable.t Variable.Map.t) (param : D_lang.Ty_param.t) :
+      Variable.t Variable.Map.t =
+    add_binder ~inline_id bindings (D_lang.Ty_param.name param)
+
+  let rec collect_stmt_binders ~(inline_id : int)
+      (bindings : Variable.t Variable.Map.t) (stmt : D_lang.Stmt.t) :
+      Variable.t Variable.Map.t =
+    let collect = collect_stmt_binders ~inline_id in
+    match stmt with
+    | D_lang.Stmt.DeclStmt decls ->
+        List.fold_left (add_decl_binder ~inline_id) bindings decls
+    | Seq (left, right) -> collect (collect bindings left) right
+    | IfStmt { then_stmt; else_stmt; _ } ->
+        collect (collect bindings then_stmt) else_stmt
+    | ForStmt { init; inc; body; _ } ->
+        let bindings =
+          match init with
+          | Some (D_lang.ForInit.Decls decls) ->
+              List.fold_left (add_decl_binder ~inline_id) bindings decls
+          | Some (D_lang.ForInit.Expr _) | None -> bindings
+        in
+        collect (collect bindings inc) body
+    | WhileStmt { body; _ } | DoStmt { body; _ } | SwitchStmt { body; _ }
+    | DefaultStmt body | CaseStmt { body; _ } ->
+        collect bindings body
+    | LambdaDecl { var; params; body; _ } ->
+        let bindings = add_binder ~inline_id bindings var in
+        let bindings =
+          List.fold_left (add_param_binder ~inline_id) bindings params
+        in
+        collect bindings body
+    | Skip | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _
+    | BreakStmt | GotoStmt | ReturnStmt _ | ContinueStmt | SExpr _ | AsmStmt _
+    | BarrierOp _ ->
+        bindings
+
+  let bindings_for_kernel ~(inline_id : int) (kernel : D_lang.Kernel.t) :
+      Variable.t Variable.Map.t =
+    let bindings =
+      List.fold_left (add_param_binder ~inline_id) Variable.Map.empty
+        kernel.params
+    in
+    let bindings =
+      List.fold_left (add_type_param_binder ~inline_id) bindings
+        kernel.type_params
+    in
+    collect_stmt_binders ~inline_id bindings kernel.code
+
+  let rename_var (bindings : Variable.t Variable.Map.t) (var : Variable.t) :
+      Variable.t =
+    Variable.Map.find_opt var bindings |> Option.value ~default:var
+
+  let rename_expr (bindings : Variable.t Variable.Map.t)
+      (expr : D_lang.Expr.t) : D_lang.Expr.t =
+    D_lang.Expr.map
+      (function
+        | D_lang.Expr.Ident decl
+          when Decl_expr.Kind.is_runtime_value decl.kind
+               || decl.kind = Decl_expr.Kind.NonTypeTemplateParm ->
+            D_lang.Expr.Ident
+              { decl with name = rename_var bindings decl.name }
+        | expr -> expr)
+      expr
+
+  let rename_init bindings (init : D_lang.Init.t) : D_lang.Init.t =
+    D_lang.Init.map (rename_expr bindings) init
+
+  let rename_decl bindings (decl : D_lang.Decl.t) : D_lang.Decl.t =
+    {
+      decl with
+      var = rename_var bindings decl.var;
+      init = Option.map (rename_init bindings) decl.init;
+    }
+
+  let rename_subscript bindings (subscript : D_lang.d_subscript) :
+      D_lang.d_subscript =
+    {
+      subscript with
+      name = rename_var bindings subscript.name;
+      index = List.map (rename_expr bindings) subscript.index;
+    }
+
+  let rename_for_init bindings (init : D_lang.ForInit.t) : D_lang.ForInit.t =
+    match init with
+    | D_lang.ForInit.Decls decls ->
+        D_lang.ForInit.Decls (List.map (rename_decl bindings) decls)
+    | Expr expr -> D_lang.ForInit.Expr (rename_expr bindings expr)
+
+  let rec rename_stmt bindings (stmt : D_lang.Stmt.t) : D_lang.Stmt.t =
+    let expr = rename_expr bindings in
+    let recurse = rename_stmt bindings in
+    match stmt with
+    | D_lang.Stmt.Skip -> Skip
+    | Seq (left, right) -> D_lang.Stmt.seq (recurse left) (recurse right)
+    | WriteAccessStmt write ->
+        WriteAccessStmt
+          {
+            write with
+            target = rename_subscript bindings write.target;
+            source = expr write.source;
+            guard = Option.map expr write.guard;
+          }
+    | ReadAccessStmt read ->
+        ReadAccessStmt
+          {
+            read with
+            target = rename_var bindings read.target;
+            source = rename_subscript bindings read.source;
+            guard = Option.map expr read.guard;
+          }
+    | AtomicAccessStmt atomic ->
+        AtomicAccessStmt
+          {
+            atomic with
+            target = rename_var bindings atomic.target;
+            source = rename_subscript bindings atomic.source;
+            atomic = Atomic.map expr atomic.atomic;
+            guard = Option.map expr atomic.guard;
+          }
+    | BreakStmt -> BreakStmt
+    | GotoStmt -> GotoStmt
+    | ReturnStmt value -> ReturnStmt (Option.map expr value)
+    | ContinueStmt -> ContinueStmt
+    | IfStmt { cond; then_stmt; else_stmt } ->
+        IfStmt
+          {
+            cond = expr cond;
+            then_stmt = recurse then_stmt;
+            else_stmt = recurse else_stmt;
+          }
+    | DeclStmt decls -> DeclStmt (List.map (rename_decl bindings) decls)
+    | WhileStmt { cond; body } ->
+        WhileStmt { cond = expr cond; body = recurse body }
+    | ForStmt { init; cond; inc; body } ->
+        ForStmt
+          {
+            init = Option.map (rename_for_init bindings) init;
+            cond = Option.map expr cond;
+            inc = recurse inc;
+            body = recurse body;
+          }
+    | DoStmt { cond; body } ->
+        DoStmt { cond = expr cond; body = recurse body }
+    | SwitchStmt { cond; body } ->
+        SwitchStmt { cond = expr cond; body = recurse body }
+    | DefaultStmt body -> DefaultStmt (recurse body)
+    | CaseStmt { case; body } ->
+        CaseStmt { case = expr case; body = recurse body }
+    | SExpr value -> SExpr (expr value)
+    | AsmStmt asm -> AsmStmt (Asm.map_expr expr asm)
+    | BarrierOp { op; target; args; loc } ->
+        BarrierOp
+          {
+            op;
+            target = rename_subscript bindings target;
+            args = List.map expr args;
+            loc;
+          }
+    | LambdaDecl { var; captures; params; body; ret_ty } ->
+        let params =
+          List.map
+            (fun (param : D_lang.Param.t) ->
+              let ty_var = D_lang.Param.ty_var param in
+              {
+                param with
+                ty_var =
+                  Ty_variable.make ~ty:(Ty_variable.ty ty_var)
+                    ~name:(rename_var bindings (Ty_variable.name ty_var));
+              })
+            params
+        in
+        LambdaDecl
+          {
+            var = rename_var bindings var;
+            captures =
+              List.map
+                (fun (name, value) ->
+                  (rename_var bindings name, expr value))
+                captures;
+            params;
+            body = recurse body;
+            ret_ty;
+          }
+
+  let parameter_binding bindings (param : D_lang.Param.t)
+      (actual : D_lang.Expr.t) : D_lang.Decl.t =
+    let ty_var = D_lang.Param.ty_var param in
+    D_lang.Decl.from_expr
+      (Ty_variable.make ~ty:(Ty_variable.ty ty_var)
+         ~name:(rename_var bindings (Ty_variable.name ty_var)))
+      actual
+
+  let expr_mentions_var (var : Variable.t) (expr : D_lang.Expr.t) : bool =
+    let found = ref false in
+    let _ =
+      D_lang.Expr.map
+        (fun expr ->
+          (match expr with
+          | D_lang.Expr.Ident decl
+            when Variable.equal (Decl_expr.name decl) var ->
+              found := true
+          | _ -> ());
+          expr)
+        expr
+    in
+    !found
+
+  let subscript_mentions_var (var : Variable.t)
+      (subscript : D_lang.d_subscript) : bool =
+    Variable.equal subscript.name var
+    || List.exists (expr_mentions_var var) subscript.index
+
+  let init_mentions_var (var : Variable.t) (init : D_lang.Init.t) : bool =
+    D_lang.Init.to_exp init |> List.exists (expr_mentions_var var)
+
+  let decl_mentions_var (var : Variable.t) (decl : D_lang.Decl.t) : bool =
+    Option.fold ~none:false ~some:(init_mentions_var var) decl.init
+
+  let for_init_mentions_var (var : Variable.t) (init : D_lang.ForInit.t) :
+      bool =
+    match init with
+    | D_lang.ForInit.Decls decls -> List.exists (decl_mentions_var var) decls
+    | Expr expr -> expr_mentions_var var expr
+
+  let asm_mentions_var (var : Variable.t) (asm : D_lang.Expr.t Asm.t) : bool =
+    let operand_mentions (operand : D_lang.Expr.t Asm.operand) =
+      expr_mentions_var var operand.expr
+    in
+    List.exists operand_mentions asm.outputs
+    || List.exists operand_mentions asm.inputs
+
+  let rec stmt_mentions_var (var : Variable.t) (stmt : D_lang.Stmt.t) : bool =
+    let expr = expr_mentions_var var in
+    let subscript = subscript_mentions_var var in
+    let recurse = stmt_mentions_var var in
+    match stmt with
+    | D_lang.Stmt.Skip | BreakStmt | GotoStmt | ContinueStmt -> false
+    | Seq (left, right) -> recurse left || recurse right
+    | WriteAccessStmt write ->
+        subscript write.target || expr write.source
+        || Option.fold ~none:false ~some:expr write.guard
+    | ReadAccessStmt read ->
+        subscript read.source
+        || Option.fold ~none:false ~some:expr read.guard
+    | AtomicAccessStmt atomic ->
+        subscript atomic.source
+        || Atomic.Operation.exists expr atomic.atomic.operation
+        || Option.fold ~none:false ~some:expr atomic.guard
+    | ReturnStmt value -> Option.fold ~none:false ~some:expr value
+    | IfStmt { cond; then_stmt; else_stmt } ->
+        expr cond || recurse then_stmt || recurse else_stmt
+    | DeclStmt decls -> List.exists (decl_mentions_var var) decls
+    | WhileStmt { cond; body } | DoStmt { cond; body }
+    | SwitchStmt { cond; body } ->
+        expr cond || recurse body
+    | ForStmt { init; cond; inc; body } ->
+        Option.fold ~none:false ~some:(for_init_mentions_var var) init
+        || Option.fold ~none:false ~some:expr cond
+        || recurse inc || recurse body
+    | DefaultStmt body -> recurse body
+    | CaseStmt { case; body } -> expr case || recurse body
+    | SExpr value -> expr value
+    | AsmStmt asm -> asm_mentions_var var asm
+    | BarrierOp { target; args; _ } ->
+        subscript target || List.exists expr args
+    | LambdaDecl { captures; body; _ } ->
+        List.exists (fun (_, value) -> expr value) captures || recurse body
+
+  let rec is_type_template_argument (argument : C_lang.TemplateArgument.t) :
+      bool =
+    match argument with
+    | C_lang.TemplateArgument.TArgType _ -> true
+    | TArgPack arguments -> List.for_all is_type_template_argument arguments
+    | TArgNullArg | TArgNullPtr | TArgDecl _ | TArgExpr _ | TArgTemplate _
+    | TArgTemplateExpansion _ | TArgIntegral _ ->
+        false
+
+  let template_bindings ~(caller : D_lang.Kernel.t)
+      ~(callee : D_lang.Kernel.t) bindings :
+      (D_lang.Decl.t list, error) result =
+    let fail reason =
+      Error
+        (Launch_wrapper_inlining_error
+           {
+             kernel = caller.name;
+             callee = Some callee.name;
+             reason;
+           })
+    in
+    if callee.type_params = [] then Ok []
+    else if
+      List.length callee.type_params <> List.length callee.template_args
+    then
+      fail
+        "specialization template parameter and argument counts do not match"
+    else
+      List.fold_left2
+        (fun result param argument ->
+          let ( let* ) = Result.bind in
+          let* bindings_rev = result in
+          match (param, argument) with
+          | D_lang.Ty_param.TemplateType _, argument
+            when is_type_template_argument argument ->
+              Ok bindings_rev
+          | ( D_lang.Ty_param.NonTypeTemplate { name; ty },
+              C_lang.TemplateArgument.TArgIntegral value ) ->
+              let binding =
+                D_lang.Decl.from_expr
+                  (Ty_variable.make ~ty ~name:(rename_var bindings name))
+                  (D_lang.Expr.IntegerLiteral value)
+              in
+              Ok (binding :: bindings_rev)
+          | D_lang.Ty_param.NonTypeTemplate { name; _ }, _
+            when not (stmt_mentions_var name callee.code) ->
+              (* Clang substitutes declaration-valued non-type template
+                 arguments in specialized bodies. Their identity already
+                 selected [callee], so no runtime declaration is needed once
+                 the original template parameter has disappeared. *)
+              Ok bindings_rev
+          | _ ->
+              fail
+                ("unresolved specialization binding for template argument "
+                ^ C_lang.TemplateArgument.to_string argument))
+        (Ok []) callee.type_params callee.template_args
+      |> Result.map List.rev
+
+  let kernel_table (program : D_lang.Program.t) :
+      D_lang.Kernel.t list StringMap.t =
+    List.fold_left
+      (fun table -> function
+        | D_lang.Def.Kernel kernel ->
+            let kernels =
+              StringMap.find_opt kernel.name table |> Option.value ~default:[]
+            in
+            StringMap.add kernel.name (kernels @ [ kernel ]) table
+        | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> table)
+      StringMap.empty program
+
+  let rec template_argument_key (argument : C_lang.TemplateArgument.t) :
+      string =
+    let open C_lang.TemplateArgument in
+    match argument with
+    | TArgType ty -> "type:" ^ J_type.to_string ty
+    | TArgIntegral value -> "int:" ^ string_of_int value
+    | TArgNullArg -> "null-arg"
+    | TArgNullPtr -> "nullptr"
+    | TArgDecl name -> "decl:" ^ name
+    | TArgExpr expr -> "expr:" ^ C_lang.Expr.to_string expr
+    | TArgPack arguments ->
+        "pack:["
+        ^ String.concat ";" (List.map template_argument_key arguments)
+        ^ "]"
+    | TArgTemplate name -> "template:" ^ name
+    | TArgTemplateExpansion name -> "template-expansion:" ^ name
+
+  let template_arguments_key (arguments : C_lang.TemplateArgument.t list) :
+      string =
+    arguments |> List.map template_argument_key |> String.concat ","
+
+  let resolve_callee ~(caller : D_lang.Kernel.t)
+      (table : D_lang.Kernel.t list StringMap.t) (call : terminal_call) :
+      (D_lang.Kernel.t, error) result =
+    let candidates =
+      StringMap.find_opt call.callee_name table |> Option.value ~default:[]
+      |> List.filter (fun (kernel : D_lang.Kernel.t) ->
+             List.length kernel.params = List.length call.args)
+    in
+    let specialized =
+      if caller.template_args = [] then candidates
+      else
+        let expected = template_arguments_key caller.template_args in
+        List.filter
+          (fun (kernel : D_lang.Kernel.t) ->
+            String.equal expected
+              (template_arguments_key kernel.template_args))
+          candidates
+    in
+    let exact =
+      List.filter
+        (fun (kernel : D_lang.Kernel.t) ->
+          String.equal kernel.ty call.callee_ty)
+        specialized
+    in
+    match (exact, specialized, candidates) with
+    | [ kernel ], _, _ | [], [ kernel ], _ -> Ok kernel
+    | [], [], [] ->
+        Error
+          (Launch_wrapper_inlining_error
+             {
+               kernel = caller.name;
+               callee = Some call.callee_name;
+               reason = "no uniquely matching kernel definition";
+             })
+    | [], [], _ ->
+        Error
+          (Launch_wrapper_inlining_error
+             {
+               kernel = caller.name;
+               callee = Some call.callee_name;
+               reason =
+                 "no kernel specialization matches launch template args <"
+                 ^ template_arguments_key caller.template_args
+                 ^ ">";
+             })
+    | _ ->
+        Error
+          (Launch_wrapper_inlining_error
+             {
+               kernel = caller.name;
+               callee = Some call.callee_name;
+               reason = "callee resolution is ambiguous";
+             })
+
+  let inline_wrapper ~(inline_id : int)
+      (table : D_lang.Kernel.t list StringMap.t) (wrapper : D_lang.Kernel.t) :
+      (D_lang.Kernel.t, error) result =
+    let ( let* ) = Result.bind in
+    let* call =
+      match terminal_call_of_kernel wrapper with
+      | Some call -> Ok call
+      | None ->
+          Error
+            (Launch_wrapper_inlining_error
+               {
+                 kernel = wrapper.name;
+                 callee = None;
+                 reason = "expected a terminal direct kernel call";
+               })
+    in
+    let* callee = resolve_callee ~caller:wrapper table call in
+    let bindings = bindings_for_kernel ~inline_id callee in
+    let* template_bindings =
+      template_bindings ~caller:wrapper ~callee bindings
+    in
+    let parameter_bindings =
+      List.map2 (parameter_binding bindings) callee.params call.args
+    in
+    let code =
+      D_lang.Stmt.from_list
+        [
+          D_lang.Stmt.skip_last wrapper.code;
+          D_lang.Stmt.DeclStmt (template_bindings @ parameter_bindings);
+          rename_stmt bindings callee.code;
+        ]
+    in
+    Ok
+      {
+        wrapper with
+        code;
+        type_params = wrapper.type_params;
+      }
+
+  let rewrite_program ~(launch_wrappers : StringSet.t)
+      (program : D_lang.Program.t) : (D_lang.Program.t, error) result =
+    let table = kernel_table program in
+    program
+    |> List.fold_left
+         (fun result def ->
+           let ( let* ) = Result.bind in
+           let* inline_id, defs = result in
+           match def with
+           | D_lang.Def.Kernel kernel
+             when StringSet.mem kernel.name launch_wrappers ->
+               let* kernel = inline_wrapper ~inline_id table kernel in
+               Ok (inline_id + 1, D_lang.Def.Kernel kernel :: defs)
+           | _ -> Ok (inline_id, def :: defs))
+         (Ok (0, []))
+    |> Result.map (fun (_, defs) -> List.rev defs)
+end
+
+let uniquify_global_kernel_names ~(launch_wrappers : StringSet.t)
+    (program : D_lang.Program.t) : D_lang.Program.t * StringSet.t =
+  let initial =
+    List.fold_left
+      (fun names -> function
+        | D_lang.Def.Kernel kernel when D_lang.Kernel.is_global kernel ->
+            StringSet.add kernel.name names
+        | D_lang.Def.Kernel _ | Declaration _ | Typedef _ | Enum _
+        | LaunchParam _ ->
+            names)
+      StringSet.empty program
+  in
+  let used = ref StringSet.empty in
+  let renamed_wrappers = ref StringSet.empty in
+  let program =
+    List.map
+      (function
+      | D_lang.Def.Kernel kernel when D_lang.Kernel.is_global kernel ->
+          let original = kernel.name in
+          let name =
+            if not (StringSet.mem original !used) then original
+            else
+              let rec fresh suffix =
+                let candidate = Printf.sprintf "%s_%d" original suffix in
+                if
+                  StringSet.mem candidate !used
+                  || StringSet.mem candidate initial
+                then fresh (suffix + 1)
+                else candidate
+              in
+              fresh 2
+          in
+          used := StringSet.add name !used;
+          if StringSet.mem original launch_wrappers then
+            renamed_wrappers := StringSet.add name !renamed_wrappers;
+          D_lang.Def.Kernel { kernel with name }
+      | def -> def)
+      program
+  in
+  (program, !renamed_wrappers)
+
+let uniform_preserving_intrinsics : StringSet.t =
+  [ "__umulhi"; "make_uint2" ]
+  |> List.fold_left (fun names name -> StringSet.add name names) StringSet.empty
+
+let expression_uses_thread_coordinate (expr : D_lang.Expr.t) : bool =
+  match variable_of_ident_or_member expr with
+  | Some var -> List.exists (Variable.equal var) Variable.tid_list
+  | None -> false
+
+let rec expr_is_uniform_preserving_with (calls : StringSet.t)
+    (expr : D_lang.Expr.t) : bool =
+  let recurse = expr_is_uniform_preserving_with calls in
+  if expression_uses_thread_coordinate expr then false
+  else
+    match expr with
+    | SizeOfExpr _ | CharacterLiteral _ | CXXBoolLiteralExpr _
+    | FloatingLiteral _ | IntegerLiteral _ | Ident _ ->
+        true
+    | BinaryOperator { lhs; rhs; _ }
+    | CXXOperatorCallExpr { args = [ lhs; rhs ]; _ } ->
+        recurse lhs && recurse rhs
+    | ConditionalOperator { cond; then_expr; else_expr; _ } ->
+        recurse cond && recurse then_expr && recurse else_expr
+    | UnaryOperator { child; _ } | MemberExpr { base = child; _ } ->
+        recurse child
+    | CXXConstructExpr { args; _ } -> List.for_all recurse args
+    | CallExpr { func; args; _ } -> (
+        match call_name func with
+        | Some name ->
+            (StringSet.mem name calls || Functions.supported name
+            || Predicates.supported name)
+            && List.for_all recurse args
+        | None -> false)
+    | CXXNewExpr _ | CXXDeleteExpr _ | RecoveryExpr _
+    | CXXOperatorCallExpr _ | UnresolvedLookupExpr _ ->
+        false
+
+let init_is_uniform_preserving_with (calls : StringSet.t)
+    (init : D_lang.Init.t) : bool =
+  D_lang.Init.to_exp init |> List.for_all (expr_is_uniform_preserving_with calls)
+
+let rec stmt_is_uniform_preserving_with (calls : StringSet.t)
+    (stmt : D_lang.Stmt.t) : bool =
+  let expr = expr_is_uniform_preserving_with calls in
+  let recurse = stmt_is_uniform_preserving_with calls in
+  match stmt with
+  | D_lang.Stmt.Skip | BreakStmt | GotoStmt | ContinueStmt -> true
+  | Seq (left, right) -> recurse left && recurse right
+  | ReturnStmt value -> Option.fold ~none:true ~some:expr value
+  | IfStmt { cond; then_stmt; else_stmt } ->
+      expr cond && recurse then_stmt && recurse else_stmt
+  | DeclStmt decls ->
+      List.for_all
+        (fun (decl : D_lang.Decl.t) ->
+          Option.fold ~none:true
+            ~some:(init_is_uniform_preserving_with calls)
+            decl.init)
+        decls
+  | WhileStmt { cond; body } | DoStmt { cond; body }
+  | SwitchStmt { cond; body } ->
+      expr cond && recurse body
+  | ForStmt { init; cond; inc; body } ->
+      let init_is_uniform =
+        match init with
+        | None -> true
+        | Some (D_lang.ForInit.Expr value) -> expr value
+        | Some (D_lang.ForInit.Decls decls) ->
+            List.for_all
+              (fun (decl : D_lang.Decl.t) ->
+                Option.fold ~none:true
+                  ~some:(init_is_uniform_preserving_with calls)
+                  decl.init)
+              decls
+      in
+      init_is_uniform
+      && Option.fold ~none:true ~some:expr cond
+      && recurse inc && recurse body
+  | DefaultStmt body -> recurse body
+  | CaseStmt { case; body } -> expr case && recurse body
+  | SExpr value -> expr value
+  | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _ | AsmStmt _
+  | BarrierOp _ | LambdaDecl _ ->
+      false
+
+let uniform_preserving_device_calls (program : D_lang.Program.t) : StringSet.t =
+  let candidates =
+    List.fold_left
+      (fun candidates -> function
+        | D_lang.Def.Kernel kernel
+          when D_lang.KernelAttr.is_device kernel.attribute ->
+            let overloads =
+              StringMap.find_opt kernel.name candidates
+              |> Option.value ~default:[]
+            in
+            StringMap.add kernel.name (kernel :: overloads) candidates
+        | D_lang.Def.Kernel _ | Declaration _ | Typedef _ | Enum _
+        | LaunchParam _ ->
+            candidates)
+      StringMap.empty program
+  in
+  let rec close calls =
+    let next =
+      StringMap.fold
+        (fun name kernels calls ->
+          if
+            StringSet.mem name calls
+            || not
+                 (List.for_all
+                    (fun (kernel : D_lang.Kernel.t) ->
+                      stmt_is_uniform_preserving_with calls kernel.code)
+                    kernels)
+          then calls
+          else StringSet.add name calls)
+        candidates calls
+    in
+    if StringSet.equal calls next then calls else close next
+  in
+  close uniform_preserving_intrinsics
+
+let route_kernel_with_uniform_calls
+    ?(target_config = SM.Target_config.missing_cuda) ?(context_defs = [])
+    ?(uniform_preserving_calls = StringSet.empty)
+    (kernel : D_lang.Kernel.t) : (routed_kernel, error) result =
   if stmt_requires_subgroup kernel.code then
-    subgroup_kernel_of_kernel context_defs target_config kernel
+    subgroup_kernel_of_kernel context_defs target_config
+      ~uniform_preserving_calls kernel
     |> Result.map (fun kernel -> Subgroup_matrix kernel)
   else
     ordinary_imp_of_kernel context_defs kernel
     |> Result.map (fun kernel -> Ordinary_imp kernel)
 
-let route_program ?target_config (program : D_lang.Program.t) :
+let route_kernel ?(target_config = SM.Target_config.missing_cuda)
+    ?(context_defs = []) (kernel : D_lang.Kernel.t) :
+    (routed_kernel, error) result =
+  route_kernel_with_uniform_calls ~target_config ~context_defs kernel
+
+let route_program ?target_config ?only_kernel
+    ?(launch_wrappers = StringSet.empty)
+    (program : D_lang.Program.t) :
     (routed_kernel list, error) result =
   let ( let* ) = Result.bind in
+  let program, launch_wrappers =
+    uniquify_global_kernel_names ~launch_wrappers program
+  in
+  let launch_wrappers =
+    match only_kernel with
+    | Some kernel when StringSet.mem kernel launch_wrappers ->
+        StringSet.singleton kernel
+    | Some _ -> StringSet.empty
+    | None -> launch_wrappers
+  in
+  let* program =
+    Launch_wrapper_link.rewrite_program ~launch_wrappers program
+  in
+  let uniform_preserving_calls = uniform_preserving_device_calls program in
   let direct_subgroup_kernels =
     List.fold_left
       (fun names -> function
@@ -2231,7 +3256,11 @@ let route_program ?target_config (program : D_lang.Program.t) :
        (fun routed def ->
          let* routed = routed in
          match def with
-         | D_lang.Def.Kernel kernel -> (
+         | D_lang.Def.Kernel kernel
+           when D_lang.Kernel.is_global kernel
+                && Option.fold ~none:true
+                     ~some:(String.equal kernel.name)
+                     only_kernel -> (
              match stmt_subgroup_callee subgroup_kernels kernel.code with
              | Some callee when not (stmt_requires_subgroup kernel.code) ->
                  Error
@@ -2239,9 +3268,11 @@ let route_program ?target_config (program : D_lang.Program.t) :
                       { kernel = kernel.name; callee })
              | Some _ | None ->
                  let* kernel =
-                   route_kernel ?target_config ~context_defs kernel
+                   route_kernel_with_uniform_calls ?target_config ~context_defs
+                     ~uniform_preserving_calls kernel
                  in
                  Ok (kernel :: routed))
+         | D_lang.Def.Kernel _ -> Ok routed
          | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> Ok routed)
        (Ok [])
   |> Result.map List.rev

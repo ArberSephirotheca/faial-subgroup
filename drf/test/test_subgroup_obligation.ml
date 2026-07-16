@@ -87,6 +87,12 @@ let variable_set (names : string list) : Variable.Set.t =
 let matrix_goal_assignments ~(block_dim : Dim3.t) ~(t1 : Dim3.t) ~(t2 : Dim3.t)
     : (string * int) list =
   [
+    ("blockIdx.x", 0);
+    ("blockIdx.y", 0);
+    ("blockIdx.z", 0);
+    ("gridDim.x", 1);
+    ("gridDim.y", 1);
+    ("gridDim.z", 1);
     ("blockDim.x", block_dim.x);
     ("blockDim.y", block_dim.y);
     ("blockDim.z", block_dim.z);
@@ -107,6 +113,12 @@ let matrix_goal_assignments ~(block_dim : Dim3.t) ~(t1 : Dim3.t) ~(t2 : Dim3.t)
 let thread_goal_assignments ~(block_dim : Dim3.t) ~(t1 : Dim3.t) ~(t2 : Dim3.t)
     : (string * int) list =
   [
+    ("blockIdx.x", 0);
+    ("blockIdx.y", 0);
+    ("blockIdx.z", 0);
+    ("gridDim.x", 1);
+    ("gridDim.y", 1);
+    ("gridDim.z", 1);
     ("blockDim.x", block_dim.x);
     ("blockDim.y", block_dim.y);
     ("blockDim.z", block_dim.z);
@@ -784,6 +796,90 @@ let test_ordinary_obligation_constrains_checked_invocation_domain () : unit =
     "ordinary goal bounds projected T2 z" true
     (Stage0.Common.contains ~substring:"threadIdx.z$T2 < blockDim.z" goal)
 
+let test_launch_assertions_supply_symbolic_checked_invocation_domain () : unit =
+  let launch_x = Exp.Var (var "launch_block_x") in
+  let launch_dimensions =
+    Variable.Map.empty
+    |> Variable.Map.add Variable.bdim_x launch_x
+    |> Variable.Map.add Variable.bdim_y (Exp.Num 1)
+    |> Variable.Map.add Variable.bdim_z (Exp.Num 1)
+  in
+  let checked_block_dim =
+    match Memory.checked_block_dim_of_launch_dimensions launch_dimensions with
+    | Ok (Some checked_block_dim) -> checked_block_dim
+    | Ok None -> Alcotest.fail "launch dimensions did not produce a domain"
+    | Error error -> Alcotest.fail (Memory.error_to_string error)
+  in
+  let kernel =
+    SM.Kernel.make ~target_config:(subgroup_config ())
+      ~name:"launch_checked_domain" []
+  in
+  let ordinary =
+    ordinary_effect
+      ~access:(Access.write (var "tile") [ Exp.Var Variable.tid_x ] None)
+      ()
+  in
+  let obligation =
+    match
+      Memory.obligations ~checked_block_dim
+        ~ordinary_memory_effects:[ ordinary ] kernel
+      |> expect_memory_ok
+    with
+    | [ obligation ] -> obligation
+    | obligations ->
+        Alcotest.fail
+          (Printf.sprintf "expected one launch-domain obligation, got %d"
+             (List.length obligations))
+  in
+  let rendered = Memory.obligation_to_string obligation in
+  Alcotest.(check bool)
+    "launch x remains symbolic" true
+    (Stage0.Common.contains ~substring:"blockDim.x == launch_block_x" rendered);
+  Alcotest.(check bool)
+    "launch x is positive" true
+    (Stage0.Common.contains ~substring:"launch_block_x > 0" rendered);
+  Alcotest.(check bool)
+    "T1 x is bounded by launch x" true
+    (Stage0.Common.contains
+       ~substring:"threadIdx.x$T1 < launch_block_x" rendered);
+  Alcotest.(check bool)
+    "T2 x is bounded by launch x" true
+    (Stage0.Common.contains
+       ~substring:"threadIdx.x$T2 < launch_block_x" rendered)
+
+let test_partial_launch_checked_invocation_domain_fails () : unit =
+  let launch_dimensions =
+    Variable.Map.singleton Variable.bdim_x (Exp.Num 64)
+  in
+  match Memory.checked_block_dim_of_launch_dimensions launch_dimensions with
+  | Error (Memory.Incomplete_launch_checked_block_dim missing) ->
+      Alcotest.(check (list string))
+        "missing launch axes" [ "blockDim.y"; "blockDim.z" ] missing
+  | Error error -> Alcotest.fail (Memory.error_to_string error)
+  | Ok _ -> Alcotest.fail "partial launch dimensions were accepted"
+
+let test_launch_checked_precondition_rejects_zero_dimension () : unit =
+  let launch_dimensions =
+    Variable.Map.empty
+    |> Variable.Map.add Variable.bdim_x (Exp.Num 0)
+    |> Variable.Map.add Variable.bdim_y (Exp.Num 1)
+    |> Variable.Map.add Variable.bdim_z (Exp.Num 1)
+  in
+  let checked_block_dim =
+    match Memory.checked_block_dim_of_launch_dimensions launch_dimensions with
+    | Ok (Some checked_block_dim) -> checked_block_dim
+    | Ok None -> Alcotest.fail "launch dimensions did not produce a domain"
+    | Error error -> Alcotest.fail (Memory.error_to_string error)
+  in
+  let precondition =
+    Memory.checked_block_dim_precondition checked_block_dim
+  in
+  Alcotest.(check bool)
+    "zero launch dimension is unsatisfiable" false
+    (eval_goal
+       [ ("blockDim.x", 0); ("blockDim.y", 1); ("blockDim.z", 1) ]
+       precondition)
+
 let test_domain_rejects_impossible_yz_subgroup_escape () : unit =
   let block_dim = checked_block_dim ~x:64 () in
   let obligation = single_store_obligation ~block_dim () in
@@ -830,6 +926,28 @@ let test_valid_cross_subgroup_pair_remains_visible () : unit =
   in
   Alcotest.(check bool)
     "valid different-subgroup matrix pair remains solver-visible" true
+    (eval_goal assignments obligation.goal)
+
+let test_obligation_constrains_block_index_domain () : unit =
+  let block_dim = checked_block_dim ~x:64 () in
+  let obligation = single_store_obligation ~block_dim () in
+  let rendered = Exp.b_to_string obligation.goal in
+  Alcotest.(check bool)
+    "goal has nonnegative block x" true
+    (Stage0.Common.contains ~substring:"blockIdx.x >= 0" rendered);
+  Alcotest.(check bool)
+    "goal bounds block x by grid x" true
+    (Stage0.Common.contains ~substring:"blockIdx.x < gridDim.x" rendered);
+  let assignments =
+    matrix_goal_assignments ~block_dim
+      ~t1:(Dim3.make ~x:0 ~y:0 ~z:0 ())
+      ~t2:(Dim3.make ~x:32 ~y:0 ~z:0 ())
+    |> List.map (fun (name, value) ->
+           if String.equal name "blockIdx.x" then (name, 1)
+           else (name, value))
+  in
+  Alcotest.(check bool)
+    "blockIdx.x == gridDim.x is outside CUDA launch domain" false
     (eval_goal assignments obligation.goal)
 
 let symbolic_checked_block_dim_of_l117 () : Memory.checked_block_dim =
@@ -1061,6 +1179,15 @@ let tests : unit Alcotest.test_case list =
     ( "ordinary checked invocation domain constraints",
       `Quick,
       test_ordinary_obligation_constrains_checked_invocation_domain );
+    ( "launch assertions supply symbolic checked invocation domain",
+      `Quick,
+      test_launch_assertions_supply_symbolic_checked_invocation_domain );
+    ( "partial launch checked invocation domain fails",
+      `Quick,
+      test_partial_launch_checked_invocation_domain_fails );
+    ( "launch checked precondition rejects zero dimension",
+      `Quick,
+      test_launch_checked_precondition_rejects_zero_dimension );
     ( "reject impossible y/z subgroup escape",
       `Quick,
       test_domain_rejects_impossible_yz_subgroup_escape );
@@ -1073,6 +1200,9 @@ let tests : unit Alcotest.test_case list =
     ( "valid cross-subgroup visibility",
       `Quick,
       test_valid_cross_subgroup_pair_remains_visible );
+    ( "block index invocation domain",
+      `Quick,
+      test_obligation_constrains_block_index_domain );
     ( "solve-tri carrier emits symbolic checked obligation",
       `Quick,
       test_solve_tri_carrier_emits_symbolic_checked_obligation );

@@ -45,18 +45,34 @@ barriers are represented by the existing phase separation rather than by
 stable barrier-site event records; tasks that need barrier-site identity must
 move the event input earlier than `Flatacc`.
 
-Mixed ordinary/subgroup parsing assigns user-facing kernel identifiers once,
-after routing. The same collision-free ordered list backs both
-`--list-kernels` and `--kernel`; selection is never applied to pre-compilation
-D-AST names. Consequently every emitted token either selects exactly one
-kernel on replay or fails during the same full-program routing step that
-prevented enumeration.
+Mixed ordinary/subgroup parsing assigns collision-free names to global
+`D_lang` entries after launch-wrapper linking and before selected subgroup
+lowering. The same suffix policy remains in place after compilation, so a
+token such as `kernel_2` selects the same source-order entry on replay.
+Auxiliary definitions remain link context but are not independently analyzed,
+and an unsupported unselected entry cannot abort the selected route.
 
 `lib/flatacc.ml` keeps upstream local-variable classification. The subgroup
 extension does not reinterpret ordinary MAP loop binders. Ownership reasoning
 for recognized shapes such as `base + threadIdx.x + k * stride` remains a
 separate guarded pre-solver concern and is enabled only by an explicit launch
 contract.
+
+## Subgroup Launch Domains
+
+For a linked `--assume-launch` wrapper, `Subgroup_source` carries top-level
+launch assertions into every source memory effect and records exact
+`blockDim.{x,y,z}` equalities separately. `Memory_event.Subgroup_obligation`
+turns a complete three-axis tuple into checked symbolic dimensions: each task
+coordinate is bounded by the launch value and every symbolic dimension has an
+explicit positive guard. A partial tuple or conflicting dimension fact fails
+instead of falling back to unconstrained dimensions.
+
+When `--check-pre-sat` is enabled (including when `--assume-delin` forces it),
+the subgroup CLI checks the conjunction of the linked launch precondition,
+dimension equalities, and positivity guards. An unsatisfiable conjunction is
+reported as structured `status=vacuous` / `drf_full=vacuous`, never as a DRF
+proof. This pre-check is separate from per-access race obligations.
 
 ## Launch Contracts
 
@@ -771,6 +787,18 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   solver goal, while subgroup-owned row/lane locals remain suffixed as
   `$T1`/`$T2`. This keeps shared row-stride and base-offset facts available to
   Z3 without turning per-invocation ownership facts into globals.
+- The subgroup source-effect route does not currently run the ordinary MAP
+  `Aligned -> Delin` pipeline. Consequently `--assume-delin` still controls
+  ordinary kernels but does not add inferred multidimensional index bounds to
+  subgroup obligations. User `--assume` clauses are likewise applied in
+  `prepare_pre` after ordinary protocol lowering and are not subgroup launch
+  preconditions yet. An upstream ordinary-path DRF result that depends on
+  either class of assumption is not yet a subgroup-path parity result; the
+  subgroup alarm remains conservative until the same facts are carried with
+  explicit provenance. Launch extraction has the same boundary: a
+  specialization chosen by a host `switch` needs that case predicate in
+  `LaunchParam`; template identity alone does not justify inventing a runtime
+  equality.
 - If subgroup phase reasoning needs subgroup identity, the caller must provide
   an explicit target configuration and the checked block dimensions. Missing
   configuration or missing block dimensions are unsupported boundaries, not
@@ -784,7 +812,10 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   goal also records `blockDim.y = K` and `K > 0`. When checked block
   dimensions are supplied, these facts are included for every generated
   obligation, including ordinary same-phase obligations that do not otherwise
-  need subgroup identity.
+  need subgroup identity. Every obligation also includes the CUDA grid domain
+  `0 <= blockIdx.{x,y,z} < gridDim.{x,y,z}`. Counterexamples that require a
+  block index at or beyond the launched grid are therefore rejected before
+  they can be reported as races.
 - `lib/subgroup_uniformity.ml` checks the subgroup/matrix carrier's subgroup
   operation sites separately from memory DRF. Top-level sites are accepted;
   supplied control facts from the source bridge, including `if`/`else` branch
@@ -935,12 +966,16 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   symbolic obligations, and Z3 dispatch use the upstream Faial path unchanged.
   Therefore a no-flag result for source containing subgroup/matrix operations
   is only an upstream-compatibility result, not a subgroup-aware verdict.
-- A synthesized launch wrapper that calls a subgroup kernel currently fails
-  explicitly with both wrapper and callee names. Sound support requires
-  inlining the callee into the subgroup carrier while retaining launch
-  assertions and substituting actual arguments; isolated wrapper analysis is
-  forbidden because it can make `--assume-dims` contradict the real launch and
-  yield a vacuous precondition.
+- A synthesized launch wrapper is linked before routing. The subgroup carrier
+  receives the callee body, launch assertions, actual argument bindings, and
+  exact integral template specialization bindings. Declaration-valued
+  non-type arguments are compile-time identity only and are admitted only when
+  Clang has already removed the corresponding parameter from the specialized
+  body. Exact global cooperative-launch targets and auxiliary specializations
+  share the same lookup. Missing definitions, ambiguous overloads, mismatched
+  template metadata, or unresolved specialization parameters fail with
+  wrapper/callee diagnostics. Isolated wrapper analysis remains forbidden
+  because it loses the production memory behavior.
 - Cached CUDA JSON inputs (`*.cjson`) are accepted by the same public analyzer
   route as live CUDA source. When `--assume-launch` is present, cached
   `LaunchParam` entries are rewritten by the launch-synthesis pass before the
@@ -951,9 +986,10 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   target as `cuda-like(threadIdx.x-contiguous(size=N))`. The model still does
   not infer warp size or lane mapping from the source.
 - Subgroup memory ordering that needs subgroup identity also needs checked
-  block dimensions. The focused Flash Attention command provides
-  `--block-dim 64 --subgroup-size 32`; missing or invalid checked dimensions
-  remain unsupported boundaries, not fallback assumptions.
+  block dimensions. They may come from an explicit `--block-dim` or a complete
+  three-axis synthesized launch assertion. Missing, partial, conflicting, or
+  non-positive checked dimensions remain unsupported or vacuous boundaries,
+  not fallback assumptions.
 - Text output for the subgroup path prints the component verdicts
   `mem_drf`, `subgroup_uniformity`, and `drf_full`, followed by deterministic
   solver/pre-solver evidence lines. JSON output includes the same components

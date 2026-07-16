@@ -215,6 +215,8 @@ let subgroup_kernel ?(target_config = subgroup_config ()) ?(body = [])
     uniform_vars;
     memory_globals;
     ordinary_memory_effects;
+    launch_precondition = Exp.Bool true;
+    launch_dimensions = Variable.Map.empty;
   }
 
 let test_ordinary_obligation_matches_symbexp_proof () : unit =

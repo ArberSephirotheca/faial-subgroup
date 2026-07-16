@@ -153,6 +153,7 @@ let rewrite_stmt (st : Stmt.t) : Stmt.t state =
               name = Variable.name fname;
               code = body;
               type_params = [];
+              template_args = [];
               params = cap_params @ params;
               attribute = KernelAttr.Auxiliary;
             }

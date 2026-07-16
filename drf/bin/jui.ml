@@ -72,6 +72,11 @@ let render_subgroup (analysis : App_analysis.subgroup) : Yojson.Basic.t =
   let memory_verdict = Solver.memory_verdict analysis.memory in
   let subgroup_verdict = Uniformity.function_verdict analysis.uniformity in
   let full_verdict = App_analysis.subgroup_full_verdict analysis in
+  let full_verdict_string =
+    match analysis.vacuous with
+    | Some _ -> "vacuous"
+    | None -> Uniformity.full_verdict_to_string full_verdict
+  in
   `Assoc
     [
       ("kernel_name", `String analysis.kernel.name);
@@ -79,11 +84,11 @@ let render_subgroup (analysis : App_analysis.subgroup) : Yojson.Basic.t =
         `String
           (Inference.Subgroup_matrix.Target_config.to_string
              analysis.kernel.target_config) );
-      ("status", `String (Uniformity.full_verdict_to_string full_verdict));
+      ("status", `String full_verdict_string);
       ("mem_drf", `String (Solver.memory_verdict_to_string memory_verdict));
       ( "subgroup_uniformity",
         `String (Uniformity.verdict_to_string subgroup_verdict) );
-      ("drf_full", `String (Uniformity.full_verdict_to_string full_verdict));
+      ("drf_full", `String full_verdict_string);
       ( "memory_checks",
         subgroup_counts_to_json (Solver.memory_counts analysis.memory) );
       ( "evidence",

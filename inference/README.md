@@ -147,11 +147,25 @@ carrier:
   focused WMMA calls route to `Subgroup_matrix` and require an explicit target
   configuration, currently CUDA x-contiguous
   `threadIdx.x / subgroup_size`;
-- a launch wrapper that calls a subgroup kernel is rejected explicitly until
-  the router can inline the callee while preserving launch assertions and
-  argument substitution. It is never analyzed as an empty ordinary wrapper,
-  which previously allowed contradictory launch assumptions to produce a
-  vacuous result;
+- wrappers synthesized by `--assume-launch` are linked to their terminal
+  kernel call before ordinary/subgroup routing. Linking keeps the wrapper's
+  grid/block/path assertions, alpha-renames callee binders, binds formal
+  parameters to the launch arguments, and binds integral non-type template
+  parameters to the exact specialization arguments. Declaration-valued
+  non-type arguments, such as specialized function pointers, are accepted only
+  when Clang has removed the original template parameter from the specialized
+  body; an unresolved occurrence fails explicitly. Type packs are compile-time
+  identity only. `D_lang.Kernel` retains Clang's template-argument metadata so
+  overloads such as
+  `solve_tri_f32_fast<64, 32>` are selected by template identity rather than by
+  name or signature alone. Exact global targets, including cooperative-launch
+  kernels, and auxiliary specializations use the same lookup. Missing,
+  ambiguous, or unresolved specialization bindings fail explicitly; the
+  wrapper is never analyzed as an empty kernel;
+- user-facing global kernel names are made collision-free before selected
+  subgroup lowering. `--kernel` therefore routes only its exact entry while
+  auxiliary definitions remain available as link context, so an unrelated
+  unsupported definition cannot reject the selected kernel;
 - the supported focused WMMA call shapes are exact:
   `fill_fragment(fragment, value)`, `load_matrix_sync(fragment, pointer, ldm)`,
   `mma_sync(d, a, b, c)`, and
@@ -197,7 +211,15 @@ carrier:
   aliases are not memory globals, so row and lane ownership remains
   task-local in memory obligations. Branch and loop exits use the same
   fail-closed join discipline as other scalar facts: a memory-global fact
-  survives only when every reachable outgoing path preserves it;
+  survives only when every reachable outgoing path preserves it. A local
+  computed from memory-global inputs remains memory-global inside a
+  thread-varying branch or after a thread-varying early return: the enclosing
+  source guard already restricts which invocations reach its uses, and the CFG
+  join still removes the fact before any use outside that dominated region.
+  Memory-free device helpers participate through a structural fixed-point
+  summary. A helper result is memory-global only when every overload is free of
+  memory, thread coordinates, barriers, atomics, and assembly, and every
+  transitive call has the same property;
 - CUDA thread-coordinate member expressions are canonicalized before source
   uniformity metadata is inferred. For an explicit x-contiguous subgroup
   configuration, a local alias such as `tid = threadIdx.x` is tracked only as a
@@ -235,7 +257,14 @@ carrier:
   `(i - init) % step == 0` and `init <= i` for the loop body without leaking
   `i == init` as an invariant. Effects are not silently dropped by the
   analyzer: the `drf` subgroup-memory boundary consumes these rows as
-  subgroup-aware memory obligations. Numeric aliases are
+  subgroup-aware memory obligations. Struct and vector projections preserve
+  their aggregate root and every enclosing subscript, so a lowered access such
+  as `y[ib].qs[iqs]` remains an access to `y.qs[ib, iqs]` rather than losing
+  `ib`. Structurally identified non-shared local arrays are thread-private and
+  therefore do not become inter-thread memory effects; shared arrays and
+  pointer-rooted/global accesses are always retained. A low-bit mask
+  `index & (2^k - 1)` is normalized to solver arithmetic
+  `index % 2^k`; other bitwise forms remain unsupported. Numeric aliases are
   assignment-sensitive across dependencies: when a scalar is overwritten,
   aliases whose right-hand side depends on that scalar, directly or
   transitively, are removed before later ordinary-memory or matrix

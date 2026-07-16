@@ -38,9 +38,9 @@ let decl ?(ty = J_type.int) (name : string) (expr : Expr.t) : Decl.t =
   Decl.from_expr (ty_var ~ty name) expr
 
 let kernel ?(attribute = D_lang.KernelAttr.Default) ?(params = [])
-    ?(type_params = []) ?(ty = "void ()") (name : string) (code : Stmt.t) :
-    D_lang.Kernel.t =
-  { ty; name; code; type_params; params; attribute }
+    ?(type_params = []) ?(template_args = []) ?(ty = "void ()")
+    (name : string) (code : Stmt.t) : D_lang.Kernel.t =
+  { ty; name; code; type_params; template_args; params; attribute }
 
 let parse_single_kernel (defs : D_lang.Program.t) : Imp.Kernel.t =
   match D_to_imp.Silent.parse_program defs with
