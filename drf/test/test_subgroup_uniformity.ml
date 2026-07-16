@@ -6,6 +6,7 @@ module SM = Inference.Subgroup_matrix
 module Source = Inference.Subgroup_source
 module Ty_variable = Inference.Ty_variable
 module Uniformity = Drf.Subgroup_uniformity
+module Uniformity_solver = Drf.Subgroup_uniformity_solver
 
 let var (name : string) : Variable.t = Variable.from_name name
 
@@ -131,8 +132,28 @@ let single_site_result (result : Uniformity.function_result) :
 let source_site_control (control : Source.site_control) :
     SM.Site.id * Uniformity.control =
   ( control.site_id,
-    Uniformity.control_with_uniform_vars ~conditions:control.conditions
-      ~uniform_vars:control.uniform_vars )
+    Uniformity.control_with_facts ~conditions:control.conditions
+      ~uniform_vars:control.uniform_vars
+      ~numeric_aliases:control.numeric_aliases )
+
+let aligned_early_exit_control () : Uniformity.control =
+  let i0 = var "i0" in
+  let n = var "n" in
+  let i0_value =
+    Exp.n_plus
+      (Exp.n_mult (Exp.Var Variable.bdim_x) (Exp.Var Variable.bid_x))
+      (Exp.Var Variable.tid_x)
+  in
+  Uniformity.control_with_facts
+    ~conditions:[ Exp.n_lt (Exp.Var i0) (Exp.Var n) ]
+    ~uniform_vars:(Variable.Set.singleton n)
+    ~numeric_aliases:(Variable.Map.singleton i0 i0_value)
+
+let semantic_prover ~(precondition : Exp.bexp) : Uniformity.semantic_prover =
+ fun control ->
+  Uniformity_solver.proves_control_uniform ~block_dim:(Dim3.make ~x:256 ())
+    ~globals:(Variable.Set.singleton (var "n"))
+    ~precondition ~target_config:(subgroup_config ()) control
 
 let test_top_level_subgroup_and_matrix_sites_are_uniform () : unit =
   let kernel =
@@ -184,6 +205,58 @@ let test_thread_index_control_is_undefined_behavior () : unit =
     (Uniformity.full_verdict_to_string
        (Uniformity.compose Uniformity.Memory_drf
           (Uniformity.function_verdict result)))
+
+let test_semantic_uniformity_accepts_aligned_early_exit () : unit =
+  let n = Exp.Var (var "n") in
+  let precondition = Exp.n_eq (Exp.n_mod n (Exp.Num 32)) (Exp.Num 0) in
+  let result =
+    Uniformity.check_kernel
+      ~site_controls:[ (40, aligned_early_exit_control ()) ]
+      ~semantic_prover:(semantic_prover ~precondition)
+      (kernel [ matrix_store 40 ])
+    |> expect_uniformity_ok
+  in
+  let site = single_site_result result in
+  Alcotest.(check string)
+    "semantic proof accepts aligned guard" "drf"
+    (Uniformity.outcome_to_string (Uniformity.site_result_outcome site));
+  Alcotest.(check string)
+    "site records semantic proof" "semantic"
+    (Uniformity.site_result_proof_method site
+    |> Option.map Uniformity.proof_method_to_string
+    |> Option.value ~default:"none")
+
+let test_semantic_uniformity_rejects_unconstrained_early_exit () : unit =
+  let result =
+    Uniformity.check_kernel
+      ~site_controls:[ (41, aligned_early_exit_control ()) ]
+      ~semantic_prover:(semantic_prover ~precondition:(Exp.Bool true))
+      (kernel [ matrix_store 41 ])
+    |> expect_uniformity_ok
+  in
+  let site = single_site_result result in
+  Alcotest.(check string)
+    "unconstrained boundary can split a subgroup"
+    "ub(reason=non_uniform_control)"
+    (Uniformity.outcome_to_string (Uniformity.site_result_outcome site))
+
+let test_semantic_uniformity_rejects_lane_control () : unit =
+  let control =
+    Uniformity.control
+      ~conditions:[ Exp.n_eq (Exp.Var Variable.tid_x) (Exp.Num 0) ]
+  in
+  let result =
+    Uniformity.check_kernel
+      ~site_controls:[ (42, control) ]
+      ~semantic_prover:(semantic_prover ~precondition:(Exp.Bool true))
+      (kernel [ matrix_store 42 ])
+    |> expect_uniformity_ok
+  in
+  let site = single_site_result result in
+  Alcotest.(check string)
+    "lane-specific control remains undefined behavior"
+    "ub(reason=non_uniform_control)"
+    (Uniformity.outcome_to_string (Uniformity.site_result_outcome site))
 
 let test_subgroup_index_control_is_uniform_with_explicit_config () : unit =
   let kernel = kernel [ matrix_store 11 ] in
@@ -1008,6 +1081,15 @@ let tests : unit Alcotest.test_case list =
     ( "thread-indexed control rejects",
       `Quick,
       test_thread_index_control_is_undefined_behavior );
+    ( "semantic aligned early exit accepts",
+      `Quick,
+      test_semantic_uniformity_accepts_aligned_early_exit );
+    ( "semantic unconstrained early exit rejects",
+      `Quick,
+      test_semantic_uniformity_rejects_unconstrained_early_exit );
+    ( "semantic lane control rejects",
+      `Quick,
+      test_semantic_uniformity_rejects_lane_control );
     ( "subgroup index control accepts",
       `Quick,
       test_subgroup_index_control_is_uniform_with_explicit_config );

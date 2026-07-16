@@ -25,32 +25,57 @@ type operation =
   | Op_subgroup_collective of SM.Collective.kind
   | Op_matrix_collective of SM.Matrix.collective_kind
 
-type control = { conditions : Exp.bexp list; uniform_vars : Variable.Set.t }
+type proof_method = Structural | Semantic
+
+type control = {
+  conditions : Exp.bexp list;
+  uniform_vars : Variable.Set.t;
+  numeric_aliases : Exp.nexp Variable.Map.t;
+}
+
+type semantic_prover = control -> bool
 
 type site_result = {
   site : SM.Site.t;
   operation : operation;
   control_depth : int;
   outcome : outcome;
+  proof_method : proof_method option;
 }
 
 type function_result = { name : string; sites : site_result list }
 
 let top_level_control : control =
-  { conditions = []; uniform_vars = Variable.Set.empty }
+  {
+    conditions = [];
+    uniform_vars = Variable.Set.empty;
+    numeric_aliases = Variable.Map.empty;
+  }
 
 let control ~(conditions : Exp.bexp list) : control =
-  { conditions; uniform_vars = Variable.Set.empty }
+  {
+    conditions;
+    uniform_vars = Variable.Set.empty;
+    numeric_aliases = Variable.Map.empty;
+  }
 
 let control_with_uniform_vars ~(conditions : Exp.bexp list)
     ~(uniform_vars : Variable.Set.t) : control =
-  { conditions; uniform_vars }
+  { conditions; uniform_vars; numeric_aliases = Variable.Map.empty }
+
+let control_with_facts ~(conditions : Exp.bexp list)
+    ~(uniform_vars : Variable.Set.t)
+    ~(numeric_aliases : Exp.nexp Variable.Map.t) : control =
+  { conditions; uniform_vars; numeric_aliases }
 
 let control_depth (control : control) : int = List.length control.conditions
 let sites (result : function_result) : site_result list = result.sites
 let site_result_site (site : site_result) : SM.Site.t = site.site
 let site_result_control_depth (site : site_result) : int = site.control_depth
 let site_result_outcome (site : site_result) : outcome = site.outcome
+
+let site_result_proof_method (site : site_result) : proof_method option =
+  site.proof_method
 
 let outcome_is_drf : outcome -> bool = function
   | Site_drf -> true
@@ -88,17 +113,27 @@ let operation_to_string : operation -> string = function
   | Op_matrix_collective kind ->
       "matrix<" ^ SM.Matrix.collective_kind_to_string kind ^ ">"
 
+let proof_method_to_string : proof_method -> string = function
+  | Structural -> "structural"
+  | Semantic -> "semantic"
+
 let outcome_to_string : outcome -> string = function
   | Site_drf -> "drf"
   | Site_undefined_behavior reason ->
       "ub(reason=" ^ violation_kind_to_string reason ^ ")"
 
 let site_result_to_string (site : site_result) : string =
-  Printf.sprintf "%s %s control_depth=%d outcome=%s"
+  let proof =
+    site.proof_method
+    |> Option.map proof_method_to_string
+    |> Option.value ~default:"none"
+  in
+  Printf.sprintf "%s %s control_depth=%d outcome=%s proof=%s"
     (SM.Site.to_string site.site)
     (operation_to_string site.operation)
     site.control_depth
     (outcome_to_string site.outcome)
+    proof
 
 let summary_lines ~(memory : memory_component) (result : function_result) :
     string list =
@@ -262,20 +297,32 @@ let control_is_subgroup_uniform ~(config : SM.Target_config.t)
        (Ok true)
 
 let check_kernel ?(site_controls = []) ?(uniform_vars = Variable.Set.empty)
-    (kernel : SM.Kernel.t) : (function_result, error) result =
+    ?semantic_prover (kernel : SM.Kernel.t) : (function_result, error) result =
   let varying_vars = subgroup_result_variables kernel in
   let check_site (site, operation) =
     let ( let* ) = Result.bind in
     let control = site_control site_controls site in
     let uniform_vars = Variable.Set.union uniform_vars control.uniform_vars in
-    let* uniform =
+    let control = { control with uniform_vars } in
+    let* structurally_uniform =
       control_is_subgroup_uniform ~config:kernel.target_config ~uniform_vars
         ~varying_vars control
     in
-    let outcome =
-      if uniform then Site_drf else Site_undefined_behavior Non_uniform_control
+    let outcome, proof_method =
+      if structurally_uniform then (Site_drf, Some Structural)
+      else
+        match semantic_prover with
+        | Some prove when prove control -> (Site_drf, Some Semantic)
+        | None | Some _ -> (Site_undefined_behavior Non_uniform_control, None)
     in
-    Ok { site; operation; control_depth = control_depth control; outcome }
+    Ok
+      {
+        site;
+        operation;
+        control_depth = control_depth control;
+        outcome;
+        proof_method;
+      }
   in
   kernel.body
   |> List.filter_map site_of_stmt

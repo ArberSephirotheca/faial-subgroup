@@ -21,14 +21,9 @@ let call_expr (name : string) (args : D_lang.Expr.t list) : D_lang.Expr.t =
       ty = J_type.void;
     }
 
-let typed_call_expr ~(ty : J_type.t) (name : string)
-    (args : D_lang.Expr.t list) : D_lang.Expr.t =
-  CallExpr
-    {
-      func = ident ~kind:Decl_expr.Kind.Function ~ty name;
-      args;
-      ty;
-    }
+let typed_call_expr ~(ty : J_type.t) (name : string) (args : D_lang.Expr.t list)
+    : D_lang.Expr.t =
+  CallExpr { func = ident ~kind:Decl_expr.Kind.Function ~ty name; args; ty }
 
 let var (name : string) : Variable.t = Variable.from_name name
 
@@ -49,8 +44,8 @@ let undef_decl ?(ty = J_type.int) (name : string) : D_lang.Decl.t =
   D_lang.Decl.from_undef (ty_var ~ty name)
 
 let kernel ?(attribute = D_lang.KernelAttr.Default) ?(params = [])
-    ?(type_params = []) ?(template_args = []) ?(ty = "void ()")
-    (name : string) (code : D_lang.Stmt.t) : D_lang.Kernel.t =
+    ?(type_params = []) ?(template_args = []) ?(ty = "void ()") (name : string)
+    (code : D_lang.Stmt.t) : D_lang.Kernel.t =
   { ty; name; code; type_params; template_args; params; attribute }
 
 let pointer_ty : J_type.t = ty "float *"
@@ -254,8 +249,7 @@ let test_launch_wrapper_for_subgroup_kernel_fails_explicitly () : unit =
       (D_lang.Stmt.SExpr (call_expr "__syncwarp" []))
   in
   let wrapper =
-    kernel "warp_body@launch"
-      (D_lang.Stmt.SExpr (call_expr "warp_body" []))
+    kernel "warp_body@launch" (D_lang.Stmt.SExpr (call_expr "warp_body" []))
   in
   match
     Source.route_program ~target_config:(subgroup_config ())
@@ -263,9 +257,8 @@ let test_launch_wrapper_for_subgroup_kernel_fails_explicitly () : unit =
   with
   | Error
       (Source.Subgroup_callee_requires_inlining
-        { kernel = actual_kernel; callee = actual_callee }) ->
-      Alcotest.(check string)
-        "wrapper name" "warp_body@launch" actual_kernel;
+         { kernel = actual_kernel; callee = actual_callee }) ->
+      Alcotest.(check string) "wrapper name" "warp_body@launch" actual_kernel;
       Alcotest.(check string) "callee name" "warp_body" actual_callee
   | Error error -> Alcotest.fail (Source.error_to_string error)
   | Ok _ -> Alcotest.fail "subgroup launch wrapper was analyzed in isolation"
@@ -278,16 +271,13 @@ let launch_dim_assert (dimension : string) (value : int) : D_lang.Stmt.t =
 let test_marked_launch_wrapper_inlines_subgroup_callee () : unit =
   let template_args = [ C_lang.TemplateArgument.TArgIntegral 64 ] in
   let type_params =
-    [
-      D_lang.Ty_param.NonTypeTemplate
-        { name = var "WIDTH"; ty = J_type.int };
-    ]
+    [ D_lang.Ty_param.NonTypeTemplate { name = var "WIDTH"; ty = J_type.int } ]
   in
   let templated_index = bin (ident "WIDTH") "+" (ident "threadIdx.x") in
   let callee =
     kernel ~attribute:D_lang.KernelAttr.Auxiliary
-      ~params:[ kernel_param ~ty:pointer_ty "dst" ] ~type_params ~template_args
-      "warp_body"
+      ~params:[ kernel_param ~ty:pointer_ty "dst" ]
+      ~type_params ~template_args "warp_body"
       (D_lang.Stmt.from_list
          [
            write_stmt (subscript "dst" [ templated_index ]);
@@ -299,8 +289,8 @@ let test_marked_launch_wrapper_inlines_subgroup_callee () : unit =
     kernel ~attribute:D_lang.KernelAttr.Auxiliary
       ~params:[ kernel_param ~ty:pointer_ty "dst" ]
       ~type_params
-      ~template_args:[ C_lang.TemplateArgument.TArgIntegral 128 ] "warp_body"
-      D_lang.Stmt.Skip
+      ~template_args:[ C_lang.TemplateArgument.TArgIntegral 128 ]
+      "warp_body" D_lang.Stmt.Skip
   in
   let actual_dst =
     D_lang.Expr.BinaryOperator
@@ -312,8 +302,9 @@ let test_marked_launch_wrapper_inlines_subgroup_callee () : unit =
       }
   in
   let wrapper =
-    kernel ~params:[ kernel_param ~ty:pointer_ty "tile" ] ~template_args
-      "warp_body@launch"
+    kernel
+      ~params:[ kernel_param ~ty:pointer_ty "tile" ]
+      ~template_args "warp_body@launch"
       (D_lang.Stmt.from_list
          [
            launch_dim_assert "blockDim.x" 64;
@@ -322,9 +313,7 @@ let test_marked_launch_wrapper_inlines_subgroup_callee () : unit =
            D_lang.Stmt.SExpr (call_expr "warp_body" [ actual_dst ]);
          ])
   in
-  let launch_wrappers =
-    Stage0.Common.StringSet.singleton "warp_body@launch"
-  in
+  let launch_wrappers = Stage0.Common.StringSet.singleton "warp_body@launch" in
   let routed =
     Source.route_program ~target_config:(subgroup_config ()) ~launch_wrappers
       [
@@ -337,10 +326,10 @@ let test_marked_launch_wrapper_inlines_subgroup_callee () : unit =
   let subgroup =
     routed
     |> List.find_map (function
-         | Source.Subgroup_matrix subgroup
-           when String.equal subgroup.matrix_kernel.name "warp_body@launch" ->
-             Some subgroup
-         | Source.Subgroup_matrix _ | Source.Ordinary_imp _ -> None)
+      | Source.Subgroup_matrix subgroup
+        when String.equal subgroup.matrix_kernel.name "warp_body@launch" ->
+          Some subgroup
+      | Source.Subgroup_matrix _ | Source.Ordinary_imp _ -> None)
     |> Option.get
   in
   Alcotest.(check int)
@@ -351,8 +340,7 @@ let test_marked_launch_wrapper_inlines_subgroup_callee () : unit =
     "pointer base retained" true
     (Variable.equal first_effect.access.array (var "tile"));
   let index =
-    first_effect.access.index |> List.map Exp.n_to_string
-    |> String.concat ", "
+    first_effect.access.index |> List.map Exp.n_to_string |> String.concat ", "
   in
   Alcotest.(check bool)
     "pointer offset retained" true
@@ -363,8 +351,7 @@ let test_marked_launch_wrapper_inlines_subgroup_callee () : unit =
   in
   Alcotest.(check bool)
     "template parameter binding retained" true
-    (Stage0.Common.contains ~substring:"@faial_inline_0:WIDTH == 64"
-       conditions);
+    (Stage0.Common.contains ~substring:"@faial_inline_0:WIDTH == 64" conditions);
   Alcotest.(check bool)
     "launch assertion retained" true
     (Stage0.Common.contains ~substring:"blockDim.x == 64"
@@ -376,8 +363,7 @@ let test_marked_launch_wrapper_inlines_subgroup_callee () : unit =
     "subgroup operation retained" 1
     (List.length subgroup.matrix_kernel.body)
 
-let test_linked_wrapper_accepts_resolved_function_template_argument () : unit
-    =
+let test_linked_wrapper_accepts_resolved_function_template_argument () : unit =
   let template_args =
     [
       C_lang.TemplateArgument.TArgDecl "op_add";
@@ -401,9 +387,7 @@ let test_linked_wrapper_accepts_resolved_function_template_argument () : unit
     kernel ~template_args "warp_body@launch"
       (D_lang.Stmt.SExpr (call_expr "warp_body" []))
   in
-  let launch_wrappers =
-    Stage0.Common.StringSet.singleton "warp_body@launch"
-  in
+  let launch_wrappers = Stage0.Common.StringSet.singleton "warp_body@launch" in
   match
     Source.route_program ~target_config:(subgroup_config ()) ~launch_wrappers
       [ D_lang.Def.Kernel callee; D_lang.Def.Kernel wrapper ]
@@ -437,8 +421,8 @@ let test_linked_wrapper_accepts_global_cooperative_launch_target () : unit =
         subgroup.matrix_kernel.name
   | _ -> Alcotest.fail "global cooperative launch target was not linked"
 
-let test_linked_wrapper_rejects_unresolved_function_template_argument () :
-    unit =
+let test_linked_wrapper_rejects_unresolved_function_template_argument () : unit
+    =
   let template_args = [ C_lang.TemplateArgument.TArgDecl "op_add" ] in
   let type_params =
     [
@@ -451,7 +435,8 @@ let test_linked_wrapper_rejects_unresolved_function_template_argument () :
       {
         func =
           ident ~kind:Decl_expr.Kind.NonTypeTemplateParm
-            ~ty:(ty "float (*)(float, float)") "op";
+            ~ty:(ty "float (*)(float, float)")
+            "op";
         args = [ D_lang.Expr.IntegerLiteral 1; IntegerLiteral 2 ];
         ty = J_type.float;
       }
@@ -465,16 +450,14 @@ let test_linked_wrapper_rejects_unresolved_function_template_argument () :
     kernel ~template_args "warp_body@launch"
       (D_lang.Stmt.SExpr (call_expr "warp_body" []))
   in
-  let launch_wrappers =
-    Stage0.Common.StringSet.singleton "warp_body@launch"
-  in
+  let launch_wrappers = Stage0.Common.StringSet.singleton "warp_body@launch" in
   match
     Source.route_program ~target_config:(subgroup_config ()) ~launch_wrappers
       [ D_lang.Def.Kernel callee; D_lang.Def.Kernel wrapper ]
   with
   | Error
       (Source.Launch_wrapper_inlining_error
-        { kernel; callee = Some callee; reason }) ->
+         { kernel; callee = Some callee; reason }) ->
       Alcotest.(check string) "wrapper name" "warp_body@launch" kernel;
       Alcotest.(check string) "callee name" "warp_body" callee;
       Alcotest.(check bool)
@@ -494,9 +477,7 @@ let test_selected_kernel_routes_before_unrelated_subgroup_failure () : unit =
     kernel "unrelated@launch"
       (D_lang.Stmt.SExpr (call_expr "missing_kernel" []))
   in
-  let launch_wrappers =
-    Stage0.Common.StringSet.singleton "unrelated@launch"
-  in
+  let launch_wrappers = Stage0.Common.StringSet.singleton "unrelated@launch" in
   match
     Source.route_program ~target_config:(subgroup_config ())
       ~only_kernel:"selected_plain" ~launch_wrappers
@@ -536,16 +517,14 @@ let test_linked_wrapper_rejects_conflicting_launch_dimensions () : unit =
            D_lang.Stmt.SExpr (call_expr "warp_body" []);
          ])
   in
-  let launch_wrappers =
-    Stage0.Common.StringSet.singleton "warp_body@launch"
-  in
+  let launch_wrappers = Stage0.Common.StringSet.singleton "warp_body@launch" in
   match
     Source.route_program ~target_config:(subgroup_config ()) ~launch_wrappers
       [ D_lang.Def.Kernel callee; D_lang.Def.Kernel wrapper ]
   with
   | Error
-      (Source.Conflicting_launch_dimension
-        { kernel; dimension; previous; next }) ->
+      (Source.Conflicting_launch_dimension { kernel; dimension; previous; next })
+    ->
       Alcotest.(check string) "wrapper name" "warp_body@launch" kernel;
       Alcotest.(check string) "dimension" "blockDim.x" dimension;
       Alcotest.(check string) "previous value" "64" (Exp.n_to_string previous);
@@ -555,9 +534,7 @@ let test_linked_wrapper_rejects_conflicting_launch_dimensions () : unit =
 
 let test_array_default_initializer_is_not_a_pointer_alias () : unit =
   let array_ty = ty "half[4224]" in
-  let array_init =
-    D_lang.Expr.CXXConstructExpr { args = []; ty = array_ty }
-  in
+  let array_init = D_lang.Expr.CXXConstructExpr { args = []; ty = array_ty } in
   let code =
     D_lang.Stmt.from_list
       [ DeclStmt [ decl ~ty:array_ty "KQ" array_init ]; syncwarp_stmt ]
@@ -568,7 +545,8 @@ let test_array_default_initializer_is_not_a_pointer_alias () : unit =
     |> expect_route_ok
   with
   | [ Source.Subgroup_matrix _ ] -> ()
-  | _ -> Alcotest.fail "array default initializer did not stay on subgroup route"
+  | _ ->
+      Alcotest.fail "array default initializer did not stay on subgroup route"
 
 let test_wmma_source_generates_site_summary () : unit =
   let frag_a = ident ~ty:matrix_a_fragment_type "frag_a" in
@@ -861,8 +839,7 @@ let test_warp_reduce_helpers_advance_ordinary_memory_subgroup_phase () : unit =
       [
         read_stmt ~target:"prev_max"
           (subscript "row_max_shmem" [ ident "q_tile_row" ]);
-        assign "max_logit"
-          (call_expr "warp_reduce_max" [ ident "max_logit" ]);
+        assign "max_logit" (call_expr "warp_reduce_max" [ ident "max_logit" ]);
         assign "sum" (call_expr "warp_reduce_sum" [ ident "cur_p" ]);
         write_stmt (subscript "row_max_shmem" [ ident "q_tile_row" ]);
       ]
@@ -901,6 +878,80 @@ let test_warp_reduce_helpers_advance_ordinary_memory_subgroup_phase () : unit =
                (List.length effects))
     end
   | _ -> Alcotest.fail "warp reduce helper kernel did not route to subgroup"
+
+let test_extended_subgroup_collectives_advance_memory_phase () : unit =
+  let full_mask = D_lang.Expr.IntegerLiteral 0xFFFFFFFF in
+  let width = D_lang.Expr.IntegerLiteral 32 in
+  let code =
+    D_lang.Stmt.from_list
+      [
+        read_stmt (subscript "src" [ ident "threadIdx.x" ]);
+        assign "any" (call_expr "warp_reduce_any" [ ident "predicate" ]);
+        assign "all" (call_expr "warp_reduce_all" [ ident "predicate" ]);
+        assign "broadcast"
+          (call_expr "__shfl_sync"
+             [ full_mask; ident "value"; D_lang.Expr.IntegerLiteral 0; width ]);
+        assign "down"
+          (call_expr "__shfl_down_sync"
+             [ full_mask; ident "value"; D_lang.Expr.IntegerLiteral 1; width ]);
+        assign "up"
+          (call_expr "__shfl_up_sync"
+             [ full_mask; ident "value"; D_lang.Expr.IntegerLiteral 1; width ]);
+        assign "xor"
+          (call_expr "__shfl_xor_sync"
+             [ full_mask; ident "value"; D_lang.Expr.IntegerLiteral 16; width ]);
+        write_stmt (subscript "dst" [ ident "threadIdx.x" ]);
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "extended_collectives" code) ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] -> begin
+      let site_summary =
+        Source.kernel_site_summary subgroup.matrix_kernel |> String.concat "\n"
+      in
+      List.iter
+        (fun label ->
+          Alcotest.(check bool)
+            ("records " ^ label) true
+            (Stage0.Common.contains ~substring:("[" ^ label ^ "]") site_summary))
+        [
+          "warp_reduce_any";
+          "warp_reduce_all";
+          "__shfl_sync";
+          "__shfl_down_sync";
+          "__shfl_up_sync";
+          "__shfl_xor_sync";
+        ];
+      match subgroup.ordinary_memory_effects with
+      | [ read; write ] ->
+          Alcotest.(check (list int))
+            "read starts before collectives" [] read.phase.subgroup;
+          Alcotest.(check (list int))
+            "write follows every collective" [ 0; 1; 2; 3; 4; 5 ]
+            write.phase.subgroup
+      | effects ->
+          Alcotest.fail
+            (Printf.sprintf "expected read/write effects, got %d"
+               (List.length effects))
+    end
+  | _ -> Alcotest.fail "extended collective kernel did not route to subgroup"
+
+let test_subgroup_shuffle_rejects_partial_mask () : unit =
+  let code =
+    assign "value"
+      (call_expr "__shfl_xor_sync"
+         [
+           D_lang.Expr.IntegerLiteral 0xFFFF;
+           ident "value";
+           D_lang.Expr.IntegerLiteral 16;
+           D_lang.Expr.IntegerLiteral 32;
+         ])
+  in
+  expect_unsupported_matrix_call ~op:"__shfl_xor_sync"
+    ~reason:"statically full participation mask" code
 
 let test_warp_reduce_helper_requires_explicit_subgroup_config () : unit =
   let code =
@@ -949,6 +1000,39 @@ let test_early_return_guards_following_memory_effect () : unit =
                (List.length effects))
     end
   | _ -> Alcotest.fail "early-return kernel did not route to subgroup"
+
+let test_early_return_guard_persists_across_intervening_effect () : unit =
+  let code =
+    D_lang.Stmt.from_list
+      [
+        assign "sum" (call_expr "warp_reduce_sum" [ ident "cur_p" ]);
+        IfStmt
+          {
+            cond = thread_x_ne_0 ();
+            then_stmt = ReturnStmt None;
+            else_stmt = Skip;
+          };
+        write_stmt (subscript "first" [ member_expr "blockIdx" "x" ]);
+        write_stmt (subscript "second" [ member_expr "blockIdx" "x" ]);
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "persistent_early_return" code) ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] -> begin
+      Alcotest.(check int)
+        "two writes follow early return" 2
+        (List.length subgroup.ordinary_memory_effects);
+      subgroup.ordinary_memory_effects
+      |> List.iter (fun memory_effect ->
+          let control = Source.ordinary_memory_effect_summary memory_effect in
+          Alcotest.(check bool)
+            "early return guard reaches every later write" true
+            (Stage0.Common.contains ~substring:"threadIdx.x == 0" control))
+    end
+  | _ -> Alcotest.fail "persistent early-return kernel did not route"
 
 let test_ordinary_memory_effects_preserve_loop_ownership_facts () : unit =
   let code =
@@ -2131,8 +2215,7 @@ let test_subgroup_memory_excludes_thread_private_arrays () : unit =
           (subscript ~ty:J_type.float "shared_tile"
              [ member_expr "threadIdx" "x" ]);
         write_stmt
-          (subscript ~ty:J_type.float "dst"
-             [ member_expr "threadIdx" "x" ]);
+          (subscript ~ty:J_type.float "dst" [ member_expr "threadIdx" "x" ]);
         syncwarp_stmt;
       ]
   in
@@ -2145,7 +2228,7 @@ let test_subgroup_memory_excludes_thread_private_arrays () : unit =
       let arrays =
         subgroup.ordinary_memory_effects
         |> List.map (fun (memory_effect : Source.ordinary_memory_effect) ->
-               Variable.name memory_effect.access.array)
+            Variable.name memory_effect.access.array)
       in
       Alcotest.(check (list string))
         "only inter-thread address spaces remain" [ "shared_tile"; "dst" ]
@@ -2171,8 +2254,7 @@ let test_subgroup_memory_recovers_nested_aggregate_indices () : unit =
          {
            base =
              D_lang.Expr.Ident
-               (Decl_expr.from_name ~ty:(ty "struct block_q8_1")
-                  aggregate_value);
+               (Decl_expr.from_name ~ty:(ty "struct block_q8_1") aggregate_value);
            name = "qs";
            ty = ty "signed char [32]";
          })
@@ -2181,7 +2263,8 @@ let test_subgroup_memory_recovers_nested_aggregate_indices () : unit =
     D_lang.Stmt.WriteAccessStmt
       {
         target =
-          D_lang.make_subscript ~name:aggregate_field ~index:[ ident "iqs" ]
+          D_lang.make_subscript ~name:aggregate_field
+            ~index:[ ident "iqs" ]
             ~ty:J_type.char ~location:Stage0.Location.empty;
         source = ident "value";
         payload = None;
@@ -2201,7 +2284,7 @@ let test_subgroup_memory_recovers_nested_aggregate_indices () : unit =
       let field_effect =
         subgroup.ordinary_memory_effects
         |> List.find_opt (fun (memory_effect : Source.ordinary_memory_effect) ->
-               String.equal (Variable.name memory_effect.access.array) "y.qs")
+            String.equal (Variable.name memory_effect.access.array) "y.qs")
       in
       begin match field_effect with
       | Some memory_effect ->
@@ -2219,15 +2302,16 @@ let test_pure_device_helper_result_is_memory_global () : unit =
   let uint2_ty = ty "uint2" in
   let fastdiv =
     kernel ~attribute:D_lang.KernelAttr.Auxiliary
-      ~params:[ kernel_param "n"; kernel_param "m" ] "fastdiv"
+      ~params:[ kernel_param "n"; kernel_param "m" ]
+      "fastdiv"
       (D_lang.Stmt.ReturnStmt
          (Some
-            (typed_call_expr ~ty:J_type.int "__umulhi"
-               [ ident "n"; ident "m" ])))
+            (typed_call_expr ~ty:J_type.int "__umulhi" [ ident "n"; ident "m" ])))
   in
   let fast_div_modulo =
     kernel ~attribute:D_lang.KernelAttr.Auxiliary
-      ~params:[ kernel_param "n"; kernel_param "m" ] "fast_div_modulo"
+      ~params:[ kernel_param "n"; kernel_param "m" ]
+      "fast_div_modulo"
       (D_lang.Stmt.ReturnStmt
          (Some
             (typed_call_expr ~ty:uint2_ty "make_uint2"
@@ -2243,8 +2327,9 @@ let test_pure_device_helper_result_is_memory_global () : unit =
         IfStmt
           {
             cond =
-              bin ~ty:J_type.bool (member_expr "threadIdx" "x") ">="
-                (ident "width");
+              bin ~ty:J_type.bool
+                (member_expr "threadIdx" "x")
+                ">=" (ident "width");
             then_stmt = D_lang.Stmt.ReturnStmt None;
             else_stmt = D_lang.Stmt.Skip;
           };
@@ -2260,7 +2345,8 @@ let test_pure_device_helper_result_is_memory_global () : unit =
       ]
   in
   let caller =
-    kernel ~params:[ kernel_param "shape"; kernel_param "width" ]
+    kernel
+      ~params:[ kernel_param "shape"; kernel_param "width" ]
       "pure_helper" code
   in
   match
@@ -2284,7 +2370,9 @@ let test_pure_device_helper_result_is_memory_global () : unit =
 let test_low_bit_mask_condition_normalizes_to_modulo () : unit =
   let mask = bin (ident "WARP_SIZE") "-" (D_lang.Expr.IntegerLiteral 1) in
   let condition =
-    bin ~ty:J_type.bool (bin (ident "owner") "&" mask) "=="
+    bin ~ty:J_type.bool
+      (bin (ident "owner") "&" mask)
+      "=="
       (member_expr "threadIdx" "x")
   in
   let code =
@@ -2428,12 +2516,21 @@ let tests : unit Alcotest.test_case list =
     ( "warp reduce helpers advance ordinary memory subgroup phase",
       `Quick,
       test_warp_reduce_helpers_advance_ordinary_memory_subgroup_phase );
+    ( "extended subgroup collectives advance memory phase",
+      `Quick,
+      test_extended_subgroup_collectives_advance_memory_phase );
+    ( "subgroup shuffle rejects partial mask",
+      `Quick,
+      test_subgroup_shuffle_rejects_partial_mask );
     ( "warp reduce helper requires explicit subgroup config",
       `Quick,
       test_warp_reduce_helper_requires_explicit_subgroup_config );
     ( "early return guards following memory effect",
       `Quick,
       test_early_return_guards_following_memory_effect );
+    ( "early return guard persists across intervening effect",
+      `Quick,
+      test_early_return_guard_persists_across_intervening_effect );
     ( "ordinary memory effects preserve loop ownership facts",
       `Quick,
       test_ordinary_memory_effects_preserve_loop_ownership_facts );

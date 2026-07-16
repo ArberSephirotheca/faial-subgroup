@@ -155,10 +155,17 @@ let checked_block_dim ?(x = 64) ?(y = 1) ?(z = 1) () : Dim3.t =
   Dim3.make ~x ~y ~z ()
 
 let source_site_control ?source_order ?(conditions = [])
-    ?(memory_conditions = []) ?(uniform_vars = Variable.Set.empty) site_id :
-    SS.site_control =
+    ?(memory_conditions = []) ?(uniform_vars = Variable.Set.empty)
+    ?(numeric_aliases = Variable.Map.empty) site_id : SS.site_control =
   let source_order = Option.value source_order ~default:site_id in
-  { site_id; source_order; conditions; memory_conditions; uniform_vars }
+  {
+    site_id;
+    source_order;
+    conditions;
+    memory_conditions;
+    uniform_vars;
+    numeric_aliases;
+  }
 
 let ordinary_site ?(id = 0) ?source_order ?(label = "ordinary") () :
     SS.ordinary_memory_site =

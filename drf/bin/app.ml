@@ -6,6 +6,7 @@ open Inference
 module SM = Subgroup_matrix
 module Subgroup_solver = Drf.Subgroup_solver
 module Subgroup_uniformity = Drf.Subgroup_uniformity
+module Subgroup_uniformity_solver = Drf.Subgroup_uniformity_solver
 module Subgroup_obligation = Drf.Memory_event.Subgroup_obligation
 
 type kernel =
@@ -191,19 +192,19 @@ let assumes_of (k : Protocols.Kernel.t) (app : t) : Exp.bexp list =
 
 (* Replace the per-kernel assumes for [k] with [bs] (or insert if the
    kernel had no entry). All other kernels' assumes are unchanged. *)
-let set_assumes_for (k : Protocols.Kernel.t) (bs : Exp.bexp list)
-    (app : t) : t =
+let set_assumes_for (k : Protocols.Kernel.t) (bs : Exp.bexp list) (app : t) : t
+    =
   let name = Protocols.Kernel.name k in
   let updated =
-    if List.mem_assoc name app.assumes
-    then List.map (fun (n, v) -> if n = name then (n, bs) else (n, v)) app.assumes
+    if List.mem_assoc name app.assumes then
+      List.map (fun (n, v) -> if n = name then (n, bs) else (n, v)) app.assumes
     else (name, bs) :: app.assumes
   in
   { app with assumes = updated }
 
 (* Extend the per-kernel assumes for [k] with [extras] (concatenate). *)
-let add_assumes_for (k : Protocols.Kernel.t) (extras : Exp.bexp list)
-    (app : t) : t =
+let add_assumes_for (k : Protocols.Kernel.t) (extras : Exp.bexp list) (app : t)
+    : t =
   set_assumes_for k (assumes_of k app @ extras) app
 
 type parsed = { options : Gv_parser.t; kernels : kernel list }
@@ -286,29 +287,27 @@ let to_string (app : t) : string =
       ^ opt int timeout ^ "\nlogic: " ^ opt_s logic ^ "\narchs: "
       ^ list_arch archs ^ "\nshow_proofs: " ^ bool show_proofs
       ^ "\nshow_proto: " ^ bool show_proto ^ "\nshow_wf: " ^ bool show_wf
-      ^ "\nshow_align: " ^ bool show_align ^ "\nshow_delin: "
-      ^ bool show_delin ^ "\nshow_phase_split: "
-      ^ bool show_phase_split ^ "\nshow_loc_split: " ^ bool show_loc_split
-      ^ "\nshow_flat_acc: " ^ bool show_flat_acc ^ "\nshow_symbexp: "
-      ^ bool show_symbexp ^ "\nmacros = " ^ list_string macros
-      ^ "\nonly_true_data_races = ^ " ^ bool only_true_data_races
-      ^ "\nsubgroup_size = " ^ subgroup_size
-      ^ "\nlaunch_contract = " ^ launch_contract
-      ^ "\nassume_delin = " ^ bool assume_delin
-      ^ "\nrewrite_delin = " ^ bool rewrite_delin
-      ^ "\ndelin_elide = " ^ bool delin_elide
-      ^ "\ndelin_algo = " ^ Delin_algo.to_string delin_algo
+      ^ "\nshow_align: " ^ bool show_align ^ "\nshow_delin: " ^ bool show_delin
+      ^ "\nshow_phase_split: " ^ bool show_phase_split ^ "\nshow_loc_split: "
+      ^ bool show_loc_split ^ "\nshow_flat_acc: " ^ bool show_flat_acc
+      ^ "\nshow_symbexp: " ^ bool show_symbexp ^ "\nmacros = "
+      ^ list_string macros ^ "\nonly_true_data_races = ^ "
+      ^ bool only_true_data_races ^ "\nsubgroup_size = " ^ subgroup_size
+      ^ "\nlaunch_contract = " ^ launch_contract ^ "\nassume_delin = "
+      ^ bool assume_delin ^ "\nrewrite_delin = " ^ bool rewrite_delin
+      ^ "\ndelin_elide = " ^ bool delin_elide ^ "\ndelin_algo = "
+      ^ Delin_algo.to_string delin_algo
       ^ "\ndelin_check_vacuosity = " ^ bool delin_check_vacuosity
       ^ "\ndelin_weak_in_range = " ^ bool delin_weak_in_range
-      ^ "\nignore_asserts = " ^ bool ignore_asserts
-      ^ "\nassume_dims = " ^ bool assume_dims
-      ^ "\nassume_launch = " ^ bool assume_launch
-      ^ "\ncheck_pre_sat = " ^ bool check_pre_sat
-      ^ "\nmemory_model = " ^ Memory_model.to_string memory_model
-      ^ "\nstop_at = " ^ opt Stage.to_string stop_at
+      ^ "\nignore_asserts = " ^ bool ignore_asserts ^ "\nassume_dims = "
+      ^ bool assume_dims ^ "\nassume_launch = " ^ bool assume_launch
+      ^ "\ncheck_pre_sat = " ^ bool check_pre_sat ^ "\nmemory_model = "
+      ^ Memory_model.to_string memory_model
+      ^ "\nstop_at = "
+      ^ opt Stage.to_string stop_at
       ^ "\nassumes: "
-      ^ list_string (
-          assumes
+      ^ list_string
+          (assumes
           |> List.concat_map (fun (k, bs) ->
               List.map (fun b -> k ^ ":" ^ Exp.b_to_string b) bs))
       ^ "\n"
@@ -399,8 +398,7 @@ let parse_cuda_json ~assume_launch (json : Yojson.Basic.t) :
 
 let parse_cuda_program ~abort_on_parsing_failure ~block_dim ~grid_dim ~includes
     ~macros ~cu_to_json ~ignore_asserts:_ ~launch_params ~cbor
-    (filename : string) :
-    Gv_parser.t * D_lang.Program.t * Common.StringSet.t =
+    (filename : string) : Gv_parser.t * D_lang.Program.t * Common.StringSet.t =
   let json, options =
     if String.ends_with ~suffix:".cjson" filename then
       ( load_cjson ~exit_status:2 filename,
@@ -456,8 +454,7 @@ let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
     parse_cuda_program
       ~abort_on_parsing_failure:(not ignore_parsing_errors)
       ~block_dim ~grid_dim ~includes ~macros ~cu_to_json ~ignore_asserts
-      ~launch_params:assume_launch ~cbor
-      filename
+      ~launch_params:assume_launch ~cbor filename
   in
   let target_config = subgroup_target_config subgroup_size in
   match
@@ -481,11 +478,11 @@ let parse_without_subgroup_config ~filename ~block_dim ~grid_dim ~includes
     ~assume_launch ~cbor : parsed =
   let parsed =
     Phase_timer.measure "inference" (fun () ->
-      Protocol_parser.Silent.to_proto
-        ~abort_on_parsing_failure:(not ignore_parsing_errors)
-        ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
-        ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor
-        filename)
+        Protocol_parser.Silent.to_proto
+          ~abort_on_parsing_failure:(not ignore_parsing_errors)
+          ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
+          ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor
+          filename)
   in
   {
     options = parsed.options;
@@ -497,10 +494,9 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~logic ~solve_tactic ~ge_index ~le_index ~eq_index ~only_array ~only_kernel
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
-    ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
-    ~assume_delin ~rewrite_delin ~delin_elide ~delin_algo
-    ~delin_check_vacuosity ~delin_weak_in_range ~assumes ~assume_dims
-    ~assume_launch ~check_pre_sat
+    ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
+    ~rewrite_delin ~delin_elide ~delin_algo ~delin_check_vacuosity
+    ~delin_weak_in_range ~assumes ~assume_dims ~assume_launch ~check_pre_sat
     ~memory_model ~cbor ~stop_at ~subgroup_size ~launch_contract : t =
   let launch_contract = parse_launch_contract launch_contract in
   let block_dim, params =
@@ -584,31 +580,50 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
      launch-config dims cover the clause's free variables. A [Some n]
      prefix restricts to kernel [n]; absent names are silently
      dropped. *)
-  let kernel_has_vars (k : Protocols.Kernel.t) (b : Exp.bexp) : bool =
+  let ordinary_kernel_has_vars (k : Protocols.Kernel.t) (b : Exp.bexp) : bool =
     let fvs = Exp.b_free_names b Variable.Set.empty in
-    let p =
-      Protocols.Params.union_left k.global_variables k.local_variables
-    in
-    Variable.Set.for_all (fun v ->
-      Variable.is_launch_config v || Protocols.Params.mem v p)
+    let p = Protocols.Params.union_left k.global_variables k.local_variables in
+    Variable.Set.for_all
+      (fun v -> Variable.is_launch_config v || Protocols.Params.mem v p)
       fvs
   in
+  let subgroup_kernel_has_vars (k : Subgroup_source.subgroup_kernel)
+      (b : Exp.bexp) : bool =
+    let available =
+      Variable.Set.union k.memory_globals k.uniform_vars
+      |> Variable.Set.union Variable.tid_set
+      |> Variable.Set.union Variable.bid_set
+      |> Variable.Set.union Variable.bdim_set
+      |> Variable.Set.union Variable.gdim_set
+    in
+    Exp.b_free_names b Variable.Set.empty
+    |> Variable.Set.for_all (fun variable ->
+        Variable.is_launch_config variable
+        || Variable.Set.mem variable available)
+  in
+  let assumptions_for_kernel ~(name : string) ~(has_vars : Exp.bexp -> bool) =
+    List.filter_map
+      (fun (prefix, clause) ->
+        match prefix with
+        | None -> if has_vars clause then Some clause else None
+        | Some expected ->
+            if String.equal expected name && has_vars clause then Some clause
+            else None)
+      assumes
+  in
   let assumes : (string * Exp.bexp list) list =
-    List.filter_map (function
-      | Subgroup_kernel _ -> None
-      | Ordinary_kernel (k : Protocols.Kernel.t) ->
-      let kn = Protocols.Kernel.name k in
-      let entries =
-        List.filter_map (fun (prefix, b) ->
-          match prefix with
-          | None ->
-            (* Global clause: include only if [k] can take it. *)
-            if kernel_has_vars k b then Some b else None
-          | Some n ->
-            if n = kn then Some b else None)
-          assumes
-      in
-      Some (kn, entries))
+    List.map
+      (function
+        | Subgroup_kernel kernel ->
+            let name = kernel.matrix_kernel.name in
+            ( name,
+              assumptions_for_kernel ~name
+                ~has_vars:(subgroup_kernel_has_vars kernel) )
+        | Ordinary_kernel (k : Protocols.Kernel.t) ->
+            let name = Protocols.Kernel.name k in
+            ( name,
+              assumptions_for_kernel ~name
+                ~has_vars:(ordinary_kernel_has_vars k) ))
       kernels
   in
   {
@@ -670,8 +685,8 @@ let show (b : bool) (call : 'a -> unit) (x : 'a) : 'a =
    (b) [stop_at] names this stage; then raises [Stop_at_stage] in
    case (b) to unwind the rest of the pipeline. The exception is
    caught at the per-kernel boundary in [run]. *)
-let show_or_stop ~(stop_at : Stage.t option) ~(stage : Stage.t)
-    ~(show : bool) (call : 'a -> unit) (x : 'a) : 'a =
+let show_or_stop ~(stop_at : Stage.t option) ~(stage : Stage.t) ~(show : bool)
+    (call : 'a -> unit) (x : 'a) : 'a =
   let matched = stop_at = Some stage in
   if show || matched then call x;
   if matched then raise Stop_at_stage else x
@@ -689,9 +704,9 @@ let prepare_pre (arch : Architecture.t) (a : t) (k : Kernel.t) : Kernel.t =
   k
   (* 0. filter arrays *)
   |> (fun k ->
-    match a.only_array with
-    | Some arr -> Protocols.Kernel.filter_array (fun x -> Variable.name x = arr) k
-    | None -> k)
+  match a.only_array with
+  | Some arr -> Protocols.Kernel.filter_array (fun x -> Variable.name x = arr) k
+  | None -> k)
   (* 1. apply block-level/grid-level analysis constraints and set dimensions *)
   |> Protocols.Kernel.try_set_block_dim a.block_dim
   |> Protocols.Kernel.try_set_grid_dim a.grid_dim
@@ -699,13 +714,13 @@ let prepare_pre (arch : Architecture.t) (a : t) (k : Kernel.t) : Kernel.t =
   (* 1.1 inject user-provided assumptions into the kernel precondition.
      Look up per-kernel; an absent entry means no extra assumes. *)
   |> (fun k ->
-    let assumes =
-      List.assoc_opt (Protocols.Kernel.name k) a.assumes
-      |> Option.value ~default:[]
-    in
-    List.fold_left (fun k b -> Protocols.Kernel.add_pre b k) k assumes)
+  let assumes =
+    List.assoc_opt (Protocols.Kernel.name k) a.assumes
+    |> Option.value ~default:[]
+  in
+  List.fold_left (fun k b -> Protocols.Kernel.add_pre b k) k assumes)
   (* 1.2 optionally pin unreferenced launch dimensions to 1 *)
-  |> (if a.assume_dims then Protocols.Kernel.add_dim_assumptions else Fun.id)
+  |> if a.assume_dims then Protocols.Kernel.add_dim_assumptions else Fun.id
 
 let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
     Flatacc.Kernel.t Streamutil.stream =
@@ -717,23 +732,22 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
      stream-producing work. *)
   let k =
     Phase_timer.measure "map" (fun () ->
-      k
-      |> prepare_pre arch a
-      (* 2. inline global assignments, including block_dim/grid_dim *)
-      |> Protocols.Kernel.inline_globals a.params
-      (* 2.1 inline block_id as a constant when architecture is Grid *)
-      |> (fun k ->
-      match (arch, a.block_idx_1) with
-      | Architecture.Block, Some bid ->
-          let kvs = Dim3.to_assoc ~prefix:"blockIdx." bid in
-          Protocols.Kernel.assign_globals kvs k
-      | _, _ -> k)
-      |> Protocols.Kernel.add_missing_binders
-      |> (if a.only_true_data_races then Protocols.Kernel.to_ci_di else Fun.id)
-      |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Map ~show:a.show_proto
-           Protocols.Kernel.print
-      (* 3. constant folding optimization *)
-      |> Protocols.Kernel.opt)
+        k |> prepare_pre arch a
+        (* 2. inline global assignments, including block_dim/grid_dim *)
+        |> Protocols.Kernel.inline_globals a.params
+        (* 2.1 inline block_id as a constant when architecture is Grid *)
+        |> (fun k ->
+        match (arch, a.block_idx_1) with
+        | Architecture.Block, Some bid ->
+            let kvs = Dim3.to_assoc ~prefix:"blockIdx." bid in
+            Protocols.Kernel.assign_globals kvs k
+        | _, _ -> k)
+        |> Protocols.Kernel.add_missing_binders
+        |> (if a.only_true_data_races then Protocols.Kernel.to_ci_di else Fun.id)
+        |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Map ~show:a.show_proto
+             Protocols.Kernel.print
+        (* 3. constant folding optimization *)
+        |> Protocols.Kernel.opt)
   in
   k
   (* 4. convert to well-formed protocol *)
@@ -741,20 +755,20 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   (* 4.1. remove unnecessary binders *)
   |> Streamutil.map Wellformed.Kernel.trim_binders
   |> Phase_timer.boundary "well-formed"
-  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Well_formed
-       ~show:a.show_wf Wellformed.print_kernels
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Well_formed ~show:a.show_wf
+       Wellformed.print_kernels
   (* 5. align protocol *)
   |> Aligned.translate
   |> Phase_timer.boundary "aligned"
-  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned
-       ~show:a.show_align Aligned.print_kernels
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Aligned ~show:a.show_align
+       Aligned.print_kernels
   (* 6. delinearize accesses *)
   |> Delinearize.translate ~enabled:a.assume_delin ~rewrite:a.rewrite_delin
        ~elide:a.delin_elide ~check_vacuosity:a.delin_check_vacuosity
        ~algo:a.delin_algo ~weak_in_range:a.delin_weak_in_range
   |> Phase_timer.boundary "delin"
-  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Delin
-       ~show:a.show_delin Aligned.print_kernels
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Delin ~show:a.show_delin
+       Aligned.print_kernels
   (* 7. split per sync *)
   |> Phasesplit.translate
   |> Phase_timer.boundary "phase-split"
@@ -768,15 +782,14 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   (* 9. flatten control-flow structures *)
   |> Flatacc.translate arch
   |> Phase_timer.boundary "flat-acc"
-  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Flat_acc
-       ~show:a.show_flat_acc Flatacc.print_kernels
+  |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Flat_acc ~show:a.show_flat_acc
+       Flatacc.print_kernels
 
 let only_kernel (a : t) (ks : kernel list) : kernel list =
   match a.only_kernel with
   | Some name ->
       let ks = ks |> List.filter (fun k -> String.equal (kernel_name k) name) in
-      if ks = [] then raise (Kernel_not_found name)
-      else ks
+      if ks = [] then raise (Kernel_not_found name) else ks
   | None -> ks
 
 let run (a : t) : App_analysis.t list =
@@ -794,15 +807,14 @@ let run (a : t) : App_analysis.t list =
       |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Symbexp
            ~show:a.show_symbexp Symbexp.print_kernels
       |> (fun ps ->
-          let kernel_extras =
-            List.assoc_opt (Protocols.Kernel.name kernel) a.core_extras
-            |> Option.value ~default:[]
-          in
-          Solve_drf.Solution.solve ~timeout:a.timeout
-            ~show_proofs:a.show_proofs ~logic:a.logic
-            ~solve_tactic:a.solve_tactic ~extras:kernel_extras
-            ~pre_solver:(Option.is_some a.launch_contract)
-            ?block_dim:a.block_dim ps)
+      let kernel_extras =
+        List.assoc_opt (Protocols.Kernel.name kernel) a.core_extras
+        |> Option.value ~default:[]
+      in
+      Solve_drf.Solution.solve ~timeout:a.timeout ~show_proofs:a.show_proofs
+        ~logic:a.logic ~solve_tactic:a.solve_tactic ~extras:kernel_extras
+        ~pre_solver:(Option.is_some a.launch_contract)
+        ?block_dim:a.block_dim ps)
       |> Phase_timer.boundary "solve"
       |> Streamutil.to_list
     in
@@ -810,19 +822,43 @@ let run (a : t) : App_analysis.t list =
   in
   let check_subgroup_kernel (subgroup : Subgroup_source.subgroup_kernel) :
       App_analysis.subgroup =
+    let user_precondition =
+      List.assoc_opt subgroup.matrix_kernel.name a.assumes
+      |> Option.value ~default:[] |> Exp.b_and_ex
+    in
+    let subgroup =
+      {
+        subgroup with
+        launch_precondition =
+          Exp.b_and subgroup.launch_precondition user_precondition;
+      }
+    in
+    let ordinary_memory_effects =
+      Subgroup_delinearize.rewrite ~enabled:a.assume_delin
+        ~rewrite_access:a.rewrite_delin ~check_vacuity:a.delin_check_vacuosity
+        ~algo:a.delin_algo ~globals:subgroup.memory_globals
+        subgroup.ordinary_memory_effects
+      |> function
+      | Ok effects -> effects
+      | Error error ->
+          Logger.Colors.error (fun () ->
+              Subgroup_delinearize.error_to_string error);
+          exit 2
+    in
+    let subgroup = { subgroup with ordinary_memory_effects } in
     let kernel = subgroup.matrix_kernel in
     let checked_block_dim =
       match a.block_dim with
       | Some _ -> None
-      | None ->
+      | None -> (
           Subgroup_obligation.checked_block_dim_of_launch_dimensions
             subgroup.launch_dimensions
-          |> (function
-               | Ok checked -> checked
-               | Error error ->
-                   Logger.Colors.error (fun () ->
-                       Subgroup_obligation.error_to_string error);
-                   exit 2)
+          |> function
+          | Ok checked -> checked
+          | Error error ->
+              Logger.Colors.error (fun () ->
+                  Subgroup_obligation.error_to_string error);
+              exit 2)
     in
     let config =
       Subgroup_solver.solver_config ?timeout_ms:a.timeout ?logic:a.logic ()
@@ -833,14 +869,14 @@ let run (a : t) : App_analysis.t list =
         let checked_for_pre_sat =
           match (checked_block_dim, a.block_dim) with
           | Some checked, None -> Some checked
-          | None, Some block_dim ->
+          | None, Some block_dim -> (
               Subgroup_obligation.checked_block_dim_of_dim3 block_dim
-              |> (function
-                   | Ok checked -> Some checked
-                   | Error error ->
-                       Logger.Colors.error (fun () ->
-                           Subgroup_obligation.error_to_string error);
-                       exit 2)
+              |> function
+              | Ok checked -> Some checked
+              | Error error ->
+                  Logger.Colors.error (fun () ->
+                      Subgroup_obligation.error_to_string error);
+                  exit 2)
           | None, None -> None
           | Some _, Some _ ->
               Logger.Colors.error (fun () ->
@@ -875,7 +911,7 @@ let run (a : t) : App_analysis.t list =
       let globals = subgroup.memory_globals in
       kernel
       |> Subgroup_obligation.obligations ~globals ?checked_block_dim
-           ?block_dim:a.block_dim
+           ?block_dim:a.block_dim ~precondition:subgroup.launch_precondition
            ~site_controls:subgroup.site_controls
            ~ordinary_memory_effects:subgroup.ordinary_memory_effects
       |> Subgroup_solver.solve_obligation_result ~config ~globals
@@ -887,13 +923,22 @@ let run (a : t) : App_analysis.t list =
         List.map
           (fun (control : Subgroup_source.site_control) ->
             ( control.site_id,
-              Subgroup_uniformity.control_with_uniform_vars
+              Subgroup_uniformity.control_with_facts
                 ~conditions:control.conditions
-                ~uniform_vars:control.uniform_vars ))
+                ~uniform_vars:control.uniform_vars
+                ~numeric_aliases:control.numeric_aliases ))
           subgroup.site_controls
       in
+      let semantic_prover control =
+        Phase_timer.measure "subgroup-uniformity/semantic" (fun () ->
+            Subgroup_uniformity_solver.proves_control_uniform ?checked_block_dim
+              ?block_dim:a.block_dim ~timeout:a.timeout ~logic:a.logic
+              ~globals:subgroup.memory_globals
+              ~precondition:subgroup.launch_precondition
+              ~target_config:kernel.target_config control)
+      in
       match
-        Subgroup_uniformity.check_kernel ~site_controls
+        Subgroup_uniformity.check_kernel ~site_controls ~semantic_prover
           ~uniform_vars:subgroup.uniform_vars kernel
       with
       | Ok result -> result
@@ -907,8 +952,9 @@ let run (a : t) : App_analysis.t list =
   in
   a.kernels |> only_kernel a
   |> List.map (function
-    | Subgroup_kernel kernel -> App_analysis.Subgroup (check_subgroup_kernel kernel)
-    | Ordinary_kernel kernel ->
+    | Subgroup_kernel kernel ->
+        App_analysis.Subgroup (check_subgroup_kernel kernel)
+    | Ordinary_kernel kernel -> (
         let vacuous : Exp.bexp option =
           if not a.check_pre_sat then None
           else
@@ -917,8 +963,8 @@ let run (a : t) : App_analysis.t list =
                 let prepared = prepare_pre arch a kernel in
                 if
                   Phase_timer.measure "pre-sat" (fun () ->
-                    Gen_z3.is_unsat ~timeout:a.timeout ~logic:a.logic
-                      prepared.pre)
+                      Gen_z3.is_unsat ~timeout:a.timeout ~logic:a.logic
+                        prepared.pre)
                 then Some prepared.pre
                 else None
             | [] -> None
@@ -926,15 +972,18 @@ let run (a : t) : App_analysis.t list =
         match vacuous with
         | Some _ -> App_analysis.Ordinary { kernel; report = []; vacuous }
         | None -> (
-        let rec check_until (archs : Architecture.t list) : App_analysis.t =
-          match archs with
-          | [] -> App_analysis.Ordinary { kernel; report = []; vacuous = None }
-          | [ arch ] -> App_analysis.Ordinary (check_ordinary_kernel arch kernel)
-          | arch :: archs ->
-              let ordinary = check_ordinary_kernel arch kernel in
-              if App_analysis.ordinary_is_safe ordinary then check_until archs
-              else App_analysis.Ordinary ordinary
-        in
-        try check_until a.archs
-        with Stop_at_stage ->
-          App_analysis.Ordinary { kernel; report = []; vacuous = None }))
+            let rec check_until (archs : Architecture.t list) : App_analysis.t =
+              match archs with
+              | [] ->
+                  App_analysis.Ordinary { kernel; report = []; vacuous = None }
+              | [ arch ] ->
+                  App_analysis.Ordinary (check_ordinary_kernel arch kernel)
+              | arch :: archs ->
+                  let ordinary = check_ordinary_kernel arch kernel in
+                  if App_analysis.ordinary_is_safe ordinary then
+                    check_until archs
+                  else App_analysis.Ordinary ordinary
+            in
+            try check_until a.archs
+            with Stop_at_stage ->
+              App_analysis.Ordinary { kernel; report = []; vacuous = None })))

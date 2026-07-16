@@ -86,15 +86,15 @@ module Ordinary_obligation = struct
      canonical proof encoder as the single source of truth so upstream changes
      to conflict, atomic, or memory-model axioms cannot drift here. *)
   let to_proof ?(memory_model = Memory_model.default) ?(assign_index = true)
-      (arch : Architecture.t)
-      (phase : Ordinary_phase.t) : Symbexp.Proof.t =
+      (arch : Architecture.t) (phase : Ordinary_phase.t) : Symbexp.Proof.t =
     Symbexp.Proof.from_flat ~memory_model ~assign_index arch phase.phase_id
       phase.flat_kernel
 
   let from_flat ?(memory_model = Memory_model.default) ?(assign_index = true)
       (arch : Architecture.t) (phase_id : int) (kernel : Flatacc.Kernel.t) :
       Symbexp.Proof.t =
-    kernel |> Ordinary_phase.from_flat ~phase_id
+    kernel
+    |> Ordinary_phase.from_flat ~phase_id
     |> to_proof ~memory_model ~assign_index arch
 end
 
@@ -193,6 +193,7 @@ module Subgroup_event = struct
     target_config : SM.Target_config.t;
     memory_globals : Variable.Set.t;
     uniform_vars : Variable.Set.t;
+    precondition : bexp;
     events : event list;
   }
 
@@ -443,6 +444,7 @@ module Subgroup_event = struct
         target_config;
         memory_globals = kernel.memory_globals;
         uniform_vars = kernel.uniform_vars;
+        precondition = kernel.launch_precondition;
         events = events @ ordinary_events;
       }
 end
@@ -645,17 +647,19 @@ module Subgroup_obligation = struct
         let missing =
           axes
           |> List.filter_map (fun (name, variable) ->
-                 if Variable.Map.mem variable dimensions then None
-                 else Some name)
+              if Variable.Map.mem variable dimensions then None else Some name)
         in
         Error (Incomplete_launch_checked_block_dim missing)
     | [ (_, _, x); (_, _, y); (_, _, z) ] ->
         Ok
           (Some
              {
-               checked_dim_x = launch_checked_dimension ~variable:Variable.bdim_x x;
-               checked_dim_y = launch_checked_dimension ~variable:Variable.bdim_y y;
-               checked_dim_z = launch_checked_dimension ~variable:Variable.bdim_z z;
+               checked_dim_x =
+                 launch_checked_dimension ~variable:Variable.bdim_x x;
+               checked_dim_y =
+                 launch_checked_dimension ~variable:Variable.bdim_y y;
+               checked_dim_z =
+                 launch_checked_dimension ~variable:Variable.bdim_z z;
              })
     | _ -> failwith "checked block dimension axis accounting"
 
@@ -845,8 +849,8 @@ module Subgroup_obligation = struct
       ?(memory_globals = Variable.Set.empty)
       ?(uniform_vars = Variable.Set.empty) ?(ordinary_memory_effects = [])
       ?(launch_precondition = Exp.Bool true)
-      ?(launch_dimensions = Variable.Map.empty)
-      (kernel : SM.Kernel.t) : SS.subgroup_kernel =
+      ?(launch_dimensions = Variable.Map.empty) (kernel : SM.Kernel.t) :
+      SS.subgroup_kernel =
     let matrix_kernel =
       match config with
       | Some config -> kernel_with_config config kernel
@@ -863,10 +867,10 @@ module Subgroup_obligation = struct
     }
 
   let unified_events_of_kernel ?config ?site_controls ?memory_globals
-      ?uniform_vars ?ordinary_memory_effects (kernel : SM.Kernel.t) :
-      (Subgroup_event.t, error) result =
+      ?uniform_vars ?ordinary_memory_effects ?launch_precondition
+      (kernel : SM.Kernel.t) : (Subgroup_event.t, error) result =
     subgroup_kernel ?config ?site_controls ?memory_globals ?uniform_vars
-      ?ordinary_memory_effects kernel
+      ?ordinary_memory_effects ?launch_precondition kernel
     |> Subgroup_event.from_subgroup_kernel
     |> Result.map_error error_of_event_error
 
@@ -982,16 +986,16 @@ module Subgroup_obligation = struct
     in
     Ok
       (Exp.b_and_ex
-         (checked_precondition :: task_bounds Task.Task1
-        @ task_bounds Task.Task2))
+         ((checked_precondition :: task_bounds Task.Task1)
+         @ task_bounds Task.Task2))
 
   let checked_block_dim_precondition (checked_block_dim : checked_block_dim) :
       Exp.bexp =
     checked_block_dim_dimensions checked_block_dim
     |> List.concat_map (fun dimension ->
-           Exp.n_eq (Exp.Var dimension.checked_dimension_variable)
-             dimension.checked_dimension_value
-           :: Option.to_list dimension.checked_dimension_positive_guard)
+        Exp.n_eq (Exp.Var dimension.checked_dimension_variable)
+          dimension.checked_dimension_value
+        :: Option.to_list dimension.checked_dimension_positive_guard)
     |> Exp.b_and_ex
 
   let invocation_domain_condition ?checked_block_dim ?block_dim
@@ -1021,8 +1025,9 @@ module Subgroup_obligation = struct
     in
     Exp.b_and_ex clauses
 
-  let obligation_goal ?(globals = Variable.Set.empty) ?checked_block_dim
-      ?block_dim (config : SM.Target_config.t) (left : conditional_access)
+  let obligation_goal ?(globals = Variable.Set.empty)
+      ?(precondition = Exp.Bool true) ?checked_block_dim ?block_dim
+      (config : SM.Target_config.t) (left : conditional_access)
       (right : conditional_access) : (Exp.bexp, error) result =
     let globals =
       globals
@@ -1048,6 +1053,8 @@ module Subgroup_obligation = struct
     in
     let left_condition = project_bexp globals Task.Task1 left.condition in
     let right_condition = project_bexp globals Task.Task2 right.condition in
+    let left_precondition = project_bexp globals Task.Task1 precondition in
+    let right_precondition = project_bexp globals Task.Task2 precondition in
     let ( let* ) = Result.bind in
     let* invocation_domain =
       invocation_domain_condition ?checked_block_dim ?block_dim left right
@@ -1061,6 +1068,8 @@ module Subgroup_obligation = struct
            invocation_domain;
            block_index_domain_condition;
            projected_thread_distinct;
+           left_precondition;
+           right_precondition;
            left_condition;
            right_condition;
            index_match_condition left_access right_access;
@@ -1096,7 +1105,8 @@ module Subgroup_obligation = struct
     let next_id = ref 0 in
     let make_obligation phase_id array_name left right =
       let* goal =
-        obligation_goal ~globals ?checked_block_dim ?block_dim config left right
+        obligation_goal ~globals ~precondition:kernel.precondition
+          ?checked_block_dim ?block_dim config left right
       in
       let id = !next_id in
       next_id := id + 1;
@@ -1128,12 +1138,13 @@ module Subgroup_obligation = struct
 
   let obligations ?globals ?config ?checked_block_dim ?block_dim
       ?(site_controls = []) ?(ordinary_memory_effects = [])
-      (kernel : SM.Kernel.t) : (obligation list, error) result =
+      ?(precondition = Exp.Bool true) (kernel : SM.Kernel.t) :
+      (obligation list, error) result =
     let memory_globals = Option.value globals ~default:Variable.Set.empty in
     let ( let* ) = Result.bind in
     let* events =
       unified_events_of_kernel ?config ~site_controls ~memory_globals
-        ~ordinary_memory_effects kernel
+        ~ordinary_memory_effects ~launch_precondition:precondition kernel
     in
     obligations_of_events ~globals:memory_globals ?config ?checked_block_dim
       ?block_dim events

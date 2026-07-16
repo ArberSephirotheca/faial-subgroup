@@ -770,12 +770,23 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   remain solver-visible.
 - Ordinary source memory effects before and after focused warp helper/shuffle
   collectives, such as `warp_max`, `warp_sum`, `warp_reduce_max`,
-  `warp_reduce_sum`, `__shfl_sync`, and `__shfl_down_sync`, use that same
+  `warp_reduce_sum`, `warp_reduce_all`, `warp_reduce_any`, `__shfl_sync`,
+  `__shfl_down_sync`, `__shfl_up_sync`, and `__shfl_xor_sync`, use that same
   rule: helper calls do not split workgroup phases and do not introduce memory
   effects, but they do provide subgroup phase boundaries for same-subgroup
-  ordering. The `warp_reduce_*` aliases summarize reviewed helper calls; they
-  do not infer subgroup size from `WARP_SIZE`, and direct width-sensitive
-  `__shfl_xor_sync` modeling remains unsupported until guarded separately.
+  ordering. Direct shuffle calls accept the CUDA three- or four-argument AST
+  shape only when the participation mask is statically the full configured
+  subgroup mask; a partial or symbolic mask fails closed because it cannot
+  order every lane in the modeled subgroup. Shuffle width controls data
+  routing, not the set of lanes admitted by this phase boundary. The
+  `warp_reduce_*` aliases summarize reviewed helper calls; they do not infer
+  subgroup size from `WARP_SIZE` or model the returned value relation.
+- Source control metadata accumulates guards from top-level early returns
+  across the remaining statement sequence. For example, after
+  `if (threadIdx.x != 0) return`, every later memory effect retains
+  `threadIdx.x == 0`, even when other memory statements intervene. The source
+  bridge does not infer arbitrary reconvergence or loop-exit invariants from
+  this rule.
 - Source-order ordinals are carried to the obligation boundary as evidence,
   but they are not by themselves a workgroup barrier or a cross-subgroup
   ordering rule.
@@ -787,18 +798,32 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   solver goal, while subgroup-owned row/lane locals remain suffixed as
   `$T1`/`$T2`. This keeps shared row-stride and base-offset facts available to
   Z3 without turning per-invocation ownership facts into globals.
-- The subgroup source-effect route does not currently run the ordinary MAP
-  `Aligned -> Delin` pipeline. Consequently `--assume-delin` still controls
-  ordinary kernels but does not add inferred multidimensional index bounds to
-  subgroup obligations. User `--assume` clauses are likewise applied in
-  `prepare_pre` after ordinary protocol lowering and are not subgroup launch
-  preconditions yet. An upstream ordinary-path DRF result that depends on
-  either class of assumption is not yet a subgroup-path parity result; the
-  subgroup alarm remains conservative until the same facts are carried with
-  explicit provenance. Launch extraction has the same boundary: a
-  specialization chosen by a host `switch` needs that case predicate in
-  `LaunchParam`; template identity alone does not justify inventing a runtime
-  equality.
+- Subgroup ordinary-memory events consume the same explicit user
+  `--assume` clauses as ordinary MAP kernels. The merged precondition is
+  projected independently for the two candidate tasks and participates in the
+  subgroup pre-SAT check, so an assumption cannot silently produce a vacuous
+  DRF verdict.
+- Under `--assume-delin`, subgroup ordinary-memory events run the selected
+  non-weak Delin dimension inference jointly per array. Recovered per-axis
+  bounds are attached to the individual source event, and the access is
+  rewritten to a multidimensional index unless `--no-rewrite-delin` is used.
+  This retains the original MAP distinction between a kernel precondition and
+  an access-local assumed bound. The subgroup carrier keeps all recovered
+  bounds rather than applying loop-range elision; those omitted ordinary-path
+  bounds are already implied, so this changes formula size rather than the
+  accepted state space. `--delin-algo weak` and
+  `--delin-avoid-vacuous` currently fail explicitly in subgroup mode instead
+  of being silently ignored.
+- Launch predicates still require source provenance. A specialization chosen
+  by a host `switch` is constrained only when `c-to-json` emits the recognized
+  non-fallthrough case equality in `LaunchParam.path_condition`; template
+  identity alone never creates a runtime equality. Fallthrough, chained,
+  range, and default cases remain conservatively unconstrained. Stable host
+  continuation guards such as `if (bad) abort();` may also contribute the
+  predicate required to reach a later launch. Positive conjunctions are split
+  into individual facts, and constant diagnostic operands are omitted, so
+  assertion idioms can carry numeric launch bounds without introducing
+  unsupported string expressions.
 - If subgroup phase reasoning needs subgroup identity, the caller must provide
   an explicit target configuration and the checked block dimensions. Missing
   configuration or missing block dimensions are unsupported boundaries, not
@@ -824,6 +849,20 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   `threadIdx.x % subgroup_size`, unknown locals, lane aliases, or subgroup
   collective results are reported as
   `subgroup_uniformity: undefined_behavior`.
+- Structural uniformity remains the fast path. When a source guard is not
+  structurally uniform, `lib/subgroup_uniformity_solver.ml` asks whether two
+  valid invocations from the same configured subgroup can disagree on that
+  guard. The query uses the linked launch/user precondition, checked CUDA
+  invocation domain, source scalar-alias equalities, and expression
+  definedness facts. Only an `unsat` result records `proof=semantic`; `sat`,
+  solver unknown, timeout, unsupported expressions, or missing target facts
+  remain unproved and therefore fail closed as non-uniform control.
+- The semantic fallback proves participation agreement, not collective result
+  equality. It can establish, for example, that an early-exit boundary aligned
+  to the configured subgroup size is uniform under a host launch assertion.
+  It does not infer that `__shfl_*` or `warp_reduce_*` returns the same value in
+  every lane; memory alarms that require such value-flow semantics remain
+  visible.
 - `threadIdx.x / subgroup_size` is accepted as a subgroup-uniform control term
   only when the explicit CUDA x-contiguous target configuration supplies the
   same subgroup size. `threadIdx.y` and `threadIdx.z` are treated as
@@ -976,6 +1015,11 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   template metadata, or unresolved specialization parameters fail with
   wrapper/callee diagnostics. Isolated wrapper analysis remains forbidden
   because it loses the production memory behavior.
+- Launch-wrapper assertions and accepted CLI assumptions are retained as one
+  subgroup precondition. Every race obligation receives a task-projected copy
+  in addition to the access-local source/control conditions. This is the
+  subgroup counterpart of ordinary `prepare_pre`, not a name-based kernel
+  exception.
 - Cached CUDA JSON inputs (`*.cjson`) are accepted by the same public analyzer
   route as live CUDA source. When `--assume-launch` is present, cached
   `LaunchParam` entries are rewritten by the launch-synthesis pass before the

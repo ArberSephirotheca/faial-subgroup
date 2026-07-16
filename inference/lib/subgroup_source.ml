@@ -53,6 +53,7 @@ and site_control = {
   conditions : Exp.bexp list;
   memory_conditions : Exp.bexp list;
   uniform_vars : Variable.Set.t;
+  numeric_aliases : Exp.nexp Variable.Map.t;
 }
 
 and subgroup_kernel = {
@@ -570,8 +571,8 @@ let is_explicit_memory_global_var (state : collect_state) (var : Variable.t) :
            (Variable.name var))
        state.memory_globals
 
-let call_is_uniform_preserving (state : collect_state)
-    (func : D_lang.Expr.t) : bool =
+let call_is_uniform_preserving (state : collect_state) (func : D_lang.Expr.t) :
+    bool =
   match call_name func with
   | Some name ->
       StringSet.mem name state.uniform_preserving_calls
@@ -609,8 +610,8 @@ let rec expr_is_source_uniform (state : collect_state) : D_lang.Expr.t -> bool =
       List.for_all (expr_is_source_uniform state) args
   | CallExpr { func; args; _ } when call_is_uniform_preserving state func ->
       List.for_all (expr_is_source_uniform state) args
-  | CallExpr _ | CXXOperatorCallExpr _ | RecoveryExpr _
-  | UnresolvedLookupExpr _ ->
+  | CallExpr _ | CXXOperatorCallExpr _ | RecoveryExpr _ | UnresolvedLookupExpr _
+    ->
       false
 
 let rec nexp_is_source_uniform (state : collect_state) : Exp.nexp -> bool =
@@ -687,8 +688,8 @@ let rec expr_is_memory_global (state : collect_state) : D_lang.Expr.t -> bool =
       List.for_all (expr_is_memory_global state) args
   | CallExpr { func; args; _ } when call_is_uniform_preserving state func ->
       List.for_all (expr_is_memory_global state) args
-  | CallExpr _ | CXXOperatorCallExpr _ | RecoveryExpr _
-  | UnresolvedLookupExpr _ ->
+  | CallExpr _ | CXXOperatorCallExpr _ | RecoveryExpr _ | UnresolvedLookupExpr _
+    ->
       false
 
 let init_is_source_uniform (state : collect_state) (init : D_lang.Init.t) : bool
@@ -880,7 +881,7 @@ let add_decl_facts (state : collect_state) (decl : D_lang.Decl.t) :
 let decl_is_thread_private_array (decl : D_lang.Decl.t) : bool =
   let ty = J_type.to_desugared_c_type decl.ty in
   C_type.is_array ty
-  && not (List.mem C_lang.c_attr_shared decl.attrs)
+  && (not (List.mem C_lang.c_attr_shared decl.attrs))
   && Option.is_none (Variable.label_opt decl.var)
 
 let add_local_decl_facts (state : collect_state) (decl : D_lang.Decl.t) :
@@ -933,20 +934,19 @@ let qualify_aggregate_field (field : string) (alias : aggregate_alias) :
   {
     alias with
     aggregate_array =
-      Variable.update_name (fun name -> name ^ "." ^ field)
+      Variable.update_name
+        (fun name -> name ^ "." ^ field)
         alias.aggregate_array;
   }
 
 let add_aggregate_member_alias_from_decl (state : collect_state)
     (decl : D_lang.Decl.t) : collect_state =
   match decl.init with
-  | Some
-      (IExpr
-        (MemberExpr
-          { base = Ident base; name = field; _ })) -> (
+  | Some (IExpr (MemberExpr { base = Ident base; name = field; _ })) -> (
       match Variable.Map.find_opt base.name state.aggregate_aliases with
       | Some alias ->
-          add_aggregate_alias decl.var (qualify_aggregate_field field alias)
+          add_aggregate_alias decl.var
+            (qualify_aggregate_field field alias)
             state
       | None -> state)
   | Some _ | None -> state
@@ -1104,11 +1104,9 @@ let matrix_footprint (state : collect_state) ~(site : SM.Site.t)
         { op = "wmma"; reason; expr = expr_to_string pointer })
 
 let empty_collect_state ~(kernel_name : string)
-    ~(target_config : SM.Target_config.t)
-    ~(uniform_vars : Variable.Set.t)
+    ~(target_config : SM.Target_config.t) ~(uniform_vars : Variable.Set.t)
     ~(uniform_preserving_calls : StringSet.t)
-    (type_aliases : C_type.t StringMap.t) :
-    collect_state =
+    (type_aliases : C_type.t StringMap.t) : collect_state =
   {
     kernel_name;
     next_site_id = 0;
@@ -1182,6 +1180,7 @@ let record_site_control ?memory_conditions (site : SM.Site.t)
         conditions;
         memory_conditions;
         uniform_vars = state.uniform_vars;
+        numeric_aliases = state.numeric_aliases;
       }
       :: state.site_controls_rev;
   }
@@ -1235,9 +1234,7 @@ let rec constant_nexp_value (state : collect_state) (expr : Exp.nexp) :
   | Exp.Binary (N_binary.Mult _, lhs, rhs) ->
       binary (fun lhs rhs -> Some (lhs * rhs)) lhs rhs
   | Exp.Binary (N_binary.Div _, lhs, rhs) ->
-      binary
-        (fun lhs rhs -> if rhs = 0 then None else Some (lhs / rhs))
-        lhs rhs
+      binary (fun lhs rhs -> if rhs = 0 then None else Some (lhs / rhs)) lhs rhs
   | Exp.Binary (N_binary.Mod _, lhs, rhs) ->
       binary
         (fun lhs rhs ->
@@ -1260,14 +1257,13 @@ let rec normalize_solver_nexp (state : collect_state) (expr : Exp.nexp) :
   | Exp.Binary (N_binary.BitAnd, lhs, rhs) ->
       let lhs = normalize lhs in
       let rhs = normalize rhs in
-      begin
-        match
-          ( Option.bind (constant_nexp_value state lhs) low_bit_mask_modulus,
-            Option.bind (constant_nexp_value state rhs) low_bit_mask_modulus )
-        with
-        | _, Some modulus -> Exp.n_mod lhs (Exp.Num modulus)
-        | Some modulus, None -> Exp.n_mod rhs (Exp.Num modulus)
-        | None, None -> Exp.Binary (N_binary.BitAnd, lhs, rhs)
+      begin match
+        ( Option.bind (constant_nexp_value state lhs) low_bit_mask_modulus,
+          Option.bind (constant_nexp_value state rhs) low_bit_mask_modulus )
+      with
+      | _, Some modulus -> Exp.n_mod lhs (Exp.Num modulus)
+      | Some modulus, None -> Exp.n_mod rhs (Exp.Num modulus)
+      | None, None -> Exp.Binary (N_binary.BitAnd, lhs, rhs)
       end
   | Exp.Binary (op, lhs, rhs) -> Exp.Binary (op, normalize lhs, normalize rhs)
   | Exp.NIf (cond, then_expr, else_expr) ->
@@ -1301,8 +1297,8 @@ and normalize_solver_bexp (state : collect_state) (condition : Exp.bexp) :
   | Exp.ThreadUnif expr -> Exp.ThreadUnif (normalize_n expr)
 
 let access_of_subscript (state : collect_state) ~(mode : Access.Mode.t)
-    ~(context : string)
-    (subscript : D_lang.d_subscript) : (Access.t, error) result =
+    ~(context : string) (subscript : D_lang.d_subscript) :
+    (Access.t, error) result =
   let ( let* ) = Result.bind in
   let* index = map_result_list (nexp_of_expr ~context) subscript.index in
   let index = List.map (normalize_solver_nexp state) index in
@@ -1314,7 +1310,7 @@ let access_of_subscript (state : collect_state) ~(mode : Access.Mode.t)
           index = alias.aggregate_index @ index;
           mode;
         }
-  | None ->
+  | None -> (
       if Variable.Set.mem subscript.name state.invalid_pointer_aliases then
         Error
           (Unsupported_expression
@@ -1344,9 +1340,9 @@ let access_of_subscript (state : collect_state) ~(mode : Access.Mode.t)
                        context;
                        expr =
                          D_lang.subscript_to_s subscript
-                         ^
-                         " (non-zero pointer offset on a non-linear subscript)";
-                     }))
+                         ^ " (non-zero pointer offset on a non-linear \
+                            subscript)";
+                     })))
 
 let condition_free_names (conditions : Exp.bexp list) : Variable.Set.t =
   List.fold_left
@@ -1626,8 +1622,12 @@ type subgroup_collective_call =
   | Warp_max
   | Warp_reduce_sum
   | Warp_reduce_max
+  | Warp_reduce_all
+  | Warp_reduce_any
   | Shfl_sync
   | Shfl_down_sync
+  | Shfl_up_sync
+  | Shfl_xor_sync
 
 let subgroup_collective_call_name : subgroup_collective_call -> string =
   function
@@ -1635,8 +1635,12 @@ let subgroup_collective_call_name : subgroup_collective_call -> string =
   | Warp_max -> "warp_max"
   | Warp_reduce_sum -> "warp_reduce_sum"
   | Warp_reduce_max -> "warp_reduce_max"
+  | Warp_reduce_all -> "warp_reduce_all"
+  | Warp_reduce_any -> "warp_reduce_any"
   | Shfl_sync -> "__shfl_sync"
   | Shfl_down_sync -> "__shfl_down_sync"
+  | Shfl_up_sync -> "__shfl_up_sync"
+  | Shfl_xor_sync -> "__shfl_xor_sync"
 
 let subgroup_collective_call_of_call (func : D_lang.Expr.t)
     (args : D_lang.Expr.t list) : subgroup_collective_call option =
@@ -1645,8 +1649,12 @@ let subgroup_collective_call_of_call (func : D_lang.Expr.t)
   | Some "warp_max", 1 -> Some Warp_max
   | Some "warp_reduce_sum", 1 -> Some Warp_reduce_sum
   | Some "warp_reduce_max", 1 -> Some Warp_reduce_max
-  | Some "__shfl_sync", 3 -> Some Shfl_sync
-  | Some "__shfl_down_sync", 3 -> Some Shfl_down_sync
+  | Some "warp_reduce_all", 1 -> Some Warp_reduce_all
+  | Some "warp_reduce_any", 1 -> Some Warp_reduce_any
+  | Some "__shfl_sync", (3 | 4) -> Some Shfl_sync
+  | Some "__shfl_down_sync", (3 | 4) -> Some Shfl_down_sync
+  | Some "__shfl_up_sync", (3 | 4) -> Some Shfl_up_sync
+  | Some "__shfl_xor_sync", (3 | 4) -> Some Shfl_xor_sync
   | _ -> None
 
 let subgroup_collective_result (site : SM.Site.t) : Variable.t =
@@ -1657,6 +1665,30 @@ let subgroup_collective_operand ~(context : string) (expr : D_lang.Expr.t) :
     (SM.Collective.operand, error) result =
   nexp_of_expr ~context expr
   |> Result.map (fun expr -> SM.Collective.Numeric expr)
+
+let subgroup_collective_predicate_operand ~(context : string)
+    (expr : D_lang.Expr.t) : (SM.Collective.operand, error) result =
+  bexp_of_expr ~context expr |> Result.map (fun expr -> SM.Collective.Bool expr)
+
+let full_subgroup_mask (state : collect_state) (expr : D_lang.Expr.t) : bool =
+  match (target_subgroup_size_value state, int_constant_of_expr state expr) with
+  | Some size, Some mask when size < Sys.int_size - 1 ->
+      Int.equal mask (-1) || Int.equal mask ((1 lsl size) - 1)
+  | Some _, Some -1 -> true
+  | Some _, Some _ | Some _, None | None, _ -> false
+
+let shuffle_operands (state : collect_state) ~(label : string)
+    ~(rendered_expr : string) (args : D_lang.Expr.t list) :
+    (D_lang.Expr.t * D_lang.Expr.t, error) result =
+  let fail reason =
+    Error (Unsupported_matrix_call { op = label; reason; expr = rendered_expr })
+  in
+  match args with
+  | [ mask; value; selector ] | [ mask; value; selector; _ ] ->
+      if full_subgroup_mask state mask then Ok (value, selector)
+      else
+        fail "subgroup ordering requires a statically full participation mask"
+  | _ -> fail "unexpected subgroup shuffle argument shape"
 
 let subgroup_collective_stmt ?result (state : collect_state)
     (op : subgroup_collective_call) (func : D_lang.Expr.t)
@@ -1679,9 +1711,7 @@ let subgroup_collective_stmt ?result (state : collect_state)
     match (op, args) with
     | (Warp_sum | Warp_reduce_sum), [ value ] ->
         let* argument =
-          subgroup_collective_operand
-            ~context:(label ^ " operand")
-            value
+          subgroup_collective_operand ~context:(label ^ " operand") value
         in
         Ok
           (SM.Collective.Operation_payload
@@ -1693,9 +1723,7 @@ let subgroup_collective_stmt ?result (state : collect_state)
              })
     | (Warp_max | Warp_reduce_max), [ value ] ->
         let* argument =
-          subgroup_collective_operand
-            ~context:(label ^ " operand")
-            value
+          subgroup_collective_operand ~context:(label ^ " operand") value
         in
         Ok
           (SM.Collective.Operation_payload
@@ -1705,7 +1733,25 @@ let subgroup_collective_stmt ?result (state : collect_state)
                argument;
                result;
              })
-    | Shfl_sync, [ _mask; value; lane ] ->
+    | (Warp_reduce_all | Warp_reduce_any), [ value ] ->
+        let* argument =
+          subgroup_collective_predicate_operand ~context:(label ^ " operand")
+            value
+        in
+        let op =
+          match op with
+          | Warp_reduce_all -> SM.Collective.All
+          | Warp_reduce_any -> SM.Collective.Any
+          | _ -> failwith "subgroup reduction operation accounting"
+        in
+        Ok
+          (SM.Collective.Operation_payload
+             { op; collective_op = SM.Collective.Reduce; argument; result })
+    | Shfl_sync, args ->
+        let* value, lane =
+          shuffle_operands state ~label ~rendered_expr:(expr_to_string expr)
+            args
+        in
         let* lane = nexp_of_expr ~context:"__shfl_sync lane" lane in
         let* argument =
           subgroup_collective_operand ~context:"__shfl_sync operand" value
@@ -1713,7 +1759,11 @@ let subgroup_collective_stmt ?result (state : collect_state)
         Ok
           (SM.Collective.Gather_payload
              { mode = SM.Collective.Broadcast lane; argument; result })
-    | Shfl_down_sync, [ _mask; value; delta ] ->
+    | Shfl_down_sync, args ->
+        let* value, delta =
+          shuffle_operands state ~label ~rendered_expr:(expr_to_string expr)
+            args
+        in
         let* delta = nexp_of_expr ~context:"__shfl_down_sync delta" delta in
         let* argument =
           subgroup_collective_operand ~context:"__shfl_down_sync operand" value
@@ -1721,6 +1771,32 @@ let subgroup_collective_stmt ?result (state : collect_state)
         Ok
           (SM.Collective.Gather_payload
              { mode = SM.Collective.Shuffle_down delta; argument; result })
+    | Shfl_up_sync, args ->
+        let* value, delta =
+          shuffle_operands state ~label ~rendered_expr:(expr_to_string expr)
+            args
+        in
+        let* delta = nexp_of_expr ~context:"__shfl_up_sync delta" delta in
+        let* argument =
+          subgroup_collective_operand ~context:"__shfl_up_sync operand" value
+        in
+        Ok
+          (SM.Collective.Gather_payload
+             { mode = SM.Collective.Shuffle_up delta; argument; result })
+    | Shfl_xor_sync, args ->
+        let* value, lane_mask =
+          shuffle_operands state ~label ~rendered_expr:(expr_to_string expr)
+            args
+        in
+        let* lane_mask =
+          nexp_of_expr ~context:"__shfl_xor_sync lane mask" lane_mask
+        in
+        let* argument =
+          subgroup_collective_operand ~context:"__shfl_xor_sync operand" value
+        in
+        Ok
+          (SM.Collective.Gather_payload
+             { mode = SM.Collective.Shuffle_xor lane_mask; argument; result })
     | _ -> unexpected_shape ()
   in
   let state = record_site_control site state in
@@ -1748,8 +1824,7 @@ let is_assert_call (func : D_lang.Expr.t) : bool =
   | Some _ | None -> false
 
 let launch_dimension_var (var : Variable.t) : bool =
-  List.exists (Variable.equal var)
-    (Variable.bdim_list @ Variable.gdim_list)
+  List.exists (Variable.equal var) (Variable.bdim_list @ Variable.gdim_list)
 
 let record_launch_dimension (state : collect_state) (dimension : Variable.t)
     (value : Exp.nexp) : (collect_state, error) result =
@@ -1806,15 +1881,15 @@ let classify_call ?result (state : collect_state) (func : D_lang.Expr.t)
   if is_assert_call func then record_assertion state args
   else
     match D_lang.Wmma_call.classify func args with
-  | Some kind -> wmma_stmt state kind func args
-  | None -> (
-      match subgroup_collective_call_of_call func args with
-      | Some op -> subgroup_collective_stmt ?result state op func args
-      | None -> (
-          match call_name func with
-          | Some "__syncwarp" -> subgroup_barrier_stmt state func args
-          | Some "__syncthreads" -> Ok (workgroup_barrier_stmt state func)
-          | _ -> Ok state))
+    | Some kind -> wmma_stmt state kind func args
+    | None -> (
+        match subgroup_collective_call_of_call func args with
+        | Some op -> subgroup_collective_stmt ?result state op func args
+        | None -> (
+            match call_name func with
+            | Some "__syncwarp" -> subgroup_barrier_stmt state func args
+            | Some "__syncthreads" -> Ok (workgroup_barrier_stmt state func)
+            | _ -> Ok state))
 
 let rec expr_requires_subgroup : D_lang.Expr.t -> bool = function
   | CallExpr { func; args; _ } ->
@@ -1874,8 +1949,9 @@ let rec stmt_requires_subgroup : D_lang.Stmt.t -> bool = function
   | LambdaDecl { captures; body; _ } ->
       List.exists (fun (_, expr) -> expr_requires_subgroup expr) captures
       || stmt_requires_subgroup body
-  | Skip | BreakStmt | GotoStmt | ReturnStmt None | ContinueStmt | AsmStmt _
-  | BarrierOp _ ->
+  | Skip | BreakStmt | GotoStmt
+  | ReturnStmt None
+  | ContinueStmt | AsmStmt _ | BarrierOp _ ->
       false
   | ReturnStmt (Some expr) -> expr_requires_subgroup expr
 
@@ -1917,11 +1993,12 @@ let rec expr_subgroup_callee (subgroup_kernels : StringSet.t) :
   | FloatingLiteral _ | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _ ->
       None
 
-let decl_subgroup_callee (subgroup_kernels : StringSet.t)
-    (decl : D_lang.Decl.t) : string option =
+let decl_subgroup_callee (subgroup_kernels : StringSet.t) (decl : D_lang.Decl.t)
+    : string option =
   match decl.init with
   | Some init ->
-      first_map (expr_subgroup_callee subgroup_kernels)
+      first_map
+        (expr_subgroup_callee subgroup_kernels)
         (D_lang.Init.to_exp init)
   | None -> None
 
@@ -1954,9 +2031,8 @@ let rec stmt_subgroup_callee (subgroup_kernels : StringSet.t) :
            (first_some
               (stmt_subgroup_callee subgroup_kernels inc)
               (stmt_subgroup_callee subgroup_kernels body)))
-  | WhileStmt { cond; body }
-  | DoStmt { cond; body }
-  | SwitchStmt { cond; body } ->
+  | WhileStmt { cond; body } | DoStmt { cond; body } | SwitchStmt { cond; body }
+    ->
       first_some
         (expr_subgroup_callee subgroup_kernels cond)
         (stmt_subgroup_callee subgroup_kernels body)
@@ -1966,7 +2042,8 @@ let rec stmt_subgroup_callee (subgroup_kernels : StringSet.t) :
         (stmt_subgroup_callee subgroup_kernels body)
   | DefaultStmt body -> stmt_subgroup_callee subgroup_kernels body
   | WriteAccessStmt write ->
-      first_map (expr_subgroup_callee subgroup_kernels)
+      first_map
+        (expr_subgroup_callee subgroup_kernels)
         (write.source :: write.target.index)
   | ReadAccessStmt read ->
       first_map (expr_subgroup_callee subgroup_kernels) read.source.index
@@ -1978,8 +2055,9 @@ let rec stmt_subgroup_callee (subgroup_kernels : StringSet.t) :
            (fun (_, expr) -> expr_subgroup_callee subgroup_kernels expr)
            captures)
         (stmt_subgroup_callee subgroup_kernels body)
-  | Skip | BreakStmt | GotoStmt | ReturnStmt None | ContinueStmt | AsmStmt _
-  | BarrierOp _ ->
+  | Skip | BreakStmt | GotoStmt
+  | ReturnStmt None
+  | ContinueStmt | AsmStmt _ | BarrierOp _ ->
       None
 
 let rec stmt_records_ordinary_memory_effect : D_lang.Stmt.t -> bool = function
@@ -2225,25 +2303,33 @@ let collect_decl (state : collect_state) (decl : D_lang.Decl.t) :
 let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
     (collect_state, error) result =
   let ( let* ) = Result.bind in
-  let is_return_stmt : D_lang.Stmt.t -> bool = function
+  let rec unconditionally_returns : D_lang.Stmt.t -> bool = function
     | ReturnStmt _ -> true
+    | Seq (_, right) -> unconditionally_returns right
     | _ -> false
   in
   let rec early_return_continuation_guard :
       D_lang.Stmt.t -> (Exp.bexp option, error) result = function
     | IfStmt { cond; then_stmt; else_stmt = Skip }
-      when is_return_stmt then_stmt ->
+      when unconditionally_returns then_stmt ->
         let* guard =
           bexp_of_expr ~context:"subgroup early-return condition" cond
         in
         Ok (Some (Exp.b_not guard))
     | IfStmt { cond; then_stmt = Skip; else_stmt }
-      when is_return_stmt else_stmt ->
+      when unconditionally_returns else_stmt ->
         let* guard =
           bexp_of_expr ~context:"subgroup early-return condition" cond
         in
         Ok (Some guard)
-    | Seq (_, right) -> early_return_continuation_guard right
+    | Seq (left, right) ->
+        let* left = early_return_continuation_guard left in
+        let* right = early_return_continuation_guard right in
+        begin match (left, right) with
+        | None, None -> Ok None
+        | Some guard, None | None, Some guard -> Ok (Some guard)
+        | Some left, Some right -> Ok (Some (Exp.b_and left right))
+        end
     | _ -> Ok None
   in
   let collect_with_control state guard stmt =
@@ -2432,14 +2518,17 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
           let* state = state in
           collect_expr state expr)
         (Ok state) atomic.source.index
-  | Skip | BreakStmt | GotoStmt | ReturnStmt None | ContinueStmt | AsmStmt _
-  | BarrierOp _ | LambdaDecl _ ->
+  | Skip | BreakStmt | GotoStmt
+  | ReturnStmt None
+  | ContinueStmt | AsmStmt _ | BarrierOp _ | LambdaDecl _ ->
       Ok state
   | ReturnStmt (Some expr) -> collect_expr state expr
 
 let ordinary_imp_of_kernel (context_defs : D_lang.Def.t list)
     (kernel : D_lang.Kernel.t) : (Imp.Kernel.t, error) result =
-  match D_to_imp.Silent.parse_program (context_defs @ [ D_lang.Def.Kernel kernel ]) with
+  match
+    D_to_imp.Silent.parse_program (context_defs @ [ D_lang.Def.Kernel kernel ])
+  with
   | [ kernel ] -> Ok kernel
   | kernels ->
       Error
@@ -2514,17 +2603,17 @@ module Launch_wrapper_link = struct
     args : D_lang.Expr.t list;
   }
 
-  let terminal_call_of_kernel (kernel : D_lang.Kernel.t) :
-      terminal_call option =
+  let terminal_call_of_kernel (kernel : D_lang.Kernel.t) : terminal_call option
+      =
     match D_lang.Stmt.last kernel.code with
     | D_lang.Stmt.SExpr (D_lang.Expr.CallExpr { func; args; _ }) ->
         call_name func
         |> Option.map (fun callee_name ->
-               {
-                 callee_name;
-                 callee_ty = J_type.to_string (D_lang.Expr.to_type func);
-                 args;
-               })
+            {
+              callee_name;
+              callee_ty = J_type.to_string (D_lang.Expr.to_type func);
+              args;
+            })
     | _ -> None
 
   let add_binder ~(inline_id : int) (bindings : Variable.t Variable.Map.t)
@@ -2533,20 +2622,17 @@ module Launch_wrapper_link = struct
     else
       let fresh =
         Variable.set_name
-          (Printf.sprintf "@faial_inline_%d:%s" inline_id
-             (Variable.name var))
+          (Printf.sprintf "@faial_inline_%d:%s" inline_id (Variable.name var))
           var
       in
       Variable.Map.add var fresh bindings
 
-  let add_decl_binder ~(inline_id : int)
-      (bindings : Variable.t Variable.Map.t) (decl : D_lang.Decl.t) :
-      Variable.t Variable.Map.t =
+  let add_decl_binder ~(inline_id : int) (bindings : Variable.t Variable.Map.t)
+      (decl : D_lang.Decl.t) : Variable.t Variable.Map.t =
     add_binder ~inline_id bindings decl.var
 
-  let add_param_binder ~(inline_id : int)
-      (bindings : Variable.t Variable.Map.t) (param : D_lang.Param.t) :
-      Variable.t Variable.Map.t =
+  let add_param_binder ~(inline_id : int) (bindings : Variable.t Variable.Map.t)
+      (param : D_lang.Param.t) : Variable.t Variable.Map.t =
     add_binder ~inline_id bindings (D_lang.Param.name param)
 
   let add_type_param_binder ~(inline_id : int)
@@ -2572,8 +2658,11 @@ module Launch_wrapper_link = struct
           | Some (D_lang.ForInit.Expr _) | None -> bindings
         in
         collect (collect bindings inc) body
-    | WhileStmt { body; _ } | DoStmt { body; _ } | SwitchStmt { body; _ }
-    | DefaultStmt body | CaseStmt { body; _ } ->
+    | WhileStmt { body; _ }
+    | DoStmt { body; _ }
+    | SwitchStmt { body; _ }
+    | DefaultStmt body
+    | CaseStmt { body; _ } ->
         collect bindings body
     | LambdaDecl { var; params; body; _ } ->
         let bindings = add_binder ~inline_id bindings var in
@@ -2589,12 +2678,14 @@ module Launch_wrapper_link = struct
   let bindings_for_kernel ~(inline_id : int) (kernel : D_lang.Kernel.t) :
       Variable.t Variable.Map.t =
     let bindings =
-      List.fold_left (add_param_binder ~inline_id) Variable.Map.empty
-        kernel.params
+      List.fold_left
+        (add_param_binder ~inline_id)
+        Variable.Map.empty kernel.params
     in
     let bindings =
-      List.fold_left (add_type_param_binder ~inline_id) bindings
-        kernel.type_params
+      List.fold_left
+        (add_type_param_binder ~inline_id)
+        bindings kernel.type_params
     in
     collect_stmt_binders ~inline_id bindings kernel.code
 
@@ -2602,15 +2693,14 @@ module Launch_wrapper_link = struct
       Variable.t =
     Variable.Map.find_opt var bindings |> Option.value ~default:var
 
-  let rename_expr (bindings : Variable.t Variable.Map.t)
-      (expr : D_lang.Expr.t) : D_lang.Expr.t =
+  let rename_expr (bindings : Variable.t Variable.Map.t) (expr : D_lang.Expr.t)
+      : D_lang.Expr.t =
     D_lang.Expr.map
       (function
         | D_lang.Expr.Ident decl
           when Decl_expr.Kind.is_runtime_value decl.kind
                || decl.kind = Decl_expr.Kind.NonTypeTemplateParm ->
-            D_lang.Expr.Ident
-              { decl with name = rename_var bindings decl.name }
+            D_lang.Expr.Ident { decl with name = rename_var bindings decl.name }
         | expr -> expr)
       expr
 
@@ -2691,8 +2781,7 @@ module Launch_wrapper_link = struct
             inc = recurse inc;
             body = recurse body;
           }
-    | DoStmt { cond; body } ->
-        DoStmt { cond = expr cond; body = recurse body }
+    | DoStmt { cond; body } -> DoStmt { cond = expr cond; body = recurse body }
     | SwitchStmt { cond; body } ->
         SwitchStmt { cond = expr cond; body = recurse body }
     | DefaultStmt body -> DefaultStmt (recurse body)
@@ -2726,8 +2815,7 @@ module Launch_wrapper_link = struct
             var = rename_var bindings var;
             captures =
               List.map
-                (fun (name, value) ->
-                  (rename_var bindings name, expr value))
+                (fun (name, value) -> (rename_var bindings name, expr value))
                 captures;
             params;
             body = recurse body;
@@ -2748,8 +2836,8 @@ module Launch_wrapper_link = struct
       D_lang.Expr.map
         (fun expr ->
           (match expr with
-          | D_lang.Expr.Ident decl
-            when Variable.equal (Decl_expr.name decl) var ->
+          | D_lang.Expr.Ident decl when Variable.equal (Decl_expr.name decl) var
+            ->
               found := true
           | _ -> ());
           expr)
@@ -2757,8 +2845,8 @@ module Launch_wrapper_link = struct
     in
     !found
 
-  let subscript_mentions_var (var : Variable.t)
-      (subscript : D_lang.d_subscript) : bool =
+  let subscript_mentions_var (var : Variable.t) (subscript : D_lang.d_subscript)
+      : bool =
     Variable.equal subscript.name var
     || List.exists (expr_mentions_var var) subscript.index
 
@@ -2768,8 +2856,8 @@ module Launch_wrapper_link = struct
   let decl_mentions_var (var : Variable.t) (decl : D_lang.Decl.t) : bool =
     Option.fold ~none:false ~some:(init_mentions_var var) decl.init
 
-  let for_init_mentions_var (var : Variable.t) (init : D_lang.ForInit.t) :
-      bool =
+  let for_init_mentions_var (var : Variable.t) (init : D_lang.ForInit.t) : bool
+      =
     match init with
     | D_lang.ForInit.Decls decls -> List.exists (decl_mentions_var var) decls
     | Expr expr -> expr_mentions_var var expr
@@ -2792,8 +2880,7 @@ module Launch_wrapper_link = struct
         subscript write.target || expr write.source
         || Option.fold ~none:false ~some:expr write.guard
     | ReadAccessStmt read ->
-        subscript read.source
-        || Option.fold ~none:false ~some:expr read.guard
+        subscript read.source || Option.fold ~none:false ~some:expr read.guard
     | AtomicAccessStmt atomic ->
         subscript atomic.source
         || Atomic.Operation.exists expr atomic.atomic.operation
@@ -2802,7 +2889,8 @@ module Launch_wrapper_link = struct
     | IfStmt { cond; then_stmt; else_stmt } ->
         expr cond || recurse then_stmt || recurse else_stmt
     | DeclStmt decls -> List.exists (decl_mentions_var var) decls
-    | WhileStmt { cond; body } | DoStmt { cond; body }
+    | WhileStmt { cond; body }
+    | DoStmt { cond; body }
     | SwitchStmt { cond; body } ->
         expr cond || recurse body
     | ForStmt { init; cond; inc; body } ->
@@ -2813,8 +2901,7 @@ module Launch_wrapper_link = struct
     | CaseStmt { case; body } -> expr case || recurse body
     | SExpr value -> expr value
     | AsmStmt asm -> asm_mentions_var var asm
-    | BarrierOp { target; args; _ } ->
-        subscript target || List.exists expr args
+    | BarrierOp { target; args; _ } -> subscript target || List.exists expr args
     | LambdaDecl { captures; body; _ } ->
         List.exists (fun (_, value) -> expr value) captures || recurse body
 
@@ -2827,24 +2914,17 @@ module Launch_wrapper_link = struct
     | TArgTemplateExpansion _ | TArgIntegral _ ->
         false
 
-  let template_bindings ~(caller : D_lang.Kernel.t)
-      ~(callee : D_lang.Kernel.t) bindings :
-      (D_lang.Decl.t list, error) result =
+  let template_bindings ~(caller : D_lang.Kernel.t) ~(callee : D_lang.Kernel.t)
+      bindings : (D_lang.Decl.t list, error) result =
     let fail reason =
       Error
         (Launch_wrapper_inlining_error
-           {
-             kernel = caller.name;
-             callee = Some callee.name;
-             reason;
-           })
+           { kernel = caller.name; callee = Some callee.name; reason })
     in
     if callee.type_params = [] then Ok []
-    else if
-      List.length callee.type_params <> List.length callee.template_args
+    else if List.length callee.type_params <> List.length callee.template_args
     then
-      fail
-        "specialization template parameter and argument counts do not match"
+      fail "specialization template parameter and argument counts do not match"
     else
       List.fold_left2
         (fun result param argument ->
@@ -2888,8 +2968,8 @@ module Launch_wrapper_link = struct
         | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> table)
       StringMap.empty program
 
-  let rec template_argument_key (argument : C_lang.TemplateArgument.t) :
-      string =
+  let rec template_argument_key (argument : C_lang.TemplateArgument.t) : string
+      =
     let open C_lang.TemplateArgument in
     match argument with
     | TArgType ty -> "type:" ^ J_type.to_string ty
@@ -2913,9 +2993,10 @@ module Launch_wrapper_link = struct
       (table : D_lang.Kernel.t list StringMap.t) (call : terminal_call) :
       (D_lang.Kernel.t, error) result =
     let candidates =
-      StringMap.find_opt call.callee_name table |> Option.value ~default:[]
+      StringMap.find_opt call.callee_name table
+      |> Option.value ~default:[]
       |> List.filter (fun (kernel : D_lang.Kernel.t) ->
-             List.length kernel.params = List.length call.args)
+          List.length kernel.params = List.length call.args)
     in
     let specialized =
       if caller.template_args = [] then candidates
@@ -2923,8 +3004,7 @@ module Launch_wrapper_link = struct
         let expected = template_arguments_key caller.template_args in
         List.filter
           (fun (kernel : D_lang.Kernel.t) ->
-            String.equal expected
-              (template_arguments_key kernel.template_args))
+            String.equal expected (template_arguments_key kernel.template_args))
           candidates
     in
     let exact =
@@ -2995,12 +3075,7 @@ module Launch_wrapper_link = struct
           rename_stmt bindings callee.code;
         ]
     in
-    Ok
-      {
-        wrapper with
-        code;
-        type_params = wrapper.type_params;
-      }
+    Ok { wrapper with code; type_params = wrapper.type_params }
 
   let rewrite_program ~(launch_wrappers : StringSet.t)
       (program : D_lang.Program.t) : (D_lang.Program.t, error) result =
@@ -3037,26 +3112,26 @@ let uniquify_global_kernel_names ~(launch_wrappers : StringSet.t)
   let program =
     List.map
       (function
-      | D_lang.Def.Kernel kernel when D_lang.Kernel.is_global kernel ->
-          let original = kernel.name in
-          let name =
-            if not (StringSet.mem original !used) then original
-            else
-              let rec fresh suffix =
-                let candidate = Printf.sprintf "%s_%d" original suffix in
-                if
-                  StringSet.mem candidate !used
-                  || StringSet.mem candidate initial
-                then fresh (suffix + 1)
-                else candidate
-              in
-              fresh 2
-          in
-          used := StringSet.add name !used;
-          if StringSet.mem original launch_wrappers then
-            renamed_wrappers := StringSet.add name !renamed_wrappers;
-          D_lang.Def.Kernel { kernel with name }
-      | def -> def)
+        | D_lang.Def.Kernel kernel when D_lang.Kernel.is_global kernel ->
+            let original = kernel.name in
+            let name =
+              if not (StringSet.mem original !used) then original
+              else
+                let rec fresh suffix =
+                  let candidate = Printf.sprintf "%s_%d" original suffix in
+                  if
+                    StringSet.mem candidate !used
+                    || StringSet.mem candidate initial
+                  then fresh (suffix + 1)
+                  else candidate
+                in
+                fresh 2
+            in
+            used := StringSet.add name !used;
+            if StringSet.mem original launch_wrappers then
+              renamed_wrappers := StringSet.add name !renamed_wrappers;
+            D_lang.Def.Kernel { kernel with name }
+        | def -> def)
       program
   in
   (program, !renamed_wrappers)
@@ -3091,16 +3166,17 @@ let rec expr_is_uniform_preserving_with (calls : StringSet.t)
         match call_name func with
         | Some name ->
             (StringSet.mem name calls || Functions.supported name
-            || Predicates.supported name)
+           || Predicates.supported name)
             && List.for_all recurse args
         | None -> false)
-    | CXXNewExpr _ | CXXDeleteExpr _ | RecoveryExpr _
-    | CXXOperatorCallExpr _ | UnresolvedLookupExpr _ ->
+    | CXXNewExpr _ | CXXDeleteExpr _ | RecoveryExpr _ | CXXOperatorCallExpr _
+    | UnresolvedLookupExpr _ ->
         false
 
-let init_is_uniform_preserving_with (calls : StringSet.t)
-    (init : D_lang.Init.t) : bool =
-  D_lang.Init.to_exp init |> List.for_all (expr_is_uniform_preserving_with calls)
+let init_is_uniform_preserving_with (calls : StringSet.t) (init : D_lang.Init.t)
+    : bool =
+  D_lang.Init.to_exp init
+  |> List.for_all (expr_is_uniform_preserving_with calls)
 
 let rec stmt_is_uniform_preserving_with (calls : StringSet.t)
     (stmt : D_lang.Stmt.t) : bool =
@@ -3119,8 +3195,8 @@ let rec stmt_is_uniform_preserving_with (calls : StringSet.t)
             ~some:(init_is_uniform_preserving_with calls)
             decl.init)
         decls
-  | WhileStmt { cond; body } | DoStmt { cond; body }
-  | SwitchStmt { cond; body } ->
+  | WhileStmt { cond; body } | DoStmt { cond; body } | SwitchStmt { cond; body }
+    ->
       expr cond && recurse body
   | ForStmt { init; cond; inc; body } ->
       let init_is_uniform =
@@ -3182,8 +3258,8 @@ let uniform_preserving_device_calls (program : D_lang.Program.t) : StringSet.t =
 
 let route_kernel_with_uniform_calls
     ?(target_config = SM.Target_config.missing_cuda) ?(context_defs = [])
-    ?(uniform_preserving_calls = StringSet.empty)
-    (kernel : D_lang.Kernel.t) : (routed_kernel, error) result =
+    ?(uniform_preserving_calls = StringSet.empty) (kernel : D_lang.Kernel.t) :
+    (routed_kernel, error) result =
   if stmt_requires_subgroup kernel.code then
     subgroup_kernel_of_kernel context_defs target_config
       ~uniform_preserving_calls kernel
@@ -3198,8 +3274,7 @@ let route_kernel ?(target_config = SM.Target_config.missing_cuda)
   route_kernel_with_uniform_calls ~target_config ~context_defs kernel
 
 let route_program ?target_config ?only_kernel
-    ?(launch_wrappers = StringSet.empty)
-    (program : D_lang.Program.t) :
+    ?(launch_wrappers = StringSet.empty) (program : D_lang.Program.t) :
     (routed_kernel list, error) result =
   let ( let* ) = Result.bind in
   let program, launch_wrappers =
@@ -3212,9 +3287,7 @@ let route_program ?target_config ?only_kernel
     | Some _ -> StringSet.empty
     | None -> launch_wrappers
   in
-  let* program =
-    Launch_wrapper_link.rewrite_program ~launch_wrappers program
-  in
+  let* program = Launch_wrapper_link.rewrite_program ~launch_wrappers program in
   let uniform_preserving_calls = uniform_preserving_device_calls program in
   let direct_subgroup_kernels =
     List.fold_left
@@ -3241,9 +3314,7 @@ let route_program ?target_config ?only_kernel
     if StringSet.equal names expanded then names
     else close_subgroup_dependencies expanded
   in
-  let subgroup_kernels =
-    close_subgroup_dependencies direct_subgroup_kernels
-  in
+  let subgroup_kernels = close_subgroup_dependencies direct_subgroup_kernels in
   let context_defs =
     List.filter
       (function
@@ -3258,8 +3329,7 @@ let route_program ?target_config ?only_kernel
          match def with
          | D_lang.Def.Kernel kernel
            when D_lang.Kernel.is_global kernel
-                && Option.fold ~none:true
-                     ~some:(String.equal kernel.name)
+                && Option.fold ~none:true ~some:(String.equal kernel.name)
                      only_kernel -> (
              match stmt_subgroup_callee subgroup_kernels kernel.code with
              | Some callee when not (stmt_requires_subgroup kernel.code) ->
@@ -3345,8 +3415,10 @@ let site_control_summary (controls : site_control list) : string list =
       | [] -> "<none>"
       | names -> String.concat ", " names
     in
-    Printf.sprintf "site#%d order#%d control=%s%s uniform_vars=%s"
+    Printf.sprintf
+      "site#%d order#%d control=%s%s uniform_vars=%s numeric_aliases=%d"
       control.site_id control.source_order rendered memory_rendered uniform_vars
+      (Variable.Map.cardinal control.numeric_aliases)
   in
   match controls with
   | [] -> [ "site_controls: <none>" ]

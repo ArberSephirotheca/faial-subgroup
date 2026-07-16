@@ -65,10 +65,17 @@ let ordinary_effect ?(kind = Source.Ordinary_write) ?(site = ordinary_site ())
   }
 
 let source_site_control ?source_order ?(conditions = [])
-    ?(memory_conditions = []) ?(uniform_vars = Variable.Set.empty) site_id :
-    Source.site_control =
+    ?(memory_conditions = []) ?(uniform_vars = Variable.Set.empty)
+    ?(numeric_aliases = Variable.Map.empty) site_id : Source.site_control =
   let source_order = Option.value source_order ~default:site_id in
-  { site_id; source_order; conditions; memory_conditions; uniform_vars }
+  {
+    site_id;
+    source_order;
+    conditions;
+    memory_conditions;
+    uniform_vars;
+    numeric_aliases;
+  }
 
 let rectangular (access : Access.t) : SM.Matrix.footprint =
   SM.Matrix.rectangular ~base:access ~rows:(Exp.Num 16) ~cols:(Exp.Num 8)
@@ -840,21 +847,21 @@ let test_launch_assertions_supply_symbolic_checked_invocation_domain () : unit =
     (Stage0.Common.contains ~substring:"launch_block_x > 0" rendered);
   Alcotest.(check bool)
     "T1 x is bounded by launch x" true
-    (Stage0.Common.contains
-       ~substring:"threadIdx.x$T1 < launch_block_x" rendered);
+    (Stage0.Common.contains ~substring:"threadIdx.x$T1 < launch_block_x"
+       rendered);
   Alcotest.(check bool)
     "T2 x is bounded by launch x" true
-    (Stage0.Common.contains
-       ~substring:"threadIdx.x$T2 < launch_block_x" rendered)
+    (Stage0.Common.contains ~substring:"threadIdx.x$T2 < launch_block_x"
+       rendered)
 
 let test_partial_launch_checked_invocation_domain_fails () : unit =
-  let launch_dimensions =
-    Variable.Map.singleton Variable.bdim_x (Exp.Num 64)
-  in
+  let launch_dimensions = Variable.Map.singleton Variable.bdim_x (Exp.Num 64) in
   match Memory.checked_block_dim_of_launch_dimensions launch_dimensions with
   | Error (Memory.Incomplete_launch_checked_block_dim missing) ->
       Alcotest.(check (list string))
-        "missing launch axes" [ "blockDim.y"; "blockDim.z" ] missing
+        "missing launch axes"
+        [ "blockDim.y"; "blockDim.z" ]
+        missing
   | Error error -> Alcotest.fail (Memory.error_to_string error)
   | Ok _ -> Alcotest.fail "partial launch dimensions were accepted"
 
@@ -871,9 +878,7 @@ let test_launch_checked_precondition_rejects_zero_dimension () : unit =
     | Ok None -> Alcotest.fail "launch dimensions did not produce a domain"
     | Error error -> Alcotest.fail (Memory.error_to_string error)
   in
-  let precondition =
-    Memory.checked_block_dim_precondition checked_block_dim
-  in
+  let precondition = Memory.checked_block_dim_precondition checked_block_dim in
   Alcotest.(check bool)
     "zero launch dimension is unsatisfiable" false
     (eval_goal
@@ -943,8 +948,7 @@ let test_obligation_constrains_block_index_domain () : unit =
       ~t1:(Dim3.make ~x:0 ~y:0 ~z:0 ())
       ~t2:(Dim3.make ~x:32 ~y:0 ~z:0 ())
     |> List.map (fun (name, value) ->
-           if String.equal name "blockIdx.x" then (name, 1)
-           else (name, value))
+        if String.equal name "blockIdx.x" then (name, 1) else (name, value))
   in
   Alcotest.(check bool)
     "blockIdx.x == gridDim.x is outside CUDA launch domain" false
@@ -1125,6 +1129,38 @@ let test_symbolic_launch_evidence_requires_source_width_fact () : unit =
         "error names missing source-width fact" true
         (Stage0.Common.contains ~substring:"did not find" reason)
 
+let test_subgroup_precondition_projects_to_both_tasks () : unit =
+  let kernel =
+    SM.Kernel.make ~target_config:(subgroup_config ())
+      ~name:"precondition_projection" []
+  in
+  let memory_effect =
+    ordinary_effect ~access:(Access.write (var "tile") [ Exp.Num 0 ] None) ()
+  in
+  let precondition =
+    Exp.n_lt (Exp.Var Variable.tid_x) (Exp.Var (var "limit"))
+  in
+  let obligation =
+    Memory.obligations
+      ~globals:(Variable.Set.singleton (var "limit"))
+      ~precondition
+      ~block_dim:(checked_block_dim ~x:64 ())
+      ~ordinary_memory_effects:[ memory_effect ] kernel
+    |> expect_memory_ok
+    |> function
+    | [ obligation ] -> obligation
+    | obligations ->
+        Alcotest.failf "expected one obligation, got %d"
+          (List.length obligations)
+  in
+  let goal = Exp.b_to_string obligation.goal in
+  Alcotest.(check bool)
+    "task 1 precondition" true
+    (Stage0.Common.contains ~substring:"threadIdx.x$T1 < limit" goal);
+  Alcotest.(check bool)
+    "task 2 precondition" true
+    (Stage0.Common.contains ~substring:"threadIdx.x$T2 < limit" goal)
+
 let tests : unit Alcotest.test_case list =
   [
     ( "subgroup barrier advances only subgroup phase",
@@ -1221,6 +1257,9 @@ let tests : unit Alcotest.test_case list =
     ( "symbolic launch evidence requires source width fact",
       `Quick,
       test_symbolic_launch_evidence_requires_source_width_fact );
+    ( "subgroup precondition projects to both tasks",
+      `Quick,
+      test_subgroup_precondition_projects_to_both_tasks );
   ]
 
 let () = Alcotest.run "Subgroup_obligation" [ ("subgroup_obligation", tests) ]

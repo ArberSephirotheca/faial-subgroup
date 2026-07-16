@@ -181,15 +181,16 @@ carrier:
 - `fill_fragment` and `mma_sync` become matrix collective sites without direct
   source-visible memory effects;
 - focused CUDA warp helper/shuffle calls, currently `warp_sum`, `warp_max`,
-  `warp_reduce_sum`, `warp_reduce_max`, `__shfl_sync`, and
-  `__shfl_down_sync`, become subgroup collective sites without direct
+  `warp_reduce_sum`, `warp_reduce_max`, `warp_reduce_all`, `warp_reduce_any`,
+  `__shfl_sync`, `__shfl_down_sync`, `__shfl_up_sync`, and
+  `__shfl_xor_sync`, become subgroup collective sites without direct
   source-visible memory effects. They advance only the subgroup phase, so
   ordinary source memory effects collected before and after those calls remain
   in the same workgroup phase but can be ordered later only for same-subgroup
   invocations. The `warp_reduce_*` names are helper summaries used by
   ggml-cuda-style source slices; they do not infer subgroup size from
-  `WARP_SIZE`. Direct `__shfl_xor_sync` width-sensitive modeling remains an
-  unsupported boundary until a guarded width/subgroup-size rule is added;
+  `WARP_SIZE`. Direct shuffle calls require a statically full participation
+  mask for the configured subgroup; partial or symbolic masks fail closed;
 - subgroup and WMMA sites collected from source control constructs carry the
   enclosing branch, loop, switch, case, or default condition as adjacent
   site-control metadata for the DRF uniformity checker; unsupported control
@@ -198,7 +199,10 @@ carrier:
   obligations. The uniformity control remains the source participation guard;
   the memory control additionally includes scalar alias equalities needed by
   the rectangular matrix footprint, such as base offsets, subgroup-id aliases,
-  and loop induction facts;
+  and loop induction facts. Each subgroup/WMMA site also snapshots the current
+  numeric-alias map. The DRF layer consumes only aliases reachable from the
+  site's participation guard when it needs a semantic same-subgroup
+  uniformity proof;
 - kernel parameters, member fields rooted in kernel parameters, and local or
   loop variables initialized from syntactically uniform expressions are passed
   as source-uniform variables; locals derived from subgroup-varying expressions

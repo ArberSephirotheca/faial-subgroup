@@ -38,7 +38,8 @@ let render_ordinary (analysis : App_analysis.ordinary) : Yojson.Basic.t =
       ("kernel_name", `String kernel_name);
       ( "status",
         `String
-          (App_analysis.Verdict.to_string (App_analysis.ordinary_verdict analysis)) );
+          (App_analysis.Verdict.to_string
+             (App_analysis.ordinary_verdict analysis)) );
       ("unknowns", `List (List.map Symbexp.Proof.to_json unknowns));
       ("logics", `List logics);
       ( "errors",
@@ -96,6 +97,11 @@ let render_subgroup (analysis : App_analysis.subgroup) : Yojson.Basic.t =
           (List.map
              (fun line -> `String line)
              (Solver.memory_evidence_lines analysis.memory)) );
+      ( "subgroup_sites",
+        `List
+          (List.map
+             (fun site -> `String (Uniformity.site_result_to_string site))
+             (Uniformity.sites analysis.uniformity)) );
     ]
 
 let render (output : App_analysis.t list) : unit =

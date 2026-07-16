@@ -50,6 +50,7 @@ and site_control = {
   conditions : Protocols.Exp.bexp list;
   memory_conditions : Protocols.Exp.bexp list;
   uniform_vars : Protocols.Variable.Set.t;
+  numeric_aliases : Protocols.Exp.nexp Protocols.Variable.Map.t;
 }
 
 and subgroup_kernel = {

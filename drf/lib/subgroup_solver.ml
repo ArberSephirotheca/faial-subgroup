@@ -420,7 +420,9 @@ let term_has_left_relation (terms : Exp.bexp list) ~(op : N_rel.t)
 
 let term_has_eq_mod_zero (terms : Exp.bexp list) ~(dividend : Exp.nexp)
     ~(modulus : Exp.nexp) : bool =
-  let mod_expr = Exp.Binary (N_binary.Mod Signedness.Signed, dividend, modulus) in
+  let mod_expr =
+    Exp.Binary (N_binary.Mod Signedness.Signed, dividend, modulus)
+  in
   List.exists
     (function
       | Exp.NRel (N_rel.Eq, lhs, rhs) ->
@@ -796,8 +798,7 @@ let lane_owner_for_index (terms : Exp.bexp list) ~(task : Task.t)
             if
               has_lane_id
               && term_has_relation terms ~op:(N_rel.Le Signedness.Signed)
-                   ~lhs:lane_expr
-                   ~rhs:(Exp.Var index)
+                   ~lhs:lane_expr ~rhs:(Exp.Var index)
             then Some (lane, subgroup)
             else None
         | _ -> None)
@@ -841,8 +842,7 @@ let head_block_owner_matches (terms : Exp.bexp list) ~(task : Task.t)
                    && expr_proven_as ~value:head_step_value terms step
                    && warp_owner_for_thread terms ~task ~warp ~subgroup ->
                 term_has_relation terms ~op:(N_rel.Le Signedness.Signed)
-                  ~lhs:warp_base
-                  ~rhs:(Exp.Var head_block)
+                  ~lhs:warp_base ~rhs:(Exp.Var head_block)
                 && term_has_relation terms ~op:(N_rel.Lt Signedness.Signed)
                      ~lhs:(Exp.Var head_block) ~rhs:head_dim
             | _ -> false)
@@ -867,7 +867,8 @@ let wmma_tile_rows_from_elem_bound (terms : Exp.bexp list)
     ~(elem_idx : Variable.t) ~(tile_cols_value : int) : int option =
   terms
   |> List.find_map (function
-    | Exp.NRel (N_rel.Lt _, lhs, rhs) when nexp_equiv lhs (Exp.Var elem_idx) -> (
+    | Exp.NRel (N_rel.Lt _, lhs, rhs) when nexp_equiv lhs (Exp.Var elem_idx)
+      -> (
         match expr_proven_positive_constant terms rhs with
         | Some limit when limit mod tile_cols_value = 0 ->
             Some (limit / tile_cols_value)
@@ -1025,12 +1026,7 @@ let wmma_tile_row_lane_ownership_matches ?(globals = Variable.Set.empty)
 
 let numeric_relation_is_negation (left : N_rel.t) (right : N_rel.t) : bool =
   match (left, right) with
-  | Eq, Neq
-  | Neq, Eq
-  | Lt _, Ge _
-  | Ge _, Lt _
-  | Gt _, Le _
-  | Le _, Gt _ ->
+  | Eq, Neq | Neq, Eq | Lt _, Ge _ | Ge _, Lt _ | Gt _, Le _ | Le _, Gt _ ->
       true
   | _ -> false
 
@@ -1335,5 +1331,6 @@ let summary_lines ?uniformity (outcome : memory_outcome) : string list =
                  (uniformity_memory_component memory_verdict)
                  subgroup);
         ]
+        @ List.map Uniformity.site_result_to_string (Uniformity.sites result)
   in
   base @ uniformity_lines @ memory_evidence_lines outcome
