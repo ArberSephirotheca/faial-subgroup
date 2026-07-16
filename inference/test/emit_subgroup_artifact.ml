@@ -101,7 +101,7 @@ let emit_artifact () : unit =
       ~context_defs kernel_def
   with
   | Error error -> fail (Subgroup_source.error_to_string error)
-  | Ok (Ordinary_imp _) ->
+  | Ok (Ordinary_source _) ->
       fail ("kernel did not route to subgroup/matrix: " ^ kernel)
   | Ok (Subgroup_matrix subgroup) ->
       [

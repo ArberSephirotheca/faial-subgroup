@@ -80,6 +80,22 @@ scalar aliases, loop facts, warp helpers, shuffles, and matrix operations that
 its event and uniformity models need. This keeps extension precision from
 changing ordinary MAP obligations.
 
+Subgroup routing is only a source-level classification decision. When a kernel
+does not require subgroup/matrix semantics, the route retains its
+`D_lang.Kernel` identity and resolves it from the protocols produced by
+`Protocol_parser.d_program_to_proto` for the complete `D_lang.Program`. That
+shared path performs the original `D_lang` to `Imp` conversion and call
+inlining with all auxiliary `__device__` definitions available. An ordinary
+kernel must never be lowered from an isolated kernel definition, because doing
+so can discard helper memory accesses before MAP construction.
+
+The parity invariant is therefore: for the same source and ordinary Faial
+options, adding `--subgroup-size` must not change the memory events,
+obligations, or verdict of a kernel that routes as ordinary. The
+`group_norm_f32@norm_300` regression is the concrete oracle: both routes retain
+the `block_reduce` shared-memory accesses and report the same `s_sum[1]`
+write/read race.
+
 With explicit subgroup configuration, focused calls such as `warp_sum`,
 `warp_max`, `warp_reduce_sum`, `warp_reduce_max`, `__shfl_sync`,
 `__shfl_down_sync`, and `__syncwarp` become subgroup sites. Without subgroup

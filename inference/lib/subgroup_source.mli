@@ -14,10 +14,9 @@ type error =
       previous : Protocols.Exp.nexp;
       next : Protocols.Exp.nexp;
     }
-  | Ordinary_imp_error of string
 
 type routed_kernel =
-  | Ordinary_imp of Imp.Kernel.t
+  | Ordinary_source of D_lang.Kernel.t
   | Subgroup_matrix of subgroup_kernel
 
 and ordinary_memory_kind = Ordinary_read | Ordinary_write | Ordinary_atomic

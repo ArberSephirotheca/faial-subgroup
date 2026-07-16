@@ -8,6 +8,7 @@ module Subgroup_solver = Drf.Subgroup_solver
 module Subgroup_uniformity = Drf.Subgroup_uniformity
 module Subgroup_uniformity_solver = Drf.Subgroup_uniformity_solver
 module Subgroup_obligation = Drf.Memory_event.Subgroup_obligation
+module StringMap = Common.StringMap
 
 type kernel =
   | Ordinary_kernel of Protocols.Kernel.t
@@ -424,22 +425,33 @@ let subgroup_target_config (subgroup_size : int) : SM.Target_config.t =
       Logger.Colors.error (fun () -> SM.Target_config.error_to_string error);
       exit 2
 
-let compile_ordinary_kernels ~(inline_calls : bool) ~(ignore_asserts : bool)
-    (kernels : Imp.Kernel.t list) : kernel list =
-  let kernels =
-    if ignore_asserts then List.map Imp.Kernel.remove_global_asserts kernels
-    else kernels
+let compile_original_ordinary_program ~(inline_calls : bool)
+    ~(ignore_asserts : bool) (options : Gv_parser.t)
+    (program : D_lang.Program.t) : kernel StringMap.t =
+  let parsed =
+    Protocol_parser.Silent.d_program_to_proto ~inline_calls ~ignore_asserts
+      options program
   in
-  kernels
-  |> Imp.Compiler.compile_all ~inline_calls
-  |> List.filter Protocols.Kernel.is_global
+  parsed.kernels
   |> List.map (fun kernel -> Ordinary_kernel kernel)
+  |> uniquify_kernel_names
+  |> List.fold_left
+       (fun kernels kernel -> StringMap.add (kernel_name kernel) kernel kernels)
+       StringMap.empty
 
-let kernels_of_routed ~(inline_calls : bool) ~(ignore_asserts : bool)
+let kernels_of_routed ~(ordinary_kernels : kernel StringMap.t)
     (kernel : Subgroup_source.routed_kernel) : kernel list =
   match kernel with
-  | Subgroup_source.Ordinary_imp kernel ->
-      compile_ordinary_kernels ~inline_calls ~ignore_asserts [ kernel ]
+  | Subgroup_source.Ordinary_source source -> (
+      match StringMap.find_opt source.name ordinary_kernels with
+      | Some kernel -> [ kernel ]
+      | None ->
+          Logger.Colors.error (fun () ->
+              Printf.sprintf
+                "ordinary route '%s' is missing from the original Faial \
+                 pipeline output"
+                source.name);
+          exit 2)
   | Subgroup_source.Subgroup_matrix kernel -> [ Subgroup_kernel kernel ]
 
 let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
@@ -465,11 +477,24 @@ let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
       Logger.Colors.error (fun () -> Subgroup_source.error_to_string error);
       exit 2
   | Ok routed ->
+      let needs_ordinary_pipeline =
+        List.exists
+          (function
+            | Subgroup_source.Ordinary_source _ -> true
+            | Subgroup_source.Subgroup_matrix _ -> false)
+          routed
+      in
+      let ordinary_kernels =
+        if needs_ordinary_pipeline then
+          compile_original_ordinary_program ~inline_calls ~ignore_asserts
+            options program
+        else StringMap.empty
+      in
       {
         options;
         kernels =
           routed
-          |> List.map (kernels_of_routed ~inline_calls ~ignore_asserts)
+          |> List.map (kernels_of_routed ~ordinary_kernels)
           |> List.concat;
       }
 

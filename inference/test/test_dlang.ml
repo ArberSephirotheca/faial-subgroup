@@ -42,6 +42,9 @@ let kernel ?(attribute = D_lang.KernelAttr.Default) ?(params = [])
     (name : string) (code : Stmt.t) : D_lang.Kernel.t =
   { ty; name; code; type_params; template_args; params; attribute }
 
+let kernel_param ?(ty = J_type.int) (name : string) : D_lang.Param.t =
+  D_lang.Param.make ~ty_var:(ty_var ~ty name) ~is_used:true ~is_shared:false
+
 let parse_single_kernel (defs : D_lang.Program.t) : Imp.Kernel.t =
   match D_to_imp.Silent.parse_program defs with
   | [ k ] -> k
@@ -471,6 +474,64 @@ let test_subgroup_policy_is_not_applied_by_ordinary_imp () : unit =
       Alcotest.failf "expected one ordinary Imp kernel, got %d"
         (List.length kernels)
 
+let test_full_program_protocol_lowering_preserves_device_helper_memory () : unit
+    =
+  let pointer_ty = ty "int *" in
+  let helper_write =
+    Stmt.WriteAccessStmt
+      {
+        target =
+          make_subscript ~name:(var "dst") ~index:[ IntegerLiteral 0 ]
+            ~ty:J_type.int ~location:Location.empty;
+        source = IntegerLiteral 1;
+        payload = None;
+        guard = None;
+      }
+  in
+  let helper =
+    kernel ~attribute:D_lang.KernelAttr.Auxiliary
+      ~params:[ kernel_param ~ty:pointer_ty "dst" ]
+      ~ty:"void (int *)" "write_helper" helper_write
+  in
+  let helper_call =
+    Expr.CallExpr
+      {
+        func =
+          ident ~kind:Decl_expr.Kind.Function ~ty:(ty "void (int *)")
+            "write_helper";
+        args = [ ident ~ty:pointer_ty "dst" ];
+        ty = J_type.void;
+      }
+  in
+  let caller =
+    kernel
+      ~params:[ kernel_param ~ty:pointer_ty "dst" ]
+      ~ty:"void (int *)" "helper_caller" (Stmt.SExpr helper_call)
+  in
+  let parsed =
+    Protocol_parser.Silent.d_program_to_proto (Gv_parser.make ())
+      [ D_lang.Def.Kernel helper; D_lang.Def.Kernel caller ]
+  in
+  match parsed.kernels with
+  | [ kernel ] ->
+      let has_helper_write =
+        Code.exists
+          (function
+            | Code.Access access ->
+                Variable.equal access.array (var "dst")
+                && Access.is_write access
+            | Code.Sync _ | Code.If _ | Code.Loop _ | Code.Seq _ | Code.Skip
+            | Code.Decl _ ->
+                false)
+          kernel.code
+      in
+      Alcotest.(check bool)
+        "device helper write survives full-program lowering" true
+        has_helper_write
+  | kernels ->
+      Alcotest.failf "expected one compiled global kernel, got %d"
+        (List.length kernels)
+
 let test_loop_and_global_constant_dependencies () : unit =
   let body =
     Stmt.WriteAccessStmt
@@ -729,6 +790,9 @@ let tests : unit Alcotest.test_case list =
     ( "subgroup policy is not applied by ordinary Imp",
       `Quick,
       test_subgroup_policy_is_not_applied_by_ordinary_imp );
+    ( "full-program protocol lowering preserves device helper memory",
+      `Quick,
+      test_full_program_protocol_lowering_preserves_device_helper_memory );
     ( "loop and global constant dependencies",
       `Quick,
       test_loop_and_global_constant_dependencies );

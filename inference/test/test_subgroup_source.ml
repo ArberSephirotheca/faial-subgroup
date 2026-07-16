@@ -214,7 +214,7 @@ let site_control_has_uniform_var (name : string) (control : Source.site_control)
 let variable_set_has (name : string) (vars : Variable.Set.t) : bool =
   Variable.Set.mem (var name) vars
 
-let test_non_wmma_routes_to_ordinary_imp_without_subgroup_config () : unit =
+let test_non_wmma_routes_to_ordinary_source_without_subgroup_config () : unit =
   let code =
     D_lang.Stmt.WriteAccessStmt
       {
@@ -231,9 +231,9 @@ let test_non_wmma_routes_to_ordinary_imp_without_subgroup_config () : unit =
     Source.route_program [ D_lang.Def.Kernel (kernel "plain_cuda" code) ]
     |> expect_route_ok
   with
-  | [ Source.Ordinary_imp kernel ] ->
+  | [ Source.Ordinary_source kernel ] ->
       Alcotest.(check string) "ordinary kernel name" "plain_cuda" kernel.name
-  | _ -> Alcotest.fail "non-WMMA kernel did not stay on ordinary Imp route"
+  | _ -> Alcotest.fail "non-WMMA kernel did not stay on ordinary source route"
 
 let test_missing_config_fails_only_on_subgroup_path () : unit =
   let code = D_lang.Stmt.SExpr (call_expr "__syncwarp" []) in
@@ -329,7 +329,7 @@ let test_marked_launch_wrapper_inlines_subgroup_callee () : unit =
       | Source.Subgroup_matrix subgroup
         when String.equal subgroup.matrix_kernel.name "warp_body@launch" ->
           Some subgroup
-      | Source.Subgroup_matrix _ | Source.Ordinary_imp _ -> None)
+      | Source.Subgroup_matrix _ | Source.Ordinary_source _ -> None)
     |> Option.get
   in
   Alcotest.(check int)
@@ -488,7 +488,7 @@ let test_selected_kernel_routes_before_unrelated_subgroup_failure () : unit =
       ]
     |> expect_route_ok
   with
-  | [ Source.Ordinary_imp kernel ] ->
+  | [ Source.Ordinary_source kernel ] ->
       Alcotest.(check string)
         "selected kernel name" "selected_plain" kernel.name
   | _ -> Alcotest.fail "selected ordinary kernel did not route alone"
@@ -500,7 +500,7 @@ let test_selected_kernel_uses_stable_duplicate_suffix () : unit =
       [ D_lang.Def.Kernel duplicate; D_lang.Def.Kernel duplicate ]
     |> expect_route_ok
   with
-  | [ Source.Ordinary_imp kernel ] ->
+  | [ Source.Ordinary_source kernel ] ->
       Alcotest.(check string) "stable duplicate name" "duplicate_2" kernel.name
   | _ -> Alcotest.fail "suffixed duplicate kernel was not selected"
 
@@ -2462,9 +2462,9 @@ let test_extra_load_store_matrix_arguments_fail () : unit =
 
 let tests : unit Alcotest.test_case list =
   [
-    ( "non-WMMA routes to ordinary Imp without subgroup config",
+    ( "non-WMMA routes to ordinary source without subgroup config",
       `Quick,
-      test_non_wmma_routes_to_ordinary_imp_without_subgroup_config );
+      test_non_wmma_routes_to_ordinary_source_without_subgroup_config );
     ( "missing config fails only on subgroup path",
       `Quick,
       test_missing_config_fails_only_on_subgroup_path );

@@ -15,6 +15,20 @@ extension keeps that model for ordinary kernels and adds a second ordering
 layer for subgroup and matrix collectives. The extension does not claim
 arbitrary CUDA support, direct warp lockstep semantics, or a new Coq theorem.
 
+### Semantic Target
+
+The subgroup DRF model intentionally treats every recognized, fully convergent
+warp primitive as a subgroup-local synchronization and ordering boundary.
+Thus `__shfl_sync`, reviewed `warp_reduce_*` helpers, explicit subgroup
+barriers, and matrix collectives all advance the subgroup phase, while never
+ordering different subgroups.
+
+This is an explicit abstract-model assumption derived from the project's warp
+semantics, not a claim that CUDA specifies every shuffle intrinsic as a memory
+barrier. A strict CUDA language-memory-model analysis would use a narrower
+ordering relation. Results and reports must state which semantic target they
+use instead of silently moving between the two.
+
 ## Original MAP Model In The Supplied Paper
 
 MAPs model memory locations rather than values. The paper describes one
@@ -233,7 +247,7 @@ treats the lanes of one matrix collective as a cooperative operation when the
 two compared tasks are in the same subgroup and at the same matrix collective
 site.
 
-### Subgroup Ordering
+### Implemented Subgroup Ordering
 
 The original MAP model treats a workgroup barrier as a phase boundary. The
 extension introduces a subgroup-local ordering predicate inside a workgroup
@@ -266,6 +280,11 @@ implements the predicate. The rule has three consequences.
 
 Different subgroups remain unordered. A subgroup barrier or WMMA operation is
 not promoted into a workgroup barrier.
+
+This rule is the intended subgroup DRF semantics. It models a recognized,
+fully convergent warp primitive as a warp-local synchronization point. The
+uniformity obligation is therefore part of the ordering justification, not an
+independent optional check.
 
 ### Subgroup Memory Race Obligation
 
@@ -371,7 +390,7 @@ and names the exact facts needed before obligations can be generated.
 | Topic | Supplied paper / original MAP | Local subgroup extension |
 | --- | --- | --- |
 | Unit of analysis | One protocol per array, checked one synchronization-free phase at a time (PDF pp. 7-8, Section 3.1). | One unified memory-event stream, grouped by workgroup phase and memory location. Subgroup phase keys refine ordering inside a workgroup phase. |
-| Synchronization | Workgroup synchronization splits protocols. Synchronization does not appear inside the MAP syntax (PDF p. 7, Section 3.1). | Workgroup barriers still split phases. Subgroup barriers, subgroup collectives, and matrix collectives update subgroup phase keys instead of splitting workgroup phases. |
+| Synchronization | Workgroup synchronization splits protocols. Synchronization does not appear inside the MAP syntax (PDF p. 7, Section 3.1). | Workgroup barriers still split phases. Under the subgroup DRF semantic assumption, fully convergent subgroup barriers, data-exchange collectives, and matrix collectives update subgroup phase keys without ordering different subgroups. |
 | Thread identity | The semantics uses a thread id `i` and checks pairs of different threads (PDF p. 8, Figure 3; PDF p. 16, Section 4.3). | The two-thread model is preserved. Target configuration maps CUDA thread coordinates to subgroup identity. Missing target configuration is unsupported. |
 | Memory access shape | Scalar array access `o[e]` (PDF p. 7, Figure 2). | Ordinary scalar accesses plus matrix footprints. Rectangular footprints are checked for overlap through indexed row/column variables. |
 | Race predicate | Same array index, different threads, same trace, and at least one write (PDF p. 16, Section 4.3). | Same memory location, overlapping scalar or matrix footprint, different projected tasks, conflicting modes, same workgroup phase, and no subgroup ordering. |
@@ -391,7 +410,8 @@ The local implementation adds the following logical concepts.
 2. Subgroup phase keys.
    Workgroup phases remain the outer race-checking unit. Subgroup operations
    refine ordering inside a workgroup phase without ordering different
-   subgroups.
+   subgroups. Recognized fully convergent warp primitives intentionally act as
+   subgroup-local ordering boundaries in this model.
 
 3. Subgroup uniformity.
    Subgroup barriers, subgroup collectives, and matrix collectives must be

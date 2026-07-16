@@ -20,10 +20,9 @@ type error =
       previous : Exp.nexp;
       next : Exp.nexp;
     }
-  | Ordinary_imp_error of string
 
 type routed_kernel =
-  | Ordinary_imp of Imp.Kernel.t
+  | Ordinary_source of D_lang.Kernel.t
   | Subgroup_matrix of subgroup_kernel
 
 and ordinary_memory_kind = Ordinary_read | Ordinary_write | Ordinary_atomic
@@ -93,7 +92,6 @@ let error_to_string : error -> string = function
       Printf.sprintf
         "kernel '%s' has conflicting launch facts for %s: %s and %s" kernel
         dimension (Exp.n_to_string previous) (Exp.n_to_string next)
-  | Ordinary_imp_error msg -> msg
 
 let call_name : D_lang.Expr.t -> string option = function
   | Ident { name; kind = Function; _ } | UnresolvedLookupExpr { name; _ } ->
@@ -2524,18 +2522,6 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
       Ok state
   | ReturnStmt (Some expr) -> collect_expr state expr
 
-let ordinary_imp_of_kernel (context_defs : D_lang.Def.t list)
-    (kernel : D_lang.Kernel.t) : (Imp.Kernel.t, error) result =
-  match
-    D_to_imp.Silent.parse_program (context_defs @ [ D_lang.Def.Kernel kernel ])
-  with
-  | [ kernel ] -> Ok kernel
-  | kernels ->
-      Error
-        (Ordinary_imp_error
-           (Printf.sprintf "expected one ordinary Imp kernel, got %d"
-              (List.length kernels)))
-
 let type_aliases_of_defs (context_defs : D_lang.Def.t list) :
     C_type.t StringMap.t =
   List.fold_left
@@ -3264,9 +3250,7 @@ let route_kernel_with_uniform_calls
     subgroup_kernel_of_kernel context_defs target_config
       ~uniform_preserving_calls kernel
     |> Result.map (fun kernel -> Subgroup_matrix kernel)
-  else
-    ordinary_imp_of_kernel context_defs kernel
-    |> Result.map (fun kernel -> Ordinary_imp kernel)
+  else Ok (Ordinary_source kernel)
 
 let route_kernel ?(target_config = SM.Target_config.missing_cuda)
     ?(context_defs = []) (kernel : D_lang.Kernel.t) :

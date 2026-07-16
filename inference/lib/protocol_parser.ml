@@ -8,6 +8,38 @@ type 'a t = { options : Gv_parser.t; kernels : 'a list }
 module Make (L : Logger.Logger) = struct
   module D = D_to_imp.Make (L)
 
+  let imp_of_d_program ?(ignore_asserts = false) (options : Gv_parser.t)
+      (program : D_lang.Program.t) : imp_kernel t =
+    let kernels =
+      Phase_timer.measure "inference/d-to-imp" (fun () ->
+          D.parse_program program)
+    in
+    let kernels =
+      if ignore_asserts then List.map Imp.Kernel.remove_global_asserts kernels
+      else kernels
+    in
+    { options; kernels }
+
+  let proto_of_imp ?(inline_calls = true) ?(only_globals = true)
+      (parsed : imp_kernel t) : proto_kernel t =
+    let compiled =
+      Phase_timer.measure "inference/imp-to-proto" (fun () ->
+          Imp.Compiler.compile_all ~inline_calls parsed.kernels)
+    in
+    {
+      parsed with
+      kernels =
+        compiled
+        |> List.filter (fun k ->
+            (not only_globals) || (only_globals && Protocols.Kernel.is_global k));
+    }
+
+  let d_program_to_proto ?(ignore_asserts = false) ?(inline_calls = true)
+      ?(only_globals = true) (options : Gv_parser.t)
+      (program : D_lang.Program.t) : proto_kernel t =
+    imp_of_d_program ~ignore_asserts options program
+    |> proto_of_imp ~inline_calls ~only_globals
+
   (* Shared JSON-to-Imp pipeline used by both [cu_to_imp] (live cu-to-json
      subprocess) and [cjson_to_imp] (cached cu-to-json output on disk). *)
   let imp_of_json ?(block_dim = None) ?(grid_dim = None)
@@ -34,16 +66,7 @@ module Make (L : Logger.Logger) = struct
           Phase_timer.measure "inference/d-lang" (fun () ->
             k1 |> D_lang.rewrite_program |> synth)
         in
-        let kernels =
-          Phase_timer.measure "inference/d-to-imp" (fun () ->
-            D.parse_program d_ast)
-        in
-        let kernels =
-          if ignore_asserts then
-            List.map Imp.Kernel.remove_global_asserts kernels
-          else kernels
-        in
-        { options; kernels }
+        imp_of_d_program ~ignore_asserts options d_ast
     | Error e ->
         Rjson.print_error e;
         exit exit_status
@@ -162,17 +185,7 @@ module Make (L : Logger.Logger) = struct
         ~includes ~exit_status ~macros ~ignore_asserts ~assume_launch
         ~launch_params ~cbor fname
     in
-    let compiled =
-      Phase_timer.measure "inference/imp-to-proto" (fun () ->
-        Imp.Compiler.compile_all ~inline_calls parsed.kernels)
-    in
-    {
-      parsed with
-      kernels =
-        compiled
-        |> List.filter (fun k ->
-            (not only_globals) || (only_globals && Protocols.Kernel.is_global k));
-    }
+    proto_of_imp ~inline_calls ~only_globals parsed
 end
 
 module Default = Make (Logger.Colors)

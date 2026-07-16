@@ -756,6 +756,13 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
 - Workgroup barriers split workgroup memory phases. Subgroup barriers,
   subgroup collectives, CUDA warp helper/shuffle collectives, and WMMA matrix
   collectives advance only the subgroup phase.
+- This phase rule is the intended subgroup DRF semantic assumption: every
+  recognized, fully convergent warp primitive acts as a subgroup-local
+  synchronization and ordering point. It is stronger than interpreting CUDA
+  shuffle intrinsics only through their documented language-level memory
+  ordering. Reports must state whether they target this subgroup model or a
+  strict CUDA memory-model interpretation. See
+  `../documentation/ggml-cuda-alarm-investigation.md`.
 - Matrix load/store effects are consumed through the rectangular footprint API:
   `memory_effect_footprint`, `indexed_access`, and `bounds_condition`. The DRF
   boundary must not collapse matrix footprints to a scalar base pointer.
@@ -774,7 +781,8 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   `__shfl_down_sync`, `__shfl_up_sync`, and `__shfl_xor_sync`, use that same
   rule: helper calls do not split workgroup phases and do not introduce memory
   effects, but they do provide subgroup phase boundaries for same-subgroup
-  ordering. Direct shuffle calls accept the CUDA three- or four-argument AST
+  ordering by design. Direct shuffle calls accept the CUDA three- or
+  four-argument AST
   shape only when the participation mask is statically the full configured
   subgroup mask; a partial or symbolic mask fails closed because it cannot
   order every lane in the modeled subgroup. Shuffle width controls data
@@ -1005,6 +1013,13 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   symbolic obligations, and Z3 dispatch use the upstream Faial path unchanged.
   Therefore a no-flag result for source containing subgroup/matrix operations
   is only an upstream-compatibility result, not a subgroup-aware verdict.
+- The route is additive rather than a replacement ordinary compiler. Kernels
+  classified as ordinary are resolved from the original full-program
+  `Protocol_parser` result, with auxiliary device functions available to the
+  original call-inlining pass. The subgroup source classifier does not lower an
+  isolated ordinary kernel or synthesize a helper summary. Consequently, an
+  ordinary kernel must produce the same MAP memory behavior and verdict with
+  or without `--subgroup-size`; failure to match is a pipeline-parity bug.
 - A synthesized launch wrapper is linked before routing. The subgroup carrier
   receives the callee body, launch assertions, actual argument bindings, and
   exact integral template specialization bindings. Declaration-valued
