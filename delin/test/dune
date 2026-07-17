@@ -1,7 +1,7 @@
 (tests
- (names test_delin test_cramer test_vspace test_flag test_pv_decomp)
- (modules test_delin test_cramer test_vspace test_flag test_pv_decomp)
- (libraries protocols delin oUnit))
+ (names test_delin test_cramer test_bs_delin test_vspace test_flag test_pv_decomp)
+ (modules test_delin test_cramer test_bs_delin test_vspace test_flag test_pv_decomp)
+ (libraries protocols delin oUnit alcotest))
 
 ; Slow differential benchmark for the ICS15 drivers. Not attached to
 ; @runtest, so `dune test` stays fast; run with `dune build @slow`.

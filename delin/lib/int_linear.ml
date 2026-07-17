@@ -35,6 +35,7 @@ module Matrix = struct
 
   let rows (m : t) : int = Array.length m
   let cols (m : t) : int = if Array.length m = 0 then 0 else Vector.length m.(0)
+  let get (m : t) (i : int) (j : int) : int = m.(i).(j)
 
   let rec det (a : t) : int =
     let n = Array.length a in
@@ -106,3 +107,22 @@ let int_solve (m : Matrix.t) (b : Vector.t) : Vector.t option =
          if Matrix.solves m ~x ~b then Some x else None)
   |> Seq.uncons
   |> Option.map fst
+
+let tri_solve (l : Matrix.t) (b : Vector.t) : Vector.t option =
+  let n = Matrix.rows l in
+  if Vector.length b <> n then
+    invalid_arg "Int_linear.tri_solve: vector length must equal the row count";
+  let rec go (k : int) (solved : int list) : int list option =
+    if k = n then Some solved
+    else
+      let sub =
+        solved
+        |> List.mapi (fun j xj -> Matrix.get l k j * xj)
+        |> List.fold_left ( + ) 0
+      in
+      let s = Vector.get b k - sub in
+      let d = Matrix.get l k k in
+      if d = 0 || s mod d <> 0 then None
+      else go (k + 1) (solved @ [ s / d ])
+  in
+  go 0 [] |> Option.map (fun xs -> Vector.of_list xs)

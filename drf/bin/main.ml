@@ -329,6 +329,8 @@ let main =
              search (Grosser et al.'s optimistic delinearization). \
              $(b,ics15-opt): same results as $(b,ics15) with a pruned \
              search. $(b,cramer): exact integer linear-algebra solve. \
+             $(b,bs): same results as $(b,cramer) via triangular \
+             back-substitution, cheaper at higher dimensions. \
              $(b,weak): for opaque runtime strides that cannot be factored \
              (e.g. ggml tensor $(b,nb) strides); reads the strides straight \
              off the index and assumes they nest, disjoined over every stride \

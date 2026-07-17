@@ -355,6 +355,7 @@ module Algo = struct
     | Ics15
     | Ics15_opt
     | Cramer
+    | Bs_delin
     | Weak
 
   let default = Ics15_opt
@@ -364,6 +365,7 @@ module Algo = struct
     | Ics15 -> "ics15"
     | Ics15_opt -> "ics15-opt"
     | Cramer -> "cramer"
+    | Bs_delin -> "bs"
     | Weak -> "weak"
 
   (* Name/value pairs for [Cmdliner.Arg.enum]. *)
@@ -373,6 +375,7 @@ module Algo = struct
       ("ics15", Ics15);
       ("ics15-opt", Ics15_opt);
       ("cramer", Cramer);
+      ("bs", Bs_delin);
       ("weak", Weak);
     ]
 
@@ -381,6 +384,7 @@ module Algo = struct
     | Ics15 -> (module Ics15)
     | Ics15_opt -> (module Ics15_opt)
     | Cramer -> (module Cramer)
+    | Bs_delin -> (module Bs_delin)
     | Weak -> failwith "Algo.to_module: weak has no Algorithm.S"
 end
 
