@@ -1302,7 +1302,7 @@ let main =
       ~show_proofs:false ~show_proto:false ~show_wf:false ~show_align:false
       ~show_delin:false ~show_phase_split:false ~show_loc_split:false
       ~show_flat_acc:false ~show_symbexp:false
-      ~logic ~solve_tactic
+      ~logic ~solve_tactic ~deterministic_sat:false
       ~ge_index:[] ~le_index:[] ~eq_index:[]
       ~only_array:None ~only_kernel
       ~only_true_data_races:false

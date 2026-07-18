@@ -410,7 +410,7 @@ module Solution = struct
     *)
   let solve ?(timeout = None) ?(show_proofs = false) ?(logic = None)
       ?(solve_tactic : Gen_z3.Tactic.t option = None)
-      ?(extras : (int * bexp) list = [])
+      ?(extras : (int * bexp) list = []) ?(deterministic = false)
       (ps : Symbexp.Proof.t Streamutil.stream) : t Streamutil.stream =
     (* User-requested BV logic warning fires once, not once per proof. *)
     (match logic with
@@ -465,6 +465,16 @@ module Solution = struct
           let ctx = Z3.mk_context options in
           let s = mk_solver_for enc ctx in
           Solver.add s [ enc.b_to_expr ctx (Predicates.b_inline p.goal) ];
+          let s =
+            if deterministic && not want_core then (
+              let text = Solver.to_string s in
+              let ctx = Z3.mk_context options in
+              let asserts = Z3.SMT.parse_smtlib2_string ctx text [] [] [] [] in
+              let s = mk_solver_for enc ctx in
+              Solver.add s (Z3.AST.ASTVector.to_expr_list asserts);
+              s)
+            else s
+          in
           trackers :=
             List.map
               (fun (id, b) ->

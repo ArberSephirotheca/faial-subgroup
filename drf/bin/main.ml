@@ -148,6 +148,15 @@ let main =
           ~doc:
             "Z3 tactic expression for the race-query solver. When omitted, \
              the solver uses Z3's default strategy.")
+  and+ deterministic_sat =
+    Arg.(
+      value & flag
+      & info [ "deterministic-sat" ]
+          ~doc:
+            "Round-trip each proof's SMT query through Z3's serializer before \
+             solving. This canonicalises the in-memory term order, so solve \
+             time no longer depends on how the query was built (notably the \
+             $(b,--delin-algo) choice). Off by default.")
   and+ output_json =
     Arg.(value & flag & info [ "json" ] ~doc:"Output result as JSON.")
   and+ ignore_parsing_errors =
@@ -544,7 +553,8 @@ let main =
     let app =
       App.parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
         ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc
-        ~show_symbexp ~logic ~solve_tactic ~ge_index ~le_index ~eq_index ~only_array
+        ~show_symbexp ~logic ~solve_tactic ~deterministic_sat ~ge_index ~le_index
+        ~eq_index ~only_array
         ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~archs
         ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros

@@ -73,6 +73,7 @@ type t = {
   show_symbexp : bool;
   logic : string option;
   solve_tactic : Gen_z3.Tactic.t option;
+  deterministic_sat : bool;
   (* Per-kernel tracked-assertion clauses for UNSAT-core shrinking,
      keyed by [Kernel.name]. Each kernel's list pairs an integer ID
      with a [bexp] that gets added to that kernel's per-proof Z3
@@ -186,6 +187,7 @@ let to_string (app : t) : string =
    show_symbexp;
    logic;
    solve_tactic = _;
+   deterministic_sat = _;
    core_extras = _;
    le_index = _;
    ge_index = _;
@@ -253,7 +255,8 @@ let to_string (app : t) : string =
 
 let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc ~show_symbexp
-    ~logic ~solve_tactic ~ge_index ~le_index ~eq_index ~only_array ~only_kernel
+    ~logic ~solve_tactic ~deterministic_sat ~ge_index ~le_index ~eq_index
+    ~only_array ~only_kernel
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
@@ -332,6 +335,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     show_symbexp;
     logic;
     solve_tactic;
+    deterministic_sat;
     core_extras = [];
     kernels;
     ge_index;
@@ -509,7 +513,8 @@ let run (a : t) : Analysis.t list =
           in
           Solve_drf.Solution.solve ~timeout:a.timeout
             ~show_proofs:a.show_proofs ~logic:a.logic
-            ~solve_tactic:a.solve_tactic ~extras:kernel_extras ps)
+            ~solve_tactic:a.solve_tactic ~deterministic:a.deterministic_sat
+            ~extras:kernel_extras ps)
       |> Phase_timer.boundary "solve"
       |> Streamutil.to_list
     in
