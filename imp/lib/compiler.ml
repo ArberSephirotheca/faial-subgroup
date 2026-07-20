@@ -16,9 +16,7 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
     k.code
     |> Scoped.Code.filter_locs array_set
        (* Remove unknown arrays *)
-    |> (fun c ->
-         let read_only = Variable.Set.diff array_set (Scoped.Code.rw_arrays c) in
-         Scoped.Code.bind_uniform_reads read_only c)
+    |> Scoped.Code.bind_uniform_reads
     |> Scoped.Code.fix_assigns
     (* Inline local variable assignment and ensure variables are distinct*)
     |> Encode_assigns.from_scoped ?infer_cond_bound

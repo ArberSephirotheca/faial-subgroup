@@ -168,54 +168,24 @@ module Code = struct
 
   let subst = ReplacePair.subst
 
-  (* Arrays that appear with a [Write] or [Atomic] access. The
-     complement (against the kernel's array set) is the read-only set
-     used to license modelling [Read]s as uninterpreted-function
-     applications: if [A] is never written, [A[i]] is a pure function
-     of [i] and two threads reading [A] at the same index see the
-     same value. Atomics are mutators here too. *)
-  let rw_arrays : t -> Variable.Set.t =
-    let rec fold (acc : Variable.Set.t) : t -> Variable.Set.t = function
-      | Access { array; mode = Write _ | Atomic _; _ } ->
-          Variable.Set.add array acc
-      | Access { mode = Read; _ } | Skip | Sync _ | Assert _ -> acc
-      | Seq (p, q) | If (_, p, q) -> fold (fold acc p) q
-      | For (_, p) | Decl (_, p) | Call (_, p) -> fold acc p
-      | Assign a -> fold acc a.body
-    in
-    fold Variable.Set.empty
-
-  (* Name used as the uninterpreted-function symbol for read-only
-     loads of [array]. Two loads of [array] at equal indices share
-     this name and therefore agree in the SMT model. *)
+  (* Name used as the uninterpreted-function symbol for loads of
+     [array]. Two loads of [array] at equal indices share this name
+     and therefore agree in the SMT model. *)
   let uniform_read_name (array : Variable.t) : string =
     "$read_" ^ Variable.name array
 
-  (* For each [Read] of an array in [read_only], bind the read's
-     target [Decl] (an unset placeholder emitted by [imp_to_scoped])
-     to [NCall (uniform_read_name array, index)] so [Encode_assigns]
-     inlines the target into a per-use uninterpreted-function
-     application keyed by the read's index expression. The matched
-     shape [Seq (Access {mode=Read; ...}, Decl ({init = None; ...},
-     ...))] is exactly the pair [imp_to_scoped] emits for [Read e]
-     with [e.target = Some _]; reads with [target = None] never
-     produce a paired [Decl] and need no rewrite. The substituted-in
-     [NCall]'s arguments carry the read's index, with its free
-     variables in their original scope. *)
-  let bind_uniform_reads (read_only : Variable.Set.t) : t -> t =
+  let bind_uniform_reads : t -> t =
     let rec rewrite : t -> t = function
       | Seq
           ( (Access { array; index; mode = Read } as acc),
-            Decl ((({ init = None; _ } : Decl.t) as d), rest) )
-        when Variable.Set.mem array read_only ->
+            Decl ((({ init = None; _ } : Decl.t) as d), rest) ) ->
           let call = Exp.NCall (uniform_read_name array, index) in
           Seq (acc, Decl ({ d with init = Some call }, rewrite rest))
       | Seq
-          ( If (_, (Access { array; index; mode = Read } as acc), Skip),
-            Decl ((({ init = None; _ } : Decl.t) as d), rest) )
-        when Variable.Set.mem array read_only ->
+          ( If (b, (Access { array; index; mode = Read } as acc), Skip),
+            Decl ((({ init = None; _ } : Decl.t) as d), rest) ) ->
           let call = Exp.NCall (uniform_read_name array, index) in
-          Seq (acc, Decl ({ d with init = Some call }, rewrite rest))
+          Seq (If (b, acc, Skip), Decl ({ d with init = Some call }, rewrite rest))
       | Seq (p, q) -> Seq (rewrite p, rewrite q)
       | If (b, p, q) -> If (b, rewrite p, rewrite q)
       | For (r, p) -> For (r, rewrite p)
@@ -296,17 +266,6 @@ module Code = struct
     in
     go Variable.Set.empty
 
-  (* Alpha-rename binders so every bound variable is globally unique,
-     in a single top-down pass. [bound] holds the names bound on the
-     path so far (seeded with the caller's [vars]); a binder whose name
-     is already in [bound] is renamed. [taken] is every name a fresh one
-     must avoid — seeded once with every name in the whole term so a
-     fresh name cannot collide with a deeper binder — and grows as fresh
-     names are minted. [env] maps a renamed binder's old name to its
-     replacement and is applied to references at the leaves. This
-     replaces an earlier per-binder [mentioned] subtree scan plus a
-     per-binder full-subtree [subst], which was quadratic on
-     inline-heavy kernels. *)
   let vars_distinct ?(vars = Variable.Set.empty) (root : t) : t =
     let module R = Subst.ReplaceVars in
     let empty (env : Subst.Vars.t) : bool = Variable.Map.is_empty env in
@@ -460,11 +419,6 @@ module Code = struct
         ty = C_type.int;
       }
 
-  (* Tags an atomic site with its binding, address, and operation.
-     [Symbexp.AtomicAxioms] reads the marker at race-query
-     construction time and instantiates the cross-thread axiom
-     schema for each compatible pair. [Predicates.strip_cross_thread]
-     neutralises the marker in single-thread codegen paths. *)
   let atomic_result_marker (aw : Atomic_write.t) : Assert.t =
     let marker =
       Exp.AtomicResult
