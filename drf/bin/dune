@@ -3,9 +3,9 @@
  (public_names faial-drf faial-genie)
  (names main genie)
  (modes exe)
- (modules main genie app tui jui)
+ (modules main genie app tui jui pyz3)
  (libraries
   ; 3rd-party
-  cmdliner printbox printbox-text
+  cmdliner printbox printbox-text z3
   ; 1st-party
   stage0 protocols protocols_parsing drf drf_genie inference))

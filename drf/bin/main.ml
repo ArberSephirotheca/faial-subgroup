@@ -159,6 +159,14 @@ let main =
              $(b,--delin-algo) choice). Off by default.")
   and+ output_json =
     Arg.(value & flag & info [ "json" ] ~doc:"Output result as JSON.")
+  and+ output_pyz3 =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "pyz3" ] ~docv:"FILE"
+          ~doc:
+            "Write each racy proof's Z3 obligation to $(docv) as a Python \
+             module that loads it into z3 (one Proof per racy proof).")
   and+ ignore_parsing_errors =
     Arg.(
       value & flag
@@ -566,7 +574,11 @@ let main =
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at ~infer_cond_bound ~rules_file
     in
-    let ui = if output_json then Jui.render else Tui.render in
+    let ui =
+      match output_pyz3 with
+      | Some file -> Pyz3.render file
+      | None -> if output_json then Jui.render else Tui.render
+    in
     let run () =
       if list_kernels then
         app.kernels
