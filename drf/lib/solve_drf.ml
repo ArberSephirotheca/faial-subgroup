@@ -341,17 +341,20 @@ module Encoder = struct
     b_to_expr : Z3.context -> Exp.bexp -> Z3.Expr.expr;
     parse_num : string -> string;
     logic     : string option;
+    is_bv     : bool;
   }
 
   let intgen ~(logic : string option) : t =
     { b_to_expr = IntGen.b_to_expr;
       parse_num = IntGen.parse_num;
-      logic }
+      logic;
+      is_bv     = false }
 
   let bv64 () : t =
     { b_to_expr = Bv64Gen.b_to_expr;
       parse_num = Bv64Gen.parse_num;
-      logic     = None }
+      logic     = None;
+      is_bv     = true }
 
   (* Starting encoder. Respect a user-requested BV logic; otherwise
      default to the arithmetic encoder. *)
@@ -392,6 +395,7 @@ module Solution = struct
     proof : Symbexp.Proof.t;
     outcome : Outcome.t;
     logic : string option;
+    is_bv : bool;
   }
 
   let is_safe (x : t) : bool = Outcome.is_safe x.outcome
@@ -546,7 +550,7 @@ module Solution = struct
               | None -> failwith "INVALID")
           | UNKNOWN -> Unknown
         in
-        { proof = p; outcome = r; logic = enc.logic }
+        { proof = p; outcome = r; logic = enc.logic; is_bv = enc.is_bv }
         with Z3.Error msg ->
           if tries > 0 then (
             Gc.full_major ();
@@ -556,7 +560,7 @@ module Solution = struct
               (Printf.sprintf
                  "WARNING: Z3 error on proof %d (%s); treating as unknown" p.id
                  msg);
-            { proof = p; outcome = Outcome.Unknown; logic = None })
+            { proof = p; outcome = Outcome.Unknown; logic = None; is_bv = false })
         in
         attempt 1)
       ps

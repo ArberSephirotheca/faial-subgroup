@@ -2,15 +2,12 @@ open Protocols
 open Drf
 open Solve_drf
 
-let proof_to_smt2 ~(logic : string option) (goal : Exp.bexp) : string =
-  let encode (enc : Encoder.t) : string =
-    let ctx = Z3.mk_context [] in
-    let s = Z3.Solver.mk_simple_solver ctx in
-    Z3.Solver.add s [ enc.b_to_expr ctx (Predicates.b_inline goal) ];
-    Z3.Solver.to_string s
-  in
-  try encode (Encoder.initial ~logic)
-  with Gen_z3.Not_implemented _ -> encode (Encoder.bv64 ())
+let proof_to_smt2 ~(is_bv : bool) (goal : Exp.bexp) : string =
+  let enc = if is_bv then Encoder.bv64 () else Encoder.initial ~logic:None in
+  let ctx = Z3.mk_context [] in
+  let s = Z3.Solver.mk_simple_solver ctx in
+  Z3.Solver.add s [ enc.b_to_expr ctx (Predicates.b_inline goal) ];
+  Z3.Solver.to_string s
 
 let py_str (s : string) : string =
   let buf = Buffer.create (String.length s + 2) in
@@ -102,23 +99,24 @@ class Proof:
     both empty is a precise counterexample (CIDI); a non-empty `data_approx`
     is a data-dependent index that no parameter assumption can discharge.
     `locations` maps a symbol to its source location where faial knows one.
-    A thread-local `X` is the solver constant `X$T1` for task1 and `X$T2` for
-    task2; globals keep their plain name, and sym()/var() translate between
-    the dict keys and the solver symbols. Add candidate assumptions and
-    re-check; push()/pop() keep the base query intact:
+    `logic` is the user-requested z3 logic, if any, and is informational;
+    `is_bv` is the authoritative sort flag: the whole proof is encoded in
+    64-bit bit-vectors when True, otherwise in Int. A thread-local `X` is the
+    solver constant `X$T1` for task1 and `X$T2` for task2; globals keep their
+    plain name, and sym()/var() translate between the dict keys and the solver
+    symbols. Build a constant of the right sort with `const`, then probe a
+    candidate assumption with `check` (an isolated child solver, so the base
+    query is left intact):
 
         p = proofs[0]
-        p.solver.check()                       # sat
-        p.globals                              # {'nb1': 0, ...}
-        p.task1.locals, p.task1.mode           # {'threadIdx.x': 32, ...}, 'rw'
-        i1, i2 = z3.Int("threadIdx.x$T1"), z3.Int("threadIdx.x$T2")
-        p.solver.push(); p.solver.add(i1 == i2)
-        p.solver.check()                       # sat / unsat under the assumption
-        p.solver.pop()
+        p.solver.check()                        # sat: the race faial found
+        p.globals                               # {'nb1': 0, ...}
+        p.check(p.const("blockDim.x") == 1)     # unsat: that removes this witness
+        p.refutes(p.const("nb1") >= p.const("ne00"))  # True if that clears it
 
-    An unsat means the assumption removes this counterexample: a lead, not a
-    DRF proof (one proof, no reachability or vacuity gate). Confirm a
-    promising assumption with `faial-drf --assume "..."`.
+    An unsat (refutes True) means the constraint removes this counterexample:
+    a lead, not a DRF proof (one proof, no reachability or vacuity gate).
+    Confirm a promising assumption with `faial-drf --assume "..."`.
     """
 
     kernel: str
@@ -130,6 +128,8 @@ class Proof:
     data_approx: list
     control_approx: list
     locations: dict
+    logic: str | None
+    is_bv: bool
     solver: z3.Solver
 
     @classmethod
@@ -144,13 +144,15 @@ class Proof:
         data_approx: list,
         control_approx: list,
         locations: dict,
+        logic: str | None,
+        is_bv: bool,
         smt2: str,
     ) -> "Proof":
         solver = z3.Solver()
         solver.add(z3.parse_smt2_string(smt2))
         return cls(
             kernel, array, indices, globals, task1, task2,
-            data_approx, control_approx, locations, solver,
+            data_approx, control_approx, locations, logic, is_bv, solver,
         )
 
     def sym(self, name: str, task: int | None = None) -> str:
@@ -168,6 +170,57 @@ class Proof:
                 return t, symbol[: -len(suffix)]
         return None if symbol.startswith("$") else (None, symbol)
 
+    def const(self, name: str, task: int | None = None) -> z3.ExprRef:
+        """A z3 constant for a witness variable, of this proof's sort. Pass the
+        faial name (the witness-dict key: `nb1`, `i00`, `@Unknown0`); the
+        `$T1` / `$T2` suffix is added for a task-local. Returns `BitVec(_, 64)`
+        when `is_bv`, else `Int`, matching the sort the emitted SMT declares."""
+        s = self.sym(name, task)
+        return z3.BitVec(s, 64) if self.is_bv else z3.Int(s)
+
+    def check(self, *constraints, timeout_ms: int = 10_000):
+        """Does the race survive if `constraints` also hold? Runs on a fresh
+        child solver seeded with the base assertions plus `constraints`, so the
+        base query stays intact and unbounded. Returns z3 `sat` (still racy),
+        `unsat` (this witness refuted), or `unknown` (hit `timeout_ms`: raise
+        it, or substitute the witness's concrete values). Mirrors
+        `z3.Solver.check(*assumptions)`; adds no standing assumption."""
+        child = z3.Solver()
+        child.set("timeout", timeout_ms)
+        child.add(self.solver.assertions())
+        child.add(*constraints)
+        return child.check()
+
+    def refutes(self, *constraints, timeout_ms: int = 10_000) -> bool:
+        """`check(...) == unsat`: True when `constraints` refute this witness."""
+        return self.check(*constraints, timeout_ms=timeout_ms) == z3.unsat
+
+    def is_index_precise(self) -> bool:
+        """The colliding index is exact: no over-approximated data variable."""
+        return not self.data_approx
+
+    def is_control_flow_precise(self) -> bool:
+        """The reaching condition is exact: no over-approximated control variable."""
+        return not self.control_approx
+
+    def is_precise(self) -> bool:
+        """Both index and control flow are exact: a precise counterexample."""
+        return self.is_index_precise() and self.is_control_flow_precise()
+
+    def affects_index_precision(self) -> list:
+        """Variables left free in the address (the `data_approx` set)."""
+        return self.data_approx
+
+    def affects_control_flow_precision(self) -> list:
+        """Variables left free in the reaching condition (the `control_approx` set)."""
+        return self.control_approx
+
+    def approx_analysis(self) -> str:
+        """The four-letter display code: CD/CI (control) then DD/DI (data)."""
+        cd = "CD" if self.control_approx else "CI"
+        dd = "DD" if self.data_approx else "DI"
+        return cd + dd
+
 
 proofs = [
 |py}
@@ -184,6 +237,8 @@ type pyz3_proof = {
   data_approx : string;
   control_approx : string;
   locations : string;
+  logic : string;
+  is_bv : string;
   smt : string;
 }
 
@@ -214,6 +269,7 @@ let to_pyz3_proof (kernel_name : string) (s : Solution.t) : pyz3_proof option =
         |> List.map (fun (k, j) -> py_str k ^ ": " ^ py_of_json j)
         |> String.concat ", "
       in
+      let smt = proof_to_smt2 ~is_bv:s.is_bv p.goal in
       Some
         {
           kernel = py_str kernel_name;
@@ -225,16 +281,18 @@ let to_pyz3_proof (kernel_name : string) (s : Solution.t) : pyz3_proof option =
           data_approx = approx w.data_approx;
           control_approx = approx w.control_approx;
           locations = "{" ^ locations ^ "}";
-          smt = proof_to_smt2 ~logic:s.logic p.goal;
+          logic = (match s.logic with Some l -> py_str l | None -> "None");
+          is_bv = (if s.is_bv then "True" else "False");
+          smt;
         }
   | _ -> None
 
 let serialize (oc : out_channel) (p : pyz3_proof) : unit =
   Printf.fprintf oc
-    "    Proof.from_smt2(%s, %s, %s, %s, %s, %s, %s, %s, %s, \
+    "    Proof.from_smt2(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, \
      r\"\"\"\n%s\"\"\"),\n"
     p.kernel p.array p.indices p.globals p.task1 p.task2 p.data_approx
-    p.control_approx p.locations p.smt
+    p.control_approx p.locations p.logic p.is_bv p.smt
 
 let render (filename : string) (output : Analysis.t list) : unit =
   Out_channel.with_open_text filename (fun oc ->
