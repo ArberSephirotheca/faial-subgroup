@@ -200,9 +200,10 @@ end = struct
       | Access _ -> failed
       | Skip | Assert _ -> failed
       | Cond (_, b) -> walk scope loop_scope failed b
-      | Loop (Norm_range.Plain r, b) ->
+      | Loop (Norm_range.Plain cr, b) ->
+        let r = cr.range in
         let scope' = G.add_range ~globals r scope in
-        let loop_scope' = Range.to_cond r :: loop_scope in
+        let loop_scope' = Range.to_bexp r :: loop_scope in
         walk scope' loop_scope' failed b
       | Loop (Norm_range.Index _, b) ->
         (* loops are normalized only after delinearization *)
@@ -293,13 +294,14 @@ end = struct
            Access acc)
       | Access _ as code -> code
       | Cond (p, b) -> Cond (p, walk scope loop_scope b)
-      | Loop (Norm_range.Plain r, b) ->
+      | Loop (Norm_range.Plain cr, b) ->
+        let r = cr.range in
         let scope' = G.add_range ~globals r scope in
-        let loop_scope' = Range.to_cond r :: loop_scope in
-        Loop (Norm_range.Plain r, walk scope' loop_scope' b)
-      | Loop ((Norm_range.Index _ as r), b) ->
+        let loop_scope' = Range.to_bexp r :: loop_scope in
+        Loop (Norm_range.Plain cr, walk scope' loop_scope' b)
+      | Loop ((Norm_range.Index _ as nr), b) ->
         (* loops are normalized only after delinearization *)
-        Loop (r, walk scope loop_scope b)
+        Loop (nr, walk scope loop_scope b)
       | Seq (a, b) ->
         Seq (walk scope loop_scope a, walk scope loop_scope b)
       | code -> code
@@ -320,15 +322,16 @@ end = struct
     | Sync c ->
       Sync (rewrite_unsync ~globals ~scope ~loop_scope ~check
               ~rewrite_access ~assume c)
-    | Loop ({ range; body; _ } as loop) ->
+    | Loop { cond_range; body } ->
+      let range = cond_range.range in
       let globals =
         if Variable.Set.subset (Range.free_names range Variable.Set.empty) globals
         then Variable.Set.add range.var globals
         else globals
       in
       let scope = G.add_range ~globals range scope in
-      let loop_scope = Range.to_cond range :: loop_scope in
-      Loop { loop with body =
+      let loop_scope = Range.to_bexp range :: loop_scope in
+      Loop { cond_range; body =
         rewrite_aligned ~globals ~scope
           ~loop_scope ~check ~rewrite_access ~assume body }
     | Seq (a, b) ->

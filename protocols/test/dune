@@ -6,6 +6,7 @@
    test_gv_parser
    test_exp_match
    test_range
+   test_hoist_decls
  )
  (libraries stage0 protocols protocols_parsing alcotest)
 )

@@ -26,12 +26,13 @@ type index = {
   lower_bound : nexp;
   upper_bound : nexp;
   recovery : recovery;
+  cond : bexp; (* the restriction, reparametrized over [index] *)
 }
 
-type t = Plain of Range.t | Index of index
+type t = Plain of Cond_range.t | Index of index
 
 let var : t -> Variable.t = function
-  | Plain r -> Range.var r
+  | Plain cr -> Cond_range.var cr
   | Index r -> r.index
 
 (* The value denoted by index [i]: [lb + k*i] when increasing,
@@ -50,7 +51,7 @@ let substitution (r : index) : Variable.t * nexp = (r.source, to_value r)
 
 (* [0 <= i] and the recovered value stays within [[lb, ub]]. With a
    literal stride the value bound is linear, so no div/mod is emitted. *)
-let index_to_cond (r : index) : bexp =
+let index_to_bexp (r : index) : bexp =
   let i = Var r.index in
   let value = to_value r in
   let value_bound =
@@ -60,24 +61,30 @@ let index_to_cond (r : index) : bexp =
   in
   b_and_ex [ n_le (Num 0) i; value_bound; Range.decl_to_bexp r.index r.ty ]
 
-let to_cond : t -> bexp = function
-  | Plain r -> Range.to_cond r
-  | Index r -> index_to_cond r
+let to_bexp : t -> bexp = function
+  | Plain cr -> Cond_range.to_bexp cr
+  | Index r -> b_and (index_to_bexp r) r.cond
 
-(* The range's own free names (bounds and stride), excluding the bound
-   index, mirroring [Range.free_names]. The source variable is gone
-   from the body after substitution, so it is not free here. *)
+(* The range's own free names (bounds, stride, and restriction), excluding
+   the bound index. The source variable is gone from the body after
+   substitution, so it is not free here. *)
 let free_names (r : t) (fns : Variable.Set.t) : Variable.Set.t =
   match r with
-  | Plain r -> Range.free_names r fns
-  | Index r -> (
+  | Plain cr -> Cond_range.free_names cr fns
+  | Index r ->
       let fns = n_free_names r.lower_bound fns in
       let fns = n_free_names r.upper_bound fns in
-      match r.recovery with Additive k -> n_free_names k fns)
+      let fns =
+        match r.recovery with Additive k -> n_free_names k fns
+      in
+      let cond_fns =
+        b_free_names r.cond Variable.Set.empty |> Variable.Set.remove r.index
+      in
+      Variable.Set.union fns cond_fns
 
 let map (f : nexp -> nexp) (r : t) : t =
   match r with
-  | Plain r -> Plain (Range.map f r)
+  | Plain cr -> Plain (Cond_range.map f cr)
   | Index r ->
       Index
         {
@@ -85,18 +92,21 @@ let map (f : nexp -> nexp) (r : t) : t =
           lower_bound = f r.lower_bound;
           upper_bound = f r.upper_bound;
           recovery = (match r.recovery with Additive k -> Additive (f k));
+          cond = b_map f r.cond;
         }
 
 (* Reparametrize a strided additive loop over a fresh unit-stride
    index. Returns [Plain] unchanged for anything outside the
-   realizable domain (unit, symbolic, or geometric steps). *)
-let normalize (r : Range.t) : t =
+   realizable domain (unit, symbolic, or geometric steps). The
+   restriction is carried over, reparametrized onto the fresh index. *)
+let normalize (cr : Cond_range.t) : t =
+  let r = cr.range in
   match Range.plus_step_literal (Range.step r) with
-  | None -> Plain r
+  | None -> Plain cr
   | Some k ->
       let source = Range.var r in
       let index = Variable.from_name (Variable.name source ^ "$q") in
-      Index
+      let ix =
         {
           source;
           index;
@@ -105,10 +115,18 @@ let normalize (r : Range.t) : t =
           lower_bound = Range.lower_bound r;
           upper_bound = Range.upper_bound r;
           recovery = Additive (Num k);
+          cond = cr.cond;
         }
+      in
+      Index { ix with cond = Subst.ReplacePair.b_subst (substitution ix) ix.cond }
 
 let to_string : t -> string = function
-  | Plain r -> Range.to_string r
+  | Plain cr -> Cond_range.to_string cr
   | Index r ->
-      Variable.name r.index ^ " for " ^ Variable.name r.source ^ " = "
-      ^ n_to_string (to_value r)
+      let base =
+        Variable.name r.index ^ " for " ^ Variable.name r.source ^ " = "
+        ^ n_to_string (to_value r)
+      in
+      (match r.cond with
+      | Bool true -> base
+      | _ -> base ^ " if " ^ b_to_string r.cond)

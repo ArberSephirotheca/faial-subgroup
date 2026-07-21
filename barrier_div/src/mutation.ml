@@ -102,7 +102,8 @@ let prepend_unused_decl : t =
         [
           {
             k with
-            code = Decl { var = x; ty = C_type.int; body = k.code };
+            code =
+              Decl { var = x; ty = C_type.int; cond = Exp.Bool true; body = k.code };
           };
         ]);
   }
@@ -141,7 +142,7 @@ let wrap_uniform_loop : t =
         [
           {
             k with
-            code = Loop { range = r; body = k.code };
+            code = Loop { cond_range = Cond_range.of_range r; body = k.code };
             global_variables =
               Params.add n C_type.int k.global_variables;
           };
@@ -175,7 +176,8 @@ let wrap_decl_if : t =
           [
             {
               k with
-              code = Decl { var = x; ty = C_type.int; body = inner };
+              code =
+                Decl { var = x; ty = C_type.int; cond = Exp.Bool true; body = inner };
             };
           ]);
   }
@@ -199,11 +201,12 @@ let wrap_decl_loop : t =
           let used' = Variable.Set.add n (kernel_used_vars k) in
           let i = Variable.fresh used' (Variable.from_name "mut_i") in
           let r = Range.make ~lower_bound:(Num 0) i (Var n) in
-          let inner : Code.t = Loop { range = r; body = k.code } in
+          let inner : Code.t = Loop { cond_range = Cond_range.of_range r; body = k.code } in
           [
             {
               k with
-              code = Decl { var = n; ty = C_type.int; body = inner };
+              code =
+                Decl { var = n; ty = C_type.int; cond = Exp.Bool true; body = inner };
             };
           ]);
   }
@@ -263,7 +266,7 @@ let wrap_tid_loop : t =
         else
           let i = fresh k "mut_i" in
           let r = Range.make ~lower_bound:(Num 0) i (Var Variable.tid_x) in
-          [ { k with code = Loop { range = r; body = k.code } } ]);
+          [ { k with code = Loop { cond_range = Cond_range.of_range r; body = k.code } } ]);
   }
 
 let all : t list =

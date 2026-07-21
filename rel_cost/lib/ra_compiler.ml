@@ -307,7 +307,7 @@ module Make (LOG : Logger.Logger) = struct
           let* q, metric2 = from_p ctx2 q in
           let code = match b with Some b -> if_ b p q | None -> Seq (p, q) in
           Ok (code, Stats.add metrics (Stats.add metric1 metric2))
-      | Loop { range; body } -> (
+      | Loop { cond_range = { range; _ }; body } -> (
           match Context.add_range uniform_loop range ctx with
           | Ok (range, accu, ctx) ->
               let* body, metric = from_p ctx body in

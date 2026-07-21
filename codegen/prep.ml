@@ -21,7 +21,8 @@ let rec inst_to_vars : Code.t -> Variable.t list = function
   | Sync _ -> []
   | Seq (p, q) -> inst_to_vars p @ inst_to_vars q
   | If (b, p, q) -> b_to_vars b @ inst_to_vars p @ inst_to_vars q
-  | Loop { range = r; body = p } -> r_to_vars r @ inst_to_vars p
+  | Loop { cond_range = { range = r; _ }; body = p } ->
+      r_to_vars r @ inst_to_vars p
 
 and n_to_vars : nexp -> Variable.t list = function
   | Var x -> [ x ]

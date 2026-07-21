@@ -179,7 +179,7 @@ let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
         Line "}";
       ]
   | Skip -> []
-  | Decl { var; ty; body = p } ->
+  | Decl { var; ty; body = p; _ } ->
       (* Synthesised Decls are uninitialised scaffold variables — strip
          [const] so the emitted C++ doesn't fail "default initialisation
          of an object of const type". Clang dependent-type placeholders
@@ -192,7 +192,7 @@ let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
       Line (ty_s ^ " " ^ Variable.name var ^ ";")
       :: inst_to_s g p
   | Seq (p, q) -> inst_to_s g p @ inst_to_s g q
-  | Loop { range = r; body = p } ->
+  | Loop { cond_range = { range = r; _ }; body = p } ->
       let x = Variable.name r.var in
       let r = if g.div_to_mult then div_to_mult r else r in
       let lb, ub, op =

@@ -173,8 +173,8 @@ module Check = struct
       | If (b, s1, s2) ->
           let p_then, p_else = PathCondition.add_cond b p in
           Seq.append (of_code p_then s1) (of_code p_else s2)
-      | Loop { range; body } ->
-          let cond = Range.to_cond range in
+      | Loop { cond_range = { range; _ }; body } ->
+          let cond = Range.to_bexp range in
           let p =
             if PathCondition.is_uniform p cond then
               p

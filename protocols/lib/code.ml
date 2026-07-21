@@ -9,10 +9,10 @@ type t =
   | Access of Access.t
   | Sync of Sync.t
   | If of bexp * t * t
-  | Loop of { range : Range.t; body : t }
+  | Loop of { cond_range : Cond_range.t; body : t }
   | Seq of t * t
   | Skip
-  | Decl of { var : Variable.t; ty : C_type.t; body : t }
+  | Decl of { var : Variable.t; ty : C_type.t; cond : bexp; body : t }
 
 let rec filter (f : t -> bool) (p : t) : t =
   if not (f p) then Skip
@@ -22,7 +22,7 @@ let rec filter (f : t -> bool) (p : t) : t =
     | Seq (p, q) -> Seq (filter f p, filter f q)
     | If (b, p, q) -> If (b, filter f p, filter f q)
     | Decl d -> Decl { d with body = filter f d.body }
-    | Loop { range; body = p } -> Loop { range; body = filter f p }
+    | Loop { cond_range; body = p } -> Loop { cond_range; body = filter f p }
 
 let rec exists (f : t -> bool) (i : t) : bool =
   f i
@@ -36,6 +36,7 @@ let rec exists (f : t -> bool) (i : t) : bool =
 
 module Make (S : Subst.SUBST) = struct
   module M = Subst.Make (S)
+  module CR = Cond_range.Make (S)
 
   let rec subst (s : S.t) (i : t) : t =
     match i with
@@ -46,13 +47,12 @@ module Make (S : Subst.SUBST) = struct
     | If (b, p, q) -> If (M.b_subst s b, subst s p, subst s q)
     | Decl d ->
         M.add s d.var (function
-          | Some s -> Decl { d with body = subst s d.body }
+          | Some s -> Decl { d with cond = M.b_subst s d.cond; body = subst s d.body }
           | None -> Decl d)
-    | Loop { range; body } ->
-        let range = M.r_subst s range in
-        M.add s range.var (function
-          | Some s -> Loop { range; body = subst s body }
-          | None -> Loop { range; body })
+    | Loop { cond_range; body } ->
+        M.add s (Cond_range.var cond_range) (function
+          | Some s -> Loop { cond_range = CR.subst s cond_range; body = subst s body }
+          | None -> Loop { cond_range; body })
 end
 
 let apply_arch (arrays : Variable.Set.t) : Architecture.t -> t -> t = function
@@ -76,26 +76,32 @@ let if_ (b : bexp) (p : t) (q : t) : t =
   | _, Skip, _ -> If (b_not b, q, Skip)
   | _, _, _ -> If (b, p, q)
 
-let loop (r : Range.t) (p : t) : t =
+let loop ?(cond = Bool true) (r : Range.t) (p : t) : t =
   if p = Skip then Skip
   else
     let is_empty =
       r |> Range.is_empty |> Exp.b_eval_res |> Result.value ~default:false
     in
-    if is_empty then Skip else Loop { range = r; body = p }
+    if is_empty then Skip
+    else Loop { cond_range = Cond_range.make r cond; body = p }
 
-let decl ?(ty = C_type.int) (var : Variable.t) : t -> t = function
+let decl ?(ty = C_type.int) ?(cond = Bool true) (var : Variable.t) : t -> t =
+  function
   | Skip -> Skip
-  | body -> Decl { var; ty; body }
+  | body -> Decl { var; ty; cond; body }
 
 let rec opt : t -> t = function
   | Skip -> Skip
-  | Decl d -> Decl { d with body = opt d.body }
+  | Decl d -> Decl { d with cond = Constfold.b_opt d.cond; body = opt d.body }
   | Seq (p, q) -> seq (opt p) (opt q)
   | Access a -> Access (Constfold.a_opt a)
   | Sync l -> Sync l
   | If (b, p, q) -> if_ (Constfold.b_opt b) (opt p) (opt q)
-  | Loop { range = r; body = p } -> loop (Constfold.r_opt r) (opt p)
+  | Loop { cond_range; body = p } ->
+      loop
+        ~cond:(Constfold.b_opt cond_range.cond)
+        (Constfold.r_opt cond_range.range)
+        (opt p)
 
 let subst_block_dim (block_dim : Dim3.t) (p : t) : t =
   let subst x n p = PSubstPair.subst (Variable.from_name x, Num n) p in
@@ -127,23 +133,29 @@ let vars_distinct : t -> Variable.Set.t -> t =
           let new_xs = Variable.Set.add new_x xs in
           let s = Subst.SubstPair.make (x, Var new_x) in
           let new_p = PSubstPair.subst s p in
+          let cond = Subst.ReplacePair.b_subst s d.cond in
           let p, new_xs = uniq new_p new_xs in
-          (Decl { var = new_x; body = p; ty = d.ty }, new_xs)
+          (Decl { var = new_x; body = p; ty = d.ty; cond }, new_xs)
         else
           let p, new_xs = uniq p (Variable.Set.add x xs) in
-          (Decl { var = x; body = p; ty = d.ty }, new_xs)
-    | Loop { range = r; body = p } ->
-        let x = r.var in
+          (Decl { var = x; body = p; ty = d.ty; cond = d.cond }, new_xs)
+    | Loop { cond_range; body = p } ->
+        let x = Cond_range.var cond_range in
         if Variable.Set.mem x xs then
           let new_x : Variable.t = Variable.fresh xs x in
           let new_xs = Variable.Set.add new_x xs in
           let s = Subst.SubstPair.make (x, Var new_x) in
           let new_p = PSubstPair.subst s p in
+          let cond_range =
+            Cond_range.make
+              { cond_range.range with var = new_x }
+              (Subst.ReplacePair.b_subst s cond_range.cond)
+          in
           let p, new_xs = uniq new_p new_xs in
-          (Loop { range = { r with var = new_x }; body = p }, new_xs)
+          (Loop { cond_range; body = p }, new_xs)
         else
           let p, new_xs = uniq p (Variable.Set.add x xs) in
-          (Loop { range = r; body = p }, new_xs)
+          (Loop { cond_range; body = p }, new_xs)
     | Seq (i, p) ->
         let i, xs = uniq i xs in
         let p, xs = uniq p xs in
@@ -159,9 +171,10 @@ let rec free_names (i : t) (fns : Variable.Set.t) : Variable.Set.t =
       (match s.participants with Some c -> n_free_names c fns | None -> fns)
   | Access a -> Access.free_names a fns
   | If (b, p, q) -> b_free_names b fns |> free_names p |> free_names q
-  | Decl { var = x; body = p; _ } -> free_names p fns |> Variable.Set.remove x
-  | Loop { range = r; body = p } ->
-      free_names p fns |> Variable.Set.remove r.var |> Range.free_names r
+  | Decl { var = x; cond; body = p; _ } ->
+      free_names p fns |> b_free_names cond |> Variable.Set.remove x
+  | Loop { cond_range; body = p } ->
+      free_names p fns |> Cond_range.free_names cond_range
   | Seq (p, q) -> free_names p fns |> free_names q
 
 (* Only retain CI-DI accesses *)
@@ -169,12 +182,12 @@ let rec to_ci_di (approx : Variable.Set.t) : t -> t = function
   | If (b, p, q) ->
       if Exp.b_intersects approx b then Skip
       else If (b, to_ci_di approx p, to_ci_di approx q)
-  | Loop { range = r; body = p } ->
-      if Range.intersects approx r then Skip
+  | Loop { cond_range; body = p } ->
+      if Range.intersects approx cond_range.range then Skip
       else
         (* the loop variable is CIDI, hence remove any existing CIDI *)
-        let approx = Variable.Set.remove (Range.var r) approx in
-        Loop { range = r; body = to_ci_di approx p }
+        let approx = Variable.Set.remove (Cond_range.var cond_range) approx in
+        Loop { cond_range; body = to_ci_di approx p }
   | Access a -> if Access.index_intersects approx a then Skip else Access a
   | Decl { var = x; body = p; _ } ->
       (* In this scope x is approximate *)
@@ -207,10 +220,17 @@ let rec to_s : t -> Indent.t list = function
   | Decl d ->
       let var = Variable.name d.var in
       let ty = C_type.to_string d.ty in
-      Line (ty ^ " " ^ var ^ ";") :: to_s d.body
-  | Loop { range = r; body = p } ->
+      let guard : Indent.t list =
+        match d.cond with
+        | Bool true -> []
+        | _ -> [ Line ("assume " ^ b_to_string d.cond ^ ";") ]
+      in
+      (Indent.Line (ty ^ " " ^ var ^ ";") :: guard) @ to_s d.body
+  | Loop { cond_range; body = p } ->
       [
-        Line ("foreach (" ^ Range.to_string r ^ ") {"); Block (to_s p); Line "}";
+        Line ("foreach (" ^ Cond_range.to_string cond_range ^ ") {");
+        Block (to_s p);
+        Line "}";
       ]
   | Seq (p, q) -> to_s p @ to_s q
 

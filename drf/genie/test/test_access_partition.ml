@@ -132,7 +132,7 @@ let test_d_nested_guards () =
     Alcotest.failf "expected 1 entry, got %d" (List.length es)
 
 (* E. Loop range bound depends on param N — the access inside picks up
-   N through [Range.to_cond] in [walk]'s path condition. *)
+   N through [Range.to_bexp] in [walk]'s path condition. *)
 let test_e_loop_param_bound () =
   let i = Variable.from_name "i" in
   let range = Range.make i (var "N") in

@@ -31,7 +31,7 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
      fun (p, locals, pre) ->
       match p with
       | If (b, p, Skip) -> inline_header (p, locals, b_and b pre)
-      | Decl { var = x; body = p; ty } ->
+      | Decl { var = x; body = p; ty; _ } ->
           inline_header (p, Params.add x ty locals, pre)
       | _ -> (p, locals, pre)
     in

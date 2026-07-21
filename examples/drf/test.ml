@@ -35,6 +35,17 @@ let tests =
         "gridDim.y == 1 && gridDim.z == 1";
       ],
       0 );
+    (* An in-source __assume() inside a loop mentioning the loop counter is
+     routed onto the loop as an invariant; [i == threadIdx.x] discharges the
+     write's cross-thread collision. *)
+    ("drf-loop-assume.cu", [], 0);
+    (* The same kernel without the __assume is racy. *)
+    ("racy-loop-assume.cu", [], 1);
+    (* Same idea across a __syncthreads(): the loop is aligned (its first
+     iteration peeled) and the invariant follows the peeling into every
+     phase, so the post-barrier write stays race-free. *)
+    ("drf-loop-sync-assume.cu", [], 0);
+    ("racy-loop-sync-assume.cu", [], 1);
     (* This example is only racy at the grid-level *)
     ("racy-grid-level.cu", [], 0);
     ("racy-grid-level.cu", [ "--grid-level" ], 1);

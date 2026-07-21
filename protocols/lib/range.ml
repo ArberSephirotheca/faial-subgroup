@@ -142,7 +142,7 @@ let plus_step_literal (s : Step.t) : int option =
        | _ -> None)
   | _ -> None
 
-let to_cond (r : t) : bexp =
+let to_bexp (r : t) : bexp =
   let x = Var r.var in
   let lb = r.lower_bound in
   let ub = r.upper_bound in

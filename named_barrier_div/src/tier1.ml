@@ -80,13 +80,13 @@ let rec reduce (t : Task.t) : State.t =
         { t with pi = pi_q; delta = delta_q; residual = Code.seq q rest }
       in
       State.union (reduce task_p) (reduce task_q)
-  | Some (Loop { range; body }, rest) ->
+  | Some (Loop { cond_range = { range; _ }; body }, rest) ->
       (* [T-Loop]: classify the range, pick the binder modifier, recurse
          on body+rest under the iter convention and on rest under the
          empty-range branch. Range conditions go through the routing
          helper just like [T-If], so a range mentioning a Local lands
          in π (rare in practice). *)
-      let cond_r = Range.to_cond range in
+      let cond_r = Range.to_bexp range in
       let empty_r = Range.is_empty range in
       let kappa = bind_kappa t.sigma cond_r in
       let pi_body, delta_body =

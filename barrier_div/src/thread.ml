@@ -65,8 +65,8 @@ let step (t : t) : action =
               { path_cond = then_pc; proto = Code.seq p rest };
               { path_cond = else_pc; proto = Code.seq q rest };
             ]
-      | Loop { range; body } ->
-          let in_range = Range.to_cond range in
+      | Loop { cond_range = { range; _ }; body } ->
+          let in_range = Range.to_bexp range in
           let empty = Range.is_empty range in
           let active_pc = Exp.b_and t.path_cond in_range in
           let empty_pc = Exp.b_and t.path_cond empty in

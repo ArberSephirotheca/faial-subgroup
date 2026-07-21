@@ -199,12 +199,14 @@ let eval ?(verbose = false) (m : Metric.t)
     | If (b, p, q) ->
         let cost = restrict b ctx |> try_eval cost p in
         restrict (Exp.b_not b) ctx |> try_eval cost q
-    | Loop { range = r; body } -> (
-        match iter r ctx with
+    | Loop { cond_range; body } -> (
+        match iter cond_range.range ctx with
         | Next (r, ctx') ->
             let cost = eval cost body ctx' in
             (* run the rest of the loop *)
-            eval cost (Loop { range = r; body }) ctx
+            eval cost
+              (Loop { cond_range = Cond_range.make r cond_range.cond; body })
+              ctx
         | End ->
             (* Loop is done *)
             cost)

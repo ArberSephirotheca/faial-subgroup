@@ -100,7 +100,7 @@ let kernels : (string * Aligned.Kernel.t * Aligned.Kernel.t) list =
     Unsynced.Access { array; index; mode = Access.Mode.Write None }
   in
   let loop (var : string) (body : Aligned.Code.t) : Aligned.Code.t = Loop {
-    range = {
+    cond_range = Cond_range.of_range {
       var = Variable.from_name var;
       ty = C_type.int;
       dir = Range.Increase;

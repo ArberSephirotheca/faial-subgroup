@@ -633,7 +633,7 @@ let rec code_to_s (cfg : config) (c : Code.t) : (Indent.t list, error) Result.t
           let* p_s = code_to_s cfg p in
           let* q_s = code_to_s cfg q in
           Ok (s.ite ~cond:b_s p_s q_s))
-  | Loop { range; body } -> (
+  | Loop { cond_range = { range; _ }; body } -> (
       let* form = classify_range range in
       let* body_s = code_to_s cfg body in
       match form with
@@ -710,7 +710,7 @@ let used_idents (k : Kernel.t) : Variable.t list =
     | Access a -> List.fold_left nexp acc a.index
     | Seq (p, q) -> on_code (on_code acc p) q
     | If (b, p, q) -> on_code (on_code (bexp acc b) p) q
-    | Loop { range; body } ->
+    | Loop { cond_range = { range; _ }; body } ->
         let acc = Variable.Set.add range.var acc in
         let acc = nexp acc range.lower_bound in
         let acc = nexp acc range.upper_bound in

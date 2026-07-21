@@ -6,16 +6,16 @@ open Streamutil
 (* ---------------- SECOND STAGE OF TRANSLATION ---------------------- *)
 
 module Phased = struct
-  type t = { code : Unsynced.t; ranges : Range.t list }
+  type t = { code : Unsynced.t; ranges : Cond_range.t list }
 
-  let add (r : Range.t) (bi : t) : t = { bi with ranges = r :: bi.ranges }
+  let add (cr : Cond_range.t) (bi : t) : t = { bi with ranges = cr :: bi.ranges }
 
   (* Implements |> *)
   let from_aligned (pre : bexp) : Aligned.Code.t -> t stream =
     let rec phase : Aligned.Code.t -> t stream = function
       | Sync Skip -> Streamutil.empty (* ^P; sync |> { P } *)
       | Sync u -> { code = Cond (pre, u); ranges = [] } |> Streamutil.one
-      | Loop { range = r; body = q } ->
+      | Loop { cond_range; body = q } ->
           (* Rule:
           P |> p    q = { for x in [n,m) Q | Q \in p }
           ------------------------------
@@ -23,10 +23,7 @@ module Phased = struct
         *)
           (* Break down the body into phases, and prefix each phase with the
             binding *)
-          phase q
-          |> Streamutil.map (fun bi ->
-              (* For every phase in q, prefix it with variable in r *)
-              add r bi)
+          phase q |> Streamutil.map (fun bi -> add cond_range bi)
       | Seq (p, q) ->
           (* Rule:
           P |> p      Q |> q
@@ -51,7 +48,7 @@ module Kernel = struct
     (* The internal variables are used in the code of the kernel.  *)
     local_variables : Params.t;
     (* Global ranges *)
-    ranges : Range.t list;
+    ranges : Cond_range.t list;
     (* The code of a kernel performs the actual memory accesses. *)
     code : Unsynced.t;
   }
@@ -78,7 +75,7 @@ module Kernel = struct
 
   let to_s (k : t) : Indent.t list =
     let open Indent in
-    let ranges = List.map Range.to_string k.ranges |> String.concat "; " in
+    let ranges = List.map Cond_range.to_string k.ranges |> String.concat "; " in
     [
       Line ("arrays: " ^ Variable.set_to_string k.arrays ^ ";");
       Line ("globals: " ^ Params.to_string k.global_variables ^ ";");

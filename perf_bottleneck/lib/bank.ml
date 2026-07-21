@@ -152,7 +152,7 @@ module Code = struct
     | Cond (b, p) -> Exp.b_and b (to_bexp p)
     | Decl { var; ty; body } ->
         Exp.b_and (Range.decl_to_bexp var ty) (to_bexp body)
-    | Loop { range; body } -> Exp.b_and (Range.to_cond range) (to_bexp body)
+    | Loop { range; body } -> Exp.b_and (Range.to_bexp range) (to_bexp body)
 
   let rec local_binders (locals : Variable.Set.t) : t -> Variable.Set.t =
     function
@@ -288,7 +288,7 @@ module Code = struct
                 | _ -> Seq.empty)
             |> Result.value ~default:Seq.empty
         | Sync _ -> Seq.empty
-        | Decl { body = p; var; ty } ->
+        | Decl { body = p; var; ty; _ } ->
             p
             |> on_p (Variable.Set.add var locals)
             |> Seq.map (fun (x, i) -> (x, Decl { var; body = i; ty }))
@@ -297,7 +297,7 @@ module Code = struct
               (on_p locals p |> Seq.map (fun (x, p) -> (x, Cond (b, p))))
               (on_p locals q
               |> Seq.map (fun (x, q) -> (x, Cond (Exp.b_not b, q))))
-        | Loop { range = r; body = p } ->
+        | Loop { cond_range = { range = r; _ }; body = p } ->
             let locals =
               let r_locals = Range.free_names r Variable.Set.empty in
               if Variable.Set.inter locals r_locals |> Variable.Set.is_empty

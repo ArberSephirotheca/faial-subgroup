@@ -47,7 +47,7 @@ let test_head_seq_access_then_sync () =
 let test_head_decl_transparent () =
   (* Decl { body = Access }  →  head_of descends through Decl *)
   let proto =
-    Code.Decl { var = v "x"; ty = C_type.int; body = access }
+    Code.Decl { var = v "x"; ty = C_type.int; cond = Exp.Bool true; body = access }
   in
   match Thread.head_of proto with
   | Some (Code.Access _, Code.Skip) -> ()
@@ -58,7 +58,7 @@ let test_head_decl_in_seq () =
   let proto =
     Code.Seq
       ( Code.Decl
-          { var = v "x"; ty = C_type.int; body = access },
+          { var = v "x"; ty = C_type.int; cond = Exp.Bool true; body = access },
         mk_sync "s1" )
   in
   match Thread.head_of proto with
@@ -111,7 +111,7 @@ let test_step_loop_forks () =
     step = Plus (Num 1);
     dir = Increase;
   } in
-  let proto = Code.Loop { range = r; body = Code.Skip } in
+  let proto = Code.Loop { cond_range = Cond_range.of_range r; body = Code.Skip } in
   let t = { Thread.path_cond = Bool true; proto } in
   match Thread.step t with
   | Step [ _active; _empty ] -> ()

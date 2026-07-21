@@ -65,14 +65,14 @@ let tests =
              (Seq (Cond (b, x_acc), Seq (Assert b, y_acc)))
              (Seq (Cond (b, x_acc), Seq (Assert b, Skip)));
            expect_some
-             (Seq (Loop (Norm_range.Plain r, Cond (b, x_acc)), Seq (Assert b, y_acc)))
-             (Seq (Loop (Norm_range.Plain r, Cond (b, x_acc)), Seq (Assert b, Skip)));
+             (Seq (Loop (Norm_range.Plain (Cond_range.of_range r), Cond (b, x_acc)), Seq (Assert b, y_acc)))
+             (Seq (Loop (Norm_range.Plain (Cond_range.of_range r), Cond (b, x_acc)), Seq (Assert b, Skip)));
            expect_some
              (Seq
-                ( Loop (Norm_range.Plain r, Cond (b, x_acc)),
+                ( Loop (Norm_range.Plain (Cond_range.of_range r), Cond (b, x_acc)),
                   Seq (Assert b, Seq (Assert b, Seq (Assert b, y_acc))) ))
              (Seq
-                ( Loop (Norm_range.Plain r, Cond (b, x_acc)),
+                ( Loop (Norm_range.Plain (Cond_range.of_range r), Cond (b, x_acc)),
                   Seq (Assert b, Seq (Assert b, Seq (Assert b, Skip))) )) );
        ]
 

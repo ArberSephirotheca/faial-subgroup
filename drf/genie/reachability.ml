@@ -169,8 +169,8 @@ let walk (code : Code.t) : (Access.t * bexp) list =
     | Code.If (b, p, q) ->
       let acc = aux (b_and env b) acc p in
       aux (b_and env (b_not b)) acc q
-    | Code.Loop { range; body } ->
-      aux (b_and env (Range.to_cond range)) acc body
+    | Code.Loop { cond_range = { range; _ }; body } ->
+      aux (b_and env (Range.to_bexp range)) acc body
     | Code.Seq (p, q) ->
       let acc = aux env acc p in
       aux env acc q
