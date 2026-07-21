@@ -73,10 +73,12 @@ rule read = parse
   | "int"                 { CAST_INT }
   | "bool"                { CAST_BOOL }
 
-  | "bvumul_noovfl"       { BVUMUL }
-
-  (* Identifiers (C-style + dots + dollar signs) *)
-  | ['a'-'z' 'A'-'Z' '_' '$']['a'-'z' 'A'-'Z' '_' '.' '$' '0'-'9']* as id { IDENT(id) }
+  (* Identifiers (C-style + dots + dollar signs). A name registered in
+     [Predicates] (e.g. [__uniform_int], [__distinct_int], [nonneg],
+     [bvumul_noovfl]) lexes as [PRED] so the grammar turns a call into a
+     boolean [Pred] node; every other name is a plain [IDENT]. *)
+  | ['a'-'z' 'A'-'Z' '_' '$']['a'-'z' 'A'-'Z' '_' '.' '$' '0'-'9']* as id
+      { if Protocols.Predicates.supported id then PRED(id) else IDENT(id) }
 
   (* Punctuation *)
   | '('                   { LPAREN }

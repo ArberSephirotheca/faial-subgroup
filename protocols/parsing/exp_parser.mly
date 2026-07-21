@@ -16,7 +16,7 @@ open Protocols.Exp
 %token L_AND L_OR L_NOT
 %token QUESTION COLON
 %token CAST_INT CAST_BOOL
-%token BVUMUL
+%token <string> PRED
 %token EOF
 
 (* C operator precedence (lowest to highest) *)
@@ -106,11 +106,14 @@ bexp:
   | left=nexp GE right=nexp              { NRel (N_rel.Ge Signedness.Signed, left, right) }
   | left=nexp GE_U right=nexp            { NRel (N_rel.Ge Signedness.Unsigned, left, right) }
 
-  (* The sole n-ary predicate; every other call is a polyadic [NCall]
-     in [nexp]. Unary predicates ([pow2], [nonneg], [uintN]) parse as
-     [NCall] and are reinterpreted by [Predicates.b_inline]. *)
-  | BVUMUL LPAREN a=nexp COMMA b=nexp RPAREN
-                                         { Pred ("bvumul_noovfl", [ a; b ]) }
+  (* A predicate call. The lexer emits [PRED] for any name registered in
+     [Predicates] (thread-uniformity [__uniform_int] / [__distinct_int],
+     [nonneg], [bvumul_noovfl], [pow2], [uintN], ...), keeping it distinct
+     from a plain [IDENT] function call, which stays a polyadic [NCall] in
+     [nexp]. [Predicates.b_inline] lowers each [Pred] to its body (e.g.
+     [__uniform_int(e)] to the cross-thread [e$T1 == e$T2] axiom). *)
+  | name=PRED LPAREN args=separated_nonempty_list(COMMA, nexp) RPAREN
+                                         { Pred (name, args) }
 
   (* Boolean binary operators *)
   | left=bexp L_AND right=bexp           { BRel (B_rel.BAnd, left, right) }

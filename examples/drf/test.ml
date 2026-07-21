@@ -41,6 +41,10 @@ let tests =
     ("drf-loop-assume.cu", [], 0);
     (* The same kernel without the __assume is racy. *)
     ("racy-loop-assume.cu", [], 1);
+    (* The same constraint injected through the --assume CLI [binder=]
+     target instead of an in-source __assume: it must resolve to the loop
+     counter [i] and route onto the loop, clearing the race. *)
+    ("racy-loop-assume.cu", [ "--assume"; "binder=i: i == threadIdx.x" ], 0);
     (* Same idea across a __syncthreads(): the loop is aligned (its first
      iteration peeled) and the invariant follows the peeling into every
      phase, so the post-barrier write stays race-free. *)

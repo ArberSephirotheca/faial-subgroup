@@ -17,48 +17,18 @@ type verdict =
   | Drf_vacuous
   | Racy
 
-(* [--assume "BEXP"] or [--assume "KERNEL:BEXP"]. The optional prefix
-   targets a single kernel by name; without it, the clause applies
-   to every kernel whose declared params plus the launch-config dims
-   cover the clause's free variables. The prefix must look like a C
-   identifier; [:] is reserved as the separator because the bexp
-   grammar uses no [:] tokens. *)
+(* [--assume "[<preamble>:] BEXP"]: an optional comma-separated
+   [key=value] preamble ([kernel=], [binder=], [line=]) scopes the clause
+   and picks its target (the precondition, or a specific binder), parsed
+   by [Assumption_parser]. *)
 let conv_assume =
-  let looks_like_ident s =
-    s <> ""
-    && String.for_all (fun c ->
-      (c >= 'a' && c <= 'z')
-      || (c >= 'A' && c <= 'Z')
-      || (c >= '0' && c <= '9')
-      || c = '_')
-      s
-  in
-  let parse_bexp s =
-    match Parsers.BExpParser.of_string s with
-    | Ok b -> Ok b
+  let parse s =
+    match Assumption_parser.of_string s with
+    | Ok a -> Ok a
     | Error msg -> Error (`Msg msg)
   in
-  let parse s =
-    match String.index_opt s ':' with
-    | None ->
-      (match parse_bexp s with
-       | Ok b -> Ok (None, b)
-       | Error e -> Error e)
-    | Some i ->
-      let prefix = String.sub s 0 i |> String.trim in
-      let rest = String.sub s (i + 1) (String.length s - i - 1) in
-      if looks_like_ident prefix then
-        match parse_bexp rest with
-        | Ok b -> Ok (Some prefix, b)
-        | Error e -> Error e
-      else
-        (match parse_bexp s with
-         | Ok b -> Ok (None, b)
-         | Error e -> Error e)
-  in
-  let print ppf = function
-    | (Some n, b) -> Format.fprintf ppf "%s:%s" n (Exp.b_to_string b)
-    | (None, b) -> Format.fprintf ppf "%s" (Exp.b_to_string b)
+  let print ppf (a : Assumption.t) =
+    Format.fprintf ppf "%s" (Assumption.to_string a)
   in
   Arg.conv (parse, print)
 
@@ -94,12 +64,29 @@ let bexp_signedness (sign : Variable.t -> Signedness.t) (b : Exp.bexp)
 let all_safe (rs : Analysis.t list) : bool =
   List.for_all Analysis.is_safe rs
 
+(* The precondition clauses that apply to kernel [k]: every [Target.Pre]
+   assumption whose kernel filter admits [k]. Binder-targeted clauses are
+   baked into the kernel by [App]'s pipeline, so they are not surfaced as
+   loose bexps here. This is genie's local replacement for the removed
+   [App.assumes_of]. *)
+let assumes_of (k : Kernel.t) (app : App.t) : Exp.bexp list =
+  let kn = Kernel.name k in
+  app.assumptions
+  |> List.filter_map (fun (a : Assumption.t) ->
+       match a.target with
+       | Assumption.Target.Pre -> (
+           match a.kernel with
+           | Assumption.Match.Any -> Some a.bexp
+           | Assumption.Match.Exact n when String.equal n kn -> Some a.bexp
+           | Assumption.Match.Exact _ -> None)
+       | Assumption.Target.Binder _ -> None)
+
 let access_set_of (app : App.t) : Reachability.AccessSet.t =
   app.kernels |> App.only_kernel app
   |> List.concat_map (fun k ->
     k
     |> Reachability.prepare_kernel
-         ~assumes:(App.assumes_of k app)
+         ~assumes:(assumes_of k app)
          ~assume_dims:app.assume_dims
          ~params:app.params
     |> Reachability.check_kernel ?timeout:app.timeout)
@@ -224,7 +211,7 @@ let gate_holds_simple (_baseline : Reachability.AccessSet.t)
     |> List.for_all (fun k ->
       k
       |> Reachability.prepare_kernel
-           ~assumes:(App.assumes_of k app)
+           ~assumes:(assumes_of k app)
            ~assume_dims:app.assume_dims
            ~params:app.params
       |> Reachability.preconditions_satisfiable ?timeout:app.timeout))
@@ -283,7 +270,7 @@ let gate_holds_cached (cache : Gate_cache.t)
         ~params:app.params
         k
     in
-    Reachability.preconditions_satisfiable_delta slot (App.assumes_of k app))
+    Reachability.preconditions_satisfiable_delta slot (assumes_of k app))
 
 let[@warning "-32"] gate_holds = gate_holds_simple
 
@@ -315,19 +302,23 @@ let gate_holds_pairs (baseline : Co_reach.pair list) (app : App.t) : bool =
    flattening — matching App.t.assumes's shape. *)
 type per_kernel_extras = (string * Exp.bexp list) list
 
-(* Merge [extras] into [app.assumes] kernel-by-kernel, returning a
-   new app. Kernels absent from [extras] keep their existing assumes
-   unchanged. *)
+(* Append [extras] to [app]'s assumptions as [Target.Pre] clauses, each
+   scoped to its kernel. The base [app] carries the user [--assume]s; a
+   round conjoins its abductive Φ on top by appending here. *)
 let app_with_extras (extras : per_kernel_extras) (app : App.t) : App.t =
-  let lookup kn =
-    List.find_opt (fun (n, _) -> n = kn) extras
-    |> Option.map snd
-    |> Option.value ~default:[]
+  let clauses =
+    extras
+    |> List.concat_map (fun (kn, bs) ->
+      List.map
+        (fun b : Assumption.t ->
+          {
+            Assumption.kernel = Assumption.Match.Exact kn;
+            target = Assumption.Target.Pre;
+            bexp = b;
+          })
+        bs)
   in
-  let assumes' =
-    List.map (fun (kn, bs) -> (kn, bs @ lookup kn)) app.assumes
-  in
-  { app with assumes = assumes' }
+  { app with assumptions = app.assumptions @ clauses }
 
 let is_extras_empty (extras : per_kernel_extras) : bool =
   List.for_all (fun (_, bs) -> bs = []) extras
@@ -639,7 +630,7 @@ let abductive_loop
             |> List.exists (fun k ->
               k
               |> Reachability.prepare_kernel
-                   ~assumes:(App.assumes_of k app')
+                   ~assumes:(assumes_of k app')
                    ~assume_dims:app'.assume_dims
                    ~params:app'.params
               |> Reachability.any_access_reachable ?timeout:app'.timeout)
@@ -728,7 +719,7 @@ let format_assume_flags (extras : per_kernel_extras) : string =
   extras
   |> List.concat_map (fun (kn, bs) ->
        List.map (fun b ->
-         Printf.sprintf "--assume \"%s:%s\"" kn
+         Printf.sprintf "--assume \"kernel=%s: %s\"" kn
            (b |> Predicates.b_inline |> Exp.b_to_string)) bs)
   |> String.concat " "
 
@@ -847,21 +838,21 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
      [Phase_timer.measure] / [Stats.incr "gate_checks"] so the
      hit/miss counters drive the cost picture. *)
   let cached_tier1 (app' : App.t) : bool =
-    match Tier_cache.find_opt tier1_cache app'.assumes with
+    match Tier_cache.find_opt tier1_cache app'.assumptions with
     | Some v -> Stats.incr "tier1_gate_hits"; v
     | None ->
       Stats.incr "tier1_gate_misses";
       let v = gate_holds_t1_pairs baseline_keys app' in
-      Tier_cache.add tier1_cache app'.assumes v;
+      Tier_cache.add tier1_cache app'.assumptions v;
       v
   in
   let cached_tier2 (_baseline : Co_reach.pair list) (app' : App.t) : bool =
-    match Tier_cache.find_opt tier2_cache app'.assumes with
+    match Tier_cache.find_opt tier2_cache app'.assumptions with
     | Some v -> Stats.incr "tier2_gate_hits"; v
     | None ->
       Stats.incr "tier2_gate_misses";
       let v = gate_holds_pairs baseline_pairs app' in
-      Tier_cache.add tier2_cache app'.assumes v;
+      Tier_cache.add tier2_cache app'.assumptions v;
       v
   in
   let gate_check = cached_tier2 in
@@ -923,7 +914,7 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
         List.map (fun (k : Kernel.t) ->
           let prepared =
             Reachability.prepare_kernel
-              ~assumes:(App.assumes_of k app)
+              ~assumes:(assumes_of k app)
               ~assume_dims:app.assume_dims
               ~params:app.params
               k
@@ -1054,7 +1045,7 @@ let compute_verdict_legacy ~(use_core_shrink : bool) ~(iter_cap : int)
             |> List.exists (fun k ->
               k
               |> Reachability.prepare_kernel
-                   ~assumes:(App.assumes_of k app')
+                   ~assumes:(assumes_of k app')
                    ~assume_dims:app'.assume_dims
                    ~params:app'.params
               |> Reachability.any_access_reachable ?timeout:app'.timeout)
@@ -1199,13 +1190,14 @@ let main =
          & info [ "kernel" ] ~doc:"Only check a specific kernel.")
   and+ extra_assumes =
     Arg.(value & opt_all conv_assume []
-         & info [ "assume" ] ~docv:"[KERNEL:]BEXP"
-             ~doc:"Pre-condition. With no prefix, applied to every kernel \
-                   whose declared params plus the launch-config dims \
-                   cover the clause's free variables. With a [KERNEL:] \
-                   prefix the clause is scoped to a specific kernel by \
-                   name; names not matching any kernel are silently \
-                   ignored. May be repeated.")
+         & info [ "assume" ] ~docv:"[PREAMBLE:]BEXP"
+             ~doc:"Add an assumption. Bare BEXP conjoins onto every \
+                   kernel's precondition. An optional comma-separated \
+                   key=value preamble scopes it: kernel=K restricts to \
+                   kernel K; binder=V targets the binder named V (which \
+                   must exist); line=N disambiguates a reused binder \
+                   label. A clause leaving any name unbound is rejected. \
+                   May be repeated.")
   and+ output_json =
     Arg.(value & flag
          & info [ "json" ] ~doc:"Output result as a single JSON object.")
@@ -1325,7 +1317,7 @@ let main =
       ~delin_check_vacuosity:false
       ~delin_weak_in_range:false
       ~delin_weak_in_range_for:[]
-      ~assumes:extra_assumes
+      ~assumptions:extra_assumes
       ~assume_dims:false
       ~assume_launch:true
       ~check_pre_sat:false

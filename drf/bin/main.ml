@@ -38,28 +38,18 @@ let conv_int_list =
   in
   Arg.conv (parse, print)
 
-(* [--assume "BEXP"] or [--assume "KERNEL:BEXP"]. The optional prefix
-   targets a single kernel by name; without it, the clause applies to
-   every kernel whose declared params plus the launch-config dims
-   cover the clause's free variables. See [Drf.Assume_scope] for the
-   scope-vs-expression split. *)
+(* [--assume "[<preamble>:] BEXP"]: an optional comma-separated
+   [key=value] preamble ([kernel=], [binder=], [line=]) scopes the clause
+   to a kernel and targets either the precondition or a specific binder,
+   parsed by [Assumption_parser]. *)
 let conv_assume =
-  let parse_bexp s =
-    match Parsers.BExpParser.of_string s with
-    | Ok b -> Ok b
+  let parse s =
+    match Assumption_parser.of_string s with
+    | Ok a -> Ok a
     | Error msg -> Error (`Msg msg)
   in
-  let parse s =
-    let scope, rest = Drf.Assume_scope.split s in
-    match parse_bexp rest with
-    | Ok b -> Ok (scope, b)
-    | Error e -> Error e
-  in
-  let print ppf = function
-    | (Some n, b) ->
-      Format.fprintf ppf "%s:%s" n (Exp.b_to_string b)
-    | (None, b) ->
-      Format.fprintf ppf "%s" (Exp.b_to_string b)
+  let print ppf (a : Assumption.t) =
+    Format.fprintf ppf "%s" (Assumption.to_string a)
   in
   Arg.conv (parse, print)
 
@@ -403,20 +393,21 @@ let main =
              forced on, so a delinearisation that would empty the state \
              space is refused. Without this flag the bounds must be \
              proven (sound). Composes with [--no-rewrite-delin].")
-  and+ assumes =
+  and+ assumptions =
     Arg.(
       value & opt_all conv_assume []
-      & info [ "assume" ] ~docv:"[KERNEL:]BEXP"
+      & info [ "assume" ] ~docv:"[PREAMBLE:]BEXP"
           ~doc:
-            "Add a boolean expression as a kernel pre-condition. With no \
-             prefix, the clause is applied to every kernel whose declared \
-             params (plus the launch-config dims) cover the clause's free \
-             variables. With a [KERNEL:] prefix the clause is scoped to a \
-             specific kernel by name; the prefix is treated as an \
-             identifier match only when [KERNEL] is a valid C identifier. \
-             Names not matching any kernel in the file are silently \
-             ignored. May be repeated. Examples: --assume \"blockDim.x == \
-             32 && N > 0\" or --assume \"ckMedian:blockDim.x == 16\"")
+            "Add a boolean expression as an assumption. Bare BEXP conjoins \
+             onto every kernel's precondition. An optional comma-separated \
+             key=value preamble scopes it: kernel=K restricts to kernel K; \
+             binder=V targets the binder (loop counter or declaration) \
+             named V, which must exist (else an error), instead of the \
+             precondition; line=N disambiguates a binder label reused \
+             across scopes. A clause that leaves any name unbound is \
+             rejected. May be repeated. Examples: --assume \"blockDim.x == \
+             32 && N > 0\", --assume \"kernel=ckMedian: blockDim.x == 16\", \
+             --assume \"binder=i,line=16: i < N\"")
   and+ assume_dims =
     Arg.(
       value & flag
@@ -570,7 +561,7 @@ let main =
         ~rewrite_delin:(not no_rewrite_delin)
         ~delin_elide:(not no_delin_elide) ~delin_algo ~delin_check_vacuosity
         ~delin_weak_in_range ~delin_weak_in_range_for
-        ~assumes ~assume_dims ~assume_launch ~check_pre_sat
+        ~assumptions ~assume_dims ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
         ~cbor ~stop_at ~infer_cond_bound ~rules_file
     in

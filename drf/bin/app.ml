@@ -55,6 +55,12 @@ exception Stop_at_stage
    [Error msg] channel rather than letting it exit as a raw failure. *)
 exception Kernel_not_found of string
 
+(* Raised when a [--assume] clause cannot be applied to a kernel (an
+   unknown binder, an ambiguous binder, or a clause that would leave an
+   unbound name). [run] validates every assumption against every kernel
+   before any analysis, so a bad clause aborts the whole run up front. *)
+exception Assumption_error of string
+
 (* CLI re-export; the type and driver mapping live in [Delinearize.Algo]. *)
 module Delin_algo = Delinearize.Algo
 
@@ -110,14 +116,11 @@ type t = {
   delin_check_vacuosity : bool;
   delin_weak_in_range : bool;
   delin_weak_in_range_for : string list;
-  (* Per-kernel pre-condition list, keyed by [Kernel.name]. Genie's
-     internal model treats assumptions as kernel-scoped: a variable
-     declared in two kernels is a different variable in each, so an
-     assumption mentioning it is meaningful only against a specific
-     kernel. The CLI's [--assume BEXP] is a UX shorthand that
-     populates every kernel; [--assume-for K:BEXP] targets a single
-     kernel by name. Look up via [assumes_of]. *)
-  assumes : (string * Exp.bexp list) list;
+  (* User [--assume] clauses. Each [Assumption.t] carries its own kernel
+     filter and target (the precondition, or a specific binder); [run]
+     applies them to every matching kernel via [Assumption.add_to_kernel].
+     genie appends its own [Target.Pre] clauses to this list and re-runs. *)
+  assumptions : Assumption.t list;
   assume_dims : bool;
   assume_launch : bool;
   (* Opt-in Z3 pre-flight on the merged [k.pre]: when set, [run]
@@ -130,30 +133,6 @@ type t = {
   memory_model : Memory_model.t;
   stop_at : Stage.t option;
 }
-
-(* The list of user-supplied (and abductive-supplied) pre-condition
-   clauses for a specific kernel. Returns [[]] when no kernel of that
-   name has any assumes recorded. *)
-let assumes_of (k : Protocols.Kernel.t) (app : t) : Exp.bexp list =
-  List.assoc_opt (Protocols.Kernel.name k) app.assumes
-  |> Option.value ~default:[]
-
-(* Replace the per-kernel assumes for [k] with [bs] (or insert if the
-   kernel had no entry). All other kernels' assumes are unchanged. *)
-let set_assumes_for (k : Protocols.Kernel.t) (bs : Exp.bexp list)
-    (app : t) : t =
-  let name = Protocols.Kernel.name k in
-  let updated =
-    if List.mem_assoc name app.assumes
-    then List.map (fun (n, v) -> if n = name then (n, bs) else (n, v)) app.assumes
-    else (name, bs) :: app.assumes
-  in
-  { app with assumes = updated }
-
-(* Extend the per-kernel assumes for [k] with [extras] (concatenate). *)
-let add_assumes_for (k : Protocols.Kernel.t) (extras : Exp.bexp list)
-    (app : t) : t =
-  set_assumes_for k (assumes_of k app @ extras) app
 
 let to_string (app : t) : string =
   let opt_s (o : string option) : string = Option.value ~default:"null" o in
@@ -212,7 +191,7 @@ let to_string (app : t) : string =
    delin_check_vacuosity;
    delin_weak_in_range;
    delin_weak_in_range_for;
-   assumes;
+   assumptions;
    assume_dims;
    assume_launch;
    check_pre_sat;
@@ -246,11 +225,8 @@ let to_string (app : t) : string =
       ^ "\ncheck_pre_sat = " ^ bool check_pre_sat
       ^ "\nmemory_model = " ^ Memory_model.to_string memory_model
       ^ "\nstop_at = " ^ opt Stage.to_string stop_at
-      ^ "\nassumes: "
-      ^ list_string (
-          assumes
-          |> List.concat_map (fun (k, bs) ->
-              List.map (fun b -> k ^ ":" ^ Exp.b_to_string b) bs))
+      ^ "\nassumptions: "
+      ^ list_string (List.map Assumption.to_string assumptions)
       ^ "\n"
 
 let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
@@ -262,7 +238,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
     ~assume_delin ~rewrite_delin ~delin_elide ~delin_algo
     ~delin_check_vacuosity ~delin_weak_in_range ~delin_weak_in_range_for
-    ~assumes ~assume_dims ~assume_launch ~check_pre_sat
+    ~assumptions ~assume_dims ~assume_launch ~check_pre_sat
     ~memory_model ~cbor ~stop_at ~infer_cond_bound ~rules_file : t =
   let rules =
     match rules_file with
@@ -283,44 +259,12 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
         ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor
         filename)
   in
-  (* Uniquify duplicate kernel names so that the user-facing flag
-     [--assume "K:BEXP"], the [--list-kernels] output, the per-kernel
-     [assumes] map, and the genie verdict JSON all address each
-     kernel by a distinct identifier. *)
+  (* Uniquify duplicate kernel names so that a [--assume kernel=K:BEXP]
+     clause, the [--list-kernels] output, and the genie verdict JSON all
+     address each kernel by a distinct identifier. *)
   let kernels = parsed.kernels |> Protocols.Kernel.uniquify_names in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
   let grid_dim = if all_dims then None else Some parsed.options.grid_dim in
-  (* [assumes] entries are [(kernel_name option, bexp)]. A [None]
-     prefix means "apply to every kernel that can take this clause"
-     — i.e., every kernel whose declared params plus the
-     launch-config dims cover the clause's free variables. A [Some n]
-     prefix restricts to kernel [n]; absent names are silently
-     dropped. *)
-  let kernel_has_vars (k : Protocols.Kernel.t) (b : Exp.bexp) : bool =
-    let fvs = Exp.b_free_names b Variable.Set.empty in
-    let p =
-      Protocols.Params.union_left k.global_variables k.local_variables
-    in
-    Variable.Set.for_all (fun v ->
-      Variable.is_launch_config v || Protocols.Params.mem v p)
-      fvs
-  in
-  let assumes : (string * Exp.bexp list) list =
-    List.map (fun (k : Protocols.Kernel.t) ->
-      let kn = Protocols.Kernel.name k in
-      let entries =
-        List.filter_map (fun (prefix, b) ->
-          match prefix with
-          | None ->
-            (* Global clause: include only if [k] can take it. *)
-            if kernel_has_vars k b then Some b else None
-          | Some n ->
-            if n = kn then Some b else None)
-          assumes
-      in
-      (kn, entries))
-      kernels
-  in
   {
     filename;
     timeout;
@@ -361,7 +305,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     delin_check_vacuosity;
     delin_weak_in_range;
     delin_weak_in_range_for;
-    assumes;
+    assumptions;
     assume_dims;
     assume_launch;
     (* Assume mode forces the pre-condition SAT pre-flight: an assumed
@@ -406,14 +350,17 @@ let prepare_pre (arch : Architecture.t) (a : t) (k : Kernel.t) : Kernel.t =
   |> Protocols.Kernel.try_set_block_dim a.block_dim
   |> Protocols.Kernel.try_set_grid_dim a.grid_dim
   |> Protocols.Kernel.apply_arch arch
-  (* 1.1 inject user-provided assumptions into the kernel precondition.
-     Look up per-kernel; an absent entry means no extra assumes. *)
+  (* 1.1 apply user-provided assumptions. Each clause conjoins onto the
+     precondition or a specific binder, filtered by its own kernel scope;
+     a clause that fails to apply (unknown/ambiguous binder, or an unbound
+     name introduced) raises [Assumption_error]. *)
   |> (fun k ->
-    let assumes =
-      List.assoc_opt (Protocols.Kernel.name k) a.assumes
-      |> Option.value ~default:[]
-    in
-    List.fold_left (fun k b -> Protocols.Kernel.add_pre b k) k assumes)
+    List.fold_left
+      (fun k a ->
+        match Assumption.add_to_kernel a k with
+        | Ok k -> k
+        | Error msg -> raise (Assumption_error msg))
+      k a.assumptions)
   (* 1.2 optionally pin unreferenced launch dimensions to 1 *)
   |> (if a.assume_dims then Protocols.Kernel.add_dim_assumptions else Fun.id)
 
@@ -520,7 +467,15 @@ let run (a : t) : Analysis.t list =
     in
     Analysis.{ kernel; report; vacuous = None }
   in
-  a.kernels |> only_kernel a
+  let kernels = a.kernels |> only_kernel a in
+  (* Validate every assumption against every kernel before any analysis, so
+     a bad [--assume] aborts the whole run up front rather than mid-stream. *)
+  (match a.archs with
+   | arch :: _ ->
+       (try List.iter (fun k -> ignore (prepare_pre arch a k)) kernels
+        with Assumption_error msg -> prerr_endline msg; exit 2)
+   | [] -> ());
+  kernels
   |> List.map (fun kernel ->
       let vacuous : Exp.bexp option =
         if not a.check_pre_sat then None
