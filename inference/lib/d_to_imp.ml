@@ -361,6 +361,7 @@ module Make (L : Logger) = struct
         Variable.from_name "assert";
         Variable.from_name "static_assert";
         Variable.from_name "__requires";
+        Variable.from_name "__builtin_assume";
       ]
 
   (* CUDA vector lanes are named [x], [y], [z], [w] in argument order. *)

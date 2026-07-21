@@ -50,6 +50,13 @@ let tests =
      phase, so the post-barrier write stays race-free. *)
     ("drf-loop-sync-assume.cu", [], 0);
     ("racy-loop-sync-assume.cu", [], 1);
+    (* __builtin_assume(cond), clang's assumption builtin, is honoured as a
+     precondition like the __assume() stub: [tid < D] forces [tid % D == tid]
+     so each thread writes a distinct cell and the kernel is DRF. *)
+    ("drf-builtin-assume.cu", [], 0);
+    (* Same kernel without the __builtin_assume: with D free the prover picks
+     D = 1 and every thread aliases onto out[0], so it is racy. *)
+    ("racy-builtin-assume.cu", [], 1);
     (* This example is only racy at the grid-level *)
     ("racy-grid-level.cu", [], 0);
     ("racy-grid-level.cu", [ "--grid-level" ], 1);
