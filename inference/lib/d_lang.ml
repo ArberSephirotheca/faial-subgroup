@@ -1005,11 +1005,12 @@ module AccessState = struct
 
   let add (s : Stmt.t) : unit state = State.update (fun s' -> Stmt.seq s' s)
 
-  let add_var (lbl : string) (f : Variable.t -> Stmt.t) : Variable.t state =
+  let add_var ?(kind = Variable.Kind.Synthesized) (lbl : string)
+      (f : Variable.t -> Stmt.t) : Variable.t state =
     let count = !counter in
     counter := count + 1;
     let name : string = "@AccessState" ^ string_of_int count in
-    let x : Variable.t = { name; label = Some lbl; location = None } in
+    let x : Variable.t = Variable.make ~name ~label:lbl ~kind () in
     let* () = add (f x) in
     return x
 
@@ -1043,16 +1044,16 @@ module AccessState = struct
                 DeclStmt [ Decl.from_expr ty_var source ] ))
 
   let add_read (a : d_subscript) : Variable.t state =
-    add_var (subscript_to_s a) (fun x -> Stmt.read_access x a)
+    add_var ~kind:ReadResult (subscript_to_s a) (fun x -> Stmt.read_access x a)
 
   let add_atomic (atomic : Expr.t Atomic.t) (source : d_subscript) :
       Variable.t state =
-    add_var (subscript_to_s source) (fun target ->
+    add_var ~kind:AtomicResult (subscript_to_s source) (fun target ->
         Stmt.atomic_access target source atomic)
 
   let add_call (c : Expr.d_call) : Variable.t state =
     let e = Expr.CallExpr c in
-    add_var (Expr.to_string e) (fun x ->
+    add_var ~kind:FunctionResult (Expr.to_string e) (fun x ->
         let ty = Ty_variable.make ~name:x ~ty:(Expr.to_type e) in
         DeclStmt [ Decl.from_expr ty e ])
 end

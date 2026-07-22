@@ -218,15 +218,15 @@ let test_param_in_index_only () =
   | es ->
     Alcotest.failf "expected 1 entry, got %d" (List.length es)
 
-(* Pins [Variable.is_thread_index] on the canonical six thread-
+(* Pins [Variable.is_id] on the canonical six thread-
    divergent built-ins and on three negative cases (a dim built-in,
    a grid-dim built-in, and a freshly-named kernel parameter). The
    predicate is load-bearing for [Access_partition.abductive_scope]
    in [test_abductive_scope_excludes_thread_indices] below; pin its
    contract here so a future rename or mis-spelling fails loudly. *)
-let test_is_thread_index () =
+let test_is_id () =
   let check name expected v =
-    Alcotest.(check bool) name expected (Variable.is_thread_index v)
+    Alcotest.(check bool) name expected (Variable.is_id v)
   in
   check "tid_x"  true  Variable.tid_x;
   check "tid_y"  true  Variable.tid_y;
@@ -294,7 +294,7 @@ let test_abductive_scope_excludes_thread_indices () =
    contract on the helper that encodes it. [abductive_universe] is
    the set of variables whose pre-occurrences are kept by
    [abductive_scope]'s intersection with [b_free_names k.pre]; its
-   exclusion of [Variable.thread_index_set] is what makes the filter
+   exclusion of [Variable.id_set] is what makes the filter
    robust to future IR changes that move [threadIdx.*]/[blockIdx.*]
    into [k.global_variables]/[k.local_variables]. *)
 let test_abductive_universe_excludes_thread_indices () =
@@ -331,8 +331,8 @@ let tests = [
   ("E. loop bound param contributes",       `Quick, test_e_loop_param_bound);
   ("F. parameter universe + edges",         `Quick, test_f_parameter_universe);
   ("param appears in index only",           `Quick, test_param_in_index_only);
-  ("Variable.is_thread_index pins six tids/bids",
-    `Quick, test_is_thread_index);
+  ("Variable.is_id pins six tids/bids",
+    `Quick, test_is_id);
   ("abductive_scope excludes thread indices",
     `Quick, test_abductive_scope_excludes_thread_indices);
   ("abductive_universe excludes thread indices",

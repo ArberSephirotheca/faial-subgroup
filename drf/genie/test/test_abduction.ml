@@ -20,7 +20,7 @@ open Drf_genie
 let test_variable_compare_name_only () =
   let v_plain = Variable.from_name "x" in
   let v_labelled =
-    { Variable.name = "x"; label = Some "kernel.A"; location = None }
+    Variable.make ~name:"x" ~label:"kernel.A" ()
   in
   Alcotest.(check int) "same-name same-label compares 0"
     0 (Variable.compare v_plain (Variable.from_name "x"));

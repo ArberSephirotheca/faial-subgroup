@@ -114,7 +114,7 @@ let ( let* ) = Result.bind
    assumption introduced. *)
 let unbound_names (k : Kernel.t) : Variable.Set.t =
   Kernel.free_names k
-  |> Variable.Set.filter (fun v -> not (Variable.is_launch_config v))
+  |> Variable.Set.filter (fun v -> not (Variable.is_runtime v))
 
 (* Apply [a] to [k]. A kernel filtered out by [a.kernel] is returned unchanged.
    [Pre] conjoins into the precondition; [Binder] must resolve to exactly one

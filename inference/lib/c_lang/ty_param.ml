@@ -40,7 +40,7 @@ let parse (j : Yojson.Basic.t) : t option j_result =
             let name =
               Printf.sprintf "__anon_nttp_%d_%d" depth index
             in
-            Ok (Variable.make ~name ~location)
+            Ok (Variable.make ~name ~location ())
       in
       let* ty = get_field "type" o in
       Ok (Some (NonTypeTemplate { name; ty = J_type.from_json ty }))

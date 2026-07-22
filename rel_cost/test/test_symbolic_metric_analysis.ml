@@ -35,7 +35,7 @@ let test_encode_count_active_threads (name : string) (threads_per_warp : int)
         }
       in
       let actual = encode_count_active_threads (Num 0) st in
-      if actual = expected then ()
+      if n_equal actual expected then ()
       else
         Alcotest.failf
           "encode_count_active_threads failed for %s:\n\
@@ -534,8 +534,8 @@ let test_extract_global (name : string) (expression : bexp)
       in
       let actual_local = Exp.b_and_ex with_locals in
       let actual_global = Exp.b_and_ex with_globals in
-      let local_matches = actual_local = expected_local in
-      let global_matches = actual_global = expected_global in
+      let local_matches = b_equal actual_local expected_local in
+      let global_matches = b_equal actual_global expected_global in
       if not local_matches then
         Alcotest.failf "Local part mismatch:\nExpected: %s\nActual: %s"
           (b_to_string expected_local)

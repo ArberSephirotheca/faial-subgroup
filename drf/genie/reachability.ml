@@ -242,7 +242,7 @@ let check_kernel ?(timeout = 0) (k : Kernel.t) : entry list =
 
      The classification mirrors [Access_partition.classify] (path
      condition plus access index, intersected with the kernel's
-     parameter set minus [launch_config_set]). Inlined here rather
+     parameter set minus [runtime_set]). Inlined here rather
      than calling into [Access_partition] because that module
      already depends on [Reachability.walk]; pulling the symbol back
      would create a cycle. *)
@@ -250,7 +250,7 @@ let check_kernel ?(timeout = 0) (k : Kernel.t) : entry list =
     Variable.Set.union
       (Params.to_set k.global_variables)
       (Params.to_set k.local_variables)
-    |> (fun s -> Variable.Set.diff s Variable.launch_config_set)
+    |> (fun s -> Variable.Set.diff s Variable.runtime_set)
   in
   let is_parameter_touching (access : Access.t) (path_cond : bexp) : bool =
     let fvs =

@@ -32,6 +32,81 @@ let rec exists (f : t -> bool) (i : t) : bool =
   | Loop { body = p; _ } | Decl { body = p; _ } -> exists f p
   | If (_, p, q) | Seq (p, q) -> exists f p || exists f q
 
+let reset_variable_kind_v ~(kernel_parameters : Variable.Set.t)
+    ~(loop_variables : Variable.Set.t) (v : Variable.t) : Variable.t =
+  if Variable.kind v <> Decl then v
+  else if Variable.is_runtime v then Variable.set_kind GpuRuntime v
+  else if Variable.Set.mem v kernel_parameters then
+    Variable.set_kind KernelParameter v
+  else if Variable.Set.mem v loop_variables then
+    Variable.set_kind LoopVariable v
+  else v
+
+let reset_variable_kind_n ~kernel_parameters ~loop_variables : nexp -> nexp =
+  let reset_v = reset_variable_kind_v ~kernel_parameters ~loop_variables in
+  let rec reset =
+    function
+    | Var v -> Var (reset_v v)
+    | Num _ as e -> e
+    | Binary (o, a, b) -> Binary (o, reset a, reset b )
+    | Unary (o, a) -> Unary (o, reset a)
+    | NCall (g, es) -> NCall (g, List.map reset es)
+    | NIf (b, a1, a2) -> NIf (Exp.b_map reset b, reset a1, reset a2)
+    | CastInt b -> CastInt (Exp.b_map reset b)
+  in
+  reset
+
+let reset_variable_kind (kernel_parameters : Variable.Set.t) : t -> t =
+  let reset_n ~loop_variables =
+    reset_variable_kind_n ~kernel_parameters ~loop_variables
+  in
+  let rec loop (loop_variables : Variable.Set.t) : t -> t = function
+    | Skip -> Skip
+    | Access a ->
+        Access
+          {
+            a with
+            array = Variable.set_kind Array a.array;
+            index = List.map (reset_n ~loop_variables) a.index;
+          }
+    | Sync s ->
+        Sync (Sync.map (reset_n ~loop_variables) s)
+    | If (b, p, q) ->
+        If
+          ( Exp.b_map (reset_n ~loop_variables) b,
+            loop loop_variables p,
+            loop loop_variables q )
+    | Seq (p, q) -> Seq (loop loop_variables p, loop loop_variables q)
+    | Loop { cond_range; body } ->
+        let loop_variables =
+          Variable.Set.add (Cond_range.var cond_range) loop_variables
+        in
+        let cond_range =
+          let cr =
+            Cond_range.map (reset_n ~loop_variables) cond_range
+          in
+          {
+            cr with
+            range =
+              {
+                cr.range with
+                var = Variable.set_kind LoopVariable (Cond_range.var cr);
+              };
+          }
+        in
+        Loop { cond_range; body = loop loop_variables body }
+    | Decl d ->
+        Decl
+          {
+            d with
+            var = Variable.set_kind Decl  d.var;
+            cond = Exp.b_map (reset_n ~loop_variables) d.cond;
+            body = loop loop_variables d.body;
+          }
+  in
+  loop Variable.Set.empty
+
+
 (** Replace variables by constants. *)
 
 module Make (S : Subst.SUBST) = struct

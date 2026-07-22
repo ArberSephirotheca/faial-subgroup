@@ -46,7 +46,7 @@ let conv_tactic =
 let int_params (k : Kernel.t) : Variable.t list =
   Params.to_list k.global_variables
   |> List.filter_map (fun (v, ty) ->
-      if C_type.is_int ty && not (Variable.is_launch_config v)
+      if C_type.is_int ty && not (Variable.is_runtime v)
       then Some v else None)
 
 (* Reduce a [bexp]'s free-variable set to a single signedness by

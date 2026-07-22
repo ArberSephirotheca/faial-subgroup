@@ -98,8 +98,9 @@ let rec inline_reads ((stmt, e) : D_lang.Stmt.t * D_lang.Expr.t) : D_lang.Expr.t
 
 let make_var ?label ?location (st : t) : Variable.t =
   let count = D_lang.Expr.Map.cardinal st.cache in
-  let name : string = "@Launch" ^ string_of_int count in
-  { name; label; location }
+  Variable.make
+    ~name:("@Launch" ^ string_of_int count)
+    ?label ?location ~kind:LaunchParameter ()
 
 let abstract (e : D_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
   let ty = D_lang.Expr.to_type e in

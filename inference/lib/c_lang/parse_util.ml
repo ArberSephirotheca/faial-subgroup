@@ -21,7 +21,7 @@ let parse_variable (j : json) : Variable.t j_result =
            Location.set_length (String.length name) l
          else l
        in
-       Ok (Variable.make ~location:l ~name)
+       Ok (Variable.make ~location:l ~name ())
    | None -> Ok (Variable.from_name name))
   |> Rjson.add_reason "parse_variable" j
 

@@ -53,7 +53,7 @@ let kernel_param_set (k : Kernel.t) : Variable.Set.t =
   Variable.Set.union
     (Params.to_set k.global_variables)
     (Params.to_set k.local_variables)
-  |> (fun s -> Variable.Set.diff s Variable.launch_config_set)
+  |> (fun s -> Variable.Set.diff s Variable.runtime_set)
 
 let partition (k : Kernel.t) : entry list =
   let params = kernel_param_set k in
@@ -130,13 +130,13 @@ let accessed_dims (k : Kernel.t) : Variable.Set.t =
    [blockIdx.*]) are the only thread-divergent launch-config
    built-ins; dim built-ins and kernel parameters are uniform per
    launch. Stating this as an explicit exclusion of
-   [Variable.thread_index_set] (rather than relying on tids being
+   [Variable.id_set] (rather than relying on tids being
    absent from [globals]/[locals]) keeps the filter correct under a
    future IR where every free variable, including thread indices, is
    bound in the kernel's parameter sets. *)
 let abductive_universe (k : Kernel.t) : Variable.Set.t =
-  Variable.Set.union (kernel_param_set k) Variable.launch_config_set
-  |> (fun s -> Variable.Set.diff s Variable.thread_index_set)
+  Variable.Set.union (kernel_param_set k) Variable.runtime_set
+  |> (fun s -> Variable.Set.diff s Variable.id_set)
 
 (* Kernel params that [k.pre] equates to a launch-config dim
    (e.g. [gridDim.x == N], or its symmetric [N == gridDim.x]).
@@ -152,7 +152,7 @@ let abductive_universe (k : Kernel.t) : Variable.Set.t =
    form [repeat >= Win] that exercise Z3's nonlinear-arithmetic
    solver on the irrelevant axis. *)
 let pre_dim_equated (pre : bexp) : Variable.Set.t =
-  let dims = Variable.launch_config_set in
+  let dims = Variable.runtime_set in
   let rec conjuncts (b : bexp) : bexp list =
     match b with
     | BRel (BAnd, b1, b2) -> conjuncts b1 @ conjuncts b2

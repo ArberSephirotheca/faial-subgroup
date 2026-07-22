@@ -388,6 +388,18 @@ let add_missing_binders (k : t) : t =
   let locals = Params.from_set C_type.int (free_names k) in
   { k with local_variables = Params.union_left k.local_variables locals }
 
+let reset_variable_kind (k : t) : t =
+  let params = parameter_set k in
+  let reset_n =
+    Code.reset_variable_kind_n ~kernel_parameters:params
+      ~loop_variables:Variable.Set.empty
+  in
+  {
+    k with
+    pre = b_map reset_n k.pre;
+    code = Code.reset_variable_kind params k.code;
+  }
+
 let to_ci_di (k : t) : t =
   let approx = k.local_variables |> Params.to_set in
   let approx = Variable.Set.diff approx Variable.tid_set in

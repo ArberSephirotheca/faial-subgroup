@@ -41,17 +41,18 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
     1. We rename all variables so that they are all different
     2. We break down for-loops and variable declarations
     *)
-  {
-    name = k.name;
-    pre;
-    arrays;
-    local_variables = locals;
-    global_variables = k.global_variables;
-    code = p;
-    visibility = k.visibility;
-    block_dim = k.block_dim;
-    grid_dim = k.grid_dim;
-  }
+  Protocols.Kernel.reset_variable_kind
+    {
+      name = k.name;
+      pre;
+      arrays;
+      local_variables = locals;
+      global_variables = k.global_variables;
+      code = p;
+      visibility = k.visibility;
+      block_dim = k.block_dim;
+      grid_dim = k.grid_dim;
+    }
 
 let compile_all ?(rules = Idiom_rewrite.all) ?(inline_calls = true)
     ?infer_cond_bound (l : Kernel.t list) : Protocols.Kernel.t list =

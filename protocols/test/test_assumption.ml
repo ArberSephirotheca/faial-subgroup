@@ -24,6 +24,7 @@ let bvar ?label ?line (name : string) : Variable.t =
           ~location:
             (Stage0.Location.make ~filename:"t.cu" ~interval:Stage0.Interval.zero
                ~line:(Stage0.Index.from_base1 l))
+          ()
     | None -> Variable.from_name name
   in
   match label with Some l -> Variable.set_label l base | None -> base

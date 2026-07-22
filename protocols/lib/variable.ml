@@ -1,25 +1,64 @@
 open Stage0 (* Loads Location.t *)
 
-type t = { name : string; label : string option; location : Location.t option }
+module Kind = struct
+  type t =
+    | Synthesized
+    | LaunchParameter
+    | ReadResult
+    | FunctionResult
+    | AtomicResult
+    | KernelParameter
+    | Decl
+    | LoopVariable
+    | Array
+    | GpuRuntime
 
-let make ~name ~location : t = { name; label = None; location = Some location }
-let from_name (name : string) : t = { name; label = None; location = None }
+  let default : t = Decl
+
+  let to_string : t -> string = function
+    | Synthesized -> "synthesized"
+    | LaunchParameter -> "launch-parameter"
+    | ReadResult -> "read-result"
+    | FunctionResult -> "function-result"
+    | AtomicResult -> "atomic-result"
+    | KernelParameter -> "kernel-parameter"
+    | Decl -> "decl"
+    | LoopVariable -> "loop-variable"
+    | Array -> "array"
+    | GpuRuntime -> "gpu-runtime"
+end
+
+type t = {
+  name : string;
+  label : string option;
+  location : Location.t option;
+  kind : Kind.t;
+}
+
+let make ?label ?(kind = Kind.default) ?location ~name () : t =
+  { name; label; location; kind }
+
+let from_name (name : string) : t =
+  { name; label = None; location = None; kind = Kind.default }
 let compare (x1 : t) (x2 : t) : int = String.compare x1.name x2.name
 let label (x : t) = match x.label with Some l -> l | None -> x.name
 let label_opt (x : t) = x.label
 let set_label (label : string) (x : t) : t = { x with label = Some label }
-let tid_x : t = from_name "threadIdx.x"
-let tid_y : t = from_name "threadIdx.y"
-let tid_z : t = from_name "threadIdx.z"
-let bid_x : t = from_name "blockIdx.x"
-let bid_y : t = from_name "blockIdx.y"
-let bid_z : t = from_name "blockIdx.z"
-let bdim_x : t = from_name "blockDim.x"
-let bdim_y : t = from_name "blockDim.y"
-let bdim_z : t = from_name "blockDim.z"
-let gdim_x : t = from_name "gridDim.x"
-let gdim_y : t = from_name "gridDim.y"
-let gdim_z : t = from_name "gridDim.z"
+let kind (x : t) : Kind.t = x.kind
+let set_kind (kind : Kind.t) (x : t) : t = { x with kind }
+let runtime (name : string) : t = make ~name ~kind:Kind.GpuRuntime ()
+let tid_x : t = runtime "threadIdx.x"
+let tid_y : t = runtime "threadIdx.y"
+let tid_z : t = runtime "threadIdx.z"
+let bid_x : t = runtime "blockIdx.x"
+let bid_y : t = runtime "blockIdx.y"
+let bid_z : t = runtime "blockIdx.z"
+let bdim_x : t = runtime "blockDim.x"
+let bdim_y : t = runtime "blockDim.y"
+let bdim_z : t = runtime "blockDim.z"
+let gdim_x : t = runtime "gridDim.x"
+let gdim_y : t = runtime "gridDim.y"
+let gdim_z : t = runtime "gridDim.z"
 let update_name (f : string -> string) (v : t) : t = { v with name = f v.name }
 let add_suffix (suffix : string) (v : t) : t = { v with name = v.name ^ suffix }
 let set_name (name : string) : t -> t = update_name (fun _ -> name)
@@ -99,28 +138,12 @@ let bdim_set : Set.t = Set.of_list bdim_list
 let gdim_list : t list = [ gdim_x; gdim_y; gdim_z ]
 let gdim_set : Set.t = Set.of_list gdim_list
 
-(* CUDA-IR launch-configuration variables — [threadIdx], [blockIdx],
-   [blockDim], [gridDim] in all three axes. These are CUDA built-ins
-   typed as [unsigned int] (per the CUDA C programming guide). *)
-let launch_config_list : t list =
-  tid_list @ bid_list @ bdim_list @ gdim_list
-
-let launch_config_set : Set.t = Set.of_list launch_config_list
-
-let is_launch_config (v : t) : bool = Set.mem v launch_config_set
-
-(* Thread-divergent indices — the three [threadIdx.*] and three
-   [blockIdx.*] axes. These are the only launch-config built-ins
-   whose value differs across threads in a given launch; the dim
-   built-ins ([blockDim.*], [gridDim.*]) are uniform per launch and
-   are therefore thread-invariant. A predicate that constrains a
-   thread-index variable shrinks the active thread set; a predicate
-   that constrains a dim built-in or a kernel parameter does not. *)
-let thread_index_list : t list = tid_list @ bid_list
-
-let thread_index_set : Set.t = Set.of_list thread_index_list
-
-let is_thread_index (v : t) : bool = Set.mem v thread_index_set
+let runtime_list : t list = tid_list @ bid_list @ bdim_list @ gdim_list
+let runtime_set : Set.t = Set.of_list runtime_list
+let is_runtime (v : t) : bool = Set.mem v runtime_set
+let id_list : t list = tid_list @ bid_list
+let id_set : Set.t = Set.of_list id_list
+let is_id (v : t) : bool = Set.mem v id_set
 
 let contains_tids (vs : Set.t) : bool =
   Set.mem tid_x vs || Set.mem tid_y vs || Set.mem tid_z vs

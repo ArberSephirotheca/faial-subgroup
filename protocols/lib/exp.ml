@@ -435,6 +435,9 @@ let n_free_names : nexp -> Variable.Set.t -> Variable.Set.t =
 let b_free_names : bexp -> Variable.Set.t -> Variable.Set.t =
   b_fold Variable.Set.add
 
+let n_equal (a : nexp) (b : nexp) : bool = n_compare a b = 0
+let b_equal (a : bexp) (b : bexp) : bool = b_compare a b = 0
+
 (* Checks if variable [x] is in the given expression *)
 let rec n_exists (f : Variable.t -> bool) : nexp -> bool = function
   | CastInt b -> b_exists f b

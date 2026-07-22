@@ -122,8 +122,9 @@ let make_unknown (label : string) : Variable.t state =
   State.update_return (fun st ->
       let count = Variable.Set.cardinal st in
       let v =
-        "@Unknown" ^ string_of_int count
-        |> Variable.from_name |> Variable.set_label label
+        Variable.make
+          ~name:("@Unknown" ^ string_of_int count)
+          ~label ~kind:Synthesized ()
       in
       (Variable.Set.add v st, v))
 

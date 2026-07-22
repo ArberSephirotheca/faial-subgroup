@@ -150,7 +150,7 @@ let parse_enum (j : Yojson.Basic.t) : Imp.Enum.t j_result =
           | [] -> None
         in
         (match name with
-        | Some name -> Ok (Variable.make ~name ~location)
+        | Some name -> Ok (Variable.make ~name ~location ())
         | None -> root_cause "Could not find enum name." j)
   in
   let* constants =
