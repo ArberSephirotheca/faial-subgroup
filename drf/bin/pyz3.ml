@@ -54,6 +54,7 @@ let header (version : string) : string =
 from __future__ import annotations
 from dataclasses import dataclass
 import enum
+import re
 import warnings
 import z3
 
@@ -74,6 +75,77 @@ if _z3_version(z3.get_version_string()) != _z3_version(FAIAL_Z3_VERSION):
         f"behaves oddly, install a matching z3-solver.",
         stacklevel=2,
     )
+
+
+# One-line gloss per `$T<k>$...` internal access descriptor (see
+# `describe_symbol`). `<k>` is the racing task, 1 or 2.
+_ACCESS_DESC = {
+    "id": "which flattened access the thread took",
+    "mode": "access mode (0 read, 1 write, 2 atomic at device scope, "
+    "3 atomic at block scope)",
+    "wknown": "1 if the written value is statically known, else 0",
+    "wval": "the written value",
+}
+
+# One-line gloss per `@`-prefixed synthesized-variable family. The `@` prefix
+# (no C or WGSL identifier can contain it) marks a value faial made up because
+# it could not keep the source expression; the rest of the name records the
+# origin. `describe_symbol` matches longest-prefix-first, defensively, so a
+# future family whose name extends another's still resolves correctly.
+_AT_FAMILY = {
+    "@Unknown": "an expression faial could not translate (a black box); "
+    "its `label` names the source construct",
+    "@AccessState": "a read / atomic / call / hoisted-expression / write "
+    "value result (the CUDA path names all of these alike)",
+    "@Launch": "a <<<grid, block>>> launch argument, or a host value "
+    "computed for one",
+    "@vec_return": "an inlined vector-constructor return; its .x/.y/.z/.w "
+    "lanes are assigned separately",
+    "@Call": "a WGSL function-call result",
+    "@Atomic": "a WGSL atomic-operation result",
+    "@WorkGroupUniformLoad": "a WGSL workgroup-uniform-load result",
+    "@SubgroupBallot": "a WGSL subgroup-ballot result",
+    "@SubgroupOperation": "a WGSL subgroup-operation result",
+    "@thread_unif": "an uninterpreted function standing for a "
+    "thread-uniform value",
+    "@atomic_result": "an uninterpreted function standing for an atomic "
+    "operation's result",
+}
+
+
+def describe_symbol(name: str) -> str:
+    """One-line gloss for any solver symbol or witness name, decoding faial's
+    sigils. Four families appear in a Proof:
+
+    * a plain source name (`n`, `threadIdx.x`) is a program variable;
+      `variables[name].kind` says which role it plays;
+    * a `$T1` / `$T2` *suffix* is a thread-local projected onto the racing
+      pair: `i$T1` is thread 1's `i`, `i$T2` thread 2's;
+    * an `@`-*prefix* marks a value faial synthesized because it could not
+      keep the source expression; these appear in `Proof.variables`, and the
+      `@`-name is the only record of the value's origin;
+    * a `$`-*prefix* marks faial's internal per-access SMT descriptor; these
+      appear only in the raw solver assertions, never in `Proof.variables`.
+    """
+    m = re.fullmatch(r"\$T(\d+)\$(.+)", name)
+    if m:
+        task, rest = m.group(1), m.group(2)
+        idx = re.fullmatch(r"idx\$(\d+)", rest)
+        if idx:
+            return f"task {task}: access address in dimension {idx.group(1)}"
+        return f"task {task}: " + _ACCESS_DESC.get(
+            rest, f"internal descriptor {rest!r}"
+        )
+    m = re.search(r"\$T([12])$", name)
+    if m:
+        base = name[: m.start()]
+        return f"thread {m.group(1)}'s value of {base!r} ({describe_symbol(base)})"
+    for prefix in sorted(_AT_FAMILY, key=len, reverse=True):
+        if name.startswith(prefix):
+            return _AT_FAMILY[prefix]
+    if name.startswith("@"):
+        return "a synthesized symbol faial introduced (the @ prefix marks a non-source name)"
+    return "a source-level program variable"
 
 
 @dataclass
@@ -119,7 +191,10 @@ class Variable:
     are the base-1 source location, all None when faial has none.
 
     Only source-level variables appear; faial's synthesized symbols (a
-    leading `$`) are excluded, so `variables["$x"]` raises KeyError."""
+    leading `$`) are excluded, so `variables["$x"]` raises KeyError. A key may
+    still be an `@`-synthesized value; call `describe_symbol(key)` for a
+    one-line gloss of any symbol, including the `$`-prefixed internals that
+    surface only in the raw solver."""
 
     kind: VariableKind
     task: int | None
