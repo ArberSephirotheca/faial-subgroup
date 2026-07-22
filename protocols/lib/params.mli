@@ -10,6 +10,9 @@ val remove_all : Variable.Set.t -> t -> t
 
 (* Keep the variables that are members of the set *)
 val retain_all : Variable.Set.t -> t -> t
+
+val reset_kind : kernel_parameters:Variable.Set.t -> t -> t
+
 val to_string : t -> string
 val from_set : C_type.t -> Variable.Set.t -> t
 val to_set : t -> Variable.Set.t

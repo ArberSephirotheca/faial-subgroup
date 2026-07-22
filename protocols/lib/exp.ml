@@ -492,6 +492,22 @@ let rec b_map (f : nexp -> nexp) : bexp -> bexp = function
         }
   | ThreadUnif e -> ThreadUnif (f e)
 
+let reset_variable_kind_n ~kernel_parameters ~loop_variables : nexp -> nexp =
+  let reset_v = Variable.reset_kind ~kernel_parameters ~loop_variables in
+  let rec reset = function
+    | Var v -> Var (reset_v v)
+    | Num _ as e -> e
+    | Binary (o, a, b) -> Binary (o, reset a, reset b)
+    | Unary (o, a) -> Unary (o, reset a)
+    | NCall (g, es) -> NCall (g, List.map reset es)
+    | NIf (b, a1, a2) -> NIf (b_map reset b, reset a1, reset a2)
+    | CastInt b -> CastInt (b_map reset b)
+  in
+  reset
+
+let reset_variable_kind_b ~kernel_parameters ~loop_variables : bexp -> bexp =
+  b_map (reset_variable_kind_n ~kernel_parameters ~loop_variables)
+
 type side = Left | Right
 
 let rec n_par ?context (* ?side *) (n : nexp) : string =

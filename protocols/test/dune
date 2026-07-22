@@ -1,6 +1,7 @@
 (tests
  (names
    test_ctype
+   test_params
    test_exp
    test_gen_z3
    test_gv_parser

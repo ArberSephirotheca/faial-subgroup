@@ -32,30 +32,6 @@ let rec exists (f : t -> bool) (i : t) : bool =
   | Loop { body = p; _ } | Decl { body = p; _ } -> exists f p
   | If (_, p, q) | Seq (p, q) -> exists f p || exists f q
 
-let reset_variable_kind_v ~(kernel_parameters : Variable.Set.t)
-    ~(loop_variables : Variable.Set.t) (v : Variable.t) : Variable.t =
-  if Variable.kind v <> Decl then v
-  else if Variable.is_runtime v then Variable.set_kind GpuRuntime v
-  else if Variable.Set.mem v kernel_parameters then
-    Variable.set_kind KernelParameter v
-  else if Variable.Set.mem v loop_variables then
-    Variable.set_kind LoopVariable v
-  else v
-
-let reset_variable_kind_n ~kernel_parameters ~loop_variables : nexp -> nexp =
-  let reset_v = reset_variable_kind_v ~kernel_parameters ~loop_variables in
-  let rec reset =
-    function
-    | Var v -> Var (reset_v v)
-    | Num _ as e -> e
-    | Binary (o, a, b) -> Binary (o, reset a, reset b )
-    | Unary (o, a) -> Unary (o, reset a)
-    | NCall (g, es) -> NCall (g, List.map reset es)
-    | NIf (b, a1, a2) -> NIf (Exp.b_map reset b, reset a1, reset a2)
-    | CastInt b -> CastInt (Exp.b_map reset b)
-  in
-  reset
-
 let reset_variable_kind (kernel_parameters : Variable.Set.t) : t -> t =
   let reset_n ~loop_variables =
     reset_variable_kind_n ~kernel_parameters ~loop_variables

@@ -390,13 +390,14 @@ let add_missing_binders (k : t) : t =
 
 let reset_variable_kind (k : t) : t =
   let params = parameter_set k in
-  let reset_n =
-    Code.reset_variable_kind_n ~kernel_parameters:params
-      ~loop_variables:Variable.Set.empty
-  in
+  let reset_binders = Params.reset_kind ~kernel_parameters:params in
   {
     k with
-    pre = b_map reset_n k.pre;
+    global_variables = reset_binders k.global_variables;
+    local_variables = reset_binders k.local_variables;
+    pre =
+      Exp.reset_variable_kind_b ~kernel_parameters:params
+        ~loop_variables:Variable.Set.empty k.pre;
     code = Code.reset_variable_kind params k.code;
   }
 

@@ -25,6 +25,14 @@ let remove_all (s : Variable.Set.t) : t -> t =
 let retain_all (s : Variable.Set.t) : t -> t =
   Variable.Map.filter (fun x _ -> Variable.Set.mem x s)
 
+let reset_kind ~(kernel_parameters : Variable.Set.t) (m : t) : t =
+  let loop_variables = Variable.Set.empty in
+  let reset_v = Variable.reset_kind ~kernel_parameters ~loop_variables in
+  let reset_b = Exp.reset_variable_kind_b ~kernel_parameters ~loop_variables in
+  Variable.Map.fold
+    (fun x (b, ty) acc -> Variable.Map.add (reset_v x) (reset_b b, ty) acc)
+    m empty
+
 let from_set (ty : C_type.t) (s : Variable.Set.t) : t =
   s |> Variable.Set.to_seq
   |> Seq.map (fun x -> (x, default_bound x ty))

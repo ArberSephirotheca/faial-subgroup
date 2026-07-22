@@ -147,3 +147,11 @@ let is_id (v : t) : bool = Set.mem v id_set
 
 let contains_tids (vs : Set.t) : bool =
   Set.mem tid_x vs || Set.mem tid_y vs || Set.mem tid_z vs
+
+let reset_kind ~(kernel_parameters : Set.t) ~(loop_variables : Set.t) (v : t) : t
+    =
+  if kind v <> Kind.Decl then v
+  else if is_runtime v then set_kind Kind.GpuRuntime v
+  else if Set.mem v kernel_parameters then set_kind Kind.KernelParameter v
+  else if Set.mem v loop_variables then set_kind Kind.LoopVariable v
+  else v
