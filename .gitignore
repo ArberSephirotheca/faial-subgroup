@@ -18,5 +18,5 @@
 /_opam
 /faial-cost-prover
 
-# Local-only Claude Code project instructions
-/CLAUDE.md
+# Python bytecode cache from running --pyz3 output modules
+/__pycache__/
