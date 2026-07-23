@@ -97,7 +97,17 @@ let main =
       value & flag
       & info [ "show-proofs" ] ~doc:"Show the Z3 proofs being generated.")
   and+ show_proto =
-    Arg.(value & flag & info [ "show-map" ] ~doc:"Show the MAP kernel.")
+    Arg.(
+      value & flag
+      & info [ "show-map" ]
+          ~doc:
+            "Show the MAP kernel. Each memory access is rendered with a \
+             trailing $(b,@N) tag, where N is the access id: a stable \
+             identifier minted once per kernel and preserved unchanged \
+             through every --show-<stage> of the pipeline (map down to \
+             symbexp), so the same access can be tracked from stage to \
+             stage, and is the id the solver uses to name each access in \
+             a race proof.")
   and+ show_wf =
     Arg.(
       value & flag
