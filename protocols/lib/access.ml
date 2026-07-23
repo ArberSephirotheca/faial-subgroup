@@ -54,7 +54,11 @@ let index_to_string (ns : Exp.nexp list) : string =
   "[" ^ idx ^ "]"
 
 let to_string (a : t) : string =
+  let id =
+    if Id.equal a.id Id.unstamped then "" else " @" ^ Id.to_string a.id
+  in
   Mode.to_string a.mode ^ " " ^ Variable.name a.array ^ index_to_string a.index
+  ^ id
 
 let make ~(array : Variable.t) ~(index : Exp.nexp list) ~(mode : Mode.t) : t =
   { array; index; mode; id = Id.unstamped }
