@@ -73,11 +73,8 @@ let inline_expansion_tests =
        let y_var = var "y" in
        let array_access =
          Access
-           {
-             array = a_array;
-             index = [ Binary (Plus Signedness.Signed, Var x_var, Var y_var) ];
-             mode = Write None;
-           }
+           (Access.write a_array
+              [ Binary (Plus Signedness.Signed, Var x_var, Var y_var) ] None)
        in
        let call_stmt =
          Call
@@ -108,11 +105,12 @@ let inline_expansion_tests =
                        (Binary (Plus Signedness.Signed, Var x1_var, Var y1_var))
                        (decl_set g_var (Var z_var)
                           (Access
-                             {
-                               array = a_array;
-                               index = [ Binary (Plus Signedness.Signed, Var x_var, Var y_var) ];
-                               mode = Write None;
-                             }))))))
+                             (Access.write a_array
+                                [
+                                  Binary
+                                    (Plus Signedness.Signed, Var x_var, Var y_var);
+                                ]
+                                None)))))))
        in
        kernel "main" [] expected_code);
   ]

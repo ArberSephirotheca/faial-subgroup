@@ -25,7 +25,7 @@ let bexp_t : bexp Alcotest.testable =
     Exp_match.b_equal
 
 let access (idx : nexp list) : Encode_assigns.t =
-  Encode_assigns.Access { array = v "A"; index = idx; mode = Access.Mode.Read }
+  Encode_assigns.Access (Access.read (v "A") idx)
 
 let rec index_of : Encode_assigns.t -> nexp list = function
   | Encode_assigns.Access a -> a.Access.index

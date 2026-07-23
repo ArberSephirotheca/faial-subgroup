@@ -10,4 +10,4 @@ type t = {
 }
 
 let to_access (a : t) : Access.t =
-  Access.{ array = a.array; index = a.index; mode = Atomic a.atomic }
+  Access.make ~array:a.array ~index:a.index ~mode:(Atomic a.atomic)

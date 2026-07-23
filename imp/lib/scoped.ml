@@ -177,12 +177,12 @@ module Code = struct
   let bind_uniform_reads : t -> t =
     let rec rewrite : t -> t = function
       | Seq
-          ( (Access { array; index; mode = Read } as acc),
+          ( (Access { array; index; mode = Read; _ } as acc),
             Decl ((({ init = None; _ } : Decl.t) as d), rest) ) ->
           let call = Exp.NCall (uniform_read_name array, index) in
           Seq (acc, Decl ({ d with init = Some call }, rewrite rest))
       | Seq
-          ( If (b, (Access { array; index; mode = Read } as acc), Skip),
+          ( If (b, (Access { array; index; mode = Read; _ } as acc), Skip),
             Decl ((({ init = None; _ } : Decl.t) as d), rest) ) ->
           let call = Exp.NCall (uniform_read_name array, index) in
           Seq (If (b, acc, Skip), Decl ({ d with init = Some call }, rewrite rest))
@@ -460,7 +460,7 @@ module Code = struct
           return (Assign { var; data; ty; body })
       | Seq (Read e, s) ->
           let* s = imp_to_scoped s in
-          let rd = Access { array = e.array; index = e.index; mode = Read } in
+          let rd = Access (Access.read e.array e.index) in
           let rd = match e.guard with Some g -> If (g, rd, Skip) | None -> rd in
           return
             (match e.target with
@@ -469,7 +469,9 @@ module Code = struct
       | Seq (Atomic e, s) ->
           let* s = imp_to_scoped s in
           let a =
-            Access { array = e.array; index = e.index; mode = Atomic e.atomic }
+            Access
+              (Access.make ~array:e.array ~index:e.index
+                 ~mode:(Atomic e.atomic))
           in
           let a = match e.guard with Some g -> If (g, a, Skip) | None -> a in
           let s = Seq (Assert (atomic_result_marker e), s) in
@@ -484,7 +486,7 @@ module Code = struct
       | Sync s -> return (Sync s)
       | Write e ->
           let a =
-            Access { array = e.array; index = e.index; mode = Write e.payload }
+            Access (Access.write e.array e.index e.payload)
           in
           return (match e.guard with Some g -> If (g, a, Skip) | None -> a)
       | Assert b -> return (Assert b)

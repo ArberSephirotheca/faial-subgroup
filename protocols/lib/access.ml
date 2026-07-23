@@ -25,12 +25,24 @@ module Mode = struct
     | _, _ -> true
 end
 
+module Id = struct
+  type t = int
+
+  let unstamped : t = -1
+  let first : t = 0
+  let next (x : t) : t = x + 1
+  let to_int (x : t) : int = x
+  let equal : t -> t -> bool = Int.equal
+  let to_string (x : t) : string = string_of_int x
+end
+
 (* An access pairs the index-expression with the access mode (R/W) *)
-type t = { array : Variable.t; index : Exp.nexp list; mode : Mode.t }
+type t = { array : Variable.t; index : Exp.nexp list; mode : Mode.t; id : Id.t }
 
 let array (x : t) : Variable.t = x.array
 let location (e : t) : Stage0.Location.t = Variable.location e.array
 let mode (x : t) : Mode.t = x.mode
+let id (x : t) : Id.t = x.id
 let is_write (x : t) : bool = Mode.is_write x.mode
 let is_read (x : t) : bool = Mode.is_read x.mode
 
@@ -44,15 +56,18 @@ let index_to_string (ns : Exp.nexp list) : string =
 let to_string (a : t) : string =
   Mode.to_string a.mode ^ " " ^ Variable.name a.array ^ index_to_string a.index
 
+let make ~(array : Variable.t) ~(index : Exp.nexp list) ~(mode : Mode.t) : t =
+  { array; index; mode; id = Id.unstamped }
+
 let write (array : Variable.t) (index : Exp.nexp list) (v : int option) : t =
-  { array; index; mode = Write v }
+  make ~array ~index ~mode:(Write v)
 
 let read (array : Variable.t) (index : Exp.nexp list) : t =
-  { array; index; mode = Read }
+  make ~array ~index ~mode:Read
 
 let atomic ~array ~atomic (index : Exp.nexp list) : t option =
   Atomic.from_name atomic
-  |> Option.map (fun a -> { array; index; mode = Atomic a })
+  |> Option.map (fun a -> make ~array ~index ~mode:(Atomic a))
 
 let index_intersects (s : Variable.Set.t) (a : t) : bool =
   List.exists (Exp.n_intersects s) a.index

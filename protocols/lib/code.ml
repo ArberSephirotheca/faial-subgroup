@@ -33,34 +33,41 @@ let rec exists (f : t -> bool) (i : t) : bool =
   | If (_, p, q) | Seq (p, q) -> exists f p || exists f q
 
 let reset_variable_kind (kernel_parameters : Variable.Set.t) : t -> t =
+  let open State.Syntax in
   let reset_n ~loop_variables =
     reset_variable_kind_n ~kernel_parameters ~loop_variables
   in
-  let rec loop (loop_variables : Variable.Set.t) : t -> t = function
-    | Skip -> Skip
+  let fresh_id : (Access.Id.t, Access.Id.t) State.t =
+    State.update_return (fun id -> (Access.Id.next id, id))
+  in
+  let rec loop (loop_variables : Variable.Set.t) :
+      t -> (Access.Id.t, t) State.t = function
+    | Skip -> return Skip
     | Access a ->
-        Access
-          {
-            a with
-            array = Variable.set_kind Array a.array;
-            index = List.map (reset_n ~loop_variables) a.index;
-          }
-    | Sync s ->
-        Sync (Sync.map (reset_n ~loop_variables) s)
+        let* id = fresh_id in
+        return
+          (Access
+             {
+               a with
+               id;
+               array = Variable.set_kind Array a.array;
+               index = List.map (reset_n ~loop_variables) a.index;
+             })
+    | Sync s -> return (Sync (Sync.map (reset_n ~loop_variables) s))
     | If (b, p, q) ->
-        If
-          ( Exp.b_map (reset_n ~loop_variables) b,
-            loop loop_variables p,
-            loop loop_variables q )
-    | Seq (p, q) -> Seq (loop loop_variables p, loop loop_variables q)
+        let* p = loop loop_variables p in
+        let* q = loop loop_variables q in
+        return (If (Exp.b_map (reset_n ~loop_variables) b, p, q))
+    | Seq (p, q) ->
+        let* p = loop loop_variables p in
+        let* q = loop loop_variables q in
+        return (Seq (p, q))
     | Loop { cond_range; body } ->
         let loop_variables =
           Variable.Set.add (Cond_range.var cond_range) loop_variables
         in
         let cond_range =
-          let cr =
-            Cond_range.map (reset_n ~loop_variables) cond_range
-          in
+          let cr = Cond_range.map (reset_n ~loop_variables) cond_range in
           {
             cr with
             range =
@@ -70,17 +77,20 @@ let reset_variable_kind (kernel_parameters : Variable.Set.t) : t -> t =
               };
           }
         in
-        Loop { cond_range; body = loop loop_variables body }
+        let* body = loop loop_variables body in
+        return (Loop { cond_range; body })
     | Decl d ->
-        Decl
-          {
-            d with
-            var = Variable.set_kind Decl  d.var;
-            cond = Exp.b_map (reset_n ~loop_variables) d.cond;
-            body = loop loop_variables d.body;
-          }
+        let* body = loop loop_variables d.body in
+        return
+          (Decl
+             {
+               d with
+               var = Variable.set_kind Decl d.var;
+               cond = Exp.b_map (reset_n ~loop_variables) d.cond;
+               body;
+             })
   in
-  loop Variable.Set.empty
+  fun code -> State.run_result (loop Variable.Set.empty code) Access.Id.first
 
 
 (** Replace variables by constants. *)

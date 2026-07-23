@@ -18,7 +18,7 @@ let r =
       ty = C_type.int;
     }
 
-let write a = Access.{ array = a; index = []; mode = Mode.Write None }
+let write a = Access.write a [] None
 let x_acc = Unsynced.Access (write x)
 let y_acc = Unsynced.Access (write y)
 

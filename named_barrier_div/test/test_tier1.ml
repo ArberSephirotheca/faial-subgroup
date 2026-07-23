@@ -8,7 +8,7 @@ let v (name : string) : Variable.t = Variable.from_name name
 let var (name : string) : nexp = Var (v name)
 
 let access : Code.t =
-  Code.Access { array = v "a"; index = [ Num 0 ]; mode = Access.Mode.Read }
+  Code.Access (Access.read (v "a") [ Num 0 ])
 
 let sync_at ?(mode = Sync.Mode.ArriveAndWait) (label : string) : Sync.t =
   { Sync.mode; id = Var (v label); participants = None;

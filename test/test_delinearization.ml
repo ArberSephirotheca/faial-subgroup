@@ -97,7 +97,7 @@ let kernels : (string * Aligned.Kernel.t * Aligned.Kernel.t) list =
   let open Aligned.Code in
   let open Build in
   let acc array index =
-    Unsynced.Access { array; index; mode = Access.Mode.Write None }
+    Unsynced.Access (Access.write array index None)
   in
   let loop (var : string) (body : Aligned.Code.t) : Aligned.Code.t = Loop {
     cond_range = Cond_range.of_range {

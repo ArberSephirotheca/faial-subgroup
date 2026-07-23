@@ -63,8 +63,8 @@ module Gen = struct
   let access_id (t : Task.t) : nexp = Ids.access_id t |> var
 
   (* assign identifier of the conditional access *)
-  let assign_access_id (t : Task.t) (aid : int) : bexp =
-    n_eq (access_id t) (Num aid)
+  let assign_access_id (t : Task.t) (aid : Access.Id.t) : bexp =
+    n_eq (access_id t) (Num (Access.Id.to_int aid))
 
   let assign_index (op : N_rel.t) (t : Task.t) (idx : int) (n : nexp) : bexp =
     n_rel op (index t idx) n
@@ -398,10 +398,10 @@ module SymAccess = struct
   ...
   assign index n
   *)
-  type t = { id : int; condition : bexp; access : Access.t }
+  type t = { id : Access.Id.t; condition : bexp; access : Access.t }
 
   let to_string (a : t) : string =
-    "{ access_id = " ^ string_of_int a.id ^ " condition = "
+    "{ access_id = " ^ Access.Id.to_string a.id ^ " condition = "
     ^ Exp.b_to_string a.condition
     ^ " access = " ^ Access.to_string a.access ^ " }"
 
@@ -424,10 +424,10 @@ module SymAccess = struct
   (* When we lower the representation, we do not want to have source code
     locations, just an id. *)
 
-  let from_cond_access (locals : Variable.Set.t) (t : Task.t) (idx : int)
+  let from_cond_access (locals : Variable.Set.t) (t : Task.t)
       (ca : CondAccess.t) : t =
     let ca = project_access locals t ca in
-    { id = idx; access = ca.access; condition = ca.cond }
+    { id = Access.id ca.access; access = ca.access; condition = ca.cond }
 end
 
 let cond_access_to_bexp (locals : Variable.Set.t) (t : Task.t)
@@ -512,7 +512,10 @@ module Proof = struct
         ("array_name", `String p.array_name);
       ]
 
-  let get ~access_id (p : t) : AccessSummary.t = List.nth p.accesses access_id
+  let get ~access_id (p : t) : AccessSummary.t =
+    List.find
+      (fun (a : AccessSummary.t) -> Access.Id.to_int a.access.id = access_id)
+      p.accesses
 
   (* Union of free variables across this fragment's access summaries.
      Each summary's [variables] covers the access expression, its path
@@ -583,7 +586,7 @@ module Proof = struct
     let assign_accesses (t : Task.t) : bexp =
       code |> Flatacc.Code.to_list (* get conditional accesses *)
       |> List.map (Flatacc.CondAccess.add_cond runtime)
-      |> List.mapi (SymAccess.from_cond_access locals t)
+      |> List.map (SymAccess.from_cond_access locals t)
          (* get symbolic access *)
       |> List.map (SymAccess.to_bexp ~assign_index t) (* generate code *)
       |> b_or_ex
@@ -643,7 +646,7 @@ module Proof = struct
     let assign_accesses (t : Task.t) : bexp =
       code |> Flatacc.Code.to_list
       |> List.map (Flatacc.CondAccess.add_cond runtime)
-      |> List.mapi (SymAccess.from_cond_access locals t)
+      |> List.map (SymAccess.from_cond_access locals t)
       |> List.map (SymAccess.to_bexp ~assign_index:false t)
       |> b_or_ex
     in
@@ -713,7 +716,7 @@ module Proof = struct
     let assign_accesses (t : Task.t) : bexp =
       code |> Flatacc.Code.to_list
       |> List.map (Flatacc.CondAccess.add_cond runtime)
-      |> List.mapi (SymAccess.from_cond_access locals t)
+      |> List.map (SymAccess.from_cond_access locals t)
       |> List.map (SymAccess.to_bexp ~assign_index:false t)
       |> b_or_ex
     in

@@ -8,7 +8,7 @@ let v (name : string) : Variable.t = Variable.from_name name
 let var (name : string) : nexp = Var (v name)
 
 let access : Code.t =
-  Code.Access { array = v "a"; index = [ Num 0 ]; mode = Access.Mode.Read }
+  Code.Access (Access.read (v "a") [ Num 0 ])
 
 (* For testing, use the label as the array name so distinct labels
    produce distinct sync ids. Real kernels will use the __syncthreads
