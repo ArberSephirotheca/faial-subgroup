@@ -221,7 +221,7 @@ let main =
       value & opt conv_int_list []
       & info [ "index" ] ~docv:"LIST"
           ~doc:
-            "Check that each index is greater-or-equal than the argument. \
+            "Check that each index is exactly equal to the argument. \
              Expects an integer, or a (JSON) list of integers. Example: 1 or \
              [1,2]")
   and+ only_array =
