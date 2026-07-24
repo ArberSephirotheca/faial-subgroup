@@ -685,6 +685,21 @@ module Statements = struct
                   let array = Variable.set_location location a.array.var in
                   let default = W_lang.Ident.atomic_result W_lang.Type.u32 in
                   let result = Option.value ~default result in
+                  (* A compare-exchange returns a struct rather than the
+                     old value, and a read of one of its fields is
+                     flattened into a suffixed variable. Bind the
+                     old-value field, the struct's first member, so the
+                     winner-uniqueness contract constrains the same
+                     variable a guard on the result reads. *)
+                  let target =
+                    match result.kind with
+                    | W_lang.IdentKind.AtomicResult { comparison = true } ->
+                        W_lang.Type.lookup_field 0 result.ty
+                        |> Option.map (fun f ->
+                               Variable.add_suffix ("." ^ f) result.var)
+                        |> Option.value ~default:result.var
+                    | _ -> result.var
+                  in
                   return
                     (Infer_stmt.Atomic
                        {
@@ -692,7 +707,7 @@ module Statements = struct
                          index;
                          ty = Types.tr result.ty;
                          atomic;
-                         target = result.var;
+                         target;
                          guard = None;
                        })))
         | Store { pointer = Ident { ty; _ } as i; value }

@@ -2847,7 +2847,7 @@ module AtomicFunction = struct
     | "Min" -> Ok Min
     | "Max" -> Ok Max
     | "Exchange" ->
-        let* c = with_field "condition" (cast_option Expression.parse) o in
+        let* c = with_field "compare" (cast_option Expression.parse) o in
         Ok (Exchange { compare = c })
     | _ -> root_cause ("AtomicFunction.parse: unknown kind: " ^ kind) j
 end

@@ -33,6 +33,13 @@ let tests =
     (* Atomics: two atomics on one cell are serialised and do not
        conflict, the same rule the CUDA path applies. *)
     ("drf-atomic-same-cell.wgsl", [], 0);
+    (* Winner uniqueness for atomicCompareExchangeWeak. Exercises the
+       struct-shaped result: the contract reaches the guard only
+       because the lowering binds the old_value field as the atomic's
+       target. *)
+    ("drf-cas-winner.wgsl", [], 0);
+    (* Negative companion with atomicExchange, which has no contract. *)
+    ("racy-exchange-no-winner.wgsl", [], 1);
   ]
 
 let unsupported : Fpath.t list = [] |> List.map (fun x -> Fpath.(v "." / x))
