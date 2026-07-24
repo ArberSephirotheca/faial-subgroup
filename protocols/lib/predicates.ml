@@ -163,19 +163,14 @@ and b_inline : bexp -> bexp = function
    on goals where the cross-thread axiom is conjoined separately;
    in both cases Z3 picks the boolean freely. *)
 let strip_cross_thread : bexp -> bexp =
-  let fresh_atomic (target : Variable.t)
-      (operation : nexp Atomic.Operation.t) : nexp =
-    let operands =
-      Atomic.Operation.to_list operation
-      |> List.filter_map (Option.map n_to_string)
-      |> String.concat ","
-    in
-    let name =
-      "@atomic_result:" ^ Variable.name target ^ ":"
-      ^ Atomic.Operation.to_string operation
-      ^ if operands = "" then "" else "(" ^ operands ^ ")"
-    in
-    Var (Variable.from_name name)
+  (* [target] is the binding that holds the atomic's returned value, so it
+     identifies the operation at the same granularity the rest of the goal
+     uses for that value. The array, the operation kind and the operands
+     are attributes of that same binding and are read by
+     [Symbexp.AtomicAxioms] before this runs, so encoding them here would
+     name information nothing reads back. *)
+  let fresh_atomic (target : Variable.t) : nexp =
+    Var (Variable.from_name ("@atomic_result:" ^ Variable.name target))
   in
   let fresh_thread_unif (e : nexp) : nexp =
     Var (Variable.from_name ("@thread_unif:" ^ n_to_string e))
@@ -197,8 +192,7 @@ let strip_cross_thread : bexp -> bexp =
     | Pred (x, ns) -> Pred (x, List.map rn ns)
     | CastBool n -> CastBool (rn n)
     | Distinct ns -> Distinct (List.map rn ns)
-    | AtomicResult { target; operation; _ } ->
-        CastBool (fresh_atomic target operation)
+    | AtomicResult { target; _ } -> CastBool (fresh_atomic target)
     | IsThreadUnif e -> CastBool (fresh_thread_unif e)
   in
   rb

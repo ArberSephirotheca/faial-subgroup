@@ -30,6 +30,9 @@ let tests =
     ("drf-loop-relminus.wgsl", [], 0);
     (* Kernel inlining with return value *)
     ("drf-inline-ret.wgsl", [], 0);
+    (* Atomics: two atomics on one cell are serialised and do not
+       conflict, the same rule the CUDA path applies. *)
+    ("drf-atomic-same-cell.wgsl", [], 0);
   ]
 
 let unsupported : Fpath.t list = [] |> List.map (fun x -> Fpath.(v "." / x))

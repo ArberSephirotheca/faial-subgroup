@@ -105,6 +105,27 @@ let tests =
        atomic-mod the same address; with disjoint cells two threads
        can both get return 0 and alias on the slot write. *)
     ("racy-atomicadd-per-thread-counter.cu", [], 1);
+    (* The atomic scope decides which threads the hardware serialises,
+       and [Gen.mode_spec] reads it off the access mode. Two atomics of
+       the same scope never conflict at block level, whichever scope
+       they carry. *)
+    ("atomic-device-scope.cu", [], 0);
+    ("atomic-block-scope.cu", [], 0);
+    (* At grid level the two scopes part ways: a device-scoped atomic
+       still serialises against every thread, while a block-scoped one
+       does not serialise against a thread of another block. The
+       explicit --gridDim=2 matters, since the default single-block
+       grid admits no second block and both kernels come out DRF for
+       want of a racing partner rather than by the mode rule. *)
+    ("atomic-device-scope.cu", [ "--grid-level"; "--gridDim=2" ], 0);
+    ("atomic-block-scope.cu", [ "--grid-level"; "--gridDim=2" ], 1);
+    (* An operation with no cross-thread contract is still a memory
+       access. atomicExch says nothing about its returned value, but
+       two of them on one cell are serialised, so the kernel is DRF. *)
+    ("drf-atomicexch-same-cell.cu", [], 0);
+    (* The other half of that rule: an atomic conflicts with a plain
+       write to the same cell no matter which operation it is. *)
+    ("racy-atomicmax-write.cu", [], 1);
     (* A data-race that occurs when we have warp-concurrent semantics *)
     ("racy-reduce.cu", [], 1);
     (* Pre-Volta warp-synchronous halving reduction on a single warp:
