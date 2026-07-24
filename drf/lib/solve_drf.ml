@@ -146,6 +146,7 @@ module TaskState = struct
         ("locals", Environ.to_json x.locals);
         ("mode", `String (Access.Mode.to_string x.access.mode));
         ("location", Access.location x.access |> Location.to_json);
+        ("access_id", `Int (Access.id x.access |> Access.Id.to_int));
       ]
 
   let to_string (v : t) : string =

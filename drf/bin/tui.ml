@@ -222,6 +222,12 @@ let render (output : Analysis.t list) : unit =
             | [ x ] -> Tui_helper.LocationUI.print x
             | [ x1; x2 ] -> Tui_helper.LocationUI.print2 x1 x2
             | _ -> failwith "??");
+            let access_ref (t : TaskState.t) : string =
+              "@" ^ (Access.id t.access |> Access.Id.to_string)
+            in
+            let r1 = access_ref t1 and r2 = access_ref t2 in
+            T.print_string [ T.Bold ] "Access ";
+            print_endline (if r1 = r2 then r1 else r1 ^ " and " ^ r2);
             print_endline "";
             T.print_string [ T.Bold ] "Globals\n";
             w |> GlobalState.from_witness |> GlobalState.to_print_box

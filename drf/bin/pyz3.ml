@@ -151,12 +151,16 @@ def describe_symbol(name: str) -> str:
 @dataclass
 class Task:
     """One conflicting thread: its local variable values (threadIdx.{x,y,z}
-    and loop counters), the access mode ('ro' read / 'rw' write), and the
-    source location of the racing access."""
+    and loop counters), the access mode ('ro' read / 'rw' write), the source
+    location of the racing access, and `access_id`, the stable per-kernel id
+    of the static access this thread took. `access_id` is the value the raw
+    SMT binds to this task's `$T<k>$id` symbol, so it cross-references a model
+    back to a specific source access."""
 
     locals: dict
     mode: str
     location: dict
+    access_id: int
 
 
 class VariableKind(enum.Enum):
@@ -416,10 +420,11 @@ let to_pyz3_proof (kernel_name : string) (s : Solution.t) : pyz3_proof option =
   | Outcome.Racy w ->
       let p : Symbexp.Proof.t = s.proof in
       let task (t : TaskState.t) : string =
-        Printf.sprintf "Task(%s, %s, %s)"
+        Printf.sprintf "Task(%s, %s, %s, %d)"
           (py_dict (Environ.variables t.locals))
           (py_str (Access.Mode.to_string (Access.mode t.access)))
           (py_of_json (Stage0.Location.to_json (Access.location t.access)))
+          (Access.id t.access |> Access.Id.to_int)
       in
       let t1, t2 = w.tasks in
       let variables =
