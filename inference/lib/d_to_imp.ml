@@ -122,12 +122,23 @@ module Make (L : Logger) = struct
     | UnaryOperator { opcode = "~"; child = e; _ } ->
         let n = infer_expr e in
         NExp (Unary (BitNot, n))
+    (* The thread-uniformity intrinsics are the surface syntax for the
+       cross-thread primitive, so they become [IsThreadUnif] here rather
+       than a [Pred] the inliner would have to lower later. *)
+    | CallExpr
+        { func = Ident { name = f; kind = Function; _ }; args = [ arg ]; _ }
+      when Exp.is_uniformity_intrinsic (Variable.name f) ->
+        let n = infer_expr arg in
+        BExp
+          (if String.equal (Variable.name f) Exp.is_thread_unif_name then
+             Infer_exp.is_thread_unif n
+           else Infer_exp.is_thread_distinct n)
     (* Whitelisted pure functions / predicates are lifted to [NCall]
        / [Pred] nodes; their lowering bodies live in [Functions] /
        [Predicates] and run at [Constfold] / [Predicates.b_inline]
        time. [Functions.supported] covers [divUp] / [min] / [max] /
        [log2] / [log] / [sqrt] / [__ffs] / [__clz]; [Predicates.supported]
-       covers [__is_pow2] / [__uniform_int] / [__distinct_int]. *)
+       covers [__is_pow2]. *)
     | CallExpr
         { func = Ident { name = f; kind = Function; _ }; args; _ }
       when Functions.supported (Variable.name f) ->

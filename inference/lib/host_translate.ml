@@ -137,7 +137,8 @@ let rewrite_expr (e : C_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
          that an opaque [@LaunchN] abstraction would lose. *)
       | CallExpr { func = Ident { name = f; _ }; _ }
         when Functions.supported (Variable.name f)
-             || Predicates.supported (Variable.name f) ->
+             || Predicates.supported (Variable.name f)
+             || Exp.is_uniformity_intrinsic (Variable.name f) ->
           State.return e
       | CXXNewExpr _
       | CXXDeleteExpr _

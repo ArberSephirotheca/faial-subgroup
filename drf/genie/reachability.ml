@@ -9,7 +9,7 @@
 
    where [base] is the architecture's per-thread constraints
    ([Architecture.Defaults.base] — tid bounds, dim bounds, etc.)
-   *without* [thread_distinct] (which is a two-task DRF artifact;
+   *without* [is_thread_distinct] (which is a two-task DRF artifact;
    reachability is a single-thread question). [runtime] is the
    kernel's parameter typing.
 
@@ -101,7 +101,7 @@ let z3_call_hook : (unit -> unit) ref = ref (fun () -> ())
    does, except the [apply_arch] distinct clause. The result is a
    protocol kernel whose [pre] includes user [--assume]s,
    [--assume-dims], inlined globals, and
-   [Architecture.Defaults.base], without the [thread_distinct]
+   [Architecture.Defaults.base], without the [is_thread_distinct]
    axiom (a two-task fact, irrelevant to the single-task
    reachability gate). *)
 let prepare_kernel

@@ -42,7 +42,7 @@ let access_w (idx : Exp.nexp) : Code.t = Code.Access (Access.write array_a [ idx
 let range_i : Range.t = Range.make (Variable.from_name "i") (var "N")
 
 (* Collapse the block to one dimension so [threadIdx.x] is the whole
-   thread identity that [thread_distinct] separates. *)
+   thread identity that [is_thread_distinct] separates. *)
 let one_d : Exp.bexp =
   Exp.b_and (eq (var "threadIdx.y") (Exp.Num 0)) (eq (var "threadIdx.z") (Exp.Num 0))
 

@@ -213,7 +213,7 @@ let tests =
     ("drf-assert-loop.cu", [], 0);
     (* Two calls to a forward-declared [__device__ unsigned int
      get(int)] must each produce a distinct unknown-valued local.
-     The [__uniform_int] asserts pin both as thread-uniform, so
+     The [__is_thread_unif] asserts pin both as thread-uniform, so
      the race witness picks adversarial values that make
      [y[i + offset1]] and [y[i + offset2]] coincide across two
      threads. *)

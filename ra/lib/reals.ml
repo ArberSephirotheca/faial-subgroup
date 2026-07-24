@@ -241,7 +241,7 @@ and from_bexp : Exp.bexp -> boolean = function
   | CastBool e -> IntToBool (from_nexp e)
   | Distinct _ -> failwith "Distinct _"
   | AtomicResult _ -> failwith "AtomicResult _"
-  | ThreadUnif _ -> failwith "ThreadUnif _"
+  | IsThreadUnif _ -> failwith "IsThreadUnif _"
 
 let rec to_string : t -> string = function
   | Var x -> Variable.name x

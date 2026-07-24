@@ -11,8 +11,8 @@ let rec norm (b : bexp) : bexp list =
   | BNot (Distinct _)
   | AtomicResult _
   | BNot (AtomicResult _)
-  | ThreadUnif _
-  | BNot (ThreadUnif _) ->
+  | IsThreadUnif _
+  | BNot (IsThreadUnif _) ->
       [ b ]
   | BRel (BAnd, b1, b2) -> List.append (norm b1) (norm b2)
   | BNot (Bool b) -> [ Bool (not b) ]
@@ -88,7 +88,7 @@ and b_opt (e : bexp) : bexp =
           index = List.map n_opt index;
           operation = Atomic.Operation.map n_opt operation;
         }
-  | ThreadUnif e -> ThreadUnif (n_opt e)
+  | IsThreadUnif e -> IsThreadUnif (n_opt e)
 
 let r_opt (r : Range.t) : Range.t =
   {

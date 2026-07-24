@@ -69,7 +69,7 @@ and b_eval_res ?(env = default_env) (b : Exp.bexp) : (bool, string) Result.t =
   | Pred (x, _) -> Error ("b_eval: pred " ^ x)
   | Distinct _ -> Error "Distinct evaluation not implemented yet"
   | AtomicResult _ -> Error "b_eval: atomic_result"
-  | ThreadUnif _ -> Error "b_eval: thread_unif"
+  | IsThreadUnif _ -> Error "b_eval: thread_unif"
 
 (* Standard int32 bounds *)
 let int32_range : Int32.t * Int32.t = (Int32.min_int, Int32.max_int)

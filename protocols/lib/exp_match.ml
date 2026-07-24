@@ -52,7 +52,7 @@ and b_equal (a : bexp) (b : bexp) : bool =
   | CastBool a1, CastBool b1 -> n_equal a1 b1
   | Distinct xs, Distinct ys ->
       List.length xs = List.length ys && List.for_all2 n_equal xs ys
-  | ThreadUnif a1, ThreadUnif b1 -> n_equal a1 b1
+  | IsThreadUnif a1, IsThreadUnif b1 -> n_equal a1 b1
   | _, _ -> false
 
 type hole =
@@ -174,7 +174,7 @@ and instantiate_b (s : subst) (template : bexp) : bexp =
   | Pred (name, args) -> Pred (name, List.map (instantiate s) args)
   | CastBool a -> CastBool (instantiate s a)
   | Distinct args -> Distinct (List.map (instantiate s) args)
-  | ThreadUnif a -> ThreadUnif (instantiate s a)
+  | IsThreadUnif a -> IsThreadUnif (instantiate s a)
   | AtomicResult _ -> template
 
 type rule = {

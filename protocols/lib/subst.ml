@@ -56,7 +56,7 @@ module Make (S : SUBST) = struct
             index = List.map (n_subst s) index;
             operation = Atomic.Operation.map (n_subst s) operation;
           }
-    | ThreadUnif e -> ThreadUnif (n_subst s e)
+    | IsThreadUnif e -> IsThreadUnif (n_subst s e)
 
   let a_subst (s : S.t) (a : Access.t) : Access.t =
     { a with index = List.map (n_subst s) a.index }

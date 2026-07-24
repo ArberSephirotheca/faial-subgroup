@@ -47,7 +47,7 @@ and b_to_vars : bexp -> Variable.t list = function
         Atomic.Operation.fold (fun e acc -> n_to_vars e @ acc) operation []
       in
       target :: array :: from_index @ from_op
-  | ThreadUnif e -> n_to_vars e
+  | IsThreadUnif e -> n_to_vars e
 
 and r_to_vars (r : Range.t) : Variable.t list =
   let step_variables =

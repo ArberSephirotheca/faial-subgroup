@@ -10,7 +10,7 @@
 
    Co-reachability strips the conflict shape. [Symbexp.translate_coreach]
    produces a parallel stream where each proof's [goal] is
-   [pre ∧ assign_T1 ∧ assign_T2 ∧ id_le ∧ thread_distinct] — two
+   [pre ∧ assign_T1 ∧ assign_T2 ∧ id_le ∧ is_thread_distinct] — two
    distinct threads, each reaching some access in the fragment,
    neither required to collide nor to use a conflicting mode. SAT
    here means "the two-thread universe for this fragment is

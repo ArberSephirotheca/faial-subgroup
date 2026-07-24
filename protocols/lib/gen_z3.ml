@@ -612,9 +612,9 @@ module CodeGen (N : NUMERIC_OPS) = struct
         preprocessing_error
           ("b_to_expr: AtomicResult must be expanded by symbexp or stripped \
             by single-thread analyses before codegen: " ^ b_to_string c)
-    | ThreadUnif _ as c ->
+    | IsThreadUnif _ as c ->
         preprocessing_error
-          ("b_to_expr: ThreadUnif must be expanded by symbexp's project_b or \
+          ("b_to_expr: IsThreadUnif must be expanded by symbexp's project_b or \
             stripped by single-thread analyses before codegen: "
           ^ b_to_string c)
 
@@ -812,7 +812,7 @@ module SignedBv32Gen = CodeGen (SignedBitVectorOps (SIGNED_32))
    [is_possible] asks whether a bexp is satisfiable ("may it hold?");
    [is_always_true] whether it is valid ("must it?"). Both inline
    predicate definitions and replace cross-thread primitives
-   ([ThreadUnif] / [AtomicResult]) with fresh booleans, then encode with
+   ([IsThreadUnif] / [AtomicResult]) with fresh booleans, then encode with
    the arithmetic [IntGen] encoder, falling back to [Bv64Gen] only on an
    operator [IntGen] cannot express. UNKNOWN maps to [false] for both,
    the conservative reading. *)

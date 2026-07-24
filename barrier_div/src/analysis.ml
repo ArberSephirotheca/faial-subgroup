@@ -66,7 +66,7 @@ module Property = struct
      threads of the same group" for Barrier_div; nothing for the others. *)
   let goal_precondition : t -> Exp.bexp = function
     | Well_sync | Missing_participants -> Bool true
-    | Barrier_div -> Exp.thread_distinct Variable.tid_list
+    | Barrier_div -> Exp.is_thread_distinct Variable.tid_list
 end
 
 (* Path-condition state carried as we walk the kernel body.
@@ -263,7 +263,7 @@ module Proj = struct
             index = List.map (nexp locals t) index;
             operation = Protocols.Atomic.Operation.map (nexp locals t) operation;
           }
-    | ThreadUnif e ->
+    | IsThreadUnif e ->
         let _ = t in
         NRel (Eq, nexp locals T1 e, nexp locals T2 e)
 end

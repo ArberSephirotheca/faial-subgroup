@@ -149,7 +149,7 @@ let constants (k : t) =
         (Variable.name x, n) :: kvs
     | BRel (BAnd, b1, b2) -> constants b1 kvs |> constants b2
     | Bool _ | CastBool _ | BNot _ | Pred _ | NRel _ | BRel _ | Distinct _
-    | AtomicResult _ | ThreadUnif _ ->
+    | AtomicResult _ | IsThreadUnif _ ->
         kvs
   in
   constants k.pre []

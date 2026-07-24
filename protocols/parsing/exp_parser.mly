@@ -17,6 +17,7 @@ open Protocols.Exp
 %token QUESTION COLON
 %token CAST_INT CAST_BOOL
 %token <string> PRED
+%token IS_THREAD_UNIF IS_THREAD_DISTINCT
 %token EOF
 
 (* C operator precedence (lowest to highest) *)
@@ -107,13 +108,21 @@ bexp:
   | left=nexp GE_U right=nexp            { NRel (N_rel.Ge Signedness.Unsigned, left, right) }
 
   (* A predicate call. The lexer emits [PRED] for any name registered in
-     [Predicates] (thread-uniformity [__uniform_int] / [__distinct_int],
-     [nonneg], [bvumul_noovfl], [pow2], [uintN], ...), keeping it distinct
-     from a plain [IDENT] function call, which stays a polyadic [NCall] in
-     [nexp]. [Predicates.b_inline] lowers each [Pred] to its body (e.g.
-     [__uniform_int(e)] to the cross-thread [e$T1 == e$T2] axiom). *)
+     [Predicates] ([nonneg], [bvumul_noovfl], [pow2], [uintN], ...),
+     keeping it distinct from a plain [IDENT] function call, which stays a
+     polyadic [NCall] in [nexp]. [Predicates.b_inline] lowers each [Pred]
+     to its body. *)
   | name=PRED LPAREN args=separated_nonempty_list(COMMA, nexp) RPAREN
                                          { Pred (name, args) }
+
+  (* The thread-uniformity intrinsics. These are the surface syntax for
+     the cross-thread primitive, so they parse straight into
+     [IsThreadUnif] rather than going through [Predicates]; the unary
+     arity is enforced here instead of at lowering time. *)
+  | IS_THREAD_UNIF LPAREN arg=nexp RPAREN
+                                         { is_thread_unif arg }
+  | IS_THREAD_DISTINCT LPAREN arg=nexp RPAREN
+                                         { BNot (is_thread_unif arg) }
 
   (* Boolean binary operators *)
   | left=bexp L_AND right=bexp           { BRel (B_rel.BAnd, left, right) }

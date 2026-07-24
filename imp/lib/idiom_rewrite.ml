@@ -54,9 +54,9 @@ and rewrite_bexp (rules : Exp_match.rule list) (b : bexp) : bexp * bexp list =
   | Distinct args ->
       let args', es = rewrite_nexp_list rules args in
       ((if args' == args then b else Distinct args'), es)
-  | ThreadUnif a ->
+  | IsThreadUnif a ->
       let a', es = rewrite_nexp rules a in
-      ((if a' == a then b else ThreadUnif a'), es)
+      ((if a' == a then b else IsThreadUnif a'), es)
   | AtomicResult _ -> (b, [])
 
 and rewrite_nexp_list (rules : Exp_match.rule list) (xs : nexp list) :

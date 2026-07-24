@@ -57,9 +57,9 @@ let accepts : unit Alcotest.test_case list =
     ok "binder=nex_prev: nex_prev >= 0" (mk ~binder:"nex_prev" "nex_prev >= 0");
     (* registered predicates parse as boolean calls in the bexp:
        thread-uniformity, its negation, and the bvumul overflow guard *)
-    ok "binder=max_expert: __uniform_int(max_expert)"
-      (mk ~binder:"max_expert" "__uniform_int(max_expert)");
-    ok "binder=x: __distinct_int(x)" (mk ~binder:"x" "__distinct_int(x)");
+    ok "binder=max_expert: __is_thread_unif(max_expert)"
+      (mk ~binder:"max_expert" "__is_thread_unif(max_expert)");
+    ok "binder=x: __is_thread_distinct(x)" (mk ~binder:"x" "__is_thread_distinct(x)");
     ok "kernel=k: bvumul_noovfl(a, b)" (mk ~kernel:"k" "bvumul_noovfl(a, b)");
   ]
 

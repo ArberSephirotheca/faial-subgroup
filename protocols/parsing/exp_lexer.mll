@@ -73,12 +73,18 @@ rule read = parse
   | "int"                 { CAST_INT }
   | "bool"                { CAST_BOOL }
 
-  (* Identifiers (C-style + dots + dollar signs). A name registered in
-     [Predicates] (e.g. [__uniform_int], [__distinct_int], [nonneg],
-     [bvumul_noovfl]) lexes as [PRED] so the grammar turns a call into a
-     boolean [Pred] node; every other name is a plain [IDENT]. *)
+  (* Identifiers (C-style + dots + dollar signs). The thread-uniformity
+     intrinsics lex as their own tokens so the grammar builds an
+     [IsThreadUnif] node directly. A name registered in [Predicates]
+     (e.g. [nonneg], [bvumul_noovfl]) lexes as [PRED] so the grammar
+     turns a call into a boolean [Pred] node; every other name is a
+     plain [IDENT]. *)
   | ['a'-'z' 'A'-'Z' '_' '$']['a'-'z' 'A'-'Z' '_' '.' '$' '0'-'9']* as id
-      { if Protocols.Predicates.supported id then PRED(id) else IDENT(id) }
+      { if String.equal id Protocols.Exp.is_thread_unif_name then IS_THREAD_UNIF
+        else if String.equal id Protocols.Exp.is_thread_distinct_name then
+          IS_THREAD_DISTINCT
+        else if Protocols.Predicates.supported id then PRED(id)
+        else IDENT(id) }
 
   (* Punctuation *)
   | '('                   { LPAREN }

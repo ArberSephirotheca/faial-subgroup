@@ -192,7 +192,7 @@ let rec bexp_to_coq (b : bexp) : (string, error) Result.t =
   | BNot b ->
       let* b_s = bexp_to_coq b in
       Ok (Printf.sprintf "(neg %s)" b_s)
-  | (CastBool _ | Pred _ | Distinct _ | AtomicResult _ | ThreadUnif _) as e ->
+  | (CastBool _ | Pred _ | Distinct _ | AtomicResult _ | IsThreadUnif _) as e ->
       Error ("unsupported bexp: " ^ Exp.b_to_string e)
 
 (** {1 Range classification}

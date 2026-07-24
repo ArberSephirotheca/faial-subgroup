@@ -133,7 +133,7 @@ and free_vars_b (acc : VarSet.t) : Infer_exp.b -> VarSet.t = function
   | BRel (_, l, r) -> free_vars (free_vars acc l) r
   | BNot e -> free_vars acc e
   | Pred (_, es) -> List.fold_left free_vars acc es
-  | ThreadUnif e -> free_vars acc e
+  | IsThreadUnif e -> free_vars acc e
 
 and free_vars (acc : VarSet.t) : Infer_exp.t -> VarSet.t = function
   | NExp n -> free_vars_n acc n

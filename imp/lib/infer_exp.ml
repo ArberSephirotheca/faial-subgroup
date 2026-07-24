@@ -15,7 +15,7 @@ and b =
   | BRel of B_rel.t * t * t
   | BNot of t
   | Pred of string * t list
-  | ThreadUnif of t
+  | IsThreadUnif of t
 
 and t = NExp of n | BExp of b | Unknown of string
 
@@ -53,7 +53,7 @@ and to_b_string : b -> string = function
   | BNot e -> "!(" ^ to_string e ^ ")"
   | Pred (o, es) ->
       o ^ "(" ^ String.concat ", " (List.map to_string es) ^ ")"
-  | ThreadUnif e -> "thread_unif(" ^ to_string e ^ ")"
+  | IsThreadUnif e -> "thread_unif(" ^ to_string e ^ ")"
 
 let n_bin (o : N_binary.t) (e1 : t) (e2 : t) : n = Binary (o, e1, e2)
 let plus : t -> t -> n = n_bin (Plus Signedness.Signed)
@@ -64,8 +64,8 @@ let max (e1 : t) (e2 : t) : n = NIf (BExp (gt e1 e2), e1, e2)
 let or_ (e1 : t) (e2 : t) : b = BRel (BOr, e1, e2)
 let not_ (e : t) : b = BNot e
 let n_eq (e1 : t) (e2 : t) : b = NRel (Eq, e1, e2)
-let thread_equal (e : t) : b = ThreadUnif e
-let thread_distinct (e : t) : b = BNot (BExp (ThreadUnif e))
+let is_thread_unif (e : t) : b = IsThreadUnif e
+let is_thread_distinct (e : t) : b = BNot (BExp (IsThreadUnif e))
 let num (n : int) : t = NExp (Num n)
 let bool (b : bool) : t = BExp (Bool b)
 let unknown (lbl : string) : t = Unknown lbl
@@ -92,7 +92,7 @@ and subst_b (f : Variable.t -> t option) : b -> b = function
   | BRel (o, e1, e2) -> BRel (o, subst f e1, subst f e2)
   | BNot e -> BNot (subst f e)
   | Pred (o, es) -> Pred (o, List.map (subst f) es)
-  | ThreadUnif e -> ThreadUnif (subst f e)
+  | IsThreadUnif e -> IsThreadUnif (subst f e)
 
 let rec free_names (e : t) (acc : Variable.Set.t) : Variable.Set.t =
   match e with
@@ -113,7 +113,7 @@ and free_names_b (b : b) (acc : Variable.Set.t) : Variable.Set.t =
   match b with
   | Bool _ -> acc
   | NRel (_, e1, e2) | BRel (_, e1, e2) -> free_names e1 (free_names e2 acc)
-  | BNot e | ThreadUnif e -> free_names e acc
+  | BNot e | IsThreadUnif e -> free_names e acc
   | Pred (_, es) -> List.fold_left (fun acc e -> free_names e acc) acc es
 
 type 'a state = (Variable.Set.t, 'a) State.t
@@ -177,9 +177,9 @@ and to_bexp (e : t) : Exp.bexp state =
       | Pred (x, ns) ->
           let* ns = State.list_map to_nexp ns in
           return (Exp.Pred (x, ns))
-      | ThreadUnif n ->
+      | IsThreadUnif n ->
           let* n = to_nexp n in
-          return (Exp.ThreadUnif n))
+          return (Exp.IsThreadUnif n))
   | NExp _ ->
       let* n = to_nexp e in
       return (Exp.cast_bool n)

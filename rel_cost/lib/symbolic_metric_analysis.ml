@@ -47,7 +47,7 @@ module Proj = struct
             index = List.map (fun n -> proj_n n ctx) index;
             operation = Atomic.Operation.map (fun n -> proj_n n ctx) operation;
           }
-    | ThreadUnif e -> ThreadUnif (proj_n e ctx)
+    | IsThreadUnif e -> IsThreadUnif (proj_n e ctx)
 
   (*
     General algorithm to replicate an element as a list of elements
@@ -787,9 +787,9 @@ and b_inline_cost : bexp -> bexp state = function
       let* index = State.list_map n_inline_cost index in
       let* operation = Atomic.Operation.map_state n_inline_cost operation in
       return (AtomicResult { target; array; index; operation })
-  | ThreadUnif e ->
+  | IsThreadUnif e ->
       let* e = n_inline_cost e in
-      return (ThreadUnif e)
+      return (IsThreadUnif e)
 
 module ProofResult = struct
   type t =

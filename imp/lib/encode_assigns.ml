@@ -115,7 +115,7 @@ and besize (sizes : int Variable.Map.t) (b : Exp.bexp) : int =
   | BNot b -> 1 + besize sizes b
   | Pred (_, es) -> List.fold_left (fun a e -> a + esize sizes e) 1 es
   | Distinct es -> List.fold_left (fun a e -> a + esize sizes e) 1 es
-  | ThreadUnif e -> 1 + esize sizes e
+  | IsThreadUnif e -> 1 + esize sizes e
   | AtomicResult _ -> 1
 
 let from_scoped ?(infer_cond_bound = default_infer_cond_bound)

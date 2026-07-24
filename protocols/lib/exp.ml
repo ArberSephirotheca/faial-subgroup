@@ -25,7 +25,7 @@ and bexp =
       index : nexp list;
       operation : nexp Atomic.Operation.t;
     }
-  | ThreadUnif of nexp
+  | IsThreadUnif of nexp
 
 
 
@@ -87,7 +87,7 @@ and bexp =
         let@ () = Variable.compare a1 a2 in
         let@ () = List.compare n_compare i1 i2 in
         Atomic.Operation.compare n_compare op1 op2
-    | ThreadUnif e1, ThreadUnif e2 -> n_compare e1 e2
+    | IsThreadUnif e1, IsThreadUnif e2 -> n_compare e1 e2
     | Bool _, _ -> -1
     | _, Bool _ -> 1
     | NRel _, _ -> -1
@@ -148,7 +148,7 @@ and b_eval_res (b : bexp) : (bool, string) Result.t =
       (* You'll implement this - placeholder for now *)
       Error "Distinct evaluation not implemented yet"
   | AtomicResult _ -> Error "b_eval: atomic_result"
-  | ThreadUnif _ -> Error "b_eval: thread_unif"
+  | IsThreadUnif _ -> Error "b_eval: thread_unif"
 
 let n_eval_opt (n : nexp) : int option = n_eval_res n |> Result.to_option
 let b_eval_opt (b : bexp) : bool option = b_eval_res b |> Result.to_option
@@ -386,10 +386,20 @@ let rec b_and_ex l =
 let rec b_or_ex l =
   match l with [] -> Bool true | [ x ] -> x | x :: l -> b_or x (b_or_ex l)
 
-let thread_eq (e : nexp) : bexp = ThreadUnif e
+let is_thread_unif (e : nexp) : bexp = IsThreadUnif e
 
-let thread_distinct (idx : Variable.t list) : bexp =
-  b_or_ex (List.map (fun x -> b_not (thread_eq (Var x))) idx)
+let is_thread_distinct (idx : Variable.t list) : bexp =
+  b_or_ex (List.map (fun x -> b_not (is_thread_unif (Var x))) idx)
+
+let is_thread_unif_name : string = "__is_thread_unif"
+let is_thread_distinct_name : string = "__is_thread_distinct"
+
+(* Source-level spelling of the uniformity annotations. Both frontends
+   recognise these names and build [IsThreadUnif] directly, so the
+   annotation is never carried as a [Predicates.t]. *)
+let is_uniformity_intrinsic (name : string) : bool =
+  String.equal name is_thread_unif_name
+  || String.equal name is_thread_distinct_name
 
 let rec n_bin_split (o : N_binary.t) : nexp -> nexp list = function
   | Binary (o', e1, e2) when o' = o -> n_bin_split o e1 @ n_bin_split o e2
@@ -427,7 +437,7 @@ and b_fold f e a =
       let a = f array a in
       let a = List.fold_left (fun a e -> n_fold f e a) a index in
       Atomic.Operation.fold (fun e a -> n_fold f e a) operation a
-  | ThreadUnif e -> n_fold f e a
+  | IsThreadUnif e -> n_fold f e a
 
 let n_free_names : nexp -> Variable.Set.t -> Variable.Set.t =
   n_fold Variable.Set.add
@@ -460,7 +470,7 @@ and b_exists (f : Variable.t -> bool) : bexp -> bool = function
       f target || f array
       || List.exists (n_exists f) index
       || Atomic.Operation.exists (n_exists f) operation
-  | ThreadUnif e -> n_exists f e
+  | IsThreadUnif e -> n_exists f e
 
 (* Checks if variable [x] is in the given expression *)
 let n_mem (x : Variable.t) : nexp -> bool = n_exists (Variable.equal x)
@@ -490,7 +500,7 @@ let rec b_map (f : nexp -> nexp) : bexp -> bexp = function
           index = List.map f index;
           operation = Atomic.Operation.map f operation;
         }
-  | ThreadUnif e -> ThreadUnif (f e)
+  | IsThreadUnif e -> IsThreadUnif (f e)
 
 let reset_variable_kind_n ~kernel_parameters ~loop_variables : nexp -> nexp =
   let reset_v = Variable.reset_kind ~kernel_parameters ~loop_variables in
@@ -550,12 +560,12 @@ and b_to_string : bexp -> string = function
       ^ Atomic.Operation.to_string operation
       ^ (if op_args = "" then "" else "(" ^ op_args ^ ")")
       ^ ")"
-  | ThreadUnif e -> "thread_unif(" ^ n_to_string e ^ ")"
+  | IsThreadUnif e -> "thread_unif(" ^ n_to_string e ^ ")"
 
 and b_par (b : bexp) : string =
   match b with
   | Pred _ | CastBool _ | Bool _ | BNot _ | Distinct _ | AtomicResult _
-  | ThreadUnif _ ->
+  | IsThreadUnif _ ->
       b_to_string b
   | BRel _ | NRel _ -> "(" ^ b_to_string b ^ ")"
 
@@ -564,7 +574,7 @@ let b_to_s : bexp -> Indent.t list =
     let open Indent in
     match b with
     | NRel _ | Bool _ | BNot _ | CastBool _ | Pred _ | Distinct _
-    | AtomicResult _ | ThreadUnif _ ->
+    | AtomicResult _ | IsThreadUnif _ ->
         [ Line (b_to_string b) ]
     | BRel (o, _, _) ->
         let op = B_rel.to_string o in

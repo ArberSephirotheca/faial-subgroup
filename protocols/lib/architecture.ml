@@ -65,7 +65,7 @@ module Defaults = struct
         |> Variable.Set.union Variable.gdim_set
         |> Params.from_set C_type.unsigned_int;
       locals = Variable.tid_set |> Params.from_set C_type.unsigned_int;
-      distinct : bexp = thread_distinct Variable.tid_list;
+      distinct : bexp = is_thread_distinct Variable.tid_list;
     }
 
   let grid : t =
@@ -79,7 +79,7 @@ module Defaults = struct
         Variable.bid_set
         |> Variable.Set.union Variable.tid_set
         |> Params.from_set C_type.unsigned_int;
-      distinct : bexp = thread_distinct Variable.bid_list;
+      distinct : bexp = is_thread_distinct Variable.bid_list;
     }
 
   let to_bexp (e : t) : bexp = b_and e.distinct base

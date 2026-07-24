@@ -106,7 +106,7 @@ and b_eval_res (b : Exp.bexp) (ctx : t) : (BMap.t, string) Result.t =
   | Pred (x, _) -> Error ("cannot evaluate predicate: " ^ x)
   | Distinct _ -> Error "cannot evaluate distinct"
   | AtomicResult _ -> Error "cannot evaluate atomic_result"
-  | ThreadUnif _ -> Error "cannot evaluate thread_unif"
+  | IsThreadUnif _ -> Error "cannot evaluate thread_unif"
 
 let n_eval (e : Exp.nexp) (ctx : t) : NMap.t = n_eval_res e ctx |> Result.get_ok
 let b_eval (e : Exp.bexp) (ctx : t) : BMap.t = b_eval_res e ctx |> Result.get_ok

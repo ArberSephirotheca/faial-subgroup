@@ -147,7 +147,7 @@ and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
       let index = List.map (project_n locals t) index in
       let operation = Atomic.Operation.map (project_n locals t) operation in
       AtomicResult { target; array; index; operation }
-  | ThreadUnif e ->
+  | IsThreadUnif e ->
       (* Expand to [e_T1 = e_T2]; the equality is symmetric so the
          active task [t] doesn't affect the encoding. *)
       let _ = t in
@@ -156,10 +156,6 @@ and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
 let project_access (locals : Variable.Set.t) (t : Task.t) (ca : CondAccess.t) :
     CondAccess.t =
   let inline_acc (a : Access.t) = Access.map (project_n locals t) a in
-  (* Inline cross-thread predicates ([__uniform_int] etc.) in the
-     access condition before projection so [project_b]'s
-     [ThreadUnif] case expands them to the per-pair equality. See
-     the analogous comment on [project_pre]. *)
   let cond = Predicates.b_inline ca.cond in
   { access = inline_acc ca.access; cond = project_b locals t cond }
 
@@ -168,16 +164,7 @@ let project_access (locals : Variable.Set.t) (t : Task.t) (ca : CondAccess.t) :
    copy rather than a single shared variable. Without this, the
    accesses' [linearIndex$T1]/[$T2] are free in the SMT while only
    a shared [linearIndex] from [pre] is constrained, and Z3 finds
-   spurious same-address witnesses.
-
-   Inline cross-thread predicates ([__uniform_int] /
-   [__distinct_int]) before projecting, so [project_b]'s
-   [ThreadUnif] case expands them to the per-pair equality
-   [e$T1 == e$T2] (or its negation). Leaving the predicate as
-   [Pred] until after projection would let [Predicates.b_inline]
-   re-introduce a [ThreadUnif] downstream of [strip_cross_thread]
-   with already-projected inner [Var]s; the bit-vector codegen
-   rejects bare [ThreadUnif] nodes via [Gen_z3.b_to_expr]. *)
+   spurious same-address witnesses. *)
 let project_pre (locals : Variable.Set.t) (pre : bexp) : bexp =
   let pre = Predicates.b_inline pre in
   b_and (project_b locals Task1 pre) (project_b locals Task2 pre)
@@ -227,7 +214,7 @@ module AtomicAxioms = struct
     | Pred (_, ns) -> List.fold_left collect_n acc ns
     | CastBool n -> collect_n acc n
     | Distinct ns -> List.fold_left collect_n acc ns
-    | ThreadUnif n -> collect_n acc n
+    | IsThreadUnif n -> collect_n acc n
 
   and collect_n (acc : marker list) (n : nexp) : marker list =
     match n with
@@ -650,12 +637,12 @@ module Proof = struct
       |> List.map (SymAccess.to_bexp ~assign_index:false t)
       |> b_or_ex
     in
-    (* No explicit [thread_distinct] term: [Kernel.apply_arch]
+    (* No explicit [is_thread_distinct] term: [Kernel.apply_arch]
        folds the arch's [distinct] clause into [k.pre] upstream,
        which [Phasesplit] then wraps as [Cond (pre, u)] over the
        kernel's unsynced code. Each [Flatacc.CondAccess.cond]
-       therefore already carries [thread_distinct], and
-       [SymAccess.from_cond_access] expands its [ThreadUnif]
+       therefore already carries [is_thread_distinct], and
+       [SymAccess.from_cond_access] expands its [IsThreadUnif]
        primitives per task — so [assign_accesses Task1] and
        [assign_accesses Task2] each carry a properly-projected
        distinct constraint without an additional explicit term. *)

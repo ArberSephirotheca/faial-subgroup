@@ -60,30 +60,19 @@ let all : t list =
         | [ v ] -> NRel (Ge Signedness.Signed, v, Num 0)
         | _ -> failwith "nonneg: expects exactly 1 argument") }
   in
-  (* C-call recognisers: the d_to_imp dispatcher consults this registry
-     by the source-level function name and emits the [body] result
-     directly, so the C name never appears as a [Pred] node. *)
+  (* C-call recogniser: [d_to_imp] lifts a call to this name into a
+     [Pred] node whose body lowers at [b_inline] time. The thread
+     uniformity intrinsics are not registered here: they are parsed
+     straight into [IsThreadUnif], so no predicate body can rebuild a
+     cross-thread primitive downstream of [strip_cross_thread]. *)
   let is_pow2 : t =
     { name = "__is_pow2";
       body = (function
         | [ n ] -> Pred ("pow2", [ n ])
         | _ -> failwith "__is_pow2: expects exactly 1 argument") }
   in
-  let uniform_int : t =
-    { name = "__uniform_int";
-      body = (function
-        | [ n ] -> ThreadUnif n
-        | _ -> failwith "__uniform_int: expects exactly 1 argument") }
-  in
-  let distinct_int : t =
-    { name = "__distinct_int";
-      body = (function
-        | [ n ] -> BNot (ThreadUnif n)
-        | _ -> failwith "__distinct_int: expects exactly 1 argument") }
-  in
   [ pow ~base:2; pow ~base:3; mk_uint 32; mk_uint 16; mk_uint 8;
-    bvumul_noovfl; nonneg;
-    is_pow2; uniform_int; distinct_int ]
+    bvumul_noovfl; nonneg; is_pow2 ]
 
 let all_db : t StringMap.t =
   List.fold_left (fun m (p : t) -> StringMap.add p.name p m) StringMap.empty all
@@ -112,7 +101,7 @@ let get_predicates (b : bexp) : t list =
           List.fold_left (fun acc e -> get_names_n e acc) preds index
         in
         Atomic.Operation.fold (fun e acc -> get_names_n e acc) operation preds
-    | ThreadUnif e -> get_names_n e preds
+    | IsThreadUnif e -> get_names_n e preds
   and get_names_n (n : nexp) (ns : StringSet.t) : StringSet.t =
     match n with
     | Var _ | Num _ -> ns
@@ -163,10 +152,10 @@ and b_inline : bexp -> bexp = function
           index = List.map n_inline index;
           operation = Atomic.Operation.map n_inline operation;
         }
-  | ThreadUnif e -> ThreadUnif (n_inline e)
+  | IsThreadUnif e -> IsThreadUnif (n_inline e)
 
 (* Replaces every cross-thread primitive ([AtomicResult],
-   [ThreadUnif]) with a fresh stable boolean encoded as
+   [IsThreadUnif]) with a fresh stable boolean encoded as
    [CastBool (Var "@<kind>:...")]. Each distinct primitive maps
    to the same variable so occurrences stay correlated within a
    query; distinct primitives stay independent. Used by
@@ -210,6 +199,6 @@ let strip_cross_thread : bexp -> bexp =
     | Distinct ns -> Distinct (List.map rn ns)
     | AtomicResult { target; operation; _ } ->
         CastBool (fresh_atomic target operation)
-    | ThreadUnif e -> CastBool (fresh_thread_unif e)
+    | IsThreadUnif e -> CastBool (fresh_thread_unif e)
   in
   rb

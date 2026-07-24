@@ -48,7 +48,7 @@ and eval_b (lookup : string -> int option) : bexp -> bool option = function
       let ints = List.map Option.get vs in
       Some (List.length (List.sort_uniq Int.compare ints) = List.length ints)
   | AtomicResult _ -> None
-  | ThreadUnif _ -> None
+  | IsThreadUnif _ -> None
 
 let launch_config_set : Variable.Set.t =
   let open Variable in
