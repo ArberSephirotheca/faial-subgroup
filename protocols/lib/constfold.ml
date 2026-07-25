@@ -40,16 +40,15 @@ let rec n_opt (a : nexp) : nexp =
   | Var _ | Num _ -> a
   | NCall (x, args) ->
       let folded = List.map n_opt args in
-      (* Symmetric to [b_opt]'s [Pred] arm below: when every argument
-         folded to a [Num], delegate to the [Functions] registry so
-         calls like [log2(8)] collapse to [Num 3]. Otherwise leave
-         [NCall (x, folded)] so the Z3 encoder can treat it as a UF
-         application. *)
-      if List.for_all (function Num _ -> true | _ -> false) folded then
-        (match Functions.call_opt x folded with
-         | Some n -> n
-         | None -> NCall (x, folded))
-      else NCall (x, folded)
+      (* Symmetric to [b_opt]'s [Pred] arm below: delegate to the
+         [Functions] registry, which lowers an entry that has a body
+         and folds a call whose arguments are all literal, so [min(i,
+         j)] becomes an [NIf] and [log2(8)] becomes [Num 3]. A [None]
+         leaves [NCall (x, folded)] for the Z3 encoder to treat as a
+         UF application. *)
+      (match Functions.call_opt x folded with
+       | Some n -> n
+       | None -> NCall (x, folded))
   | ReadResult r -> ReadResult { r with args = List.map n_opt r.args }
   | Unary (BitNot, e) -> n_bit_not (n_opt e)
   | Unary (Negate, e) -> n_uminus (n_opt e)

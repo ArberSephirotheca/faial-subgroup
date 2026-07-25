@@ -571,6 +571,42 @@ let tests =
     (* The companion at an int element type, whose range spans more than
      the stride, so the range must not clear this one. *)
     ("racy-read-elem-range.cu", [], 1);
+    (* An entry with a body lowers to that body at every application,
+     not only where every argument is a literal. Leaving min an
+     uninterpreted function makes its result an unbounded integer, which
+     is the same false alarm a missing declaration produces. *)
+    ("drf-min-rewrite.cu", [], 0);
+    (* The companion: the body has to be min's own graph, since
+     rewriting the call to its second argument, to a constant or to max
+     clears this one. *)
+    ("racy-min-rewrite.cu", [], 1);
+    (* The same rung against max, whose body is the mirror conditional. *)
+    ("drf-max-rewrite.cu", [], 0);
+    ("racy-max-rewrite.cu", [], 1);
+    (* The third entry with a body, and the one whose body divides. *)
+    ("drf-divup-rewrite.cu", [], 0);
+    (* A registered name applied at an arity the entry does not declare
+     is a different function: it gets neither the body nor the
+     declaration, and applying the body regardless raises out of it. *)
+    ("racy-divup-arity.cu", [], 1);
+    (* The third entry carrying a 0..32 result, whose companion is
+     racy-clz-range.cu. *)
+    ("drf-popc-range.cu", [], 0);
+    (* The 64-bit intrinsics count over a wider word, so their result
+     range is 0..64 and a stride of 128 is what separates two threads. *)
+    ("drf-clzll-range.cu", [], 0);
+    (* The companion at a stride of 64, the exact width of that range,
+     which fails if the 64-bit entries inherit the 32-bit range. *)
+    ("racy-clzll-range.cu", [], 1);
+    (* The other two 64-bit entries, sharing that companion. *)
+    ("drf-ffsll-range.cu", [], 0);
+    ("drf-popcll-range.cu", [], 0);
+    (* A declaration is instantiated once per occurring application, and
+     an application nested inside another is still one of them. Dropping
+     either of the two ranges reports a race. *)
+    ("drf-nested-range.cu", [], 0);
+    (* The companion at a stride of 64, the two ranges summed. *)
+    ("racy-nested-range.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are
