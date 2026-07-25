@@ -131,29 +131,6 @@ let call_opt (name : string) (args : nexp list) : nexp option =
 
 let supported (name : string) : bool = StringMap.mem name all_db
 
-let applications : bexp -> nexp list =
-  let rec b_walk (acc : nexp list) (b : bexp) : nexp list =
-    match b with
-    | Bool _ -> acc
-    | NRel (_, n1, n2) -> n_walk (n_walk acc n1) n2
-    | BRel (_, b1, b2) -> b_walk (b_walk acc b1) b2
-    | BNot b -> b_walk acc b
-    | Pred (_, ns) | Distinct ns -> List.fold_left n_walk acc ns
-    | CastBool n | IsThreadUnif n -> n_walk acc n
-    | AtomicResult { index; operation; _ } ->
-        let acc = List.fold_left n_walk acc index in
-        Atomic.Operation.fold (fun n acc -> n_walk acc n) operation acc
-  and n_walk (acc : nexp list) (n : nexp) : nexp list =
-    match n with
-    | Var _ | Num _ -> acc
-    | Unary (_, e) -> n_walk acc e
-    | Binary (_, n1, n2) -> n_walk (n_walk acc n1) n2
-    | CastInt b -> b_walk acc b
-    | NIf (b, n1, n2) -> n_walk (n_walk (b_walk acc b) n1) n2
-    | NCall (_, args) -> List.fold_left n_walk (n :: acc) args
-  in
-  fun b -> b_walk [] b |> List.sort_uniq n_compare
-
 let postcondition (n : nexp) : bexp option =
   match n with
   | NCall (name, args) -> (
@@ -163,4 +140,4 @@ let postcondition (n : nexp) : bexp option =
   | _ -> None
 
 let add_postconditions (b : bexp) : bexp =
-  applications b |> List.filter_map postcondition |> List.fold_left b_and b
+  b_calls b |> List.filter_map postcondition |> List.fold_left b_and b

@@ -168,12 +168,6 @@ module Code = struct
 
   let subst = ReplacePair.subst
 
-  (* Name used as the uninterpreted-function symbol for loads of
-     [array]. Two loads of [array] at equal indices share this name
-     and therefore agree in the SMT model. *)
-  let uniform_read_name (array : Variable.t) : string =
-    "$read_" ^ Variable.name array
-
   let rec written_arrays (acc : Variable.Set.t) : t -> Variable.Set.t = function
     | Access { array; mode = Write _ | Atomic _; _ } ->
         Variable.Set.add array acc
@@ -214,7 +208,7 @@ module Code = struct
     let read_call (v : Version.t) (array : Variable.t)
         (index : Exp.nexp list) : Exp.nexp =
       Exp.NCall
-        (uniform_read_name array, Exp.Num (Version.get array v) :: index)
+        (Read_symbol.name array, Exp.Num (Version.get array v) :: index)
     in
     let rec rewrite (looped : Variable.Set.t) (v : Version.t) :
         t -> t * Version.t = function

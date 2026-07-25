@@ -102,7 +102,7 @@ let coreach_stream_of (arch : Architecture.t) (app : App.t)
     (k : Kernel.t) : Symbexp.Proof.t Streamutil.stream =
   k
   |> App.translate arch app
-  |> Symbexp.translate_coreach arch
+  |> Symbexp.translate_coreach ~arrays:k.arrays arch
 
 (* Build the single-thread (T1-only) proof stream for one kernel
    under the current [app] state. Each fragment's goal asserts
@@ -114,7 +114,7 @@ let t1_stream_of (arch : Architecture.t) (app : App.t)
     (k : Kernel.t) : Symbexp.Proof.t Streamutil.stream =
   k
   |> App.translate arch app
-  |> Symbexp.translate_t1 arch
+  |> Symbexp.translate_t1 ~arrays:k.arrays arch
 
 (* Build [baseline] or [under-Φ] pair sets from an [app]. The
    precondition stack that drives the SAT outcome of each fragment

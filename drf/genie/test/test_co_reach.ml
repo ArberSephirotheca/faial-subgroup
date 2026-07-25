@@ -229,7 +229,7 @@ let test_drf_vacuous_empty_pairs () =
 let mk_synthetic_pair ~kn ~an ~id : Co_reach.pair =
   let proof =
     Symbexp.Proof.make ~kernel_name:kn ~array_name:an ~id
-      ~accesses:[] ~goal:(Exp.Bool true)
+      ~accesses:[] ~arrays:Variable.Map.empty ~goal:(Exp.Bool true)
   in
   { kernel_name = kn; array_name = an; id; proof }
 

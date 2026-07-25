@@ -443,6 +443,21 @@ module AccessSummary = struct
     ^ "]}"
 end
 
+let add_read_postconditions (arrays : Memory.t Variable.Map.t) (b : bexp) : bexp
+    =
+  let ( let* ) = Option.bind in
+  let bound (n : nexp) : bexp option =
+    match n with
+    | NCall (name, _) ->
+        let* array = Read_symbol.array_of name in
+        let* mem = Variable.Map.find_opt array arrays in
+        let* dom = Memory.int_dom mem in
+        let lo, hi = Int_dom.to_range dom in
+        Some (b_and (n_le (Num lo) n) (n_le n (Num hi)))
+    | _ -> None
+  in
+  b_calls b |> List.filter_map bound |> List.fold_left b_and b
+
 module Proof = struct
   type t = {
     id : int;
@@ -519,10 +534,13 @@ module Proof = struct
       array_name:string ->
       id:int ->
       accesses:AccessSummary.t list ->
+      arrays:Memory.t Variable.Map.t ->
       goal:bexp ->
       t =
-   fun ~kernel_name ~array_name ~id ~accesses ~goal ->
-    let goal = Functions.add_postconditions goal in
+   fun ~kernel_name ~array_name ~id ~accesses ~arrays ~goal ->
+    let goal =
+      goal |> Functions.add_postconditions |> add_read_postconditions arrays
+    in
     let goal =
       Constfold.b_opt goal
       (* Optimize the output expression *)
@@ -654,8 +672,8 @@ module Proof = struct
         n_le (Gen.access_id Task1) (Gen.access_id Task2);
       ]
 
-  let from_flat_coreach (arch : Architecture.t) (proof_id : int)
-      (k : Flatacc.Kernel.t) : t =
+  let from_flat_coreach ?(arrays = Variable.Map.empty)
+      (arch : Architecture.t) (proof_id : int) (k : Flatacc.Kernel.t) : t =
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
@@ -684,7 +702,7 @@ module Proof = struct
         k.code
     in
     make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
-      ~accesses
+      ~accesses ~arrays
 
   (* Single-thread variant of [from_code_coreach]: builds the
      one-thread existential. The result asserts
@@ -710,8 +728,8 @@ module Proof = struct
     in
     assign_accesses Task1
 
-  let from_flat_t1 (arch : Architecture.t) (proof_id : int)
-      (k : Flatacc.Kernel.t) : t =
+  let from_flat_t1 ?(arrays = Variable.Map.empty) (arch : Architecture.t)
+      (proof_id : int) (k : Flatacc.Kernel.t) : t =
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
@@ -740,10 +758,11 @@ module Proof = struct
         k.code
     in
     make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
-      ~accesses
+      ~accesses ~arrays
 
-  let from_flat ?(memory_model = Memory_model.default) (arch : Architecture.t)
-      (proof_id : int) (k : Flatacc.Kernel.t) : t =
+  let from_flat ?(memory_model = Memory_model.default)
+      ?(arrays = Variable.Map.empty) (arch : Architecture.t) (proof_id : int)
+      (k : Flatacc.Kernel.t) : t =
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
@@ -776,7 +795,7 @@ module Proof = struct
         k.code
     in
     make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
-      ~accesses
+      ~accesses ~arrays
 end
 
 let add_rel_index (o : N_rel.t) (idx : int list) (s : Proof.t Streamutil.stream)
@@ -786,17 +805,18 @@ let add_rel_index (o : N_rel.t) (idx : int list) (s : Proof.t Streamutil.stream)
 let add ~tid ~bid : Proof.t Streamutil.stream -> Proof.t Streamutil.stream =
   Streamutil.map (Proof.add ~tid ~bid)
 
-let translate ?(memory_model = Memory_model.default) (arch : Architecture.t)
+let translate ?(memory_model = Memory_model.default)
+    ?(arrays = Variable.Map.empty) (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
-  Streamutil.mapi (Proof.from_flat ~memory_model arch) stream
+  Streamutil.mapi (Proof.from_flat ~memory_model ~arrays arch) stream
 
-let translate_coreach (arch : Architecture.t)
+let translate_coreach ?(arrays = Variable.Map.empty) (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
-  Streamutil.mapi (Proof.from_flat_coreach arch) stream
+  Streamutil.mapi (Proof.from_flat_coreach ~arrays arch) stream
 
-let translate_t1 (arch : Architecture.t)
+let translate_t1 ?(arrays = Variable.Map.empty) (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
-  Streamutil.mapi (Proof.from_flat_t1 arch) stream
+  Streamutil.mapi (Proof.from_flat_t1 ~arrays arch) stream
 
 (* ------------------- SERIALIZE ---------------------- *)
 

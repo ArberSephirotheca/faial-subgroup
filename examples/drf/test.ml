@@ -563,6 +563,14 @@ let tests =
     ("racy-clz-range.cu", [], 1);
     (* The second declared range, against __ffs. *)
     ("drf-ffs-range.cu", [], 0);
+    (* Reads are the second class of uninterpreted function, and their
+     result range comes from the array's element type. Without it the
+     loaded unsigned char is an unbounded integer and the stride of 256
+     does not separate two threads. *)
+    ("drf-read-elem-range.cu", [], 0);
+    (* The companion at an int element type, whose range spans more than
+     the stride, so the range must not clear this one. *)
+    ("racy-read-elem-range.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are
