@@ -553,6 +553,16 @@ let tests =
      array, or one left named after the callee's parameter, merges the two
      loads and clears the race. *)
     ("racy-read-two-arrays.cu", [], 1);
+    (* An uninterpreted function's result carries the range its
+     declaration states. Without it __clz is an unbounded integer and a
+     stride of 64 does not separate two threads, so the kernel reports a
+     race it does not have. *)
+    ("drf-clz-range.cu", [], 0);
+    (* The companion: at a stride of 16 the same range no longer
+     separates the threads, so the range must not clear this one. *)
+    ("racy-clz-range.cu", [], 1);
+    (* The second declared range, against __ffs. *)
+    ("drf-ffs-range.cu", [], 0);
   ]
 
 (* These are kernels that are being documented, but are

@@ -522,6 +522,7 @@ module Proof = struct
       goal:bexp ->
       t =
    fun ~kernel_name ~array_name ~id ~accesses ~goal ->
+    let goal = Functions.add_postconditions goal in
     let goal =
       Constfold.b_opt goal
       (* Optimize the output expression *)
