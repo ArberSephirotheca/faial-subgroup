@@ -446,18 +446,6 @@ module AccessSummary = struct
     ^ "]}"
 end
 
-let add_read_postconditions (b : bexp) : bexp =
-  let bound (n : nexp) : bexp option =
-    match n with
-    | ReadResult r ->
-        C_type.to_int_dom r.ty
-        |> Option.map (fun d ->
-            let lo, hi = Int_dom.to_range d in
-            b_and (n_le (Num lo) n) (n_le n (Num hi)))
-    | _ -> None
-  in
-  b_calls b |> List.filter_map bound |> List.fold_left b_and b
-
 module Proof = struct
   type t = {
     id : int;
@@ -466,11 +454,12 @@ module Proof = struct
     preds : Predicates.t list;
     decls : string list;
     labels : (string * string) list;
-    goal : bexp;
+    formula : Formula.t;
     accesses : AccessSummary.t list;
   }
 
-  let add_goal (b : bexp) (p : t) : t = { p with goal = b_and p.goal b }
+  let add_goal (b : bexp) (p : t) : t =
+    { p with formula = Formula.map_goal (fun g -> b_and g b) p.formula }
 
   let add_rel_index (o : N_rel.t) (idx : int list) (p : t) : t =
     let idx_eq =
@@ -537,15 +526,9 @@ module Proof = struct
       goal:bexp ->
       t =
    fun ~kernel_name ~array_name ~id ~accesses ~goal ->
-    let goal =
-      goal |> Functions.add_postconditions |> add_read_postconditions
-    in
-    let goal =
-      Constfold.b_opt goal
-      (* Optimize the output expression *)
-    in
+    let formula = Formula.make (Constfold.b_opt goal) in
     let fns =
-      Exp.b_free_names goal Variable.Set.empty |> Variable.Set.elements
+      Formula.free_names formula Variable.Set.empty |> Variable.Set.elements
     in
     let decls = List.map Variable.name fns in
     let labels =
@@ -555,7 +538,7 @@ module Proof = struct
         fns
     in
     let preds = Predicates.get_predicates goal in
-    { id; preds; decls; goal; array_name; kernel_name; labels; accesses }
+    { id; preds; decls; formula; array_name; kernel_name; labels; accesses }
 
   let to_s (p : t) : Indent.t list =
     let open Indent in
@@ -573,7 +556,7 @@ module Proof = struct
         ("accesses: "
         ^ (List.map AccessSummary.to_string p.accesses |> String.concat ", "));
       Line "goal:";
-      Block (b_to_s p.goal);
+      Block (b_to_s (Formula.goal p.formula));
       Line ";";
     ]
 

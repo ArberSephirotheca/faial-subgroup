@@ -389,8 +389,8 @@ let test_translate_coreach_output_shape () =
     true (List.length race = 1);
   let cp = List.hd coreach in
   let rp = List.hd race in
-  let cg = Exp.b_to_string cp.goal in
-  let rg = Exp.b_to_string rp.goal in
+  let cg = Exp.b_to_string (Formula.goal cp.formula) in
+  let rg = Exp.b_to_string (Formula.goal rp.formula) in
   (* mode_spec conflict pattern: race goal contains [$T2$mode !=]
      from the [b_and (n_eq mode1 mode_read) (n_neq mode2 mode_read)]
      clause of [Gen.mode_spec]. Co-reach goal does not. *)
@@ -446,7 +446,7 @@ let test_translate_coreach_output_shape () =
      [IsThreadUnif _] node. *)
   Alcotest.(check bool)
     "co-reach goal has no raw IsThreadUnif _ node (projection eliminated it)"
-    false (bexp_has_thread_unif cp.goal);
+    false (bexp_has_thread_unif (Formula.goal cp.formula));
   Alcotest.(check bool)
     "co-reach goal has projected is_thread_distinct (threadIdx.x$T1 != threadIdx.x$T2)"
     true (str_contains cg "threadIdx.x$T1 != threadIdx.x$T2"

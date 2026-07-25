@@ -112,7 +112,7 @@ let z3_solver : (module Gen_z3.Z3_SOLVER) = (module Gen_z3.Bv64Gen)
 let task_feasible ?(timeout = 0) (pre : bexp) (t : Task.t)
     : [ `Sat | `Unsat | `Unknown of string ] =
   let goal =
-    b_and (b_and pre t.Task.pi) t.delta |> Predicates.b_inline
+    Formula.make (b_and t.Task.pi t.delta) |> Formula.assume pre
   in
   let module S = (val z3_solver) in
   match S.solve ~timeout goal with
@@ -160,7 +160,7 @@ let discharge ?(timeout = 0) ?(pre = Bool true) (_sigma : Sigma.t)
          itself.) *)
       Pass
   | _ ->
-      let goal = goal_of_group_with_pre pre group |> Predicates.b_inline in
+      let goal = Formula.make (goal_of_group_with_pre pre group) in
       let module S = (val z3_solver) in
       match S.solve ~timeout goal with
       | Ok Gen_z3.Solver.Unsat -> Pass

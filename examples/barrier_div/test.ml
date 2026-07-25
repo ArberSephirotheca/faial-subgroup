@@ -109,6 +109,17 @@ let sync_tests : (string * string list * int) list =
     ("decl-under-tid.cu", [ "--check=well-sync" ], 0);
     ("decl-under-tid.cu", [ "--check=barrier-div" ], 1);
     ("decl-under-tid.cu", [ "--check=missing-participants" ], 1);
+    (* clz-range-sync: the barrier's guard is [__clz(t) <= 32], which
+       every thread satisfies because __clz is declared to return a
+       number between 0 and 32. A goal that does not carry the
+       declaration leaves the result an arbitrary integer, lets one
+       thread's exceed 32 while another's does not, and reports the
+       barrier divergent. *)
+    ("clz-range-sync.cu", [ "--check=barrier-div" ], 0);
+    (* clz-range-divergent: the companion at a bound the declared range
+       does not reach, so two threads can straddle it and the
+       divergence is real. *)
+    ("clz-range-divergent.cu", [ "--check=barrier-div" ], 1);
   ]
 
 (* faial-sync-sym is the symbolic-execution variant. On most kernels it

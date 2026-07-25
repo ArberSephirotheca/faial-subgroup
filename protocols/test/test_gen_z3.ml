@@ -20,7 +20,7 @@ let test_optimize_expr_with_variable () : unit =
   (* Test maximizing a variable x with constraint x <= 5 *)
   let x = Variable.from_name "x" in
   let pre = NRel (N_rel.Le Signedness.Signed, Var x, Num 5) in
-  let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize (Var x) in
+  let result = IntGen.optimize_expr ~pre:(Formula.make pre) Optimizer.Strategy.Maximize (Var x) in
   Alcotest.check
     Alcotest.(result (option int) string)
     "maximize x where x <= 5" (Ok (Some 5)) result
@@ -30,7 +30,7 @@ let test_optimize_expr_arithmetic () : unit =
   let x = Variable.from_name "x" in
   let pre = NRel (N_rel.Le Signedness.Signed, Var x, Num 2) in
   let expr = Binary (N_binary.Plus Signedness.Signed, Var x, Num 3) in
-  let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize expr in
+  let result = IntGen.optimize_expr ~pre:(Formula.make pre) Optimizer.Strategy.Maximize expr in
   Alcotest.check
     Alcotest.(result (option int) string)
     "maximize x + 3 where x <= 2" (Ok (Some 5)) result
@@ -39,7 +39,7 @@ let test_optimize_expr_minimize_with_constraint () : unit =
   (* Test minimizing x where x >= 10 *)
   let x = Variable.from_name "x" in
   let pre = NRel (N_rel.Ge Signedness.Signed, Var x, Num 10) in
-  let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Minimize (Var x) in
+  let result = IntGen.optimize_expr ~pre:(Formula.make pre) Optimizer.Strategy.Minimize (Var x) in
   Alcotest.check
     Alcotest.(result (option int) string)
     "minimize x where x >= 10" (Ok (Some 10)) result
@@ -51,7 +51,7 @@ let test_optimize_expr_unsat () : unit =
     BRel
       (B_rel.BAnd, NRel (N_rel.Gt Signedness.Signed, Var x, Num 5), NRel (N_rel.Lt Signedness.Signed, Var x, Num 5))
   in
-  let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize (Var x) in
+  let result = IntGen.optimize_expr ~pre:(Formula.make pre) Optimizer.Strategy.Maximize (Var x) in
   Alcotest.check
     Alcotest.(result (option int) string)
     "contradictory constraints should be unsat" (Ok None) result
@@ -61,7 +61,7 @@ let test_optimize_expr_multiplication () : unit =
   let x = Variable.from_name "x" in
   let pre = NRel (N_rel.Le Signedness.Signed, Var x, Num 3) in
   let expr = Binary (N_binary.Mult Signedness.Signed, Var x, Num 2) in
-  let result = IntGen.optimize_expr ~pre Optimizer.Strategy.Maximize expr in
+  let result = IntGen.optimize_expr ~pre:(Formula.make pre) Optimizer.Strategy.Maximize expr in
   Alcotest.check
     Alcotest.(result (option int) string)
     "maximize x * 2 where x <= 3" (Ok (Some 6)) result
@@ -80,7 +80,7 @@ let test_tactic_fail () : unit =
   let tautology = Bool true in
   [ true; false ]
   |> List.iter (fun debug ->
-      let result = IntGen.solve_with_tactic ~debug Tactic.Fail tautology in
+      let result = IntGen.solve_with_tactic ~debug Tactic.Fail (Formula.make tautology) in
       match result with
       | Error _ -> () (* Expected - tactic should fail *)
       | Ok e ->
@@ -101,11 +101,11 @@ let test_ule_ugt_on_zero () : unit =
   let minus_one = Num (-1) in
   let ugt = NRel (N_rel.Gt Signedness.Unsigned, Var x, minus_one) in
   let sgt = NRel (N_rel.Gt Signedness.Signed, Var x, minus_one) in
-  (match Bv64Gen.solve ugt with
+  (match Bv64Gen.solve (Formula.make ugt) with
   | Ok Solver.Unsat -> ()
   | Ok (Solver.Sat _) -> Alcotest.fail "UGt(x, -1) should be UNSAT"
   | Error msg -> Alcotest.failf "UGt solver error: %s" msg);
-  match Bv64Gen.solve sgt with
+  match Bv64Gen.solve (Formula.make sgt) with
   | Ok (Solver.Sat _) -> ()
   | Ok Solver.Unsat -> Alcotest.fail "Gt(x, -1) should be SAT"
   | Error msg -> Alcotest.failf "Gt solver error: %s" msg
@@ -134,12 +134,12 @@ let test_urshift_vs_rshift_on_high_bit () : unit =
   let claim_unsigned =
     BRel (BAnd, eq_minus_one, NRel (N_rel.Gt Signedness.Signed, shifted_unsigned, zero))
   in
-  (match Bv64Gen.solve claim_signed with
+  (match Bv64Gen.solve (Formula.make claim_signed) with
   | Ok Solver.Unsat -> ()
   | Ok (Solver.Sat _) ->
       Alcotest.fail "RightShift on all-ones stays negative; should be UNSAT"
   | Error msg -> Alcotest.failf "signed shift solver error: %s" msg);
-  match Bv64Gen.solve claim_unsigned with
+  match Bv64Gen.solve (Formula.make claim_unsigned) with
   | Ok (Solver.Sat _) -> ()
   | Ok Solver.Unsat ->
       Alcotest.fail "URightShift on all-ones yields 2^63-1; should be SAT"
@@ -168,12 +168,12 @@ let test_udiv_vs_sdiv_on_minus_one () : unit =
   let claim_unsigned =
     BRel (BAnd, eq_minus_one, NRel (N_rel.Gt Signedness.Signed, div_unsigned, zero))
   in
-  (match Bv64Gen.solve claim_signed with
+  (match Bv64Gen.solve (Formula.make claim_signed) with
   | Ok Solver.Unsat -> ()
   | Ok (Solver.Sat _) ->
       Alcotest.fail "signed bvsdiv(-1, 2) = 0; should be UNSAT"
   | Error msg -> Alcotest.failf "signed div solver error: %s" msg);
-  match Bv64Gen.solve claim_unsigned with
+  match Bv64Gen.solve (Formula.make claim_unsigned) with
   | Ok (Solver.Sat _) -> ()
   | Ok Solver.Unsat ->
       Alcotest.fail "unsigned bvudiv(all-ones, 2) = 2^63-1; should be SAT"
@@ -202,12 +202,12 @@ let test_umod_vs_smod_on_minus_one () : unit =
   let claim_unsigned =
     BRel (BAnd, eq_minus_one, NRel (Eq, mod_unsigned, zero))
   in
-  (match Bv64Gen.solve claim_signed with
+  (match Bv64Gen.solve (Formula.make claim_signed) with
   | Ok Solver.Unsat -> ()
   | Ok (Solver.Sat _) ->
       Alcotest.fail "signed bvsrem(-1, 3) = -1; should be UNSAT for == 0"
   | Error msg -> Alcotest.failf "signed mod solver error: %s" msg);
-  match Bv64Gen.solve claim_unsigned with
+  match Bv64Gen.solve (Formula.make claim_unsigned) with
   | Ok (Solver.Sat _) -> ()
   | Ok Solver.Unsat ->
       Alcotest.fail "unsigned bvurem(2^64-1, 3) = 0; should be SAT"
@@ -248,12 +248,12 @@ let test_medianfilter_overflow_shape () : unit =
   let claim_unsigned =
     BRel (BAnd, pre_bounds, NRel (N_rel.Ge Signedness.Unsigned, Var x, xy_unsigned))
   in
-  (match Bv64Gen.solve claim_signed with
+  (match Bv64Gen.solve (Formula.make claim_signed) with
   | Ok (Solver.Sat _) -> ()
   | Ok Solver.Unsat ->
       Alcotest.fail "signed Ge admits overflow model and should be SAT"
   | Error msg -> Alcotest.failf "signed claim solver error: %s" msg);
-  match Bv64Gen.solve claim_unsigned with
+  match Bv64Gen.solve (Formula.make claim_unsigned) with
   | Ok Solver.Unsat -> ()
   | Ok (Solver.Sat _) ->
       Alcotest.fail "unsigned UGe should reject the overflow model and be UNSAT"
@@ -267,11 +267,11 @@ let test_ult_vs_lt_on_zero () : unit =
   let x = Variable.from_name "x" in
   let ult_zero = NRel (N_rel.Lt Signedness.Unsigned, Var x, Num 0) in
   let slt_zero = NRel (N_rel.Lt Signedness.Signed, Var x, Num 0) in
-  (match Bv64Gen.solve ult_zero with
+  (match Bv64Gen.solve (Formula.make ult_zero) with
   | Ok Solver.Unsat -> ()
   | Ok (Solver.Sat _) -> Alcotest.fail "ULt(x, 0) should be UNSAT, got SAT"
   | Error msg -> Alcotest.failf "ULt(x, 0) solver error: %s" msg);
-  match Bv64Gen.solve slt_zero with
+  match Bv64Gen.solve (Formula.make slt_zero) with
   | Ok (Solver.Sat _) -> ()
   | Ok Solver.Unsat -> Alcotest.fail "Lt(x, 0) should be SAT, got UNSAT"
   | Error msg -> Alcotest.failf "Lt(x, 0) solver error: %s" msg
@@ -282,7 +282,7 @@ let test_ncall_uninterpreted_function_same_args () : unit =
      contract [f(x) = f(y) when x = y]. *)
   let f_of n = NCall ("f_uf_test", [ Num n ]) in
   let claim = NRel (N_rel.Neq, f_of 7, f_of 7) in
-  match IntGen.solve claim with
+  match IntGen.solve (Formula.make claim) with
   | Ok Solver.Unsat -> ()
   | Ok (Solver.Sat _) ->
       Alcotest.fail "f(7) <> f(7) should be UNSAT for a UF"
@@ -293,7 +293,7 @@ let test_ncall_uninterpreted_function_diff_args () : unit =
      asserting they differ is SAT. *)
   let f_of n = NCall ("g_uf_test", [ Num n ]) in
   let claim = NRel (N_rel.Neq, f_of 1, f_of 2) in
-  match IntGen.solve claim with
+  match IntGen.solve (Formula.make claim) with
   | Ok (Solver.Sat _) -> ()
   | Ok Solver.Unsat ->
       Alcotest.fail "g(1) <> g(2) should be SAT for a UF"
@@ -304,7 +304,7 @@ let test_tactic_skip () : unit =
   let tautology = Bool true in
   [ true; false ]
   |> List.iter (fun debug ->
-      let result = IntGen.solve_with_tactic ~debug Tactic.Skip tautology in
+      let result = IntGen.solve_with_tactic ~debug Tactic.Skip (Formula.make tautology) in
       match result with
       | Ok (Solver.Sat _) ->
           ()

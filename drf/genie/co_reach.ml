@@ -116,7 +116,7 @@ let dump_line ~(tag : string) (p : Symbexp.Proof.t)
       "[coreach-dump] tag=%s kernel=%s array=%s id=%d result=%s goal=%s\n"
       tag p.kernel_name p.array_name p.id
       (status_to_string status)
-      (Exp.b_to_string (Predicates.b_inline p.goal));
+      (Exp.b_to_string (Formula.to_bexp p.formula));
     flush stderr
   end
 
@@ -178,10 +178,7 @@ let solve_one ?(timeout : int option = None) (p : Symbexp.Proof.t)
   in
   let ctx = Z3.mk_context options in
   let solver = Z3.Solver.mk_simple_solver ctx in
-  let expr =
-    Gen_z3.Bv64Gen.b_to_expr ctx
-      (p.goal |> Predicates.b_inline |> Predicates.strip_cross_thread)
-  in
+  let expr = Gen_z3.Bv64Gen.b_to_expr ctx p.formula in
   Z3.Solver.add solver [ expr ];
   Z3.Solver.check solver []
 

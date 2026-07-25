@@ -505,7 +505,7 @@ let optimize ?(verbose = false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
   let pre = st.assumptions in
   (* pre: the generated runtime constraints (eg, tid is unique) *)
   let solve formula : (int, string) Result.t =
-    S.optimize_expr ~timeout strategy ~pre formula
+    S.optimize_expr ~timeout strategy ~pre:(Formula.make pre) formula
     |> Result.map (fun o -> Option.value ~default:default_cost o)
   in
   if verbose then print_optimize pre formula;
@@ -529,8 +529,8 @@ let prove ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(debug = true)
     (st : t) : (Gen_z3.Solver.t, string) Result.t =
   let module S = (val solver) in
   let pre = st.assumptions in
-  let goal = b_and pre (b_not goal) in
-  if verbose then print_prove pre goal;
+  let goal = Formula.make goal |> Formula.assume pre |> Formula.negate_goal in
+  if verbose then print_prove pre (Formula.to_bexp goal);
   match tactic with
   | Some tactic_strategy -> S.solve_with_tactic ~debug tactic_strategy goal
   | None -> S.solve goal
@@ -611,7 +611,9 @@ let sat_count
       (n_le count_expr (Num st.config.threads_per_warp))
   in
   let goal =
-    Exp.b_and (Exp.b_and st.assumptions count_bounds) (predicate count_expr)
+    Formula.make (predicate count_expr)
+    |> Formula.assume st.assumptions
+    |> Formula.assume count_bounds
   in
   match S.solve_with_int_witness ~timeout goal count_expr with
   | Ok (Some k) -> Sat k
@@ -685,7 +687,7 @@ let sat_n_distinct_in_cohort
       Exp.b_and_ex !acc
     in
     let goal =
-      Exp.b_and_ex (pairwise_distinct :: List.init n mk_instance)
+      Formula.make (Exp.b_and_ex (pairwise_distinct :: List.init n mk_instance))
     in
     let witness_exprs =
       List.init n (fun i ->

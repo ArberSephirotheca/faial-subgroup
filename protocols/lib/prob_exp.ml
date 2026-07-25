@@ -150,7 +150,7 @@ let infer_dom ?(timeout = 100) (x : Variable.t) (goal : Exp.bexp) :
     let b_to_expr = Gen_z3.SignedBv32Gen.b_to_expr ctx in
     let n_to_expr = Gen_z3.SignedBv32Gen.n_to_expr ctx in
     let opt = Optimize.mk_opt ctx in
-    Optimize.add opt [ b_to_expr goal ];
+    Optimize.add opt [ b_to_expr (Formula.make goal) ];
     (* Optimize the given variable *)
     let _ = op opt (n_to_expr (Var x)) in
     match Optimize.check opt with

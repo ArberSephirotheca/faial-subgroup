@@ -283,14 +283,14 @@ module Proof = struct
     preds : Predicates.t list;
     decls : string list;
     labels : (string * string) list;
-    goal : Exp.bexp;
+    formula : Formula.t;
   }
 
   let make ~(property : Property.t) ~(kernel_name : string)
       ~(barrier : Sync.t) ~(id : int) ~(goal : Exp.bexp) : t =
-    let goal = Constfold.b_opt goal in
+    let formula = Formula.make (Constfold.b_opt goal) in
     let fns =
-      Exp.b_free_names goal Variable.Set.empty |> Variable.Set.elements
+      Formula.free_names formula Variable.Set.empty |> Variable.Set.elements
     in
     let decls = List.map Variable.name fns in
     let labels =
@@ -300,7 +300,7 @@ module Proof = struct
         fns
     in
     let preds = Predicates.get_predicates goal in
-    { property; id; preds; decls; goal; kernel_name; labels; barrier }
+    { property; id; preds; decls; formula; kernel_name; labels; barrier }
 
   let to_s (p : t) : Indent.t list =
     let open Indent in
@@ -321,7 +321,7 @@ module Proof = struct
       Line ("predicates: " ^ preds_str ^ ";");
       Line ("decls: " ^ (p.decls |> String.concat ", ") ^ ";");
       Line "goal:";
-      Block (Exp.b_to_s p.goal);
+      Block (Exp.b_to_s (Formula.goal p.formula));
       Line ";";
     ]
 
@@ -387,7 +387,7 @@ module Proof = struct
   let solve ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?timeout
       (p : t) : (Gen_z3.Solver.t, string) Result.t =
     let module S = (val solver) in
-    S.solve ?timeout (Predicates.b_inline p.goal)
+    S.solve ?timeout p.formula
 
   module Witness = struct
     (* Two witness shapes, mirroring the two obligation frames:

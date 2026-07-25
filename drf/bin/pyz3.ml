@@ -2,11 +2,11 @@ open Protocols
 open Drf
 open Solve_drf
 
-let proof_to_smt2 ~(is_bv : bool) (goal : Exp.bexp) : string =
+let proof_to_smt2 ~(is_bv : bool) (goal : Formula.t) : string =
   let enc = if is_bv then Encoder.bv64 () else Encoder.initial ~logic:None in
   let ctx = Z3.mk_context [] in
   let s = Z3.Solver.mk_simple_solver ctx in
-  Z3.Solver.add s [ enc.b_to_expr ctx (Predicates.b_inline goal) ];
+  Z3.Solver.add s [ enc.b_to_expr ctx goal ];
   Z3.Solver.to_string s
 
 let py_str (s : string) : string =
@@ -433,7 +433,7 @@ let to_pyz3_proof (kernel_name : string) (s : Solution.t) : pyz3_proof option =
         in
         let data_names = names w.data_approx in
         let ctrl_names = names w.control_approx in
-        Exp.b_free_names p.goal Variable.Set.empty
+        Formula.free_names p.formula Variable.Set.empty
         |> Variable.Set.elements
         (* Drop faial's synthesized symbols; only source variables belong. *)
         |> List.filter (fun v ->
@@ -448,7 +448,7 @@ let to_pyz3_proof (kernel_name : string) (s : Solution.t) : pyz3_proof option =
                    ~location:(Variable.location_opt v))
         |> String.concat ", "
       in
-      let smt = proof_to_smt2 ~is_bv:s.is_bv p.goal in
+      let smt = proof_to_smt2 ~is_bv:s.is_bv p.formula in
       Some
         {
           kernel = py_str kernel_name;

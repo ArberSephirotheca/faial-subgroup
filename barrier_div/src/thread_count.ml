@@ -87,7 +87,11 @@ let find_missing_thread ?(timeout = 0) (cfg : Rel_cost.Config.t)
         n_lt (Var Variable.tid_z) (Num bdim.z);
       ]
   in
-  let goal = Exp.b_and_ex [ pre; in_block; Exp.b_not arrive_cohort ] in
+  let goal =
+    Formula.make (Exp.b_not arrive_cohort)
+    |> Formula.assume pre
+    |> Formula.assume in_block
+  in
   let module S = Gen_z3.Bv64Gen in
   let witnesses : Exp.nexp list =
     [ Var Variable.tid_x; Var Variable.tid_y; Var Variable.tid_z ]

@@ -212,9 +212,7 @@ let make_check_slot ~(timeout : int) (k : Kernel.t)
     Params.to_bexp (Params.union_left k.global_variables k.local_variables)
   in
   let base_goal =
-    Exp.b_and k.pre runtime
-    |> Predicates.b_inline
-    |> Predicates.strip_cross_thread
+    Formula.make (Bool true) |> Formula.assume k.pre |> Formula.assume runtime
   in
   let args =
     if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
@@ -286,11 +284,7 @@ let check_kernel ?(timeout = 0) (k : Kernel.t) : entry list =
           let classes = group_by_path_cond parameter_touching in
           List.concat_map (fun (path_cond, members) ->
             !z3_call_hook ();
-            let delta =
-              path_cond
-              |> Predicates.b_inline
-              |> Predicates.strip_cross_thread
-            in
+            let delta = Formula.make path_cond in
             Z3.Solver.push solver;
             Z3.Solver.add solver [ Gen_z3.Bv64Gen.b_to_expr ctx delta ];
             let result =
@@ -349,9 +343,7 @@ let preconditions_check ?(timeout = 0) (k : Kernel.t) : pre_check =
     Params.to_bexp (Params.union_left k.global_variables k.local_variables)
   in
   let goal =
-    Exp.b_and k.pre runtime
-    |> Predicates.b_inline
-    |> Predicates.strip_cross_thread
+    Formula.make (Bool true) |> Formula.assume k.pre |> Formula.assume runtime
   in
   match
     Phase_timer.measure "gate/solve" (fun () ->
@@ -379,9 +371,9 @@ let any_access_reachable ?(timeout = 0) (k : Kernel.t) : bool =
   if path_conds = [] then false
   else
     let goal =
-      Exp.b_and_ex [ k.pre; runtime; Exp.b_or_ex path_conds ]
-      |> Predicates.b_inline
-      |> Predicates.strip_cross_thread
+      Formula.make (Exp.b_or_ex path_conds)
+      |> Formula.assume k.pre
+      |> Formula.assume runtime
     in
     match
       Phase_timer.measure "non-trivial/solve" (fun () ->
@@ -420,9 +412,9 @@ let make_any_access_slot ?(timeout = 0) (k : Kernel.t)
     let ctx = Z3.mk_context args in
     let solver = Z3.Solver.mk_solver ctx None in
     let base_goal =
-      Exp.b_and_ex [ k.pre; runtime; Exp.b_or_ex path_conds ]
-      |> Predicates.b_inline
-      |> Predicates.strip_cross_thread
+      Formula.make (Exp.b_or_ex path_conds)
+      |> Formula.assume k.pre
+      |> Formula.assume runtime
     in
     Z3.Solver.add solver [ Gen_z3.Bv64Gen.b_to_expr ctx base_goal ];
     Some Any_access_slot.{ ctx; solver }
@@ -431,9 +423,7 @@ let any_access_reachable_delta
     (slot : Any_access_slot.t) (delta : bexp) : bool =
   let { Any_access_slot.ctx; solver } = slot in
   Z3.Solver.push solver;
-  Z3.Solver.add solver
-    [ Gen_z3.Bv64Gen.b_to_expr ctx
-        (delta |> Predicates.b_inline |> Predicates.strip_cross_thread) ];
+  Z3.Solver.add solver [ Gen_z3.Bv64Gen.b_to_expr ctx (Formula.make delta) ];
   let result =
     Phase_timer.measure "non-trivial/solve" (fun () ->
       !z3_call_hook ();
@@ -473,9 +463,9 @@ let make_slot ?(arch = Architecture.Block)
       (Params.union_left base.global_variables base.local_variables)
   in
   let base_goal =
-    Exp.b_and base.pre runtime
-    |> Predicates.b_inline
-    |> Predicates.strip_cross_thread
+    Formula.make (Bool true)
+    |> Formula.assume base.pre
+    |> Formula.assume runtime
   in
   let args =
     match timeout with
@@ -502,9 +492,8 @@ let preconditions_satisfiable_delta
   let delta =
     delta_assumes
     |> List.map (Subst.ReplaceAssoc.b_subst slot.subst)
-    |> List.map Predicates.b_inline
     |> Exp.b_and_ex
-    |> Predicates.strip_cross_thread
+    |> Formula.make
   in
   Z3.Solver.push slot.solver;
   Z3.Solver.add slot.solver [ Gen_z3.Bv64Gen.b_to_expr slot.ctx delta ];

@@ -162,7 +162,7 @@ let naive_check_kernel (k : Kernel.t) : Reachability.AccessSet.t =
     let goal = Exp.b_and_ex [ k.pre; runtime; path_cond ] in
     let goal = Predicates.b_inline goal in
     let reachable =
-      match Gen_z3.Bv64Gen.solve goal with
+      match Gen_z3.Bv64Gen.solve (Formula.make goal) with
       | Ok (Gen_z3.Solver.Sat _) -> true
       | Ok Gen_z3.Solver.Unsat -> false
       | Error _ -> true (* accept-on-Unknown, matching the gate's stance *)

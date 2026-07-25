@@ -485,7 +485,7 @@ let run (a : t) : Analysis.t list =
             let prepared = prepare_pre arch a kernel in
             if Phase_timer.measure "pre-sat"
                  (fun () -> Gen_z3.is_unsat ~timeout:a.timeout
-                              ~logic:a.logic prepared.pre)
+                              ~logic:a.logic (Formula.make prepared.pre))
             then Some prepared.pre else None
           | [] -> None
       in

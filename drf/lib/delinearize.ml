@@ -421,10 +421,15 @@ let translate ~(enabled : bool) ~(rewrite : bool) ~(elide : bool)
           Params.to_bexp
             (Params.union_left kernel.global_variables kernel.local_variables)
         in
-        let base = b_and kernel.pre runtime in
+        let base =
+          Formula.make (Bool true)
+          |> Formula.assume kernel.pre
+          |> Formula.assume runtime
+        in
         Gen_z3.CachedSolver.with_assertion base (fun s ->
           let check ~scope ~bound =
-            Gen_z3.CachedSolver.is_possible s (b_and (b_and_ex scope) bound)
+            Gen_z3.CachedSolver.is_possible s
+              (Formula.make (b_and (b_and_ex scope) bound))
           in
           rewrite_kernel ~check kernel)
       else rewrite_kernel ~check:trivially_true_oracle kernel

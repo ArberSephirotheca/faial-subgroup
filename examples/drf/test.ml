@@ -607,6 +607,14 @@ let tests =
     ("drf-nested-range.cu", [], 0);
     (* The companion at a stride of 64, the two ranges summed. *)
     ("racy-nested-range.cu", [], 1);
+    (* A declaration governs every query, not only the race query. The
+     precondition here contradicts __clz's declared range, so the kernel
+     clears vacuously and --check-pre-sat must say so. A precondition
+     query that does not carry the declaration finds the precondition
+     satisfiable, runs the race pipeline and reports plain data-race
+     freedom, which is exit 0 rather than the 1 expected here. *)
+    ("vacuous-clz-pre.cu",
+     [ "--check-pre-sat"; "--assume"; "__clz(n) > 40" ], 1);
   ]
 
 (* These are kernels that are being documented, but are

@@ -59,7 +59,7 @@ let test_named_predicate_reaches_the_goal () =
   Alcotest.(check bool) "the goal still calls pow2 rather than its body" true
     (List.exists
        (fun (p : Symbexp.Proof.t) ->
-         Predicates.get_predicates p.goal
+         Predicates.get_predicates (Formula.goal p.formula)
          |> List.exists (fun (x : Predicates.t) -> x.name = "pow2"))
        proofs)
 

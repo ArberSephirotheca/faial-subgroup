@@ -339,7 +339,7 @@ end
    [check_bexp_sat] share one selection / fallback rule. *)
 module Encoder = struct
   type t = {
-    b_to_expr : Z3.context -> Exp.bexp -> Z3.Expr.expr;
+    b_to_expr : Z3.context -> Formula.t -> Z3.Expr.expr;
     parse_num : string -> string;
     logic     : string option;
     is_bv     : bool;
@@ -469,7 +469,7 @@ module Solution = struct
              unsat-core. *)
           let ctx = Z3.mk_context options in
           let s = mk_solver_for enc ctx in
-          Solver.add s [ enc.b_to_expr ctx (Predicates.b_inline p.goal) ];
+          Solver.add s [ enc.b_to_expr ctx p.formula ];
           let s =
             if deterministic && not want_core then (
               let text = Solver.to_string s in
@@ -486,7 +486,7 @@ module Solution = struct
                 let track =
                   Z3.Boolean.mk_const_s ctx ("extra_" ^ string_of_int id)
                 in
-                let expr = enc.b_to_expr ctx (Predicates.b_inline b) in
+                let expr = enc.b_to_expr ctx (Formula.make b) in
                 Solver.assert_and_track s expr track;
                 (id, track))
               extras;

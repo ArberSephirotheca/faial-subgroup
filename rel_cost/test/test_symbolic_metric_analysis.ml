@@ -290,7 +290,7 @@ let test_warp_constraints_enforces_bounds_and_uniqueness () : unit =
         b_and c (n_eq (var_ "threadIdx.x$0") (var_ "threadIdx.x$1"))
       in
       let open Gen_z3.IntGen in
-      let result = solve contradiction in
+      let result = solve (Formula.make contradiction) in
       let test_msg =
         Printf.sprintf
           "warp_constraints should make threadIdx.x$0 = threadIdx.x$1 \
@@ -331,7 +331,7 @@ let test_cross_warp_unsoundness_test () : unit =
           ]
       in
       let open Gen_z3.IntGen in
-      let result = solve cross_warp in
+      let result = solve (Formula.make cross_warp) in
       let test_msg =
         Printf.sprintf
           "EXPECTED TO FAIL: Current constraints allow threads from different \

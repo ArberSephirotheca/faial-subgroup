@@ -494,18 +494,18 @@ module Optimizer = struct
 end
 
 module type Z3_SOLVER = sig
-  val solve : ?timeout:int -> Exp.bexp -> (Solver.t, string) Result.t
+  val solve : ?timeout:int -> Formula.t -> (Solver.t, string) Result.t
 
   val solve_with_tactic :
     ?timeout:int ->
     ?debug:bool ->
     Tactic.t ->
-    Exp.bexp ->
+    Formula.t ->
     (Solver.t, string) Result.t
 
   val optimize_expr :
     ?timeout:int ->
-    ?pre:Exp.bexp ->
+    ?pre:Formula.t ->
     Optimizer.Strategy.t ->
     Exp.nexp ->
     (int option, string) Result.t
@@ -517,7 +517,7 @@ module type Z3_SOLVER = sig
      than the optimum — much cheaper than the full optimizer when a
      witness is enough. *)
   val solve_with_int_witness :
-    ?timeout:int -> Exp.bexp -> Exp.nexp -> (int option, string) Result.t
+    ?timeout:int -> Formula.t -> Exp.nexp -> (int option, string) Result.t
 
   (* Like [solve_with_int_witness], but extracts multiple witnesses from
      a single solve in one shared Z3 context. Returns [Ok (Some [v1; …])]
@@ -527,7 +527,7 @@ module type Z3_SOLVER = sig
      witnesses (e.g. all three [tid] components). *)
   val solve_with_int_witnesses :
     ?timeout:int ->
-    Exp.bexp ->
+    Formula.t ->
     Exp.nexp list ->
     (int option list option, string) Result.t
 end
@@ -588,17 +588,17 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Binary (op, n1, n2) ->
         (nbin_to_expr op) ctx (n_to_expr ctx n1) (n_to_expr ctx n2)
     | NIf (b, n1, n2) ->
-        Boolean.mk_ite ctx (b_to_expr ctx b) (n_to_expr ctx n1)
+        Boolean.mk_ite ctx (encode_bexp ctx b) (n_to_expr ctx n1)
           (n_to_expr ctx n2)
 
-  and b_to_expr (ctx : Z3.context) : bexp -> Expr.expr = function
+  and encode_bexp (ctx : Z3.context) : bexp -> Expr.expr = function
     | Bool (b : bool) -> Boolean.mk_val ctx b
-    | CastBool n -> b_to_expr ctx (n_neq n (Num 0))
+    | CastBool n -> encode_bexp ctx (n_neq n (Num 0))
     | NRel (op, n1, n2) ->
         (nrel_to_expr op) ctx (n_to_expr ctx n1) (n_to_expr ctx n2)
     | BRel (op, b1, b2) ->
-        (brel_to_expr op) ctx (b_to_expr ctx b1) (b_to_expr ctx b2)
-    | BNot (b : bexp) -> Boolean.mk_not ctx (b_to_expr ctx b)
+        (brel_to_expr op) ctx (encode_bexp ctx b1) (encode_bexp ctx b2)
+    | BNot (b : bexp) -> Boolean.mk_not ctx (encode_bexp ctx b)
     (* [bvumul_noovfl] is intentionally not inlined by
        [Predicates.b_inline] — its semantics live in the encoder and
        differ between the natural-number and BV backends. *)
@@ -606,22 +606,30 @@ module CodeGen (N : NUMERIC_OPS) = struct
         N.mk_umul_no_overflow ctx (n_to_expr ctx a) (n_to_expr ctx b)
     | Pred _ as c ->
         preprocessing_error
-          ("b_to_expr: invoke Predicates.inline to remove predicates: "
+          ("encode_bexp: invoke Predicates.inline to remove predicates: "
          ^ b_to_string c)
     | Distinct exprs ->
         let z3_exprs = List.map (n_to_expr ctx) exprs in
         Boolean.mk_distinct ctx z3_exprs
     | AtomicResult _ as c ->
         preprocessing_error
-          ("b_to_expr: AtomicResult must be expanded by symbexp or stripped \
+          ("encode_bexp: AtomicResult must be expanded by symbexp or stripped \
             by single-thread analyses before codegen: " ^ b_to_string c)
     | IsThreadUnif _ as c ->
         preprocessing_error
-          ("b_to_expr: IsThreadUnif must be expanded by symbexp's project_b or \
+          ("encode_bexp: IsThreadUnif must be expanded by symbexp's project_b or \
             stripped by single-thread analyses before codegen: "
           ^ b_to_string c)
 
   let ( let* ) = Option.bind
+
+  (* The encoder's entry point. [encode_bexp] above is the recursive
+     worker and is not what a caller wants: a [Formula.t] is what
+     carries the hypotheses apart from the goal and instantiates the
+     declarations governing the symbols in either, and there is no way
+     to build one that skips either step. *)
+  let b_to_expr (ctx : Z3.context) (f : Formula.t) : Expr.expr =
+    encode_bexp ctx (Formula.to_bexp f)
 
   (* Get's the value of a symbolic (integer) expression *)
   let get_int (m : Z3.Model.model) (e : Z3.Expr.expr) : int option =
@@ -665,7 +673,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     every query saturates the budget. There is no global cap.
     *)
   let optimize ?(timeout = 0) (* per-Z3-call timeout in ms; 0 = unlimited *)
-      (strategy : Optimizer.Strategy.t) (pre : Exp.bexp) (n : Exp.nexp) :
+      (strategy : Optimizer.Strategy.t) (pre : Formula.t) (n : Exp.nexp) :
       (Optimizer.t, string) Result.t =
     let open Z3 in
     let args =
@@ -678,7 +686,8 @@ module CodeGen (N : NUMERIC_OPS) = struct
     Optimizer.run opt strategy n
 
   let optimize_expr ?(timeout = 0) (* By default no timeout is given *)
-      ?(pre = Bool true) (strategy : Optimizer.Strategy.t) (n : Exp.nexp) :
+      ?(pre = Formula.make (Bool true)) (strategy : Optimizer.Strategy.t)
+      (n : Exp.nexp) :
       (int option, string) Result.t =
     optimize ~timeout strategy pre n
     |> Result.map (function
@@ -686,7 +695,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
           Some (get_int model optimal |> Option.get)
       | Unsat -> None)
 
-  let solve ?(timeout = 0) (pre : Exp.bexp) : (Solver.t, string) Result.t =
+  let solve ?(timeout = 0) (pre : Formula.t) : (Solver.t, string) Result.t =
     let args =
       if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
     in
@@ -695,7 +704,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     Z3.Solver.add solver [ b_to_expr ctx pre ];
     Solver.run solver
 
-  let solve_with_int_witness ?(timeout = 0) (pre : Exp.bexp) (witness : Exp.nexp)
+  let solve_with_int_witness ?(timeout = 0) (pre : Formula.t) (witness : Exp.nexp)
       : (int option, string) Result.t =
     let args =
       if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
@@ -712,7 +721,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Z3.Solver.UNSATISFIABLE -> Ok None
     | Z3.Solver.UNKNOWN -> Error (Z3.Solver.get_reason_unknown solver)
 
-  let solve_with_int_witnesses ?(timeout = 0) (pre : Exp.bexp)
+  let solve_with_int_witnesses ?(timeout = 0) (pre : Formula.t)
       (witnesses : Exp.nexp list) : (int option list option, string) Result.t =
     let args =
       if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
@@ -730,7 +739,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | Z3.Solver.UNKNOWN -> Error (Z3.Solver.get_reason_unknown solver)
 
   let solve_with_tactic ?(timeout = 0) ?(debug = false) (tactic : Tactic.t)
-      (pre : Exp.bexp) : (Solver.t, string) Result.t =
+      (pre : Formula.t) : (Solver.t, string) Result.t =
     let args =
       if timeout > 0 then [ ("timeout", string_of_int timeout) ] else []
     in
@@ -812,44 +821,44 @@ module SignedBv32Gen = CodeGen (SignedBitVectorOps (SIGNED_32))
 
 (* Centralized satisfiability / validity checks.
 
-   [is_possible] asks whether a bexp is satisfiable ("may it hold?");
-   [is_always_true] whether it is valid ("must it?"). Both inline
-   predicate definitions and replace cross-thread primitives
-   ([IsThreadUnif] / [AtomicResult]) with fresh booleans, then encode with
-   the arithmetic [IntGen] encoder, falling back to [Bv64Gen] only on an
-   operator [IntGen] cannot express. UNKNOWN maps to [false] for both,
-   the conservative reading. *)
+   [is_possible] asks whether a formula's goal is satisfiable under its
+   hypotheses ("may it hold?"); [is_always_true] whether it is valid
+   ("must it?"), which negates the goal and leaves the hypotheses
+   standing. Both encode with the arithmetic [IntGen] encoder, falling
+   back to [Bv64Gen] only on an operator [IntGen] cannot express.
+   UNKNOWN maps to [false] for both, the conservative reading.
 
-let prepare_bexp (b : bexp) : bexp =
-  b |> Predicates.b_inline |> Predicates.strip_cross_thread
+   Predicate inlining, cross-thread stripping and the instantiation of
+   every governing declaration all happen inside [Formula], so nothing
+   here has to remember them. *)
 
 let solve_with_fallback ?(timeout : int option = None)
-    ?(logic : string option = None) (b : bexp) : (Solver.t, string) Result.t =
+    ?(logic : string option = None) (f : Formula.t) :
+    (Solver.t, string) Result.t =
   let timeout = Option.value ~default:0 timeout in
-  let prepared = prepare_bexp b in
   let prefer_bv =
     match logic with Some l -> String.ends_with ~suffix:"BV" l | None -> false
   in
-  if prefer_bv then Bv64Gen.solve ~timeout prepared
+  if prefer_bv then Bv64Gen.solve ~timeout f
   else
-    try IntGen.solve ~timeout prepared
-    with Not_implemented _ -> Bv64Gen.solve ~timeout prepared
+    try IntGen.solve ~timeout f
+    with Not_implemented _ -> Bv64Gen.solve ~timeout f
 
 let is_possible ?(timeout : int option = None) ?(logic : string option = None)
-    (b : bexp) : bool =
-  match solve_with_fallback ~timeout ~logic b with
+    (f : Formula.t) : bool =
+  match solve_with_fallback ~timeout ~logic f with
   | Ok (Solver.Sat _) -> true
   | _ -> false
 
 let is_unsat ?(timeout : int option = None) ?(logic : string option = None)
-    (b : bexp) : bool =
-  match solve_with_fallback ~timeout ~logic b with
+    (f : Formula.t) : bool =
+  match solve_with_fallback ~timeout ~logic f with
   | Ok Solver.Unsat -> true
   | _ -> false
 
 let is_always_true ?(timeout : int option = None) ?(logic : string option = None)
-    (b : bexp) : bool =
-  is_unsat ~timeout ~logic (b_not b)
+    (f : Formula.t) : bool =
+  is_unsat ~timeout ~logic (Formula.negate_goal f)
 
 (* A solver that keeps one asserted [base] across many queries: the base
    is asserted once, then each [is_possible] / [is_always_true] pushes its
@@ -861,35 +870,34 @@ module CachedSolver = struct
   type t = {
     ctx : Z3.context;
     solver : Z3.Solver.solver;
-    b_to_expr : Z3.context -> bexp -> Z3.Expr.expr;
+    b_to_expr : Z3.context -> Formula.t -> Z3.Expr.expr;
   }
 
-  let query (t : t) (delta : bexp) : (Solver.t, string) Result.t =
+  let query (t : t) (delta : Formula.t) : (Solver.t, string) Result.t =
     Z3.Solver.push t.solver;
-    Z3.Solver.add t.solver [ t.b_to_expr t.ctx (prepare_bexp delta) ];
+    Z3.Solver.add t.solver [ t.b_to_expr t.ctx delta ];
     let r = Solver.run t.solver in
     Z3.Solver.pop t.solver 1;
     r
 
-  let is_possible (t : t) (b : bexp) : bool =
-    match query t b with Ok (Solver.Sat _) -> true | _ -> false
+  let is_possible (t : t) (f : Formula.t) : bool =
+    match query t f with Ok (Solver.Sat _) -> true | _ -> false
 
-  let is_always_true (t : t) (b : bexp) : bool =
-    match query t (b_not b) with Ok Solver.Unsat -> true | _ -> false
+  let is_always_true (t : t) (f : Formula.t) : bool =
+    match query t (Formula.negate_goal f) with Ok Solver.Unsat -> true | _ -> false
 
   let with_assertion ?(timeout : int option = None)
-      ?(logic : string option = None) (base : bexp) (f : t -> 'a) : 'a =
+      ?(logic : string option = None) (base : Formula.t) (f : t -> 'a) : 'a =
     let args =
       match timeout with Some t -> [ ("timeout", string_of_int t) ] | None -> []
     in
-    let prepared_base = prepare_bexp base in
     let prefer_bv =
       match logic with Some l -> String.ends_with ~suffix:"BV" l | None -> false
     in
-    let run (b_to_expr : Z3.context -> bexp -> Z3.Expr.expr) : 'a =
+    let run (b_to_expr : Z3.context -> Formula.t -> Z3.Expr.expr) : 'a =
       let ctx = Z3.mk_context args in
       let solver = Z3.Solver.mk_solver ctx None in
-      Z3.Solver.add solver [ b_to_expr ctx prepared_base ];
+      Z3.Solver.add solver [ b_to_expr ctx base ];
       let t = { ctx; solver; b_to_expr } in
       Fun.protect ~finally:(fun () -> Z3.Solver.reset solver) (fun () -> f t)
     in
