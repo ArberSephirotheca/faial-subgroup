@@ -581,6 +581,9 @@ module CodeGen (N : NUMERIC_OPS) = struct
         let domain = List.map (fun _ -> sort) args in
         let func_decl = Z3.FuncDecl.mk_func_decl_s ctx name domain sort in
         Z3.FuncDecl.apply func_decl z3_args
+    | ReadResult r ->
+        n_to_expr ctx
+          (NCall (Read_symbol.name r.array, Num r.version :: r.args))
     | Num (n : int) -> N.mk_num ctx n
     | Binary (op, n1, n2) ->
         (nbin_to_expr op) ctx (n_to_expr ctx n1) (n_to_expr ctx n2)

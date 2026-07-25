@@ -245,6 +245,8 @@ module Proj = struct
     | NIf (b, n1, n2) ->
         NIf (bexp locals t b, nexp locals t n1, nexp locals t n2)
     | NCall (x, ns) -> NCall (x, List.map (nexp locals t) ns)
+    | ReadResult r ->
+        ReadResult { r with args = List.map (nexp locals t) r.args }
 
   and bexp (locals : Variable.Set.t) (t : task) (b : Exp.bexp) : Exp.bexp =
     let open Exp in

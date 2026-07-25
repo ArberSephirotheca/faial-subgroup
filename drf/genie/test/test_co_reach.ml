@@ -229,7 +229,7 @@ let test_drf_vacuous_empty_pairs () =
 let mk_synthetic_pair ~kn ~an ~id : Co_reach.pair =
   let proof =
     Symbexp.Proof.make ~kernel_name:kn ~array_name:an ~id
-      ~accesses:[] ~arrays:Variable.Map.empty ~goal:(Exp.Bool true)
+      ~accesses:[] ~goal:(Exp.Bool true)
   in
   { kernel_name = kn; array_name = an; id; proof }
 
@@ -297,6 +297,7 @@ let rec nexp_has_thread_unif (n : Exp.nexp) : bool =
   | Exp.Num _ | Exp.Var _ -> false
   | Exp.Unary (_, e) -> nexp_has_thread_unif e
   | Exp.NCall (_, es) -> List.exists nexp_has_thread_unif es
+  | Exp.ReadResult r -> List.exists nexp_has_thread_unif r.args
   | Exp.CastInt b -> bexp_has_thread_unif b
   | Exp.Binary (_, n1, n2) ->
       nexp_has_thread_unif n1 || nexp_has_thread_unif n2

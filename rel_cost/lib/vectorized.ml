@@ -82,6 +82,7 @@ let rec n_eval_res (n : Exp.nexp) (ctx : t) : (NMap.t, string) Result.t =
       let* n2 = n_eval_res n2 ctx in
       Ok (n_map3 (fun b x1 x2 -> if b then x1 else x2) b n1 n2)
   | NCall (x, _) -> Error ("unknown function call: " ^ x)
+  | ReadResult r -> Error ("unknown read: " ^ Variable.name r.array)
 
 and b_eval_res (b : Exp.bexp) (ctx : t) : (BMap.t, string) Result.t =
   match b with

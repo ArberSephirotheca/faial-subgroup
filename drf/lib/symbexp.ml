@@ -127,6 +127,8 @@ let rec project_n (locals : Variable.Set.t) (t : Task.t) (n : nexp) : nexp =
   | NIf (b, n1, n2) ->
       NIf (project_b locals t b, project_n locals t n1, project_n locals t n2)
   | NCall (x, ns) -> NCall (x, List.map (project_n locals t) ns)
+  | ReadResult r ->
+      ReadResult { r with args = List.map (project_n locals t) r.args }
 and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
   match b with
   | CastBool e -> CastBool (project_n locals t e)
@@ -224,6 +226,7 @@ module AtomicAxioms = struct
     | Binary (_, n1, n2) -> collect_n (collect_n acc n1) n2
     | NIf (b, n1, n2) -> collect_n (collect_n (collect_b acc b) n1) n2
     | NCall (_, args) -> List.fold_left collect_n acc args
+    | ReadResult r -> List.fold_left collect_n acc r.args
 
   let collect (k : Flatacc.Kernel.t) : marker list =
     let pre_markers = collect_b [] k.pre in
@@ -443,17 +446,14 @@ module AccessSummary = struct
     ^ "]}"
 end
 
-let add_read_postconditions (arrays : Memory.t Variable.Map.t) (b : bexp) : bexp
-    =
-  let ( let* ) = Option.bind in
+let add_read_postconditions (b : bexp) : bexp =
   let bound (n : nexp) : bexp option =
     match n with
-    | NCall (name, _) ->
-        let* array = Read_symbol.array_of name in
-        let* mem = Variable.Map.find_opt array arrays in
-        let* dom = Memory.int_dom mem in
-        let lo, hi = Int_dom.to_range dom in
-        Some (b_and (n_le (Num lo) n) (n_le n (Num hi)))
+    | ReadResult r ->
+        C_type.to_int_dom r.ty
+        |> Option.map (fun d ->
+            let lo, hi = Int_dom.to_range d in
+            b_and (n_le (Num lo) n) (n_le n (Num hi)))
     | _ -> None
   in
   b_calls b |> List.filter_map bound |> List.fold_left b_and b
@@ -534,12 +534,11 @@ module Proof = struct
       array_name:string ->
       id:int ->
       accesses:AccessSummary.t list ->
-      arrays:Memory.t Variable.Map.t ->
       goal:bexp ->
       t =
-   fun ~kernel_name ~array_name ~id ~accesses ~arrays ~goal ->
+   fun ~kernel_name ~array_name ~id ~accesses ~goal ->
     let goal =
-      goal |> Functions.add_postconditions |> add_read_postconditions arrays
+      goal |> Functions.add_postconditions |> add_read_postconditions
     in
     let goal =
       Constfold.b_opt goal
@@ -672,8 +671,8 @@ module Proof = struct
         n_le (Gen.access_id Task1) (Gen.access_id Task2);
       ]
 
-  let from_flat_coreach ?(arrays = Variable.Map.empty)
-      (arch : Architecture.t) (proof_id : int) (k : Flatacc.Kernel.t) : t =
+  let from_flat_coreach (arch : Architecture.t) (proof_id : int)
+      (k : Flatacc.Kernel.t) : t =
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
@@ -702,7 +701,7 @@ module Proof = struct
         k.code
     in
     make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
-      ~accesses ~arrays
+      ~accesses
 
   (* Single-thread variant of [from_code_coreach]: builds the
      one-thread existential. The result asserts
@@ -728,8 +727,8 @@ module Proof = struct
     in
     assign_accesses Task1
 
-  let from_flat_t1 ?(arrays = Variable.Map.empty) (arch : Architecture.t)
-      (proof_id : int) (k : Flatacc.Kernel.t) : t =
+  let from_flat_t1 (arch : Architecture.t) (proof_id : int)
+      (k : Flatacc.Kernel.t) : t =
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
@@ -758,11 +757,10 @@ module Proof = struct
         k.code
     in
     make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
-      ~accesses ~arrays
+      ~accesses
 
-  let from_flat ?(memory_model = Memory_model.default)
-      ?(arrays = Variable.Map.empty) (arch : Architecture.t) (proof_id : int)
-      (k : Flatacc.Kernel.t) : t =
+  let from_flat ?(memory_model = Memory_model.default) (arch : Architecture.t)
+      (proof_id : int) (k : Flatacc.Kernel.t) : t =
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
@@ -795,7 +793,7 @@ module Proof = struct
         k.code
     in
     make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
-      ~accesses ~arrays
+      ~accesses
 end
 
 let add_rel_index (o : N_rel.t) (idx : int list) (s : Proof.t Streamutil.stream)
@@ -805,18 +803,17 @@ let add_rel_index (o : N_rel.t) (idx : int list) (s : Proof.t Streamutil.stream)
 let add ~tid ~bid : Proof.t Streamutil.stream -> Proof.t Streamutil.stream =
   Streamutil.map (Proof.add ~tid ~bid)
 
-let translate ?(memory_model = Memory_model.default)
-    ?(arrays = Variable.Map.empty) (arch : Architecture.t)
+let translate ?(memory_model = Memory_model.default) (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
-  Streamutil.mapi (Proof.from_flat ~memory_model ~arrays arch) stream
+  Streamutil.mapi (Proof.from_flat ~memory_model arch) stream
 
-let translate_coreach ?(arrays = Variable.Map.empty) (arch : Architecture.t)
+let translate_coreach (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
-  Streamutil.mapi (Proof.from_flat_coreach ~arrays arch) stream
+  Streamutil.mapi (Proof.from_flat_coreach arch) stream
 
-let translate_t1 ?(arrays = Variable.Map.empty) (arch : Architecture.t)
+let translate_t1 (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
-  Streamutil.mapi (Proof.from_flat_t1 ~arrays arch) stream
+  Streamutil.mapi (Proof.from_flat_t1 arch) stream
 
 (* ------------------- SERIALIZE ---------------------- *)
 

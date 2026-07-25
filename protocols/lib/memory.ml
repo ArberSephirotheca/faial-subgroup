@@ -18,11 +18,6 @@ let from_type (h : Mem_hierarchy.t) (ty : C_type.t) : t =
     data_type = C_type.get_array_type ty;
   }
 
-let int_dom (x : t) : Int_dom.t option =
-  match x.data_type with
-  | [] -> None
-  | ty -> ty |> String.concat " " |> C_type.make |> C_type.to_int_dom
-
 let make_map (h : Mem_hierarchy.t) (vs : Variable.t list) : t Variable.Map.t =
   vs |> List.map (fun x -> (x, make h)) |> Variable.Map.of_list
 

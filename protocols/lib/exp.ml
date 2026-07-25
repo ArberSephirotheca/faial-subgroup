@@ -8,6 +8,12 @@ type nexp =
   | Binary of N_binary.t * nexp * nexp
   | Unary of N_unary.t * nexp
   | NCall of string * nexp list
+  | ReadResult of {
+      array : Variable.t;
+      version : int;
+      ty : C_type.t;
+      args : nexp list;
+    }
   | NIf of bexp * nexp * nexp
   | CastInt of bexp
 
@@ -49,6 +55,10 @@ and bexp =
         let@ () = b_compare b1 b2 in
         let@ () = n_compare t1 t2 in
         n_compare f1 f2
+    | ReadResult r1, ReadResult r2 ->
+        let@ () = Variable.compare r1.array r2.array in
+        let@ () = compare r1.version r2.version in
+        List.compare n_compare r1.args r2.args
     | CastInt b1, CastInt b2 -> b_compare b1 b2
     | Var _, _ -> -1
     | _, Var _ -> 1
@@ -60,6 +70,8 @@ and bexp =
     | _, Unary _ -> 1
     | NCall _, _ -> -1
     | _, NCall _ -> 1
+    | ReadResult _, _ -> -1
+    | _, ReadResult _ -> 1
     | NIf _, _ -> -1
     | _, NIf _ -> 1
 
@@ -121,6 +133,7 @@ let rec n_eval_res (n : nexp) : (int, string) Result.t =
       let* n2 = n_eval_res n2 in
       Ok (N_binary.eval o n1 n2)
   | NCall (x, _) -> Error ("n_eval: call " ^ x)
+  | ReadResult r -> Error ("n_eval: read " ^ Variable.name r.array)
   | NIf (b, n1, n2) ->
       let* b = b_eval_res b in
       if b then n_eval_res n1 else n_eval_res n2
@@ -422,6 +435,7 @@ let rec n_fold f e a =
   | Binary (_, e1, e2) -> n_fold f e1 a |> n_fold f e2
   | NIf (b, e1, e2) -> b_fold f b a |> n_fold f e1 |> n_fold f e2
   | NCall (_, es) -> List.fold_left (fun a e -> n_fold f e a) a es
+  | ReadResult r -> List.fold_left (fun a e -> n_fold f e a) a r.args
 
 and b_fold f e a =
   match e with
@@ -468,6 +482,7 @@ let b_calls : bexp -> nexp list =
     | CastInt b -> b_walk acc b
     | NIf (b, n1, n2) -> n_walk (n_walk (b_walk acc b) n1) n2
     | NCall (_, args) -> List.fold_left n_walk (n :: acc) args
+    | ReadResult r -> List.fold_left n_walk (n :: acc) r.args
   in
   fun b -> b_walk [] b |> List.sort_uniq n_compare
 
@@ -478,6 +493,7 @@ let rec n_exists (f : Variable.t -> bool) : nexp -> bool = function
   | Num _ -> false
   | Binary (_, e1, e2) -> n_exists f e1 || n_exists f e2
   | NCall (_, es) -> List.exists (n_exists f) es
+  | ReadResult r -> List.exists (n_exists f) r.args
   | Unary (_, e) -> n_exists f e
   | NIf (b, e1, e2) -> b_exists f b || n_exists f e1 || n_exists f e2
 
@@ -533,6 +549,7 @@ let reset_variable_kind_n ~kernel_parameters ~loop_variables : nexp -> nexp =
     | Binary (o, a, b) -> Binary (o, reset a, reset b)
     | Unary (o, a) -> Unary (o, reset a)
     | NCall (g, es) -> NCall (g, List.map reset es)
+    | ReadResult r -> ReadResult { r with args = List.map reset r.args }
     | NIf (b, a1, a2) -> NIf (b_map reset b, reset a1, reset a2)
     | CastInt b -> CastInt (b_map reset b)
   in
@@ -549,7 +566,8 @@ let rec n_par ?context (* ?side *) (n : nexp) : string =
       Binary ((N_binary.Plus _ | N_binary.Mult _ | N_binary.Div _), _, _) )
   | Some (N_binary.Mult _), Binary (N_binary.Mult _, _, _) ->
       n_to_string n
-  | _, Num _ | _, Var _ | _, NCall _ | _, CastInt _ -> n_to_string n
+  | _, Num _ | _, Var _ | _, NCall _ | _, ReadResult _ | _, CastInt _ ->
+      n_to_string n
   | _, NIf _ | _, Unary _ | _, Binary _ -> "(" ^ n_to_string n ^ ")"
 
 and n_to_string : nexp -> string = function
@@ -559,6 +577,11 @@ and n_to_string : nexp -> string = function
   | Binary (b, a1, a2) -> n_par ~context:b a1 ^ " " ^ N_binary.to_string b ^ " " ^ n_par ~context:b a2
   | NCall (x, args) ->
       x ^ "(" ^ String.concat ", " (List.map n_to_string args) ^ ")"
+  | ReadResult r ->
+      Read_symbol.name r.array ^ "("
+      ^ String.concat ", "
+          (string_of_int r.version :: List.map n_to_string r.args)
+      ^ ")"
   | NIf (b, n1, n2) -> b_par b ^ " ? " ^ n_par n1 ^ " : " ^ n_par n2
   | CastInt b -> "int(" ^ b_to_string b ^ ")"
 
@@ -614,3 +637,7 @@ let b_to_s : bexp -> Indent.t list =
         |> List.concat
   in
   to_s true
+
+let int_dom_bound (x : Variable.t) (d : Int_dom.t) : bexp =
+  let lb, ub = Int_dom.to_range d in
+  b_and (n_le (Num lb) (Var x)) (n_le (Var x) (Num ub))

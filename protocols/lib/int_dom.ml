@@ -47,7 +47,3 @@ let to_range (d : t) : int * int =
   | Bit64, true -> signed_int_range
   | Bit64, false -> unsigned_int_range
 
-let to_bexp (x : Variable.t) (d : t) : Exp.bexp =
-  let lb, ub = to_range d in
-  let open Exp in
-  b_and (n_le (Num lb) (Var x)) (n_le (Var x) (Num ub))

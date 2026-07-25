@@ -8,7 +8,7 @@ let default_bound (x : Variable.t) (ty : C_type.t) : Exp.bexp * C_type.t =
   let b =
     ty |> C_type.to_int_dom
     |> Option.value ~default:Int_dom.signed_int
-    |> Int_dom.to_bexp x
+    |> Exp.int_dom_bound x
   in
   (b, ty)
 

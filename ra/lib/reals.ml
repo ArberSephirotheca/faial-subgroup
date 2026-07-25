@@ -229,6 +229,7 @@ let rec from_nexp : Exp.nexp -> t = function
      variable named after [f]; this is sound (opaque) and keeps
      equal calls aliased to the same symbol. *)
   | NCall (name, _) -> Var (Variable.from_name name)
+  | ReadResult r -> Var (Variable.from_name (Read_symbol.name r.array))
   | NIf (e1, e2, e3) -> if_ (from_bexp e1) (from_nexp e2) (from_nexp e3)
   | CastInt e -> BoolToInt (from_bexp e)
 

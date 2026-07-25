@@ -123,6 +123,12 @@ let rec match_nexp (pat : nexp) (subject : nexp) (s : subst) : subst Seq.t =
           let* s = match_nexp p1 s1 s in
           match_nexp p2 s2 s
       | _ -> Seq.empty)
+  | ReadResult pr -> (
+      match subject with
+      | ReadResult sr
+        when Variable.equal pr.array sr.array && pr.version = sr.version ->
+          match_list pr.args sr.args s
+      | _ -> Seq.empty)
   | CastInt pb -> (
       match subject with
       | CastInt sb when b_equal pb sb -> Seq.return s
@@ -161,6 +167,7 @@ let rec instantiate (s : subst) (template : nexp) : nexp =
   | Binary (op, a, b) -> Binary (op, instantiate s a, instantiate s b)
   | Unary (op, a) -> Unary (op, instantiate s a)
   | NCall (name, args) -> NCall (name, List.map (instantiate s) args)
+  | ReadResult r -> ReadResult { r with args = List.map (instantiate s) r.args }
   | NIf (b, a1, a2) ->
       NIf (instantiate_b s b, instantiate s a1, instantiate s a2)
   | CastInt b -> CastInt (instantiate_b s b)

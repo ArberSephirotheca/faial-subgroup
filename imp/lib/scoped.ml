@@ -205,10 +205,10 @@ module Code = struct
      no barrier in between needs no version bump, since it races with
      the read on its own. *)
   let bind_uniform_reads : t -> t =
-    let read_call (v : Version.t) (array : Variable.t)
+    let read_call (v : Version.t) (ty : C_type.t) (array : Variable.t)
         (index : Exp.nexp list) : Exp.nexp =
-      Exp.NCall
-        (Read_symbol.name array, Exp.Num (Version.get array v) :: index)
+      Exp.ReadResult
+        { array; version = Version.get array v; ty; args = index }
     in
     let rec rewrite (looped : Variable.Set.t) (v : Version.t) :
         t -> t * Version.t = function
@@ -216,14 +216,14 @@ module Code = struct
           ( (Access { array; index; mode = Read; _ } as acc),
             Decl ((({ init = None; _ } : Decl.t) as d), rest) )
         when not (Variable.Set.mem array looped) ->
-          let call = read_call v array index in
+          let call = read_call v d.ty array index in
           let rest, v = rewrite looped v rest in
           (Seq (acc, Decl ({ d with init = Some call }, rest)), v)
       | Seq
           ( If (b, (Access { array; index; mode = Read; _ } as acc), Skip),
             Decl ((({ init = None; _ } : Decl.t) as d), rest) )
         when not (Variable.Set.mem array looped) ->
-          let call = read_call v array index in
+          let call = read_call v d.ty array index in
           let rest, v = rewrite looped v rest in
           (Seq (If (b, acc, Skip), Decl ({ d with init = Some call }, rest)), v)
       | Seq (p, q) ->

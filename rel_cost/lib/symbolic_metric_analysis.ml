@@ -29,6 +29,8 @@ module Proj = struct
     | Binary (o, n1, n2) -> Binary (o, proj_n n1 ctx, proj_n n2 ctx)
     | NIf (b, n1, n2) -> NIf (proj_b b ctx, proj_n n1 ctx, proj_n n2 ctx)
     | NCall (x, ns) -> NCall (x, List.map (fun n -> proj_n n ctx) ns)
+    | ReadResult r ->
+        ReadResult { r with args = List.map (fun n -> proj_n n ctx) r.args }
 
   and proj_b (b : bexp) (ctx : t) : bexp =
     match b with
@@ -745,6 +747,9 @@ let rec n_inline_cost : nexp -> nexp state = function
   | NCall (name, args) ->
       let* args' = State.list_map n_inline_cost args in
       return (NCall (name, args'))
+  | ReadResult r ->
+      let* args' = State.list_map n_inline_cost r.args in
+      return (ReadResult { r with args = args' })
   | NIf (b, e1, e2) ->
       let* b' = b_inline_cost b in
       let* e1' = n_inline_cost e1 in

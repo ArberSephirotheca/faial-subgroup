@@ -129,7 +129,7 @@ let from_decl (var : Variable.t) (ty : C_type.t) : t =
 let decl_to_bexp (var : Variable.t) (ty : C_type.t) : bexp =
   ty |> C_type.to_int_dom
   |> Option.value ~default:Int_dom.signed_int
-  |> Int_dom.to_bexp var
+  |> Exp.int_dom_bound var
 
 (* For a [Plus] range whose stride evaluates to a literal [k > 1],
    returns [k]. Detects strided additive loops that can be

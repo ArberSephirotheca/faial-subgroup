@@ -47,6 +47,14 @@ module BC = struct
               Uniform args_t
           in
           (NCall (f, List.map fst args_t), r)
+      | ReadResult rd ->
+          let args_t = List.map from_nexp rd.args in
+          let r =
+            List.fold_left
+              (fun acc (_, t) -> if acc = Any || t = Any then Any else Uniform)
+              Uniform args_t
+          in
+          (ReadResult { rd with args = List.map fst args_t }, r)
       | CastInt e ->
           let r = if Exp.b_intersects locals e then Any else Uniform in
           (CastInt e, r)

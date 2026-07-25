@@ -12,7 +12,7 @@ let rec eval_n (lookup : string -> int option) : nexp -> int option = function
        (try Some (N_binary.eval op va vb) with Division_by_zero -> None)
      | _ -> None)
   | Unary (op, a) -> Option.map (N_unary.eval op) (eval_n lookup a)
-  | NCall _ -> None
+  | NCall _ | ReadResult _ -> None
   | NIf (b, t, f) ->
     (match eval_b lookup b with
      | Some true -> eval_n lookup t

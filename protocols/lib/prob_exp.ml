@@ -44,6 +44,7 @@ let rec n_eval_res ?(env = default_env) (n : Exp.nexp) :
       let* n2 = n_eval_res ~env n2 in
       Ok (eval_nbin o n1 n2)
   | NCall (x, _) -> Error ("n_eval: call " ^ x)
+  | ReadResult r -> Error ("n_eval: read " ^ Variable.name r.array)
   | NIf (b, n1, n2) ->
       let* b = b_eval_res ~env b in
       if b then n_eval_res ~env n1 else n_eval_res ~env n2

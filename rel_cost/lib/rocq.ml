@@ -173,7 +173,7 @@ let rec nexp_to_coq (n : nexp) : (string, error) Result.t =
       let* e1_s = nexp_to_coq e1 in
       let* e2_s = nexp_to_coq e2 in
       Ok (Printf.sprintf "(NBin %s %s %s)" op_s e1_s e2_s)
-  | (Unary _ | NCall _ | NIf _ | CastInt _) as e ->
+  | (Unary _ | NCall _ | ReadResult _ | NIf _ | CastInt _) as e ->
       Error ("unsupported nexp: " ^ Exp.n_to_string e)
 
 let rec bexp_to_coq (b : bexp) : (string, error) Result.t =

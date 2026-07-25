@@ -21,6 +21,9 @@ and rewrite_children (rules : Exp_match.rule list) (e : nexp) : nexp * bexp list
   | NCall (f, args) ->
       let args', es = rewrite_nexp_list rules args in
       ((if args' == args then e else NCall (f, args')), es)
+  | ReadResult r ->
+      let args', es = rewrite_nexp_list rules r.args in
+      ((if args' == r.args then e else ReadResult { r with args = args' }), es)
   | NIf (b, a1, a2) ->
       let b', esb = rewrite_bexp rules b in
       let a1', es1 = rewrite_nexp rules a1 in

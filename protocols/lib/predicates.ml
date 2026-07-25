@@ -109,6 +109,8 @@ let get_predicates (b : bexp) : t list =
     | NIf (b, n1, n2) -> get_names_b b ns |> get_names_n n1 |> get_names_n n2
     | NCall (_, ns') ->
         List.fold_left (fun acc n -> get_names_n n acc) ns ns'
+    | ReadResult r ->
+        List.fold_left (fun acc n -> get_names_n n acc) ns r.args
     | Unary (_, n) -> get_names_n n ns
     | CastInt b -> get_names_b b ns
   in
@@ -123,6 +125,7 @@ let get_predicates (b : bexp) : t list =
 let rec n_inline : nexp -> nexp = function
   | (Var _ | Num _) as n -> n
   | NCall (x, args) -> NCall (x, List.map n_inline args)
+  | ReadResult r -> ReadResult { r with args = List.map n_inline r.args }
   | CastInt b -> CastInt (b_inline b)
   | Unary (o, e) -> Unary (o, n_inline e)
   | Binary (o, n1, n2) -> Binary (o, n_inline n1, n_inline n2)
@@ -183,6 +186,7 @@ let strip_cross_thread : bexp -> bexp =
     | Binary (o, n1, n2) -> Binary (o, rn n1, rn n2)
     | NIf (b, n1, n2) -> NIf (rb b, rn n1, rn n2)
     | NCall (x, args) -> NCall (x, List.map rn args)
+    | ReadResult r -> ReadResult { r with args = List.map rn r.args }
   and rb (b : bexp) : bexp =
     match b with
     | Bool _ -> b

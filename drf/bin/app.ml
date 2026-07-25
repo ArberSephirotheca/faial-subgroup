@@ -445,8 +445,7 @@ let run (a : t) : Analysis.t list =
   let check_kernel arch (kernel : Protocols.Kernel.t) : Analysis.t =
     let report =
       kernel |> translate arch a
-      |> Symbexp.translate ~memory_model:a.memory_model
-           ~arrays:kernel.arrays arch
+      |> Symbexp.translate ~memory_model:a.memory_model arch
       |> Symbexp.add_rel_index (N_rel.Le Signedness.Signed) a.le_index
       |> Symbexp.add_rel_index (N_rel.Ge Signedness.Signed) a.ge_index
       |> Symbexp.add_rel_index N_rel.Eq a.eq_index

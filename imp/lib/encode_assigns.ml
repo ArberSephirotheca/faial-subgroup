@@ -103,6 +103,7 @@ let rec esize (sizes : int Variable.Map.t) (n : Exp.nexp) : int =
   | Unary (_, e) -> 1 + esize sizes e
   | Binary (_, e1, e2) -> 1 + esize sizes e1 + esize sizes e2
   | NCall (_, es) -> List.fold_left (fun a e -> a + esize sizes e) 1 es
+  | ReadResult r -> List.fold_left (fun a e -> a + esize sizes e) 1 r.args
   | NIf (b, e1, e2) -> 1 + besize sizes b + esize sizes e1 + esize sizes e2
   | CastInt b -> 1 + besize sizes b
 
