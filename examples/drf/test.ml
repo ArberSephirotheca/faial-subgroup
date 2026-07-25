@@ -527,6 +527,32 @@ let tests =
      threads, so the write index offsets a shared constant by the
      thread id. *)
     ("drf-read-version.cu", [], 0);
+    (* A read symbol is minted only after an array has reached its final
+     name and its index has picked up every offset folded into it. A load
+     in a callee therefore carries the caller's array and the offset of
+     the argument, and agrees with a load the caller writes directly on
+     that array, so the two cancel in the write index. Minting the symbol
+     before inlining keeps the callee's parameter as the array and drops
+     the offset, which separates the two loads and reports a race. *)
+    ("drf-read-call-arg.cu", [], 0);
+    (* The other direction on the offset: two calls of one callee at
+     different offsets of one array read different cells and must stay
+     apart, so their difference is free and two threads collide. Dropping
+     the offset of the argument merges the two loads and clears the
+     race. *)
+    ("racy-read-call-offsets.cu", [], 1);
+    (* A pointer bound to the interior of an array is resolved before the
+     symbol is minted, so a load through the pointer and a load written on
+     the array itself are the same load. *)
+    ("drf-read-source-alias.cu", [], 0);
+    (* Offsets accumulate along a chain of calls, and the load carries the
+     sum of all of them. *)
+    ("drf-read-nested-call.cu", [], 0);
+    (* One callee inlined against two arrays keeps the arrays apart, since
+     the symbol is named after the resolved array. A symbol shared by every
+     array, or one left named after the callee's parameter, merges the two
+     loads and clears the race. *)
+    ("racy-read-two-arrays.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are
