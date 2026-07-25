@@ -126,6 +126,12 @@ let tests =
     (* The other half of that rule: an atomic conflicts with a plain
        write to the same cell no matter which operation it is. *)
     ("racy-atomicmax-write.cu", [], 1);
+    (* The first end-to-end coverage of a predicate carrying a proof.
+       Masking by [n - 1] is the identity on [0, n) exactly when [n]
+       is a power of two, so the verdict turns on whether the
+       assumption is present. *)
+    ("drf-pow2-mask.cu", [], 0);
+    ("racy-pow2-mask.cu", [], 1);
     (* A data-race that occurs when we have warp-concurrent semantics *)
     ("racy-reduce.cu", [], 1);
     (* Pre-Volta warp-synchronous halving reduction on a single warp:
