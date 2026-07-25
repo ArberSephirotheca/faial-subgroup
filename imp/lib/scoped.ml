@@ -174,27 +174,90 @@ module Code = struct
   let uniform_read_name (array : Variable.t) : string =
     "$read_" ^ Variable.name array
 
+  let rec written_arrays (acc : Variable.Set.t) : t -> Variable.Set.t = function
+    | Access { array; mode = Write _ | Atomic _; _ } ->
+        Variable.Set.add array acc
+    | Call (c, p) ->
+        Call.arrays c |> Variable.Set.of_list |> Variable.Set.union acc
+        |> fun acc -> written_arrays acc p
+    | If (_, p, q) | Seq (p, q) -> written_arrays (written_arrays acc p) q
+    | For (_, p) | Decl (_, p) | Assign { body = p; _ } -> written_arrays acc p
+    | Access _ | Assert _ | Sync _ | Skip -> acc
+
+  (* Counts the stores to each array sequenced before a program point.
+     Two loads agree only while nothing has stored in between, so the
+     count is passed as the read call's leading argument and separates
+     loads taken on either side of a store. It must stay a numeral: a
+     variable in that position would let the solver equate two counts
+     and merge versions that a store separates. *)
+  module Version = struct
+    type t = int Variable.Map.t
+
+    let empty : t = Variable.Map.empty
+
+    let get (x : Variable.t) (v : t) : int =
+      Variable.Map.find_opt x v |> Option.value ~default:0
+
+    let bump (x : Variable.t) (v : t) : t = Variable.Map.add x (get x v + 1) v
+
+    let join : t -> t -> t =
+      Variable.Map.union (fun _ a b -> Some (max a b))
+  end
+
+  (* A load binds to the read symbol at the array's current version. A
+     loop body that stores to the array is the one shape a version
+     cannot express, since the count would have to advance per
+     iteration, so its loads are left unbound. A cross-thread store with
+     no barrier in between needs no version bump, since it races with
+     the read on its own. *)
   let bind_uniform_reads : t -> t =
-    let rec rewrite : t -> t = function
+    let read_call (v : Version.t) (array : Variable.t)
+        (index : Exp.nexp list) : Exp.nexp =
+      Exp.NCall
+        (uniform_read_name array, Exp.Num (Version.get array v) :: index)
+    in
+    let rec rewrite (looped : Variable.Set.t) (v : Version.t) :
+        t -> t * Version.t = function
       | Seq
           ( (Access { array; index; mode = Read; _ } as acc),
-            Decl ((({ init = None; _ } : Decl.t) as d), rest) ) ->
-          let call = Exp.NCall (uniform_read_name array, index) in
-          Seq (acc, Decl ({ d with init = Some call }, rewrite rest))
+            Decl ((({ init = None; _ } : Decl.t) as d), rest) )
+        when not (Variable.Set.mem array looped) ->
+          let call = read_call v array index in
+          let rest, v = rewrite looped v rest in
+          (Seq (acc, Decl ({ d with init = Some call }, rest)), v)
       | Seq
           ( If (b, (Access { array; index; mode = Read; _ } as acc), Skip),
-            Decl ((({ init = None; _ } : Decl.t) as d), rest) ) ->
-          let call = Exp.NCall (uniform_read_name array, index) in
-          Seq (If (b, acc, Skip), Decl ({ d with init = Some call }, rewrite rest))
-      | Seq (p, q) -> Seq (rewrite p, rewrite q)
-      | If (b, p, q) -> If (b, rewrite p, rewrite q)
-      | For (r, p) -> For (r, rewrite p)
-      | Decl (d, p) -> Decl (d, rewrite p)
-      | Assign a -> Assign { a with body = rewrite a.body }
-      | Call (c, p) -> Call (c, rewrite p)
-      | (Access _ | Assert _ | Sync _ | Skip) as p -> p
+            Decl ((({ init = None; _ } : Decl.t) as d), rest) )
+        when not (Variable.Set.mem array looped) ->
+          let call = read_call v array index in
+          let rest, v = rewrite looped v rest in
+          (Seq (If (b, acc, Skip), Decl ({ d with init = Some call }, rest)), v)
+      | Seq (p, q) ->
+          let p, v = rewrite looped v p in
+          let q, v = rewrite looped v q in
+          (Seq (p, q), v)
+      | If (b, p, q) ->
+          let p, v1 = rewrite looped v p in
+          let q, v2 = rewrite looped v q in
+          (If (b, p, q), Version.join v1 v2)
+      | For (r, p) ->
+          let p, v = rewrite (written_arrays looped p) v p in
+          (For (r, p), v)
+      | Decl (d, p) ->
+          let p, v = rewrite looped v p in
+          (Decl (d, p), v)
+      | Assign a ->
+          let body, v = rewrite looped v a.body in
+          (Assign { a with body }, v)
+      | Call (c, p) ->
+          let v = Call.arrays c |> List.fold_left (Fun.flip Version.bump) v in
+          let p, v = rewrite looped v p in
+          (Call (c, p), v)
+      | Access { array; mode = Write _ | Atomic _; _ } as p ->
+          (p, Version.bump array v)
+      | (Access _ | Assert _ | Sync _ | Skip) as p -> (p, v)
     in
-    rewrite
+    fun p -> rewrite Variable.Set.empty Version.empty p |> fst
 
   (* Only keep accesses that mention an array in the set *)
   let filter_locs (locs : Variable.Set.t) : t -> t =

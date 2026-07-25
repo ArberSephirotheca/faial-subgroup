@@ -508,6 +508,25 @@ let tests =
      Unsupported and every access lowers to [skip], producing a
      false-negative DRF on a kernel that races on every thread. *)
     ("racy-qualified-pointer.cu", [], 1);
+    (* Congruence on the read symbol doing real work: with one warp per
+     block both threads of a witness load the same cell and share a
+     base, so the write index separates them by thread id alone. The
+     two load indices are distinct terms, one per thread, so only the
+     equality axiom relates them. *)
+    ("drf-read-congruence.cu", [ "--block-dim=32" ], 0);
+    (* Two warps per block put the witness on unrelated bases, which
+     can undercut each other by the thread-id gap. *)
+    ("drf-read-congruence.cu", [ "--block-dim=64" ], 1);
+    (* A load that follows a store to the same array must not reuse the
+     earlier load's value: reading a cell back after overwriting it
+     yields a different number, and cancelling the two against each
+     other clears a real race. *)
+    ("racy-read-after-write.cu", [], 1);
+    (* The companion precision case: separating the two loads must not
+     downgrade either to an unknown local. Both stay uniform across
+     threads, so the write index offsets a shared constant by the
+     thread id. *)
+    ("drf-read-version.cu", [], 0);
   ]
 
 (* These are kernels that are being documented, but are
