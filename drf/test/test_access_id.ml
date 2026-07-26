@@ -7,7 +7,7 @@ let arch : Architecture.t = Architecture.Block
 
 let array_a : Variable.t = Variable.from_name "A"
 let tid : nexp = Var Variable.tid_x
-let shared_int : Memory.t = Memory.from_type Mem_hierarchy.SharedMemory C_type.int
+let shared_int : Memory.t = Memory.from_type Mem_hierarchy.SharedMemory Ty.int
 
 let write (idx : nexp) : Code.t = Code.Access (Access.write array_a [ idx ] None)
 

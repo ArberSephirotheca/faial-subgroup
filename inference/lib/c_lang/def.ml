@@ -42,8 +42,8 @@ let has_array_type (j : Yojson.Basic.t) : bool =
   let open Rjson in
   let is_array =
     let* o = cast_object j in
-    let* ty = get_field "type" o |> Result.map J_type.from_json in
-    Ok (J_type.matches C_type.is_array ty)
+    let* ty = get_field "type" o |> Result.map J_type.parse in
+    Ok (Ty.is_array_or_pointer ty)
   in
   is_array |> Result.value ~default:false
 
@@ -143,10 +143,9 @@ let parse_enum (j : Yojson.Basic.t) : Imp.Enum.t j_result =
           | first :: _ ->
               first
               |> member "type"
-              |> J_type.from_json
-              |> J_type.to_c_type_res
-              |> Result.to_option
-              |> Option.map C_type.to_string
+              |> J_type.parse
+              |> Ty.to_string
+              |> Option.some
           | [] -> None
         in
         (match name with
@@ -222,19 +221,14 @@ let rec parse (j : Yojson.Basic.t) : t list j_result =
       Ok (List.concat defs)
   | "TypedefDecl" | "TypeAliasDecl" -> (
       let* name = with_field "name" cast_string o in
-      let* ty = get_field "type" o |> Result.map J_type.from_json in
+      let* ty = get_field "type" o |> Result.map J_type.parse in
       let location =
         with_field "range" parse_location o
         |> Result.value ~default:Location.empty
       in
-      let ty = J_type.from_c_type (J_type.to_desugared_c_type ty) in
-      match J_type.to_c_type_res ty with
-      | Ok ty ->
-          if
-            C_type.is_struct ty || C_type.is_array ty || C_type.is_function ty
-          then Ok []
-          else Ok [ Typedef { name; ty; location } ]
-      | Error _ -> Ok [])
+      if Ty.is_struct ty || Ty.is_array_or_pointer ty || Ty.is_function ty then
+        Ok []
+      else Ok [ Typedef { name; ty; location } ])
   | "EnumDecl" ->
       let* e = parse_enum j in
       Ok [ Enum e ]

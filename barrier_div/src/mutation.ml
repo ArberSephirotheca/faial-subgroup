@@ -103,7 +103,7 @@ let prepend_unused_decl : t =
           {
             k with
             code =
-              Decl { var = x; ty = C_type.int; cond = Exp.Bool true; body = k.code };
+              Decl { var = x; ty = Ty.int; cond = Exp.Bool true; body = k.code };
           };
         ]);
   }
@@ -144,7 +144,7 @@ let wrap_uniform_loop : t =
             k with
             code = Loop { cond_range = Cond_range.of_range r; body = k.code };
             global_variables =
-              Params.add n C_type.int k.global_variables;
+              Params.add n Ty.int k.global_variables;
           };
         ]);
   }
@@ -177,7 +177,7 @@ let wrap_decl_if : t =
             {
               k with
               code =
-                Decl { var = x; ty = C_type.int; cond = Exp.Bool true; body = inner };
+                Decl { var = x; ty = Ty.int; cond = Exp.Bool true; body = inner };
             };
           ]);
   }
@@ -206,7 +206,7 @@ let wrap_decl_loop : t =
             {
               k with
               code =
-                Decl { var = n; ty = C_type.int; cond = Exp.Bool true; body = inner };
+                Decl { var = n; ty = Ty.int; cond = Exp.Bool true; body = inner };
             };
           ]);
   }
@@ -241,7 +241,7 @@ let wrap_tid_if : t =
               k with
               code = If (cond, k.code, Skip);
               global_variables =
-                Params.add n C_type.int k.global_variables;
+                Params.add n Ty.int k.global_variables;
             };
           ]);
   }

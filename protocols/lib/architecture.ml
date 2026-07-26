@@ -63,8 +63,8 @@ module Defaults = struct
         |> Variable.Set.union Variable.bid_set
         |> Variable.Set.union Variable.bdim_set
         |> Variable.Set.union Variable.gdim_set
-        |> Params.from_set C_type.unsigned_int;
-      locals = Variable.tid_set |> Params.from_set C_type.unsigned_int;
+        |> Params.from_set Ty.unsigned_int;
+      locals = Variable.tid_set |> Params.from_set Ty.unsigned_int;
       distinct : bexp = is_thread_distinct Variable.tid_list;
     }
 
@@ -74,11 +74,11 @@ module Defaults = struct
         Variable.Set.empty
         |> Variable.Set.union Variable.bdim_set
         |> Variable.Set.union Variable.gdim_set
-        |> Params.from_set C_type.unsigned_int;
+        |> Params.from_set Ty.unsigned_int;
       locals =
         Variable.bid_set
         |> Variable.Set.union Variable.tid_set
-        |> Params.from_set C_type.unsigned_int;
+        |> Params.from_set Ty.unsigned_int;
       distinct : bexp = is_thread_distinct Variable.bid_list;
     }
 

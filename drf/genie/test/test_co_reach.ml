@@ -50,7 +50,7 @@ let lt (a : Exp.nexp) (b : Exp.nexp) : Exp.bexp =
 
 let array_a : Variable.t = Variable.from_name "A"
 let shared_int : Memory.t =
-  Memory.from_type Mem_hierarchy.SharedMemory C_type.int
+  Memory.from_type Mem_hierarchy.SharedMemory Ty.int
 
 let access_w (idx : Exp.nexp) : Code.t =
   Code.Access (Access.write array_a [ idx ] None)
@@ -160,7 +160,7 @@ let test_co_reach_gate_catches_trivialisation () =
       (Code.seq (access_w (var "threadIdx.x")) (access_r (var "threadIdx.x")))
       Code.Skip
   in
-  let k_baseline = mk_kernel ~globals:[ (n, C_type.int) ] [ ("A", shared_int) ] body in
+  let k_baseline = mk_kernel ~globals:[ (n, Ty.int) ] [ ("A", shared_int) ] body in
   let k_phi =
     let pre' = eq (var n) (Exp.Num 0) in
     { k_baseline with pre = Exp.b_and k_baseline.pre pre' }
@@ -580,7 +580,7 @@ let test_t1_baseline_restricted_to_pair_relevant () =
       (access_w_arr array_b (var "threadIdx.x"))
   in
   let k_baseline =
-    mk_kernel ~globals:[ (n, C_type.int) ]
+    mk_kernel ~globals:[ (n, Ty.int) ]
       [ ("A", shared_int); ("B", shared_int) ]
       body
   in

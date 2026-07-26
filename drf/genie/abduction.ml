@@ -57,7 +57,7 @@ let launch_config_set : Variable.Set.t =
 let int_params (k : Kernel.t) : Variable.t list =
   Params.to_list (Params.union_left k.global_variables k.local_variables)
   |> List.filter_map (fun (v, ty) ->
-    if C_type.is_int ty && not (Variable.Set.mem v launch_config_set)
+    if Ty.is_int ty && not (Variable.Set.mem v launch_config_set)
     then Some v else None)
   |> List.sort_uniq Variable.compare
 
@@ -70,7 +70,7 @@ let signedness_of (k : Kernel.t) (v : Variable.t) : Signedness.t =
   else
     let p = Params.union_left k.global_variables k.local_variables in
     match Params.find_opt v p with
-    | Some (_, ty) when C_type.is_unsigned ty -> Signedness.Unsigned
+    | Some (_, ty) when Ty.is_unsigned ty -> Signedness.Unsigned
     | _ -> Signedness.Signed
 
 (* Pool combinators. Each step is [bexp list -> bexp list] and prepends

@@ -18,7 +18,7 @@ open Parse_util
 
 type t = {
   name : Variable.t;
-  ty : J_type.t;
+  ty : Ty.t;
   init : c_expr;
 }
 
@@ -39,7 +39,7 @@ let parse (j : Yojson.Basic.t) : t Rjson.j_result =
    Ok
      {
        name = Variable.from_name name_str;
-       ty = J_type.from_json ty;
+       ty = J_type.parse ty;
        init;
      })
   |> Rjson.add_reason "ConstBinding" j

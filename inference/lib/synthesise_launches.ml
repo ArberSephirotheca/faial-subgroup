@@ -64,7 +64,7 @@ let synth_name (lp : C_lang.LaunchParam.t) : string =
 
 (** Converts a free variable into a kernel parameter. *)
 let param_of_free_var (d : Decl_expr.t) : C_lang.Param.t option =
-  if J_type.matches C_type.is_struct d.ty then None
+  if Ty.is_struct d.ty then None
   else
     let ty_var = Ty_variable.make ~ty:d.ty ~name:d.name in
     Some (C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false)
@@ -192,7 +192,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     |> dedup_by_name ~name_of:C_lang.Param.name
   in
   let name = synth_name lp in
-  let ty = J_type.to_string lp.kernel.ty in
+  let ty = Ty.to_string lp.kernel.ty in
   {
     Kernel.ty;
     name;

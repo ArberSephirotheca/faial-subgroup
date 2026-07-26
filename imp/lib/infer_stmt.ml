@@ -28,7 +28,7 @@ module Arg = struct
   type t =
     | Scalar of Infer_exp.t
     | Array of Array_use.t
-    | Unsupported of C_type.t
+    | Unsupported of Ty.t
 
   let infer : t -> O_Arg.t Infer_exp.state = function
     | Scalar e ->
@@ -52,14 +52,14 @@ type t =
     }
   | Assert of Infer_exp.t
   | Read of {
-      target : (C_type.t * Variable.t) option;
+      target : (Ty.t * Variable.t) option;
       array : Variable.t;
       index : Infer_exp.t list;
       guard : Infer_exp.t option;
     }
   | Atomic of {
       target : Variable.t;
-      ty : C_type.t;
+      ty : Ty.t;
       atomic : Infer_exp.t Atomic.t;
       array : Variable.t;
       index : Infer_exp.t list;
@@ -76,11 +76,11 @@ type t =
       target : Variable.t;
       offset : Infer_exp.t;
     }
-  | Decl of { var : Variable.t; ty : C_type.t; init : Infer_exp.t option }
-  | Assign of { var : Variable.t; data : Infer_exp.t; ty : C_type.t }
+  | Decl of { var : Variable.t; ty : Ty.t; init : Infer_exp.t option }
+  | Assign of { var : Variable.t; data : Infer_exp.t; ty : Ty.t }
   | If of (Infer_exp.t * t * t)
   | Call of {
-      result : (Variable.t * C_type.t) option;
+      result : (Variable.t * Ty.t) option;
       kernel : string;
       ty : string;
       args : Arg.t list;
@@ -92,10 +92,10 @@ type t =
   | DoWhile of (Infer_exp.t * t)
   | For of { init : t; cond : Infer_exp.t; inc : t; body : t }
 
-let decl_set ?(ty = C_type.int) (var : Variable.t) (init : Infer_exp.t) : t =
+let decl_set ?(ty = Ty.int) (var : Variable.t) (init : Infer_exp.t) : t =
   Decl { init = Some init; ty; var }
 
-let decl_unset ?(ty = C_type.int) (var : Variable.t) : t =
+let decl_unset ?(ty = Ty.int) (var : Variable.t) : t =
   Decl { init = None; ty; var }
 
 let for_ ~init ~cond ~inc ~body : t = For { init; cond; inc; body }
@@ -196,8 +196,8 @@ module Convert_assigns = struct
     residual : t;
     env : IE.t Variable.Map.t;
     local : Variable.Set.t;
-    reads : C_type.t Variable.Map.t;
-    assigned : C_type.t Variable.Map.t;
+    reads : Ty.t Variable.Map.t;
+    assigned : Ty.t Variable.Map.t;
   }
 
   let empty : arm =
@@ -221,7 +221,7 @@ module Convert_assigns = struct
 
   let keep (a : arm) (s : t) : arm = { a with residual = seq a.residual s }
 
-  let bind_target (a : arm) : (C_type.t * Variable.t) option -> arm = function
+  let bind_target (a : arm) : (Ty.t * Variable.t) option -> arm = function
     | Some (ty, x) ->
         { a with
           reads = Variable.Map.add x ty a.reads;
@@ -362,7 +362,7 @@ let to_s: t -> Indent.t list =
     | Call c -> [Line (Call.to_string c)]
     | Sync _ -> [Line "sync;"]
     | Assert b -> [Line (Assert.to_string b ^ ";")]
-    | Atomic r -> [Line (C_type.to_string r.ty ^ " " ^ Variable.name r.target ^ " = atomic " ^ Variable.name r.array ^ Access.index_to_string r.index ^ ";")]
+    | Atomic r -> [Line (Ty.to_string r.ty ^ " " ^ Variable.name r.target ^ " = atomic " ^ Variable.name r.array ^ Access.index_to_string r.index ^ ";")]
     | Read r ->
       let a = Variable.name r.array in
       let idx = Access.index_to_string r.index in
@@ -370,7 +370,7 @@ let to_s: t -> Indent.t list =
         match r.target with
         | Some (ty, target) ->
           let x = Variable.name target in
-          let ty = C_type.to_string ty in
+          let ty = Ty.to_string ty in
           ty ^ " " ^ x ^ " = "
         | None ->
           ""

@@ -22,7 +22,7 @@ open D_lang
 
 module Param = C_lang.Param
 
-let mk_param ~(name : Variable.t) ~(ty : J_type.t) : Param.t =
+let mk_param ~(name : Variable.t) ~(ty : Ty.t) : Param.t =
   Param.make
     ~ty_var:(Ty_variable.make ~ty ~name)
     ~is_used:true ~is_shared:false
@@ -98,7 +98,7 @@ open State.Syntax
    the recursion. *)
 let rewrite_expr (e : Expr.t) : Expr.t state =
   let* env = Context.bindings in
-  let synth_call (b : Context.binding) (args : Expr.t list) (ty : J_type.t) :
+  let synth_call (b : Context.binding) (args : Expr.t list) (ty : Ty.t) :
       Expr.t =
     let cap_args = List.map snd b.captures in
     let func =
@@ -149,7 +149,7 @@ let rewrite_stmt (st : Stmt.t) : Stmt.t state =
           in
           let synth : Kernel.t =
             {
-              ty = J_type.to_string ret_ty;
+              ty = Ty.to_string ret_ty;
               name = Variable.name fname;
               code = body;
               type_params = [];

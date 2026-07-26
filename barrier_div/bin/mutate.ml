@@ -21,7 +21,7 @@ let read_kernels ~macros ~params (fname : string) : Kernel.t list =
   |> (fun x -> x.kernels)
   |> List.map (preprocess params)
 
-(* The IR uses [C_type.unknown] (literal "?") as a placeholder when
+(* The IR uses [Ty.unknown] (literal "?") as a placeholder when
    inference can't recover the type of a binder — e.g. the anonymous
    loop counters introduced for [Star] iterations. The cgen emits
    "? <var>;" which doesn't parse as C++, so any mutant generated
@@ -30,7 +30,7 @@ let read_kernels ~macros ~params (fname : string) : Kernel.t list =
 let has_unknown_type_decl (c : Code.t) : bool =
   Code.exists
     (function
-      | Code.Decl { ty; _ } -> C_type.to_string ty = "?"
+      | Code.Decl { ty; _ } -> Ty.is_unknown ty
       | _ -> false)
     c
 

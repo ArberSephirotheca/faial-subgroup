@@ -1058,6 +1058,80 @@ module Type = struct
     in
     binding ^ s.name ^ " : " ^ to_string s.ty
 
+  (* The spelling faial shows for a WGSL type: an integer scalar as the C
+     fixed-width typedef, anything else as naga writes it. *)
+  let display (ty : t) : string =
+    match ty.inner with
+    | Scalar s when Scalar.is_int s ->
+        let unsigned = if Scalar.is_unsigned s then "u" else "" in
+        unsigned ^ "int" ^ string_of_int (s.width * 8) ^ "_t"
+    | _ -> to_string ty
+
+  (* naga gives a width in bytes, and leaves the abstract literal types
+     unmaterialized; WGSL gives those 64 bits. *)
+  let scalar_to_ty (s : Scalar.t) : Protocols.Scalar.t option =
+    let kind : Protocols.Scalar.kind =
+      match s.kind with
+      | Sint | AbstractInt -> Sint
+      | Uint -> Uint
+      | Float | AbstractFloat -> Float
+      | Bool -> Bool
+    in
+    let size =
+      match s.kind with
+      | AbstractInt | AbstractFloat -> Some Protocols.Size.Bit64
+      | Sint | Uint | Float | Bool -> Protocols.Size.of_bytes s.width
+    in
+    size |> Option.map (fun size -> { Protocols.Scalar.kind; size })
+
+  let vector_size : VectorSize.t -> Protocols.Vector_size.t = function
+    | Bi -> Two
+    | Tri -> Three
+    | Quad -> Four
+
+  let rec to_ty (ty : t) : Protocols.Ty.t =
+    let name = display ty in
+    let opaque () =
+      Protocols.Ty.make ~name (Protocols.Ty.Opaque (to_string ty))
+    in
+    let with_scalar (s : Scalar.t)
+        (f : Protocols.Scalar.t -> Protocols.Ty.inner) : Protocols.Ty.t =
+      match scalar_to_ty s with
+      | Some s -> Protocols.Ty.make ~name (f s)
+      | None -> opaque ()
+    in
+    match ty.inner with
+    | Scalar s -> with_scalar s (fun s -> Protocols.Ty.Scalar s)
+    | Atomic s -> with_scalar s (fun s -> Protocols.Ty.Atomic s)
+    | Vector v ->
+        with_scalar v.scalar (fun scalar ->
+            Protocols.Ty.Vector { size = vector_size v.size; scalar })
+    | Matrix m ->
+        with_scalar m.scalar (fun scalar ->
+            Protocols.Ty.Matrix
+              {
+                columns = vector_size m.columns;
+                rows = vector_size m.rows;
+                scalar;
+              })
+    | Array a ->
+        Protocols.Ty.make ~name
+          (Protocols.Ty.Array
+             { base = to_ty a.base; size = ArraySize.to_int a.size })
+    | Pointer p -> Protocols.Ty.make ~name (Protocols.Ty.Pointer (to_ty p.base))
+    | Struct { members; _ } ->
+        Protocols.Ty.make ~name
+          (Protocols.Ty.Struct
+             {
+               members =
+                 List.map
+                   (fun (m : struct_member) -> (m.name, to_ty m.ty))
+                   members;
+             })
+    | Image _ | Sampler _ | AccelerationStructure | BindingArray _
+    | ValuePointer _ ->
+        opaque ()
+
   let frexp_result (ty : t) : t =
     let fract, exp =
       match ty.inner with

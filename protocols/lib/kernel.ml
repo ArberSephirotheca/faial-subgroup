@@ -227,12 +227,12 @@ let uniquify_names (ks : t list) : t list =
    not already contain the [unsigned] keyword. *)
 let signature_string (k : t) : string =
   let format_param (v, ty) =
-    let s = C_type.to_string ty in
+    let s = Ty.to_string ty in
     let has_unsigned_keyword =
       Stage0.Common.contains ~substring:"unsigned" s
     in
     let display =
-      if C_type.is_unsigned ty && not has_unsigned_keyword
+      if Ty.is_unsigned ty && not has_unsigned_keyword
       then "unsigned " ^ s
       else s
     in
@@ -385,7 +385,7 @@ let free_names (k : t) : Variable.Set.t =
 Given a protocol with free names, add those as thread-locals.
   *)
 let add_missing_binders (k : t) : t =
-  let locals = Params.from_set C_type.int (free_names k) in
+  let locals = Params.from_set Ty.int (free_names k) in
   { k with local_variables = Params.union_left k.local_variables locals }
 
 let reset_variable_kind (k : t) : t =

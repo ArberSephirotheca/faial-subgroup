@@ -58,7 +58,7 @@ let test_single_class_multiple_accesses () =
            access (Exp.Num 3); access (Exp.Num 4) ])
       Code.Skip
   in
-  let k = mk_kernel ~globals:[ ("N", C_type.int) ] body in
+  let k = mk_kernel ~globals:[ ("N", Ty.int) ] body in
   let count, entries =
     Z3_call_counter.with_counter (fun () -> Reachability.check_kernel k)
   in
@@ -85,7 +85,7 @@ let test_distinct_classes_count () =
   let body = seq_of [ acc1; acc2; acc3 ] in
   let k =
     mk_kernel
-      ~globals:[ ("N", C_type.int); ("M", C_type.int) ]
+      ~globals:[ ("N", Ty.int); ("M", Ty.int) ]
       body
   in
   let count, entries =
@@ -135,7 +135,7 @@ let test_mixed_count_equals_pt_classes () =
       Code.Skip
   in
   let body = seq_of [ pf1; pf2; pt_class_1; pt_class_2 ] in
-  let k = mk_kernel ~globals:[ ("N", C_type.int) ] body in
+  let k = mk_kernel ~globals:[ ("N", Ty.int) ] body in
   let count, entries =
     Z3_call_counter.with_counter (fun () -> Reachability.check_kernel k)
   in
@@ -197,7 +197,7 @@ let test_semantic_equivalence () =
       (access (Exp.Num 3)) Code.Skip
   in
   let body = seq_of [ pf; pt_sat; pt_unsat ] in
-  let k = mk_kernel ~globals:[ ("N", C_type.int) ] body in
+  let k = mk_kernel ~globals:[ ("N", Ty.int) ] body in
   let new_set = Reachability.reachable_set (Reachability.check_kernel k) in
   let naive_set = naive_check_kernel k in
   let to_sorted_list s =
@@ -228,7 +228,7 @@ let test_semantic_equivalence_nested () =
   let body = seq_of [ loop; extra ] in
   let k =
     mk_kernel
-      ~globals:[ ("N", C_type.int); ("M", C_type.int) ]
+      ~globals:[ ("N", Ty.int); ("M", Ty.int) ]
       body
   in
   let new_set = Reachability.reachable_set (Reachability.check_kernel k) in

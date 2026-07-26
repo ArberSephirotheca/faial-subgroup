@@ -68,30 +68,22 @@ end
 module Types = struct
   open W_lang
 
-  let tr (ty : Type.t) : C_type.t =
-    match ty.inner with
-    | Scalar s when Scalar.is_int s ->
-        let unsigned = if Scalar.is_unsigned s then "u" else "" in
-        let width = string_of_int (s.width * 8) in
-        C_type.make (unsigned ^ "int" ^ width ^ "_t")
-    | _ -> ty |> Type.to_string |> C_type.make
-
   let to_parameter (ty : Type.t) : Imp.Kernel.Parameter.Type.t =
     let open Imp.Kernel.Parameter.Type in
     if W_lang.Type.is_array ty then
       ty |> Arrays.tr_memory
       |> Option.map (fun m -> Array m)
-      |> Option.value ~default:(Unsupported (tr ty))
-    else if W_lang.Type.is_int ty then Scalar (tr ty)
+      |> Option.value ~default:(Unsupported (Type.to_ty ty))
+    else if W_lang.Type.is_int ty then Scalar (Type.to_ty ty)
     else
-      (* unsupported; retain the translated [C_type.t] from [tr]. *)
-      Unsupported (tr ty)
+      (* unsupported; retain the parameter's declared type *)
+      Unsupported (Type.to_ty ty)
 end
 
 module Variables = struct
-  let tr : W_lang.Expression.t -> (C_type.t * Variable.t) option =
+  let tr : W_lang.Expression.t -> (Ty.t * Variable.t) option =
     let open W_lang.Expression in
-    function Ident { var; ty; _ } -> Some (Types.tr ty, var) | _ -> None
+    function Ident { var; ty; _ } -> Some (W_lang.Type.to_ty ty, var) | _ -> None
 
   let inline_field (index : int) (a : W_lang.Ident.t) : W_lang.Ident.t option =
     let open W_lang in
@@ -431,7 +423,7 @@ module Expressions = struct
       List.map
         (fun (r : Read.t) ->
           let array = r.array in
-          let target = Option.map (fun (ty, x) -> (Types.tr ty, x)) r.target in
+          let target = Option.map (fun (ty, x) -> (W_lang.Type.to_ty ty, x)) r.target in
           let index = List.map to_i_exp r.index in
           Infer_stmt.Read { index; array; target; guard = None })
         reads
@@ -498,7 +490,7 @@ module Typing = struct
 end
 
 module Globals = struct
-  type t = { var : Variable.t; ty : C_type.t; init : Exp.nexp option }
+  type t = { var : Variable.t; ty : Ty.t; init : Exp.nexp option }
 
   let tr (d : W_lang.Declaration.t) : t list =
     match d.ty.inner with
@@ -506,12 +498,12 @@ module Globals = struct
         let init =
           match d.init with Some e -> Expressions.try_nexp e | None -> None
         in
-        [ { var = Variable.from_name d.name; ty = Types.tr d.ty; init } ]
+        [ { var = Variable.from_name d.name; ty = W_lang.Type.to_ty d.ty; init } ]
     | Array _ ->
         [
           {
             var = Variable.from_name (d.name ^ ".len");
-            ty = C_type.int;
+            ty = Ty.int;
             init = None;
           };
         ]
@@ -523,7 +515,7 @@ module Globals = struct
               Some
                 {
                   var = Variable.from_name (d.name ^ "." ^ m.name);
-                  ty = Types.tr m.ty;
+                  ty = W_lang.Type.to_ty m.ty;
                   init = None;
                 }
             else None)
@@ -532,10 +524,10 @@ module Globals = struct
 end
 
 module Const = struct
-  type t = { var : Variable.t; ty : C_type.t; init : Exp.nexp }
+  type t = { var : Variable.t; ty : Ty.t; init : Exp.nexp }
 
   let to_stmt (c : t) : Imp.Stmt.t option =
-    if C_type.is_int c.ty then
+    if Ty.is_int c.ty then
       Some
         (Imp.Stmt.Decl
            { var = c.var; ty = c.ty; init = Some c.init })
@@ -705,7 +697,7 @@ module Statements = struct
                        {
                          array;
                          index;
-                         ty = Types.tr result.ty;
+                         ty = W_lang.Type.to_ty result.ty;
                          atomic;
                          target;
                          guard = None;
@@ -806,14 +798,14 @@ module Statements = struct
                             | Infer_exp.NExp (Var x) ->
                                 Infer_stmt.Arg.Array
                                   (Infer_stmt.Array_use.make x)
-                            | _ -> Unsupported (Types.tr ty)
+                            | _ -> Unsupported (W_lang.Type.to_ty ty)
                           else if W_lang.Type.is_int ty then
                             (* handle scalar *)
                             Scalar arg
                           else
                             (* unsupported; retain the translated
-                               [C_type.t] from [Types.tr]. *)
-                            Unsupported (Types.tr ty)
+                               [Ty.t] from [W_lang.Type.to_ty]. *)
+                            Unsupported (W_lang.Type.to_ty ty)
                         in
                         arg)
                       args k
@@ -822,7 +814,7 @@ module Statements = struct
                     Option.map
                       (fun r ->
                         let open W_lang.Ident in
-                        (r.var, Types.tr r.ty))
+                        (r.var, W_lang.Type.to_ty r.ty))
                       result
                   in
                   return (Infer_stmt.Call { result; args; kernel; ty = kernel })))
@@ -854,7 +846,7 @@ module LocalDeclarations = struct
       (let* init = State.option_map Expressions.tr l.init in
        return
          (if W_lang.Type.is_int l.ty then
-            Infer_stmt.Decl { var = l.var; ty = Types.tr l.ty; init }
+            Infer_stmt.Decl { var = l.var; ty = W_lang.Type.to_ty l.ty; init }
           else Skip))
 
   let tr : W_lang.LocalDeclaration.t list -> Infer_stmt.t =

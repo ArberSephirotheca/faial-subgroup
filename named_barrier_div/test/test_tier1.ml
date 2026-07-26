@@ -48,7 +48,7 @@ let test_head_decl_not_transparent () =
   (* Unlike Thread.head_of, head_split treats Decl as a head so we can
      extend Σ. *)
   let proto =
-    Code.Decl { var = v "x"; ty = C_type.int; cond = Exp.Bool true; body = access }
+    Code.Decl { var = v "x"; ty = Ty.int; cond = Exp.Bool true; body = access }
   in
   match Tier1.head_split proto with
   | Some (Code.Decl _, Code.Skip) -> ()
@@ -110,7 +110,7 @@ let test_reduce_loop_forks () =
   let k = var "K" in
   let i = v "i" in
   let r = Range.{
-    var = i; ty = C_type.int;
+    var = i; ty = Scalar.int;
     lower_bound = Num 0; upper_bound = k;
     step = Plus (Num 1); dir = Increase;
   } in
@@ -122,7 +122,7 @@ let test_reduce_decl_extends_sigma () =
   (* decl x; sync s1   →   parked task has x ↦ Local in its sigma *)
   let proto =
     Code.Decl
-      { var = v "x"; ty = C_type.int; cond = Exp.Bool true; body = mk_sync "s1" }
+      { var = v "x"; ty = Ty.int; cond = Exp.Bool true; body = mk_sync "s1" }
   in
   let s = Tier1.reduce (task_of proto) in
   match s.parked with

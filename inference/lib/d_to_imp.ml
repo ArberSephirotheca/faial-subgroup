@@ -12,19 +12,6 @@ let ( @ ) = Common.append_tr
 
 open Exp
 
-type d_error = string StackTrace.t
-
-let error_to_buffer (e : d_error) : Buffer.t =
-  let b = Buffer.create 512 in
-  StackTrace.iter (Buffer.add_string b) e;
-  b
-
-type 'a d_result = ('a, d_error) Result.t
-
-let unwrap : 'a d_result -> 'a = function
-  | Ok a -> a
-  | Error e -> failwith (error_to_buffer e |> Buffer.contents)
-
 let parse_var : D_lang.Expr.t -> Variable.t = function
   | Ident v -> v.name
   | e ->
@@ -43,13 +30,13 @@ type d_location_alias = {
 }
 
 module TypeAlias = struct
-  type t = C_type.t StringMap.t
+  type t = Ty.t StringMap.t
 
   let empty : t = StringMap.empty
 
   (* Resolve a type according to the alias in the database *)
-  let resolve (ty : C_type.t) (db : t) : C_type.t =
-    StringMap.find_opt (C_type.to_string ty) db |> Option.value ~default:ty
+  let resolve (ty : Ty.t) (db : t) : Ty.t =
+    StringMap.find_opt (Ty.to_string ty) db |> Option.value ~default:ty
 
   (* Add a new type alias to the data-base *)
   let add (x : Typedef.t) (db : t) : t =
@@ -98,17 +85,11 @@ module Make (L : Logger) = struct
         NExp (Var v)
     (* ------------------ nexp ------------------------ *)
     | Ident d -> NExp (Var d.name)
-    | SizeOfExpr ty -> (
-        match J_type.to_c_type_res ty with
-        | Ok ty ->
-            let size = C_type.sizeof ty |> Option.value ~default:4 in
-            L.warning (fun () ->
-              "sizeof(" ^ C_type.to_string ty ^ ") = " ^ string_of_int size);
-            NExp (Num size)
-        | Error _ ->
-            let lbl = "sizeof(" ^ J_type.to_string ty ^ ")" in
-            L.warning (fun () -> "could not parse type: " ^ lbl ^ " = ?");
-            Unknown lbl)
+    | SizeOfExpr ty ->
+        let size = Ty.sizeof ty |> Option.value ~default:4 in
+        L.warning (fun () ->
+          "sizeof(" ^ Ty.to_string ty ^ ") = " ^ string_of_int size);
+        NExp (Num size)
     | IntegerLiteral n | CharacterLiteral n -> NExp (Num n)
     | FloatingLiteral n ->
         L.warning (fun () ->
@@ -181,12 +162,7 @@ module Make (L : Logger) = struct
     | BinaryOperator { opcode = ","; lhs = _; rhs = e; _ } -> infer_expr e
     | BinaryOperator { opcode = o; lhs = n1; rhs = n2; _ } ->
         let is_unsigned_operand (e : D_lang.Expr.t) : bool =
-          e
-          |> D_lang.Expr.to_type
-          |> J_type.to_c_type_res
-          |> Result.to_option
-          |> Option.map C_type.is_unsigned
-          |> Option.value ~default:false
+          e |> D_lang.Expr.to_type |> Ty.is_unsigned
         in
         let sign : Signedness.t =
           if is_unsigned_operand n1 || is_unsigned_operand n2
@@ -204,9 +180,7 @@ module Make (L : Logger) = struct
        argument resolves to the caller's variable rather than an opaque
        unknown. *)
     | CXXConstructExpr { args = [ Ident v ]; ty }
-      when J_type.to_c_type_res ty |> Result.to_option
-           |> (fun c -> Option.bind c C_type.vector_lanes)
-           |> Option.is_some ->
+      when Ty.vector_lanes ty |> Option.is_some ->
         NExp (Var v.name)
     | RecoveryExpr _ | CXXConstructExpr _ | MemberExpr _ | CallExpr _
     | UnaryOperator _ | CXXOperatorCallExpr _ | UnresolvedLookupExpr _ ->
@@ -224,12 +198,6 @@ module Make (L : Logger) = struct
   let try_to_nexp (e : D_lang.Expr.t) : Exp.nexp option =
     e |> infer_expr |> Infer_exp.to_nexp |> Infer_exp.no_unknowns
 
-  let parse_type (e : J_type.t) : C_type.t =
-    e |> J_type.to_c_type_res
-    |> Result.map_error (fun e ->
-        Stack_trace.RootCause (Rjson.error_to_string e))
-    |> unwrap
-
   let infer_arg (e : D_lang.Expr.t) : Infer_stmt.Arg.t =
     let rec to_array_use : D_lang.Expr.t -> Infer_stmt.Array_use.t option =
       function
@@ -237,9 +205,9 @@ module Make (L : Logger) = struct
       | UnaryOperator { opcode; child = Ident _ as v; _ } when opcode = "&" ->
           to_array_use v
       | BinaryOperator o when o.opcode = "+" ->
-          let lhs_ty = D_lang.Expr.to_type o.lhs |> parse_type in
+          let lhs_ty = D_lang.Expr.to_type o.lhs in
           let address, offset =
-            if C_type.is_array lhs_ty then (o.lhs, o.rhs) else (o.rhs, o.lhs)
+            if Ty.is_array_or_pointer lhs_ty then (o.lhs, o.rhs) else (o.rhs, o.lhs)
           in
           address
           (* try to parse array use *)
@@ -250,17 +218,17 @@ module Make (L : Logger) = struct
               Infer_stmt.Array_use.add offset arr)
       | _ -> None
     in
-    let ty = D_lang.Expr.to_type e |> parse_type in
-    if C_type.is_array ty then
+    let ty = D_lang.Expr.to_type e in
+    if Ty.is_array_or_pointer ty then
       e |> to_array_use
       (* If we have an array, wrap it under Array *)
       |> Option.map (fun o -> Infer_stmt.Arg.Array o)
       (* Otherwise, return unsupported retaining the source type. *)
       |> Option.value ~default:(Infer_stmt.Arg.Unsupported ty)
-    else if C_type.is_int ty then
+    else if Ty.is_int ty then
       (* Handle scalars *)
       Scalar (infer_expr e)
-    else if C_type.vector_lanes ty |> Option.is_some then
+    else if Ty.vector_lanes ty |> Option.is_some then
       (* A vector argument is carried as its variable so the inliner can
          bind the callee's per-lane parameter reads to it. *)
       Scalar (infer_expr e)
@@ -298,22 +266,22 @@ module Make (L : Logger) = struct
         enums = Variable.Map.empty;
       }
 
-    let resolve (ty : C_type.t) (b : t) : C_type.t =
+    let resolve (ty : Ty.t) (b : t) : Ty.t =
       TypeAlias.resolve ty b.typedefs
 
     let lookup_sig (e : D_lang.Expr.t) (arg_count : int) (db : t) :
         D_lang.SignatureDB.Signature.t option =
       D_lang.SignatureDB.lookup e arg_count db.sigs
 
-    let is_enum (ty : C_type.t) (ctx : t) : bool =
-      let name = C_type.to_string ty |> Variable.from_name in
+    let is_enum (ty : Ty.t) (ctx : t) : bool =
+      let name = Ty.to_string ty |> Variable.from_name in
       Variable.Map.mem name ctx.enums
 
-    let is_int (ty : C_type.t) (ctx : t) : bool =
-      C_type.is_int ty || is_enum ty ctx
+    let is_int (ty : Ty.t) (ctx : t) : bool =
+      Ty.is_int ty || is_enum ty ctx
 
-    let get_enum (ty : C_type.t) (ctx : t) : Enum.t =
-      let name = C_type.to_string ty |> Variable.from_name in
+    let get_enum (ty : Ty.t) (ctx : t) : Enum.t =
+      let name = Ty.to_string ty |> Variable.from_name in
       Variable.Map.find name ctx.enums
 
     let add_array (var : Variable.t) (m : Memory.t) (b : t) : t =
@@ -322,7 +290,7 @@ module Make (L : Logger) = struct
     let add_assign (var : Variable.t) (n : Exp.nexp) (b : t) : t =
       { b with assigns = (var, n) :: b.assigns }
 
-    let add_global (var : Variable.t) (ty : C_type.t) (b : t) : t =
+    let add_global (var : Variable.t) (ty : Ty.t) (b : t) : t =
       { b with globals = Params.add var ty b.globals }
 
     let add_typedef (d : Typedef.t) (b : t) : t =
@@ -346,8 +314,8 @@ module Make (L : Logger) = struct
     let ( let* ) = Option.bind in
     match exp with
     | Ident { ty; _ }
-      when J_type.matches C_type.is_pointer ty
-           || J_type.matches C_type.is_array ty ->
+      when Ty.is_pointer ty
+           || Ty.is_array_or_pointer ty ->
         Some { target; source = exp; offset = IntegerLiteral 0 }
     | CXXOperatorCallExpr
         { func = UnresolvedLookupExpr { name = n; _ }; args = [ lhs; rhs ]; ty }
@@ -391,16 +359,12 @@ module Make (L : Logger) = struct
     else None
 
   (* Lane axes of a CUDA vector type ([uint2], [const uint3], ...). *)
-  let vector_type_axes (ty : J_type.t) : string list option =
-    J_type.to_c_type_res ty |> Result.to_option |> fun c ->
-    Option.bind c C_type.vector_lanes
+  let vector_type_axes (ty : Ty.t) : string list option = Ty.vector_lanes ty
 
   let infer_stmt (ctx : Context.t) : D_lang.Stmt.t -> Imp.Infer_stmt.t =
     let resolve ty = Context.resolve ty ctx in
 
-    let infer_type (ty : J_type.t) : C_type.t =
-      Context.resolve (J_type.to_c_type ty) ctx
-    in
+    let infer_type (ty : Ty.t) : Ty.t = Context.resolve ty ctx in
 
     let infer_location_alias (s : d_location_alias) : Imp.Infer_stmt.t =
       let source = parse_var s.source in
@@ -413,7 +377,7 @@ module Make (L : Logger) = struct
       let x = d.var in
       match
         D_lang.Decl.types d
-        |> List.map (fun ty -> Context.resolve (J_type.to_c_type ty) ctx)
+        |> List.map (fun ty -> Context.resolve ty ctx)
         |> List.find_opt (fun ty -> Context.is_int ty ctx)
       with
       | Some ty ->
@@ -430,7 +394,7 @@ module Make (L : Logger) = struct
           d
       | None ->
           let x = Variable.name x in
-          let ty = J_type.to_string d.ty in
+          let ty = Ty.to_string d.ty in
           L.warning (fun () ->
             "parse_decl: skipping non-int local variable '" ^ x ^ "' "
            ^ "type: " ^ ty);
@@ -455,7 +419,7 @@ module Make (L : Logger) = struct
                 Variable.update_name (fun n -> n ^ "." ^ field) var
               in
               Infer_stmt.Assign
-                { var = member; ty = C_type.int; data = infer_expr arg })
+                { var = member; ty = Ty.int; data = infer_expr arg })
             fields args
           |> Infer_stmt.from_list
       | _ -> (
@@ -507,7 +471,7 @@ module Make (L : Logger) = struct
             r.source.name |> Variable.set_location r.source.location
           in
           let index = List.map infer_expr r.source.index in
-          let ty = r.ty |> resolve |> C_type.strip_array in
+          let ty = r.ty |> resolve |> Ty.strip_array in
           let guard = Option.map infer_expr r.guard in
           Infer_stmt.Read { target = Some (ty, r.target); array; index; guard }
       | AtomicAccessStmt r ->
@@ -515,7 +479,7 @@ module Make (L : Logger) = struct
             r.source.name |> Variable.set_location r.source.location
           in
           let index = List.map infer_expr r.source.index in
-          let ty = r.ty |> resolve |> C_type.strip_array in
+          let ty = r.ty |> resolve |> Ty.strip_array in
           let atomic = Atomic.map infer_expr r.atomic in
           let guard = Option.map infer_expr r.guard in
           Infer_stmt.Atomic
@@ -561,21 +525,15 @@ module Make (L : Logger) = struct
                        Infer_stmt.Assign
                          {
                            var = lane d.var;
-                           ty = C_type.int;
+                           ty = Ty.int;
                            data = NExp (Var (lane src.name));
                          })
                      axes
                   |> Infer_stmt.from_list)
             (* Detect array alias: *)
             | { ty; init = Some (IExpr rhs); _ }
-              when J_type.matches
-                     (fun x -> C_type.is_pointer x || C_type.is_auto x)
-                     ty ->
-                let d_ty =
-                  d.ty
-                  |> J_type.to_c_type ~default:C_type.int
-                  |> resolve |> J_type.from_c_type
-                in
+              when Ty.is_pointer ty || Ty.is_auto ty ->
+                let d_ty = resolve d.ty in
                 let lhs : D_lang.Expr.t =
                   Ident (Decl_expr.from_name ~ty:d_ty d.var)
                 in
@@ -594,7 +552,7 @@ module Make (L : Logger) = struct
       | DeclStmt [] -> Skip
       | SExpr
           (BinaryOperator { opcode = "="; lhs = Ident { ty; _ } as lhs; rhs; _ })
-        when J_type.matches C_type.is_pointer ty ->
+        when Ty.is_pointer ty ->
           infer_load_expr lhs rhs
           |> Option.map infer_location_alias
           |> Option.value ~default:Infer_stmt.Skip
@@ -602,7 +560,7 @@ module Make (L : Logger) = struct
           (BinaryOperator
              { opcode = "="; lhs = Ident { name = var; _ }; rhs; ty; _ }) ->
           let rhs = infer_expr rhs in
-          let ty = J_type.to_c_type ~default:C_type.int ty |> resolve in
+          let ty = ty |> resolve in
           Infer_stmt.Assign { var; ty; data = rhs }
       | SExpr
           (BinaryOperator
@@ -613,7 +571,7 @@ module Make (L : Logger) = struct
             base.name |> Variable.update_name (fun n -> n ^ "." ^ field)
           in
           let rhs = infer_expr rhs in
-          let ty = J_type.to_c_type ~default:C_type.int ty |> resolve in
+          let ty = ty |> resolve in
           Infer_stmt.Assign { var; ty; data = rhs }
       (* [++x] / [--x] / [x++] / [x--] as a statement-expression. Clang
          normalises these to [x = x + 1] inside [for]-loop inc slots
@@ -636,7 +594,7 @@ module Make (L : Logger) = struct
           let data : Infer_exp.t =
             NExp (Binary (op, NExp (Var var), NExp (Num 1)))
           in
-          let ty = J_type.to_c_type ~default:C_type.int ty |> resolve in
+          let ty = ty |> resolve in
           Infer_stmt.Assign { var; ty; data }
       | ContinueStmt -> Continue
       | BreakStmt -> Break
@@ -656,7 +614,7 @@ module Make (L : Logger) = struct
             (fun field arg ->
               let lane = Variable.update_name (fun n -> n ^ "." ^ field) retvar in
               Infer_stmt.Assign
-                { var = lane; ty = C_type.int; data = infer_expr arg })
+                { var = lane; ty = Ty.int; data = infer_expr arg })
             fields args
           @ [ Infer_stmt.Return (Some (NExp (Var retvar))) ]
           |> Infer_stmt.from_list
@@ -724,31 +682,23 @@ module Make (L : Logger) = struct
     in
     infer
 
-  type param = (Variable.t * C_type.t, Variable.t * Memory.t) Either.t
-
-  let from_j_error (e : Rjson.j_error) : d_error =
-    RootCause (Rjson.error_to_string e)
+  type param = (Variable.t * Ty.t, Variable.t * Memory.t) Either.t
 
   let parse_param ~(expand_vectors : bool) (ctx : Context.t) (p : Param.t) :
       Kernel.Parameter.t list =
-    let mk_array (h : Mem_hierarchy.t) (ty : C_type.t) : Memory.t =
+    let mk_array (h : Mem_hierarchy.t) (ty : Ty.t) : Memory.t =
       {
         hierarchy = h;
-        size = C_type.get_array_length ty;
-        data_type = C_type.get_array_type ty;
+        size = Ty.get_array_length ty;
+        data_type = Ty.get_array_type ty;
       }
     in
-    let ty =
-      p.ty_var.ty |> J_type.to_c_type_res
-      |> Result.map_error from_j_error
-      |> Result.map (fun x -> Context.resolve x ctx)
-      |> unwrap
-    in
+    let ty = Context.resolve p.ty_var.ty ctx in
     let x = p.ty_var.name in
     if Context.is_enum ty ctx then
       [ Kernel.Parameter.enum x (Context.get_enum ty ctx) ]
     else if Context.is_int ty ctx then [ Kernel.Parameter.scalar x ty ]
-    else if C_type.is_array ty then
+    else if Ty.is_array_or_pointer ty then
       let h =
         if p.is_shared then Mem_hierarchy.SharedMemory
         else Mem_hierarchy.GlobalMemory
@@ -766,7 +716,7 @@ module Make (L : Logger) = struct
           List.map
             (fun axis ->
               let lane = Variable.update_name (fun n -> n ^ "." ^ axis) x in
-              Kernel.Parameter.scalar lane C_type.int)
+              Kernel.Parameter.scalar lane Ty.int)
             axes
       | None -> [ Kernel.Parameter.unsupported x ty ]
 
@@ -778,13 +728,9 @@ module Make (L : Logger) = struct
        (the array names a set of named barriers) and must not be added to
        data-memory tracking. *)
     let is_barrier_decl (d : Decl.t) : bool =
-      match J_type.to_c_type_res d.ty with
-      | Ok ty ->
-          let elem = C_type.strip_array ty in
-          let resolved = Context.resolve elem ctx in
-          C_lang.BarrierOp.is_barrier_c_type resolved
-          || C_lang.BarrierOp.is_barrier_base_type d.ty
-      | Error _ -> false
+      let resolved = Context.resolve (Ty.strip_array d.ty) ctx in
+      C_lang.BarrierOp.is_barrier_c_type resolved
+      || C_lang.BarrierOp.is_barrier_base_type d.ty
     in
     let rec find_shared (arrays : (Variable.t * array_t) list) (s : Stmt.t) :
         (Variable.t * array_t) list =
@@ -845,9 +791,7 @@ module Make (L : Logger) = struct
       | TemplateType _ :: l -> add_type_params params l
       | NonTypeTemplate x :: l ->
           let params =
-            match J_type.to_c_type_res x.ty with
-            | Ok ty when C_type.is_int ty -> Params.add x.name ty params
-            | _ -> params
+            if Ty.is_int x.ty then Params.add x.name x.ty params else params
           in
           add_type_params params l
     in
@@ -886,41 +830,38 @@ module Make (L : Logger) = struct
             (* Skip arrays of barriers: they're identity-only, not data memory. *)
             if C_lang.BarrierOp.is_barrier_base_type v.ty then ctx
             else
-              match J_type.to_c_type_res v.ty with
-              | Ok ty ->
-                  (* make sure we resolve the type before we query it *)
-                  let ty = Context.resolve ty ctx in
-                  let is_mut = not (C_type.is_const ty) in
-                  if is_mut && List.mem C_lang.c_attr_shared v.attrs then
-                    Context.add_array v.var
-                      (Memory.from_type SharedMemory ty) ctx
-                  else if is_mut && List.mem C_lang.c_attr_device v.attrs then
-                    Context.add_array v.var
-                      (Memory.from_type GlobalMemory ty) ctx
-                  else if Context.is_int ty ctx then
-                    (* Fold a global's initializer into a constant only
-                       when it is immutable: a C-level [const], or a
-                       global cu-to-json proved is never written (the
-                       [c_attr_immutable] tag). A mutable global, e.g. one
-                       accumulated at runtime before a launch, would
-                       otherwise be pinned to its stale initializer;
-                       without proof of immutability, keep it symbolic. *)
-                    let immutable =
-                      (not is_mut)
-                      || List.mem C_lang.c_attr_immutable v.attrs
-                    in
-                    let g =
-                      if immutable then
-                        (match v.init with
-                         | Some (IExpr n) -> try_to_nexp n
-                         | _ -> None)
-                      else None
-                    in
-                    match g with
-                    | Some g -> Context.add_assign v.var g ctx
-                    | None -> Context.add_global v.var ty ctx
-                  else ctx
-              | Error _ -> ctx
+              (* make sure we resolve the type before we query it *)
+              let ty = Context.resolve v.ty ctx in
+              let is_mut = not (Ty.is_const ty) in
+              if is_mut && List.mem C_lang.c_attr_shared v.attrs then
+                Context.add_array v.var
+                  (Memory.from_type SharedMemory ty) ctx
+              else if is_mut && List.mem C_lang.c_attr_device v.attrs then
+                Context.add_array v.var
+                  (Memory.from_type GlobalMemory ty) ctx
+              else if Context.is_int ty ctx then
+                (* Fold a global's initializer into a constant only
+                   when it is immutable: a C-level [const], or a
+                   global cu-to-json proved is never written (the
+                   [c_attr_immutable] tag). A mutable global, e.g. one
+                   accumulated at runtime before a launch, would
+                   otherwise be pinned to its stale initializer;
+                   without proof of immutability, keep it symbolic. *)
+                let immutable =
+                  (not is_mut)
+                  || List.mem C_lang.c_attr_immutable v.attrs
+                in
+                let g =
+                  if immutable then
+                    (match v.init with
+                     | Some (IExpr n) -> try_to_nexp n
+                     | _ -> None)
+                  else None
+                in
+                match g with
+                | Some g -> Context.add_assign v.var g ctx
+                | None -> Context.add_global v.var ty ctx
+              else ctx
           in
           parse_p b l
       | Kernel k :: l ->

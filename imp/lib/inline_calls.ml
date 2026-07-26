@@ -27,9 +27,9 @@ let to_string (s : t) : string =
 
 module Inline = struct
   module Variable = Protocols.Variable
-  module C_type = Protocols.C_type
+  module Ty = Protocols.Ty
 
-  let apply (vars : Variable.Set.t) (result : (Variable.t * C_type.t) option)
+  let apply (vars : Variable.Set.t) (result : (Variable.t * Ty.t) option)
       (args : Arg.t list) (k : Scoped.Kernel.t) (s : Scoped.Code.t) :
       Scoped.Code.t =
     let open Scoped.Code in
@@ -104,7 +104,7 @@ module Inline = struct
          (fun ((x, ty), a) s ->
            let open Scoped.Code in
            let open Arg in
-           match (C_type.vector_lanes ty, a) with
+           match (Ty.vector_lanes ty, a) with
            (* A vector argument [v] passed to a vector parameter [x]:
               bind each lane [x.axis := v.axis] so the callee's
               per-lane reads resolve to the caller's value. *)

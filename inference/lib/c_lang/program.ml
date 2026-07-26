@@ -32,7 +32,7 @@ let rewrite_shared_arrays : t -> t =
     State.update_return (fun vars ->
         let vars =
           let name = Decl.var d in
-          if Decl.is_shared d && not (Decl.matches C_type.is_array d) then
+          if Decl.is_shared d && not (Decl.matches Ty.is_array_or_pointer d) then
             Variable.Set.add name vars
           else Variable.Set.remove name vars
         in
@@ -131,7 +131,7 @@ let rewrite_shared_arrays : t -> t =
   let rec rw_p (vars : Variable.Set.t) : t -> t = function
     | Def.Declaration d :: p ->
         let vars =
-          if Decl.is_shared d && not (Decl.matches C_type.is_array d) then
+          if Decl.is_shared d && not (Decl.matches Ty.is_array_or_pointer d) then
             Variable.Set.add (Decl.var d) vars
           else vars
         in

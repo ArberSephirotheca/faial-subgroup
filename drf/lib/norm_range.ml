@@ -21,7 +21,7 @@ type recovery = Additive of nexp (* stride k; value = first +/- k * index *)
 type index = {
   source : Variable.t; (* original value variable, eliminated by substitution *)
   index : Variable.t; (* fresh unit-stride index *)
-  ty : C_type.t;
+  ty : Scalar.t;
   dir : Range.direction;
   lower_bound : nexp;
   upper_bound : nexp;

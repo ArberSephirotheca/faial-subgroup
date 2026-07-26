@@ -3,58 +3,58 @@ open Protocols
 open Ast
 
 type t = c_expr =
-  | SizeOfExpr of J_type.t
-  | CXXNewExpr of { arg : t; ty : J_type.t }
-  | CXXDeleteExpr of { arg : t; ty : J_type.t }
-  | RecoveryExpr of J_type.t
+  | SizeOfExpr of Ty.t
+  | CXXNewExpr of { arg : t; ty : Ty.t }
+  | CXXDeleteExpr of { arg : t; ty : Ty.t }
+  | RecoveryExpr of Ty.t
   | CharacterLiteral of int
   | ArraySubscriptExpr of c_array_subscript
   | BinaryOperator of c_binary
-  | CallExpr of { func : t; args : t list; ty : J_type.t }
+  | CallExpr of { func : t; args : t list; ty : Ty.t }
   | ConditionalOperator of {
       cond : t;
       then_expr : t;
       else_expr : t;
-      ty : J_type.t;
+      ty : Ty.t;
     }
-  | CXXConstructExpr of { args : t list; ty : J_type.t }
+  | CXXConstructExpr of { args : t list; ty : Ty.t }
   | CXXBoolLiteralExpr of bool
   | Ident of Decl_expr.t
-  | CXXOperatorCallExpr of { func : t; args : t list; ty : J_type.t }
+  | CXXOperatorCallExpr of { func : t; args : t list; ty : Ty.t }
   | FloatingLiteral of float
   | IntegerLiteral of int
-  | MemberExpr of { name : string; base : t; ty : J_type.t }
-  | UnaryOperator of { opcode : string; child : t; ty : J_type.t }
-  | UnresolvedLookupExpr of { name : Variable.t; tys : J_type.t list }
-  | StmtExpr of { body : c_stmt; result : t; ty : J_type.t }
+  | MemberExpr of { name : string; base : t; ty : Ty.t }
+  | UnaryOperator of { opcode : string; child : t; ty : Ty.t }
+  | UnresolvedLookupExpr of { name : Variable.t; tys : Ty.t list }
+  | StmtExpr of { body : c_stmt; result : t; ty : Ty.t }
   | LambdaExpr of {
       captures : (Variable.t * t) list;
       params : Param.t list;
       body : c_stmt;
-      ret_ty : J_type.t;
+      ret_ty : Ty.t;
     }
   | PackExpansion of t
   | DependentScopeRef of {
       name : string;
       nested_name_specifier : string option;
-      ty : J_type.t;
+      ty : Ty.t;
     }
 
 type nonrec c_binary = c_binary = {
   opcode : string;
   lhs : t;
   rhs : t;
-  ty : J_type.t;
+  ty : Ty.t;
 }
 
 type nonrec c_array_subscript = c_array_subscript = {
   lhs : t;
   rhs : t;
-  ty : J_type.t;
+  ty : Ty.t;
   location : Location.t;
 }
 
-let rec to_type : t -> J_type.t = function
+let rec to_type : t -> Ty.t = function
   | SizeOfExpr _ -> J_type.int
   | CXXNewExpr c -> c.ty
   | CXXDeleteExpr c -> c.ty
@@ -83,8 +83,8 @@ let rec to_type : t -> J_type.t = function
 let to_string ?(modifier : bool = false) ?(provenance : bool = false)
     ?(types : bool = false) : t -> string =
   let attr (s : string) : string = if modifier then "@" ^ s ^ " " else "" in
-  let opcode (o : string) (j : J_type.t) : string =
-    if types then "(" ^ o ^ "." ^ J_type.to_string j ^ ")" else o
+  let opcode (o : string) (j : Ty.t) : string =
+    if types then "(" ^ o ^ "." ^ Ty.to_string j ^ ")" else o
   in
   let var_name : Variable.t -> string =
     if provenance then Variable.name_line else Variable.name
@@ -102,9 +102,9 @@ let to_string ?(modifier : bool = false) ?(provenance : bool = false)
           exp_to_s e
     in
     function
-    | SizeOfExpr ty -> "sizeof(" ^ J_type.to_string ty ^ ")"
+    | SizeOfExpr ty -> "sizeof(" ^ Ty.to_string ty ^ ")"
     | CXXNewExpr c ->
-        "new " ^ J_type.to_string c.ty ^ "(" ^ exp_to_s c.arg ^ ")"
+        "new " ^ Ty.to_string c.ty ^ "(" ^ exp_to_s c.arg ^ ")"
     | CXXDeleteExpr c -> "del " ^ par c.arg
     | RecoveryExpr _ -> "?"
     | FloatingLiteral f -> string_of_float f
@@ -117,7 +117,7 @@ let to_string ?(modifier : bool = false) ?(provenance : bool = false)
     | ArraySubscriptExpr b -> par b.lhs ^ "[" ^ exp_to_s b.rhs ^ "]"
     | CXXBoolLiteralExpr b -> if b then "true" else "false"
     | CXXConstructExpr c ->
-        attr "ctor" ^ J_type.to_string c.ty ^ "(" ^ list_to_s exp_to_s c.args
+        attr "ctor" ^ Ty.to_string c.ty ^ "(" ^ list_to_s exp_to_s c.args
         ^ ")"
     | CXXOperatorCallExpr c ->
         exp_to_s c.func ^ "[" ^ list_to_s exp_to_s c.args ^ "]"
@@ -200,46 +200,46 @@ module Visit = struct
   type expr_t = t
 
   type 'a t =
-    | SizeOf of J_type.t
-    | CXXNew of { arg : 'a; ty : J_type.t }
-    | CXXDelete of { arg : 'a; ty : J_type.t }
-    | Recovery of J_type.t
+    | SizeOf of Ty.t
+    | CXXNew of { arg : 'a; ty : Ty.t }
+    | CXXDelete of { arg : 'a; ty : Ty.t }
+    | Recovery of Ty.t
     | CharacterLiteral of int
     | ArraySubscript of {
         lhs : 'a;
         rhs : 'a;
-        ty : J_type.t;
+        ty : Ty.t;
         location : Location.t;
       }
-    | BinaryOperator of { opcode : string; lhs : 'a; rhs : 'a; ty : J_type.t }
-    | Call of { func : 'a; args : 'a list; ty : J_type.t }
+    | BinaryOperator of { opcode : string; lhs : 'a; rhs : 'a; ty : Ty.t }
+    | Call of { func : 'a; args : 'a list; ty : Ty.t }
     | ConditionalOperator of {
         cond : 'a;
         then_expr : 'a;
         else_expr : 'a;
-        ty : J_type.t;
+        ty : Ty.t;
       }
-    | CXXConstruct of { args : 'a list; ty : J_type.t }
+    | CXXConstruct of { args : 'a list; ty : Ty.t }
     | CXXBoolLiteral of bool
     | Ident of Decl_expr.t
-    | CXXOperatorCall of { func : 'a; args : 'a list; ty : J_type.t }
+    | CXXOperatorCall of { func : 'a; args : 'a list; ty : Ty.t }
     | FloatingLiteral of float
     | IntegerLiteral of int
-    | Member of { name : string; base : 'a; ty : J_type.t }
-    | UnaryOperator of { opcode : string; child : 'a; ty : J_type.t }
-    | UnresolvedLookup of { name : Variable.t; tys : J_type.t list }
-    | StmtExpr of { body : c_stmt; result : 'a; ty : J_type.t }
+    | Member of { name : string; base : 'a; ty : Ty.t }
+    | UnaryOperator of { opcode : string; child : 'a; ty : Ty.t }
+    | UnresolvedLookup of { name : Variable.t; tys : Ty.t list }
+    | StmtExpr of { body : c_stmt; result : 'a; ty : Ty.t }
     | LambdaExpr of {
         captures : (Variable.t * 'a) list;
         params : Param.t list;
         body : c_stmt;
-        ret_ty : J_type.t;
+        ret_ty : Ty.t;
       }
     | PackExpansion of 'a
     | DependentScopeRef of {
         name : string;
         nested_name_specifier : string option;
-        ty : J_type.t;
+        ty : Ty.t;
       }
 
   let rec fold (f : 'a t -> 'a) : expr_t -> 'a = function
@@ -509,7 +509,7 @@ let rewrite_comma : t -> t list * t =
     let st, e = State.run (rw e) [] in
     (List.rev st, e)
 
-let compound (ty : J_type.t) (lhs : t) (opcode : string) (rhs : t) : t =
+let compound (ty : Ty.t) (lhs : t) (opcode : string) (rhs : t) : t =
   BinaryOperator
     { ty; opcode = "="; lhs; rhs = BinaryOperator { ty; opcode; lhs; rhs } }
 

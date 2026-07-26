@@ -11,7 +11,7 @@ let sole (vs : Variable.Set.t) : Variable.t =
 let test_reset_stamps_key_and_bound () =
   let n = Variable.from_name "n" in
   let params = Variable.Set.singleton n in
-  let m = Params.add n C_type.int Params.empty in
+  let m = Params.add n Ty.int Params.empty in
   Alcotest.(check string)
     "key starts as decl" "decl"
     (kind_of (sole (Params.to_set m)));

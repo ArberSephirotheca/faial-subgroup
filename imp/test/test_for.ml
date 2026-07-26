@@ -31,9 +31,9 @@ let body_decrement_input : For.t * Stmt.t =
     Stmt.from_list
       [
         Stmt.Write { array = var "A"; index = [ Var k ]; payload = None; guard = None };
-        Stmt.assign C_type.int k (n_minus (Var k) (Num 1));
+        Stmt.assign Ty.int k (n_minus (Var k) (Num 1));
         Stmt.Write { array = var "A"; index = [ Var k ]; payload = None; guard = None };
-        Stmt.assign C_type.int k (n_minus (Var k) (Num 1));
+        Stmt.assign Ty.int k (n_minus (Var k) (Num 1));
       ]
   in
   ({ init; cond; inc }, body)
@@ -56,9 +56,9 @@ let body_increment_input : For.t * Stmt.t =
     Stmt.from_list
       [
         Stmt.Write { array = var "A"; index = [ Var i ]; payload = None; guard = None };
-        Stmt.assign C_type.int i (n_plus (Var i) (Num 1));
+        Stmt.assign Ty.int i (n_plus (Var i) (Num 1));
         Stmt.Write { array = var "A"; index = [ Var i ]; payload = None; guard = None };
-        Stmt.assign C_type.int i (n_plus (Var i) (Num 1));
+        Stmt.assign Ty.int i (n_plus (Var i) (Num 1));
       ]
   in
   ({ init; cond; inc }, body)
@@ -190,7 +190,7 @@ let test_no_extras_symbolic_minus_preserved () =
   let j = var "j" in
   let init = Stmt.decl_set j (Var (var "ub")) in
   let cond = n_ge (Var j) (Var (var "lb")) in
-  let inc = Stmt.assign C_type.int j (n_minus (Var j) (Var (var "step"))) in
+  let inc = Stmt.assign Ty.int j (n_minus (Var j) (Var (var "step"))) in
   let body = Stmt.Sync (Sync.syncthreads ()) in
   let out = For.to_stmt { init; cond; inc } body in
   match find_for out with
@@ -208,12 +208,12 @@ let test_mixed_inc_and_body_sums () =
   let i = var "i" in
   let init = Stmt.decl_set i (Num 0) in
   let cond = n_lt (Var i) (Var (var "n")) in
-  let inc = Stmt.assign C_type.int i (n_plus (Var i) (Num 1)) in
+  let inc = Stmt.assign Ty.int i (n_plus (Var i) (Num 1)) in
   let body =
     Stmt.from_list
       [
         Stmt.Write { array = var "A"; index = [ Var i ]; payload = None; guard = None };
-        Stmt.assign C_type.int i (n_plus (Var i) (Num 1));
+        Stmt.assign Ty.int i (n_plus (Var i) (Num 1));
       ]
   in
   let out = For.to_stmt { init; cond; inc } body in

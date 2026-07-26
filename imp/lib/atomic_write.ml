@@ -2,7 +2,7 @@ open Protocols
 
 type t = {
   target : Variable.t;
-  ty : C_type.t;
+  ty : Ty.t;
   atomic : Exp.nexp Atomic.t;
   array : Variable.t;
   index : Exp.nexp list;

@@ -13,29 +13,29 @@ let list_to_s (f : 'a -> string) (l : 'a list) : string =
    [Expr.BinaryOperator] / [Stmt.IfStmt] / etc. remain accessible at
    their existing module paths. *)
 type c_expr =
-  | SizeOfExpr of J_type.t
-  | CXXNewExpr of { arg : c_expr; ty : J_type.t }
-  | CXXDeleteExpr of { arg : c_expr; ty : J_type.t }
-  | RecoveryExpr of J_type.t
+  | SizeOfExpr of Ty.t
+  | CXXNewExpr of { arg : c_expr; ty : Ty.t }
+  | CXXDeleteExpr of { arg : c_expr; ty : Ty.t }
+  | RecoveryExpr of Ty.t
   | CharacterLiteral of int
   | ArraySubscriptExpr of c_array_subscript
   | BinaryOperator of c_binary
-  | CallExpr of { func : c_expr; args : c_expr list; ty : J_type.t }
+  | CallExpr of { func : c_expr; args : c_expr list; ty : Ty.t }
   | ConditionalOperator of {
       cond : c_expr;
       then_expr : c_expr;
       else_expr : c_expr;
-      ty : J_type.t;
+      ty : Ty.t;
     }
-  | CXXConstructExpr of { args : c_expr list; ty : J_type.t }
+  | CXXConstructExpr of { args : c_expr list; ty : Ty.t }
   | CXXBoolLiteralExpr of bool
   | Ident of Decl_expr.t
-  | CXXOperatorCallExpr of { func : c_expr; args : c_expr list; ty : J_type.t }
+  | CXXOperatorCallExpr of { func : c_expr; args : c_expr list; ty : Ty.t }
   | FloatingLiteral of float
   | IntegerLiteral of int
-  | MemberExpr of { name : string; base : c_expr; ty : J_type.t }
-  | UnaryOperator of { opcode : string; child : c_expr; ty : J_type.t }
-  | UnresolvedLookupExpr of { name : Variable.t; tys : J_type.t list }
+  | MemberExpr of { name : string; base : c_expr; ty : Ty.t }
+  | UnaryOperator of { opcode : string; child : c_expr; ty : Ty.t }
+  | UnresolvedLookupExpr of { name : Variable.t; tys : Ty.t list }
   (* GCC statement expression [({ s1; s2; ... ; e; })]. The value of
      the expression is [result] (the trailing expression of the inner
      CompoundStmt); [body] holds the prefix statements (typically
@@ -43,7 +43,7 @@ type c_expr =
      pass hoists [body] into the enclosing statement scope and replaces
      the StmtExpr with [result], so the rest of the pipeline never sees
      this constructor. *)
-  | StmtExpr of { body : c_stmt; result : c_expr; ty : J_type.t }
+  | StmtExpr of { body : c_stmt; result : c_expr; ty : Ty.t }
   (* C++ lambda expression [\[captures\](params) { body }]. C_lang
      carries this through unchanged; [D_lang.rewrite_stmt] recognises
      the [auto v = LambdaExpr {...}] singleton-DeclStmt shape and emits
@@ -53,7 +53,7 @@ type c_expr =
       captures : (Variable.t * c_expr) list;
       params : Param.t list;
       body : c_stmt;
-      ret_ty : J_type.t;
+      ret_ty : Ty.t;
     }
   (* C++11 parameter-pack expansion [pattern...]. Wraps the pattern
      expression and marks "this expression repeats over a parameter
@@ -69,25 +69,25 @@ type c_expr =
   | DependentScopeRef of {
       name : string;
       nested_name_specifier : string option;
-      ty : J_type.t;
+      ty : Ty.t;
     }
 
-and c_binary = { opcode : string; lhs : c_expr; rhs : c_expr; ty : J_type.t }
+and c_binary = { opcode : string; lhs : c_expr; rhs : c_expr; ty : Ty.t }
 
 and c_array_subscript = {
   lhs : c_expr;
   rhs : c_expr;
-  ty : J_type.t;
+  ty : Ty.t;
   location : Location.t;
 }
 
 and c_init =
-  | InitListExpr of { ty : J_type.t; args : c_expr list }
+  | InitListExpr of { ty : Ty.t; args : c_expr list }
   | IExpr of c_expr
 
 and c_decl = {
   var : Variable.t;
-  ty : J_type.t;
+  ty : Ty.t;
   init : c_init option;
   attrs : string list;
 }
@@ -137,7 +137,7 @@ and c_stmt =
    [JSONNodeDumper], with [TArgExpr] / [TArgPack] requiring mutual
    recursion through [c_expr]. *)
 and c_template_argument =
-  | TArgType of J_type.t
+  | TArgType of Ty.t
   | TArgIntegral of int
   | TArgNullArg
   | TArgNullPtr
@@ -153,7 +153,7 @@ let c_stmt_seq (s1 : c_stmt) (s2 : c_stmt) : c_stmt =
 let c_stmt_from_list (l : c_stmt list) : c_stmt =
   List.fold_left c_stmt_seq Skip l
 
-let rec c_expr_to_type : c_expr -> J_type.t = function
+let rec c_expr_to_type : c_expr -> Ty.t = function
   | SizeOfExpr _ -> J_type.int
   | CXXNewExpr c -> c.ty
   | CXXDeleteExpr c -> c.ty
@@ -179,7 +179,7 @@ let rec c_expr_to_type : c_expr -> J_type.t = function
   | PackExpansion e -> c_expr_to_type e
   | DependentScopeRef d -> d.ty
 
-let c_expr_compound (ty : J_type.t) (lhs : c_expr) (opcode : string)
+let c_expr_compound (ty : Ty.t) (lhs : c_expr) (opcode : string)
     (rhs : c_expr) : c_expr =
   BinaryOperator
     { ty; opcode = "="; lhs; rhs = BinaryOperator { ty; opcode; lhs; rhs } }

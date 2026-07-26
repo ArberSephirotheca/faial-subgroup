@@ -59,8 +59,8 @@ let inline_expansion_tests =
        let func_kernel =
          kernel ~return:(Some (Var z_var)) "f"
            [
-             Parameter.scalar x_param C_type.int;
-             Parameter.scalar y_param C_type.int;
+             Parameter.scalar x_param Ty.int;
+             Parameter.scalar y_param Ty.int;
            ]
            func_body
        in
@@ -79,7 +79,7 @@ let inline_expansion_tests =
        let call_stmt =
          Call
            ( {
-               result = Some (g_var, C_type.int);
+               result = Some (g_var, Ty.int);
                kernel = "f";
                ty = "";
                args = [ Arg.Scalar (Num 1); Arg.Scalar (Num 2) ];

@@ -81,7 +81,7 @@ let make_kernel
     name = "";
     global_variables =
       globals
-      |> List.map (fun n -> (Variable.from_name n, C_type.int))
+      |> List.map (fun n -> (Variable.from_name n, Ty.int))
       |> Params.from_list;
     local_variables = Params.empty;
     arrays = Variable.Map.empty;
@@ -102,7 +102,7 @@ let kernels : (string * Aligned.Kernel.t * Aligned.Kernel.t) list =
   let loop (var : string) (body : Aligned.Code.t) : Aligned.Code.t = Loop {
     cond_range = Cond_range.of_range {
       var = Variable.from_name var;
-      ty = C_type.int;
+      ty = Scalar.int;
       dir = Range.Increase;
       lower_bound = Num 0;
       upper_bound = Num 0;
@@ -164,7 +164,7 @@ let maslov_scope_of (items : (string * nexp * nexp) list)
   |> List.fold_left (fun scope (n, lb, ub) ->
       let r : Range.t = {
         var = Variable.from_name n;
-        ty = C_type.int;
+        ty = Scalar.int;
         dir = Range.Increase;
         lower_bound = lb;
         upper_bound = ub;

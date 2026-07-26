@@ -53,7 +53,7 @@ let rec binder_cond (label : string) : Code.t -> bexp option = function
 let mk_kernel (code : Code.t) : Kernel.t =
   {
     name = "k_test";
-    global_variables = Params.add (v "N") C_type.int Params.empty;
+    global_variables = Params.add (v "N") Ty.int Params.empty;
     local_variables = Params.empty;
     arrays = Variable.Map.empty;
     pre = Bool true;

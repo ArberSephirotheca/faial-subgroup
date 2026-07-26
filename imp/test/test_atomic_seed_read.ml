@@ -14,7 +14,7 @@ let atomic_add : Infer_exp.t Atomic.t =
 let read_int ~target ~array : t =
   Read
     {
-      target = Some (C_type.int, var target);
+      target = Some (Ty.int, var target);
       array = var array;
       index = [ Infer_exp.NExp (Num 0) ];
       guard = None;
@@ -24,7 +24,7 @@ let atomic_with ~target ~array ~atomic () : t =
   Atomic
     {
       target = var target;
-      ty = C_type.int;
+      ty = Ty.int;
       atomic;
       array = var array;
       index = [ Infer_exp.NExp (Num 0) ];
@@ -43,12 +43,12 @@ let decl_set ~var:v ~init : t =
   Decl
     {
       var = var v;
-      ty = C_type.int;
+      ty = Ty.int;
       init = Some (Infer_exp.NExp (Var (var init)));
     }
 
 let assign ~var:v ~data : t =
-  Assign { var = var v; ty = C_type.int; data = Infer_exp.NExp (Var (var data)) }
+  Assign { var = var v; ty = Ty.int; data = Infer_exp.NExp (Var (var data)) }
 
 (* Walk a result Stmt.t and return a list of (kind, target-name) pairs
    for every Read / Atomic, in source order. *)

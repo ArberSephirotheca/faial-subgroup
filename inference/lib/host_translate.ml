@@ -43,7 +43,7 @@ let read_to_call (r : D_lang.d_read) : D_lang.Expr.t =
   CallExpr {
     func = D_lang.Expr.ident read_name;
     args = r.source.index;
-    ty = J_type.from_c_type r.ty;
+    ty = r.ty;
   }
 
 (** A simplistic substitution function for statements that is only
@@ -155,7 +155,7 @@ let unpack_dim3 (e : C_lang.Expr.t) :
     C_lang.Expr.t option * C_lang.Expr.t option * C_lang.Expr.t option =
   let one : C_lang.Expr.t = IntegerLiteral 1 in
   let is_int_arg (a : C_lang.Expr.t) : bool =
-    J_type.matches C_type.is_int (C_lang.Expr.to_type a)
+    Ty.is_int (C_lang.Expr.to_type a)
   in
   match e with
   | CXXConstructExpr { args = [ x; y; z ]; _ }

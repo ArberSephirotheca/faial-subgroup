@@ -37,7 +37,7 @@ let mk_kernel ?(globals = []) ?(pre = Exp.Bool true)
 let var (name : string) : Exp.nexp = Exp.Var (Variable.from_name name)
 let eq (a : Exp.nexp) (b : Exp.nexp) : Exp.bexp = Exp.NRel (Eq, a, b)
 let array_a : Variable.t = Variable.from_name "A"
-let shared_int : Memory.t = Memory.from_type Mem_hierarchy.SharedMemory C_type.int
+let shared_int : Memory.t = Memory.from_type Mem_hierarchy.SharedMemory Ty.int
 let access_w (idx : Exp.nexp) : Code.t = Code.Access (Access.write array_a [ idx ] None)
 let range_i : Range.t = Range.make (Variable.from_name "i") (var "N")
 
@@ -66,7 +66,7 @@ let all_unsat (proofs : Symbexp.Proof.t list) : bool =
 
 let test_racy_without_cond () =
   let k =
-    mk_kernel ~globals:[ ("N", C_type.int) ] ~pre:one_d [ ("A", shared_int) ]
+    mk_kernel ~globals:[ ("N", Ty.int) ] ~pre:one_d [ ("A", shared_int) ]
       (Code.loop range_i (access_w (var "i")))
   in
   let proofs = race_proofs k in
@@ -76,7 +76,7 @@ let test_racy_without_cond () =
 let test_safe_with_cond () =
   let cond = eq (var "i") (var "threadIdx.x") in
   let k =
-    mk_kernel ~globals:[ ("N", C_type.int) ] ~pre:one_d [ ("A", shared_int) ]
+    mk_kernel ~globals:[ ("N", Ty.int) ] ~pre:one_d [ ("A", shared_int) ]
       (Code.loop ~cond range_i (access_w (var "i")))
   in
   let proofs = race_proofs k in

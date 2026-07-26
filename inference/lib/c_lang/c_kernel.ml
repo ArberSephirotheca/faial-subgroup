@@ -1,3 +1,4 @@
+open Protocols
 open Stage0
 open Location_parser
 open Ast
@@ -91,8 +92,8 @@ let wrap_error (msg : string) (j : Yojson.Basic.t) :
 let parse (type_params : Ty_param.t list) (j : Yojson.Basic.t) : t j_result =
   let open Rjson in
   (let* o = cast_object j in
-   let* ty = get_field "type" o |> Result.map J_type.from_json in
-   let ty = J_type.to_string ty in
+   let* ty = get_field "type" o |> Result.map J_type.parse in
+   let ty = Ty.to_string ty in
    let* inner = with_field "inner" cast_list o in
    let attrs, inner =
      inner |> List.partition (j_filter_kind (String.ends_with ~suffix:"Attr"))

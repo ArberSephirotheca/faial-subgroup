@@ -57,7 +57,7 @@ type direction = Increase | Decrease
 
 type t = {
   var : Variable.t;
-  ty : C_type.t;
+  ty : Scalar.t;
   dir : direction;
   lower_bound : nexp;
   upper_bound : nexp;
@@ -65,7 +65,7 @@ type t = {
 }
 
 let var (r : t) : Variable.t = r.var
-let ty (r : t) : C_type.t = r.ty
+let ty (r : t) : Scalar.t = r.ty
 let lower_bound (r : t) : nexp = r.lower_bound
 let upper_bound (r : t) : nexp = r.upper_bound
 let dir (r : t) : direction = r.dir
@@ -81,7 +81,7 @@ let to_string (r : t) : string =
     | _ -> "; " ^ Variable.name r.var ^ " " ^ Step.to_string r.step
   in
   let d = match r.dir with Increase -> "" | Decrease -> ";↓" in
-  x ^ " ∈ " ^ C_type.to_string r.ty ^ " | " ^ lb ^ " ≤ " ^ x ^ " ≤ " ^ ub ^ s
+  x ^ " ∈ " ^ Scalar.to_string r.ty ^ " | " ^ lb ^ " ≤ " ^ x ^ " ≤ " ^ ub ^ s
   ^ d
 
 (* -------------------- UTILITY CONSTRUCTORS ---------------------- *)
@@ -95,9 +95,15 @@ let map (f : nexp -> nexp) (r : t) : t =
   }
 
 let make ?(lower_bound = Num 0) ?(step : Step.t = Plus (Num 1))
-    ?(dir = Increase) ?(ty = C_type.int) (var : Variable.t) (upper_bound : nexp)
+    ?(dir = Increase) ?(ty = Scalar.int) (var : Variable.t) (upper_bound : nexp)
     : t =
   { var; lower_bound; upper_bound; step; dir; ty }
+
+(* A float has no range, and a declaration whose type carries none is
+   bounded as a signed int, which is what the string table did. *)
+let scalar_range (ty : Scalar.t) : int * int =
+  ty |> Scalar.to_range
+  |> Option.value ~default:(Int_dom.to_range Int_dom.signed_int)
 
 let eq_nums x l : bexp = List.map (fun i -> n_eq x (Num i)) l |> b_or_ex
 
@@ -110,12 +116,8 @@ let pow ~base (n : nexp) : bexp =
   in
   pows 0 |> eq_nums n
 
-let from_decl (var : Variable.t) (ty : C_type.t) : t =
-  let lower_bound, upper_bound =
-    ty |> C_type.to_int_dom
-    |> Option.value ~default:Int_dom.signed_int
-    |> Int_dom.to_range
-  in
+let from_decl (var : Variable.t) (ty : Scalar.t) : t =
+  let lower_bound, upper_bound = scalar_range ty in
   {
     var;
     ty;
@@ -126,10 +128,8 @@ let from_decl (var : Variable.t) (ty : C_type.t) : t =
   }
 
 (* Convert a variable declaration into a range *)
-let decl_to_bexp (var : Variable.t) (ty : C_type.t) : bexp =
-  ty |> C_type.to_int_dom
-  |> Option.value ~default:Int_dom.signed_int
-  |> Exp.int_dom_bound var
+let decl_to_bexp (var : Variable.t) (ty : Scalar.t) : bexp =
+  ty |> scalar_range |> Exp.range_bound var
 
 (* For a [Plus] range whose stride evaluates to a literal [k > 1],
    returns [k]. Detects strided additive loops that can be

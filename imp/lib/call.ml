@@ -1,7 +1,7 @@
 open Protocols
 
 type t = {
-  result : (Variable.t * C_type.t) option;
+  result : (Variable.t * Ty.t) option;
   kernel : string;
   ty : string;
   args : Arg.t list;
@@ -23,7 +23,7 @@ let to_string (c : t) : string =
   let args = c.args |> List.map Arg.to_string |> String.concat ", " in
   let pre =
     match c.result with
-    | Some (v, ty) -> Variable.name v ^ " : " ^ C_type.to_string ty ^ " = "
+    | Some (v, ty) -> Variable.name v ^ " : " ^ Ty.to_string ty ^ " = "
     | None -> ""
   in
   pre ^ c.kernel ^ "(" ^ args ^ ")"

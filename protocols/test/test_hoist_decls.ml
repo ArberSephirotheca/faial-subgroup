@@ -11,7 +11,7 @@ let range (name : string) (ub : nexp) : Range.t = Range.make (v name) ub
 let mk_kernel (code : Code.t) : Kernel.t =
   {
     name = "k_test";
-    global_variables = Params.add (v "N") C_type.int Params.empty;
+    global_variables = Params.add (v "N") Ty.int Params.empty;
     local_variables = Params.empty;
     arrays = Variable.Map.empty;
     pre = Bool true;

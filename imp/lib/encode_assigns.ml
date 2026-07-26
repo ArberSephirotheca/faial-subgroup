@@ -11,11 +11,11 @@ type t =
   | Skip
   | Decl of {
       var : Variable.t;
-      ty : C_type.t;
+      ty : Ty.t;
       body : t;
     }
 
-let decl ?(ty = C_type.int) (var : Variable.t) (body : t) : t =
+let decl ?(ty = Ty.int) (var : Variable.t) (body : t) : t =
   Decl { var; ty; body }
 
 let seq (p : t) (q : t) : t =
@@ -29,7 +29,7 @@ let to_string : t -> string =
     | Access e -> [ Line (Access.to_string e) ]
     | Decl d ->
         [
-          Line (C_type.to_string d.ty ^ " " ^ Variable.name d.var ^ " {");
+          Line (Ty.to_string d.ty ^ " " ^ Variable.name d.var ^ " {");
           Block (to_s d.body);
           Line "}";
         ]
@@ -146,7 +146,7 @@ let from_scoped ?(infer_cond_bound = default_infer_cond_bound)
       let known = Variable.Set.add x known in
       (x, known, st)
     in
-    let inline_or_havoc (x : Variable.t) (ty : C_type.t) (data : Exp.nexp)
+    let inline_or_havoc (x : Variable.t) (ty : Ty.t) (data : Exp.nexp)
         (p : Scoped.Code.t) : t =
       let sz = esize sizes data in
       if sz <= infer_cond_bound then

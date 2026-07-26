@@ -125,7 +125,7 @@ module Infer = struct
                 in
                 let delta = Exp.n_mult i_inc trip_count in
                 Some
-                  (Stmt.assign C_type.int i.var
+                  (Stmt.assign Ty.int i.var
                      (Exp.n_plus (Var i.var) delta))
             | _ -> None)
         |> Stmt.from_list

@@ -14,7 +14,7 @@ type t =
   | Write of Write.t
   | LocationAlias of Alias.t
   | Decl of Decl.t
-  | Assign of { var : Variable.t; data : Exp.nexp; ty : C_type.t }
+  | Assign of { var : Variable.t; data : Exp.nexp; ty : Ty.t }
   | If of (Exp.bexp * t * t)
   | For of (Range.t * t)
   | Star of t
@@ -122,7 +122,7 @@ let to_list ?(rev = true) : t -> t list =
   in
   fun s -> loop [] s |> if rev then List.rev else Fun.id
 
-let assign (ty : C_type.t) (var : Variable.t) (data : Exp.nexp) : t =
+let assign (ty : Ty.t) (var : Variable.t) (data : Exp.nexp) : t =
   Assign { ty; var; data }
 
 let decl_unset (v : Variable.t) : t = Decl (Decl.unset v)
@@ -135,7 +135,7 @@ let to_s : t -> Indent.t list =
     | Atomic r ->
         [
           Line
-            (C_type.to_string r.ty ^ " " ^ Variable.name r.target ^ " = atomic "
+            (Ty.to_string r.ty ^ " " ^ Variable.name r.target ^ " = atomic "
            ^ Variable.name r.array
             ^ Access.index_to_string r.index
             ^ ";");
@@ -147,7 +147,7 @@ let to_s : t -> Indent.t list =
           match r.target with
           | Some (ty, target) ->
               let x = Variable.name target in
-              let ty = C_type.to_string ty in
+              let ty = Ty.to_string ty in
               ty ^ " " ^ x ^ " = "
           | None -> ""
         in

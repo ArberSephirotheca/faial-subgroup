@@ -3,7 +3,7 @@ open Stage0
 
 module Code = struct
   type t =
-    | Decl of { ty : C_type.t; var : Variable.t; body : t }
+    | Decl of { ty : Ty.t; var : Variable.t; body : t }
     | Loop of { range : Range.t; body : t }
     | Cond of { test : Exp.bexp; body : t }
     | Barrier of Sync.t

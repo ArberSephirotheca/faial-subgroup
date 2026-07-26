@@ -11,7 +11,9 @@ type nexp =
   | ReadResult of {
       array : Variable.t;
       version : int;
-      ty : C_type.t;
+      (* [None] when the element type is not a value type, which is where
+         the array-or-scalar seam does not hold. *)
+      ty : Scalar.t option;
       args : nexp list;
     }
   | NIf of bexp * nexp * nexp
@@ -638,6 +640,8 @@ let b_to_s : bexp -> Indent.t list =
   in
   to_s true
 
-let int_dom_bound (x : Variable.t) (d : Int_dom.t) : bexp =
-  let lb, ub = Int_dom.to_range d in
+let range_bound (x : Variable.t) ((lb, ub) : int * int) : bexp =
   b_and (n_le (Num lb) (Var x)) (n_le (Var x) (Num ub))
+
+let int_dom_bound (x : Variable.t) (d : Int_dom.t) : bexp =
+  range_bound x (Int_dom.to_range d)

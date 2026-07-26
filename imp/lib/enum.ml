@@ -23,7 +23,7 @@ type t = { var : Variable.t; constants : Constant.t list }
 
 let name (x : t) : string = Variable.name x.var
 let location (x : t) : Location.t = Variable.location x.var
-let to_c_type (e : t) = e.var |> Variable.name |> C_type.make
+let to_c_type (e : t) = e.var |> Variable.name |> Ty.of_c_string
 
 type assign_t = { current : int; assigns : (Variable.t * Exp.nexp) list }
 

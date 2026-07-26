@@ -15,7 +15,7 @@ let r =
       upper_bound = Num 2;
       step = Plus (Num 1);
       dir = Increase;
-      ty = C_type.int;
+      ty = Scalar.int;
     }
 
 let write a = Access.write a [] None

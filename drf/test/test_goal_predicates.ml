@@ -9,14 +9,14 @@ let tid : nexp = Var Variable.tid_x
 let n : Variable.t = Variable.from_name "n"
 
 let shared_int : Memory.t =
-  Memory.from_type Mem_hierarchy.SharedMemory C_type.int
+  Memory.from_type Mem_hierarchy.SharedMemory Ty.int
 
 let write (idx : nexp) : Code.t = Code.Access (Access.write array_a [ idx ] None)
 
 let mk_kernel (pre : bexp) : Kernel.t =
   {
     name = "k_test";
-    global_variables = Params.add n C_type.int Params.empty;
+    global_variables = Params.add n Ty.int Params.empty;
     local_variables = Params.empty;
     arrays = Variable.Map.add array_a shared_int Variable.Map.empty;
     pre;

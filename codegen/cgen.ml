@@ -185,7 +185,7 @@ let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
          of an object of const type". Clang dependent-type placeholders
          (e.g. "<dependent type>" inside templated bodies) leak through
          as type strings; substitute [int] so the file remains parseable. *)
-      let ty_s = C_type.to_string (C_type.strip_const ty) in
+      let ty_s = Ty.to_string (Ty.strip_const ty) in
       let ty_s =
         if String.length ty_s > 0 && ty_s.[0] = '<' then "int" else ty_s
       in

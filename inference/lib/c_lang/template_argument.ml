@@ -1,7 +1,8 @@
+open Protocols
 open Ast
 
 type t = c_template_argument =
-  | TArgType of J_type.t
+  | TArgType of Ty.t
   | TArgIntegral of int
   | TArgNullArg
   | TArgNullPtr
@@ -14,7 +15,7 @@ type t = c_template_argument =
 let parse = Parsers.parse_c_template_argument
 
 let rec to_string : t -> string = function
-  | TArgType ty -> J_type.to_string ty
+  | TArgType ty -> Ty.to_string ty
   | TArgIntegral n -> string_of_int n
   | TArgNullArg -> "<null>"
   | TArgNullPtr -> "nullptr"

@@ -103,7 +103,7 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
             with Not_found -> (decls, js))
         | Declaration d ->
             let decls =
-              if Decl.matches Protocols.C_type.is_array d then d :: decls
+              if Decl.matches Protocols.Ty.is_array_or_pointer d then d :: decls
               else decls
             in
             (decls, js)

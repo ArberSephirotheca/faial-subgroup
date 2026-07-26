@@ -77,7 +77,7 @@ let test_build_pool_referentially_transparent () =
   let kernel : Kernel.t = {
     name = "k_test";
     global_variables =
-      Params.add (Variable.from_name "n") C_type.int Params.empty;
+      Params.add (Variable.from_name "n") Ty.int Params.empty;
     local_variables = Params.empty;
     arrays = Variable.Map.empty;
     pre = Exp.Bool true;
@@ -113,7 +113,7 @@ let make_kernel_with_params (param_names : string list) : Kernel.t = {
   name = "k_scope";
   global_variables =
     List.fold_left
-      (fun p n -> Params.add (Variable.from_name n) C_type.int p)
+      (fun p n -> Params.add (Variable.from_name n) Ty.int p)
       Params.empty param_names;
   local_variables = Params.empty;
   arrays = Variable.Map.empty;
@@ -170,7 +170,7 @@ let test_build_pool_union_dedup_stable () =
   let make_kernel name : Kernel.t = {
     name;
     global_variables =
-      Params.add (Variable.from_name "n") C_type.int Params.empty;
+      Params.add (Variable.from_name "n") Ty.int Params.empty;
     local_variables = Params.empty;
     arrays = Variable.Map.empty;
     pre = Exp.Bool true;

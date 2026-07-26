@@ -11,11 +11,11 @@ let hierarchy (x : t) : Mem_hierarchy.t = x.hierarchy
 let make (h : Mem_hierarchy.t) : t =
   { hierarchy = h; size = []; data_type = [] }
 
-let from_type (h : Mem_hierarchy.t) (ty : C_type.t) : t =
+let from_type (h : Mem_hierarchy.t) (ty : Ty.t) : t =
   {
     hierarchy = h;
-    size = C_type.get_array_length ty;
-    data_type = C_type.get_array_type ty;
+    size = Ty.get_array_length ty;
+    data_type = Ty.get_array_type ty;
   }
 
 let make_map (h : Mem_hierarchy.t) (vs : Variable.t list) : t Variable.Map.t =

@@ -35,7 +35,7 @@ let test_hoisted_cond_rewrite () =
     {
       name = "k";
       array_name = "A";
-      global_variables = Params.add (v "N") C_type.int Params.empty;
+      global_variables = Params.add (v "N") Ty.int Params.empty;
       local_variables = Params.empty;
       ranges = [ Cond_range.make range cond ];
       code = Unsynced.Access (Access.write (v "A") [ Var i ] None);

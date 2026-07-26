@@ -12,9 +12,10 @@ let negate_goal (f : t) : t = { f with goal = b_not f.goal }
 let read_postcondition (n : nexp) : bexp option =
   match n with
   | ReadResult r ->
-      C_type.to_int_dom r.ty
-      |> Option.map (fun d ->
-          let lo, hi = Int_dom.to_range d in
+      r.ty
+      |> Option.map Scalar.to_range
+      |> Option.join
+      |> Option.map (fun (lo, hi) ->
           b_and (n_le (Num lo) n) (n_le n (Num hi)))
   | _ -> None
 

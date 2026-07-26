@@ -1,6 +1,6 @@
 (tests
  (names
-   test_ctype
+   test_ty
    test_params
    test_exp
    test_functions

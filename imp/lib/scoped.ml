@@ -12,7 +12,7 @@ module Code = struct
     | Call of (Call.t * t)
     | If of (Exp.bexp * t * t)
     | For of (Range.t * t)
-    | Assign of { var : Variable.t; ty : C_type.t; data : Exp.nexp; body : t }
+    | Assign of { var : Variable.t; ty : Ty.t; data : Exp.nexp; body : t }
     | Decl of (Decl.t * t)
     | Seq of t * t
 
@@ -29,10 +29,10 @@ module Code = struct
     in
     add
 
-  let decl_set ?(ty = C_type.int) (x : Variable.t) (e : Exp.nexp) (s : t) : t =
+  let decl_set ?(ty = Ty.int) (x : Variable.t) (e : Exp.nexp) (s : t) : t =
     Decl (Decl.set ~ty x e, s)
 
-  let decl_unset ?(ty = C_type.int) (x : Variable.t) (s : t) : t =
+  let decl_unset ?(ty = Ty.int) (x : Variable.t) (s : t) : t =
     Decl (Decl.unset ~ty x, s)
 
   let calls : t -> StringSet.t =
@@ -205,10 +205,15 @@ module Code = struct
      no barrier in between needs no version bump, since it races with
      the read on its own. *)
   let bind_uniform_reads : t -> t =
-    let read_call (v : Version.t) (ty : C_type.t) (array : Variable.t)
+    let read_call (v : Version.t) (ty : Ty.t) (array : Variable.t)
         (index : Exp.nexp list) : Exp.nexp =
       Exp.ReadResult
-        { array; version = Version.get array v; ty; args = index }
+        {
+          array;
+          version = Version.get array v;
+          ty = Ty.to_scalar ty;
+          args = index;
+        }
     in
     let rec rewrite (looped : Variable.Set.t) (v : Version.t) :
         t -> t * Version.t = function
@@ -456,7 +461,7 @@ module Code = struct
              variables aren't wrongly reported as outstanding for
              [Assign]s inside the loop body. The For's range variable
              [r.var] is added too, since it's bound here. *)
-          let defined = Params.add r.var C_type.int defined in
+          let defined = Params.add r.var Ty.int defined in
           let assigns, p = fix_assigns defined p in
           (* convert assigns to decls *)
           (assigns, For (r, decl assigns p))
@@ -473,7 +478,7 @@ module Code = struct
         lower_bound = Num 1;
         upper_bound = Var x;
         step = Step.plus (Num 1);
-        ty = C_type.int;
+        ty = Scalar.int;
       }
 
   let atomic_result_marker (aw : Atomic_write.t) : Assert.t =
@@ -493,7 +498,7 @@ module Code = struct
     let unknown curr_id : Variable.t =
       Variable.from_name ("@loop_" ^ string_of_int curr_id)
     in
-    let add_global (x : Variable.t) ?(ty = C_type.char) () : unit state =
+    let add_global (x : Variable.t) ?(ty = Ty.char) () : unit state =
       State.update (fun (curr_id, params) ->
           (curr_id + 1, Params.add x ty params))
     in

@@ -17,10 +17,10 @@ let list_to_s (f : 'a -> string) (l : 'a list) : string =
 
 module Expr = struct
   type t =
-    | SizeOfExpr of J_type.t
-    | CXXNewExpr of { arg : t; ty : J_type.t }
-    | CXXDeleteExpr of { arg : t; ty : J_type.t }
-    | RecoveryExpr of J_type.t
+    | SizeOfExpr of Ty.t
+    | CXXNewExpr of { arg : t; ty : Ty.t }
+    | CXXDeleteExpr of { arg : t; ty : Ty.t }
+    | RecoveryExpr of Ty.t
     | CharacterLiteral of int
     | BinaryOperator of d_binary
     | CallExpr of d_call
@@ -28,20 +28,20 @@ module Expr = struct
         cond : t;
         then_expr : t;
         else_expr : t;
-        ty : J_type.t;
+        ty : Ty.t;
       }
-    | CXXConstructExpr of { args : t list; ty : J_type.t }
+    | CXXConstructExpr of { args : t list; ty : Ty.t }
     | CXXBoolLiteralExpr of bool
-    | CXXOperatorCallExpr of { func : t; args : t list; ty : J_type.t }
+    | CXXOperatorCallExpr of { func : t; args : t list; ty : Ty.t }
     | FloatingLiteral of float
     | IntegerLiteral of int
-    | MemberExpr of { name : string; base : t; ty : J_type.t }
+    | MemberExpr of { name : string; base : t; ty : Ty.t }
     | Ident of Decl_expr.t
-    | UnaryOperator of { opcode : string; child : t; ty : J_type.t }
-    | UnresolvedLookupExpr of { name : Variable.t; tys : J_type.t list }
+    | UnaryOperator of { opcode : string; child : t; ty : Ty.t }
+    | UnresolvedLookupExpr of { name : Variable.t; tys : Ty.t list }
 
-  and d_binary = { opcode : string; lhs : t; rhs : t; ty : J_type.t }
-  and d_call = { func : t; args : t list; ty : J_type.t }
+  and d_binary = { opcode : string; lhs : t; rhs : t; ty : Ty.t }
+  and d_call = { func : t; args : t list; ty : Ty.t }
 
   let ident ?(ty = J_type.int) ?(kind = Decl_expr.Kind.Var) (name : Variable.t)
       =
@@ -68,7 +68,7 @@ module Expr = struct
     | UnresolvedLookupExpr _ -> "UnresolvedLookupExpr"
     | Ident _ -> "Ident"
 
-  let rec to_type : t -> J_type.t = function
+  let rec to_type : t -> Ty.t = function
     | SizeOfExpr _ -> J_type.int
     | CXXNewExpr c -> c.ty
     | CXXDeleteExpr c -> c.ty
@@ -90,8 +90,8 @@ module Expr = struct
   let to_string ?(modifier : bool = false) ?(provenance : bool = false)
       ?(types : bool = false) : t -> string =
     let attr (s : string) : string = if modifier then "@" ^ s ^ " " else "" in
-    let opcode (o : string) (j : J_type.t) : string =
-      if types then "(" ^ o ^ "." ^ J_type.to_string j ^ ")" else o
+    let opcode (o : string) (j : Ty.t) : string =
+      if types then "(" ^ o ^ "." ^ Ty.to_string j ^ ")" else o
     in
     let var_name : Variable.t -> string =
       if provenance then Variable.repr else Variable.name
@@ -108,9 +108,9 @@ module Expr = struct
             exp_to_s e
       in
       function
-      | SizeOfExpr ty -> "sizeof(" ^ J_type.to_string ty ^ ")"
+      | SizeOfExpr ty -> "sizeof(" ^ Ty.to_string ty ^ ")"
       | CXXNewExpr c ->
-          "new " ^ J_type.to_string c.ty ^ "(" ^ exp_to_s c.arg ^ ")"
+          "new " ^ Ty.to_string c.ty ^ "(" ^ exp_to_s c.arg ^ ")"
       | CXXDeleteExpr c -> "del " ^ par c.arg
       | RecoveryExpr _ -> "?"
       | FloatingLiteral f -> string_of_float f
@@ -122,7 +122,7 @@ module Expr = struct
       | MemberExpr m -> par m.base ^ "." ^ m.name
       | CXXBoolLiteralExpr b -> if b then "true" else "false"
       | CXXConstructExpr c ->
-          attr "ctor" ^ J_type.to_string c.ty ^ "(" ^ list_to_s exp_to_s c.args
+          attr "ctor" ^ Ty.to_string c.ty ^ "(" ^ list_to_s exp_to_s c.args
           ^ ")"
       | CXXOperatorCallExpr c ->
           exp_to_s c.func ^ "[" ^ list_to_s exp_to_s c.args ^ "]"
@@ -283,8 +283,8 @@ end
 
 module Init = struct
   type t =
-    | CXXConstructExpr of { constructor : J_type.t; ty : J_type.t }
-    | InitListExpr of { ty : J_type.t; args : Expr.t list }
+    | CXXConstructExpr of { constructor : Ty.t; ty : Ty.t }
+    | InitListExpr of { ty : Ty.t; args : Expr.t list }
     | IExpr of Expr.t
 
   let to_exp (i : t) : Expr.t list =
@@ -293,7 +293,7 @@ module Init = struct
     | InitListExpr i -> i.args
     | IExpr e -> [ e ]
 
-  let to_type : t -> J_type.t = function
+  let to_type : t -> Ty.t = function
     | CXXConstructExpr { ty; _ } | InitListExpr { ty; _ } -> ty
     | IExpr e -> Expr.to_type e
 
@@ -325,12 +325,12 @@ end
 module Decl = struct
   type t = {
     var : Variable.t;
-    ty : J_type.t;
+    ty : Ty.t;
     init : Init.t option;
     attrs : string list;
   }
 
-  let types (d : t) : J_type.t list =
+  let types (d : t) : Ty.t list =
     d.ty :: Option.to_list (Option.map Init.to_type d.init)
 
   let make ~ty ~var ~init ~attrs : t = { ty; var; init; attrs }
@@ -358,15 +358,12 @@ module Decl = struct
 
   let get_shared (d : t) : Memory.t option =
     if List.mem C_lang.c_attr_shared d.attrs then
-      match J_type.to_c_type_res d.ty with
-      | Ok ty ->
-          Some
-            {
-              hierarchy = SharedMemory;
-              size = C_type.get_array_length ty;
-              data_type = C_type.get_array_type ty;
-            }
-      | Error _ -> None
+      Some
+        {
+          hierarchy = SharedMemory;
+          size = Ty.get_array_length d.ty;
+          data_type = Ty.get_array_type d.ty;
+        }
     else None
 
   let to_exp (d : t) : Expr.t list =
@@ -382,7 +379,7 @@ module Decl = struct
         let attrs = String.concat " " d.attrs |> String.trim in
         attrs ^ " "
     in
-    let ty = J_type.to_string d.ty in
+    let ty = Ty.to_string d.ty in
     let x = Variable.name d.var in
     attr ^ ty ^ " " ^ x ^ i
 
@@ -440,7 +437,7 @@ end
 type d_subscript = {
   name : Variable.t;
   index : Expr.t list;
-  ty : J_type.t;
+  ty : Ty.t;
   location : Location.t;
 }
 
@@ -466,7 +463,7 @@ type d_write = {
 type d_read = {
   target : Variable.t;
   source : d_subscript;
-  ty : C_type.t;
+  ty : Ty.t;
   guard : Expr.t option;
 }
 
@@ -474,7 +471,7 @@ type d_atomic = {
   target : Variable.t;
   source : d_subscript;
   atomic : Expr.t Atomic.t;
-  ty : C_type.t;
+  ty : Ty.t;
   guard : Expr.t option;
 }
 
@@ -514,7 +511,7 @@ module Stmt = struct
         captures : (Variable.t * Expr.t) list;
         params : C_lang.Param.t list;
         body : t;
-        ret_ty : J_type.t;
+        ret_ty : Ty.t;
       }
 
   and d_cond = { cond : Expr.t; body : t }
@@ -539,20 +536,16 @@ module Stmt = struct
 
   let read_access (target : Variable.t) (source : d_subscript) : t =
     let ty =
-      source.ty
-      |> J_type.to_c_type ~default:C_type.int
       (* If it's an array get the elements type *)
-      |> C_type.strip_array
+      Ty.strip_array source.ty
     in
     ReadAccessStmt { target; source; ty; guard = None }
 
   let atomic_access (target : Variable.t) (source : d_subscript)
       (atomic : Expr.t Atomic.t) : t =
     let ty =
-      source.ty
-      |> J_type.to_c_type ~default:C_type.int
       (* If it's an array get the elements type *)
-      |> C_type.strip_array
+      Ty.strip_array source.ty
     in
     AtomicAccessStmt { target; source; atomic; ty; guard = None }
 
@@ -583,7 +576,7 @@ module Stmt = struct
     | AtomicAccessStmt r ->
         [
           Line
-            ("atomic " ^ C_type.to_string r.ty ^ " " ^ Variable.name r.target
+            ("atomic " ^ Ty.to_string r.ty ^ " " ^ Variable.name r.target
            ^ " = " ^ subscript_to_s r.source);
         ]
     | ReturnStmt None -> [ Line "return" ]
@@ -974,7 +967,7 @@ module SignatureDB = struct
       match e with
       | UnresolvedLookupExpr { name = n; _ } -> Some (Variable.name n, "?")
       | Ident { name = n; kind = Function; ty } ->
-          Some (Variable.name n, J_type.to_string ty)
+          Some (Variable.name n, Ty.to_string ty)
       | _ -> None
     in
     get ~kernel ~ty ~arg_count db |> Option.map Signature.from_kernel
@@ -1014,7 +1007,7 @@ module AccessState = struct
     let* () = add (f x) in
     return x
 
-  let add_expr (expr : Expr.t) (ty : J_type.t) : Variable.t state =
+  let add_expr (expr : Expr.t) (ty : Ty.t) : Variable.t state =
     add_var (Expr.to_string expr) (fun name ->
         let ty_var = Ty_variable.make ~ty ~name in
         DeclStmt [ Decl.from_expr ty_var expr ])
@@ -1032,11 +1025,8 @@ module AccessState = struct
     | _ ->
         add_var (subscript_to_s a) (fun x ->
             let ty =
-              a.ty
-              |> J_type.to_c_type ~default:C_type.int
               (* If it's an array get the elements type *)
-              |> C_type.strip_array
-              |> J_type.from_c_type
+              Ty.strip_array a.ty
             in
             let ty_var = Ty_variable.make ~name:x ~ty in
             Seq
@@ -1281,7 +1271,7 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       let* func = rewrite_exp func in
       let* args = State.list_map rewrite_exp args in
       return (CXXOperatorCallExpr { func; args; ty })
-  | CallExpr { func; args; ty } when J_type.matches C_type.is_void ty ->
+  | CallExpr { func; args; ty } when Ty.is_void ty ->
       let* func = rewrite_exp func in
       let* args = State.list_map rewrite_exp args in
       return (CallExpr { func; args; ty })

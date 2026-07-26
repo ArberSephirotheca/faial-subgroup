@@ -1,16 +1,4 @@
-module Size = struct
-  type t =
-    | Bit8 (* char *)
-    | Bit16 (* short *)
-    | Bit32 (* int *)
-    | Bit64 (* long *)
-
-  let to_string : t -> string = function
-    | Bit8 -> "char"
-    | Bit16 -> "short"
-    | Bit32 -> "int"
-    | Bit64 -> "long"
-end
+module Size = Size
 
 type t = { size : Size.t; signed : bool }
 
@@ -18,9 +6,9 @@ let to_string (x : t) : string =
   let s = if x.signed then "" else "unsigned " in
   s ^ Size.to_string x.size
 
-let signed_char_range = (-127, 127)
+let signed_char_range = (-128, 127)
 let unsigned_char_range = (0, 255)
-let signed_short_range = (-32767, 32767)
+let signed_short_range = (-32768, 32767)
 let unsigned_short_range = (0, 65535)
 let signed_int_range = (-2147483648, 2147483647)
 let unsigned_int_range = (0, 4294967295)

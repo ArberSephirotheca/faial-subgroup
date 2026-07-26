@@ -12,7 +12,7 @@ type t =
   | Loop of { cond_range : Cond_range.t; body : t }
   | Seq of t * t
   | Skip
-  | Decl of { var : Variable.t; ty : C_type.t; cond : bexp; body : t }
+  | Decl of { var : Variable.t; ty : Ty.t; cond : bexp; body : t }
 
 let rec filter (f : t -> bool) (p : t) : t =
   if not (f p) then Skip
@@ -146,7 +146,7 @@ let loop ?(cond = Bool true) (r : Range.t) (p : t) : t =
     if is_empty then Skip
     else Loop { cond_range = Cond_range.make r cond; body = p }
 
-let decl ?(ty = C_type.int) ?(cond = Bool true) (var : Variable.t) : t -> t =
+let decl ?(ty = Ty.int) ?(cond = Bool true) (var : Variable.t) : t -> t =
   function
   | Skip -> Skip
   | body -> Decl { var; ty; cond; body }
@@ -280,7 +280,7 @@ let rec to_s : t -> Indent.t list = function
       ]
   | Decl d ->
       let var = Variable.name d.var in
-      let ty = C_type.to_string d.ty in
+      let ty = Ty.to_string d.ty in
       let guard : Indent.t list =
         match d.cond with
         | Bool true -> []

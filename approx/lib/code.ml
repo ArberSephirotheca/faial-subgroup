@@ -15,11 +15,11 @@ let typecheck_r (env : Variable.Set.t) (r : Range.t) : bool =
 
 type t =
   | Cond of Exp.bexp * t
-  | Decl of { var : Variable.t; ty : C_type.t; body : t }
+  | Decl of { var : Variable.t; ty : Ty.t; body : t }
   | Loop of { range : Range.t; body : t }
   | Access of Access.t
 
-let decl ?(ty = C_type.int) (var : Variable.t) (body : t) : t =
+let decl ?(ty = Ty.int) (var : Variable.t) (body : t) : t =
   Decl { ty; var; body }
 
 let rec location : t -> Location.t = function

@@ -104,7 +104,7 @@ let test_synthetic_for_init_bound_parses () : unit =
    produces for [*p = src] / [*(p + n) = src] / [p[n] = src] so we can
    agree on the right per-shape index before changing the rewriter. *)
 
-let ptr_int_ty : J_type.t = J_type.int (* placeholder — the deref's
+let ptr_int_ty : Ty.t = J_type.int (* placeholder — the deref's
    recorded element type; concrete value isn't asserted below *)
 
 let ident (name : string) : C_lang.Expr.t =

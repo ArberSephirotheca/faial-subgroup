@@ -5,7 +5,7 @@ open Parse_util
 
 type t =
   | TemplateType of Variable.t
-  | NonTypeTemplate of { name : Variable.t; ty : J_type.t }
+  | NonTypeTemplate of { name : Variable.t; ty : Ty.t }
 
 let to_string (p : t) : string =
   let name =
@@ -43,5 +43,5 @@ let parse (j : Yojson.Basic.t) : t option j_result =
             Ok (Variable.make ~name ~location ())
       in
       let* ty = get_field "type" o in
-      Ok (Some (NonTypeTemplate { name; ty = J_type.from_json ty }))
+      Ok (Some (NonTypeTemplate { name; ty = J_type.parse ty }))
   | _ -> Ok None
