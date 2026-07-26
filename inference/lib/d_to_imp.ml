@@ -160,25 +160,34 @@ module Make (L : Logger) = struct
              (BExp (Pred ("pow2", [ n ])))
              (BExp (Infer_exp.n_eq n (NExp (Num 0)))))
     | BinaryOperator { opcode = ","; lhs = _; rhs = e; _ } -> infer_expr e
-    | BinaryOperator { opcode = o; lhs = n1; rhs = n2; _ } ->
-        let is_unsigned_operand (e : D_lang.Expr.t) : bool =
-          e |> D_lang.Expr.to_type |> Ty.is_unsigned
-        in
+    | BinaryOperator { opcode = o; lhs = n1; rhs = n2; ty } ->
+        (* Clang applies C's usual arithmetic conversions and types an
+           arithmetic operator with their result, so the operator already
+           carries the answer. A comparison does not: its type is the result
+           type, bool, so its signedness has to come from the operands, which
+           clang has promoted for the same reason. *)
         let sign : Signedness.t =
-          if is_unsigned_operand n1 || is_unsigned_operand n2
-          then Unsigned else Signed
+          let unsigned =
+            match o with
+            | "<" | "<=" | ">" | ">=" ->
+                Ty.is_unsigned (D_lang.Expr.to_type n1)
+                || Ty.is_unsigned (D_lang.Expr.to_type n2)
+            | _ -> Ty.is_unsigned ty
+          in
+          if unsigned then Unsigned else Signed
         in
         let n1 = infer_expr n1 in
         let n2 = infer_expr n2 in
         parse_bin ~sign o n1 n2
+    | Convert c -> (
+        let arg = infer_expr c.arg in
+        match Ty.to_scalar c.ty with
+        | Some ty -> NExp (Convert { ty; arg })
+        | None -> arg)
     | CXXBoolLiteralExpr b -> BExp (Bool b)
     | UnaryOperator u when u.opcode = "!" ->
         let b = infer_expr u.child in
         BExp (BNot b)
-    (* A single-argument vector copy-constructor [uintN(v)] is just the
-       value of [v]; keep its variable identity so a by-value vector
-       argument resolves to the caller's variable rather than an opaque
-       unknown. *)
     | CXXConstructExpr { args = [ Ident v ]; ty }
       when Ty.vector_lanes ty |> Option.is_some ->
         NExp (Var v.name)

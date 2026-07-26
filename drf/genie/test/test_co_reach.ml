@@ -298,6 +298,7 @@ let rec nexp_has_thread_unif (n : Exp.nexp) : bool =
   | Exp.Unary (_, e) -> nexp_has_thread_unif e
   | Exp.NCall (_, es) -> List.exists nexp_has_thread_unif es
   | Exp.ReadResult r -> List.exists nexp_has_thread_unif r.args
+  | Exp.Convert c -> nexp_has_thread_unif c.arg
   | Exp.CastInt b -> bexp_has_thread_unif b
   | Exp.Binary (_, n1, n2) ->
       nexp_has_thread_unif n1 || nexp_has_thread_unif n2

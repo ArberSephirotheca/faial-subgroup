@@ -247,6 +247,7 @@ module Proj = struct
     | NCall (x, ns) -> NCall (x, List.map (nexp locals t) ns)
     | ReadResult r ->
         ReadResult { r with args = List.map (nexp locals t) r.args }
+    | Convert c -> Convert { c with arg = nexp locals t c.arg }
 
   and bexp (locals : Variable.Set.t) (t : task) (b : Exp.bexp) : Exp.bexp =
     let open Exp in

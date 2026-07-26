@@ -65,6 +65,7 @@ module Variables = struct
           Seq.empty
       | UnaryOperator { child = e; _ }
       | Member { base = e; _ }
+      | Convert { arg = e; _ }
       | CXXNew { arg = e; _ }
       | CXXDelete { arg = e; _ }
       | PackExpansion e ->
@@ -181,6 +182,7 @@ module Calls = struct
           Seq.empty
       | UnaryOperator { child = e; _ }
       | MemberExpr { base = e; _ }
+      | Convert { arg = e; _ }
       | CXXNewExpr { arg = e; _ }
       | CXXDeleteExpr { arg = e; _ }
       | PackExpansion e ->
@@ -439,6 +441,7 @@ module MutatedVar = struct
         writes
     | UnaryOperator { child = e; _ }
     | MemberExpr { base = e; _ }
+    | Convert { arg = e; _ }
     | CXXNewExpr { arg = e; _ }
     | CXXDeleteExpr { arg = e; _ }
     | PackExpansion e ->

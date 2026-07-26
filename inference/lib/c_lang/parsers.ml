@@ -70,8 +70,15 @@ let rec parse_expr (j : json) : c_expr j_result =
       Ok (CharacterLiteral i)
   | "CXXConstCastExpr" | "CXXReinterpretCastExpr"
   | "ImplicitCastExpr" | "CXXStaticCastExpr" | "ConstantExpr" | "ParenExpr"
-  | "ExprWithCleanups" | "CStyleCastExpr" | "CXXDefaultArgExpr" ->
-      with_field "inner" (cast_list_1 parse_expr) o
+  | "ExprWithCleanups" | "CStyleCastExpr" | "CXXDefaultArgExpr"
+  | "CXXFunctionalCastExpr" ->
+      let* arg = with_field "inner" (cast_list_1 parse_expr) o in
+      (* The pure wrappers share this arm, and [convert] declines them
+         without a special case, since their type equals their operand's. *)
+      Ok
+        (match get_field "type" o with
+        | Ok ty -> convert (J_type.parse ty) arg
+        | Error _ -> arg)
   | "PackExpansionExpr" ->
       (* Preserve the pack-expansion wrapper rather than collapsing to
          the bare pattern: [f(args...)] keeps the trailing [...] so
@@ -364,8 +371,8 @@ let rec parse_expr (j : json) : c_expr j_result =
        | Ident f, [ arg ] when is_reinterpret_cast (Variable.name f.name) ->
            Ok arg
        | _ -> Ok (CallExpr { func; args; ty = J_type.parse ty }))
-  | "CXXBindTemporaryExpr" | "CXXFunctionalCastExpr"
-  | "MaterializeTemporaryExpr" | "CompoundLiteralExpr" ->
+  | "CXXBindTemporaryExpr" | "MaterializeTemporaryExpr"
+  | "CompoundLiteralExpr" ->
       let* body = with_field "inner" (cast_list_1 parse_expr) o in
       Ok body
   | "StmtExpr" ->

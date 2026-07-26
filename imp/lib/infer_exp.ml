@@ -8,6 +8,7 @@ type n =
   | Binary of N_binary.t * t * t
   | NCall of string * t list
   | NIf of t * t * t
+  | Convert of { ty : Scalar.t; arg : t }
 
 and b =
   | Bool of bool
@@ -37,6 +38,7 @@ and to_n_string : n -> string = function
       let e2 = to_string e2 in
       let e3 = to_string e3 in
       "(" ^ e1 ^ ") ? (" ^ e2 ^ ") : (" ^ e3 ^ ")"
+  | Convert c -> "(" ^ Scalar.to_string c.ty ^ ")(" ^ to_string c.arg ^ ")"
 
 and to_b_string : b -> string = function
   | Bool b -> if b then "true" else "false"
@@ -85,6 +87,7 @@ and subst_n (f : Variable.t -> t option) : n -> n = function
   | Binary (o, e1, e2) -> Binary (o, subst f e1, subst f e2)
   | NCall (o, es) -> NCall (o, List.map (subst f) es)
   | NIf (e1, e2, e3) -> NIf (subst f e1, subst f e2, subst f e3)
+  | Convert c -> Convert { c with arg = subst f c.arg }
 
 and subst_b (f : Variable.t -> t option) : b -> b = function
   | Bool _ as b -> b
@@ -108,6 +111,7 @@ and free_names_n (n : n) (acc : Variable.Set.t) : Variable.Set.t =
   | Binary (_, e1, e2) -> free_names e1 (free_names e2 acc)
   | NCall (_, es) -> List.fold_left (fun acc e -> free_names e acc) acc es
   | NIf (e1, e2, e3) -> free_names e1 (free_names e2 (free_names e3 acc))
+  | Convert c -> free_names c.arg acc
 
 and free_names_b (b : b) (acc : Variable.Set.t) : Variable.Set.t =
   match b with
@@ -150,7 +154,10 @@ let rec to_nexp (e : t) : Exp.nexp state =
           let* b = to_bexp b in
           let* n1 = to_nexp n1 in
           let* n2 = to_nexp n2 in
-          return (Exp.NIf (b, n1, n2)))
+          return (Exp.NIf (b, n1, n2))
+      | Convert c ->
+          let* arg = to_nexp c.arg in
+          return (Exp.Convert { ty = c.ty; arg }))
   | BExp _ ->
       let* b = to_bexp e in
       return (Exp.cast_int b)

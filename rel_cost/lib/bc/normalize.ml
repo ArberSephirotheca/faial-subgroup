@@ -55,6 +55,8 @@ module BC = struct
               Uniform args_t
           in
           (ReadResult { rd with args = List.map fst args_t }, r)
+      (* Erased, as in [Ua_analysis] and [Reals.from_nexp]. *)
+      | Convert c -> from_nexp c.arg
       | CastInt e ->
           let r = if Exp.b_intersects locals e then Any else Uniform in
           (CastInt e, r)

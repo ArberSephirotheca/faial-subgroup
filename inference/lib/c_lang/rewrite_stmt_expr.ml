@@ -25,6 +25,9 @@ let rec rewrite_expr (e : c_expr) : c_stmt * c_expr =
   | FloatingLiteral _ | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _
   | DependentScopeRef _ ->
       (Skip, e)
+  | Convert { arg; ty } ->
+      let s, arg = rewrite_expr arg in
+      (s, Convert { arg; ty })
   | CXXNewExpr { arg; ty } ->
       let s, arg = rewrite_expr arg in
       (s, CXXNewExpr { arg; ty })

@@ -145,8 +145,10 @@ let constants (k : t) =
       =
     match b with
     | CastBool (CastInt b) -> constants b kvs
-    | NRel (Eq, Var x, Num n) | NRel (Eq, Num n, Var x) ->
-        (Variable.name x, n) :: kvs
+    | NRel (Eq, e1, e2) -> (
+        match (Exp.strip_convert e1, Exp.strip_convert e2) with
+        | Var x, Num n | Num n, Var x -> (Variable.name x, n) :: kvs
+        | _ -> kvs)
     | BRel (BAnd, b1, b2) -> constants b1 kvs |> constants b2
     | Bool _ | CastBool _ | BNot _ | Pred _ | NRel _ | BRel _ | Distinct _
     | AtomicResult _ | IsThreadUnif _ ->

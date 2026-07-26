@@ -16,6 +16,7 @@ type nexp =
       ty : Scalar.t option;
       args : nexp list;
     }
+  | Convert of { ty : Scalar.t; arg : nexp }
   | NIf of bexp * nexp * nexp
   | CastInt of bexp
 
@@ -61,6 +62,9 @@ and bexp =
         let@ () = Variable.compare r1.array r2.array in
         let@ () = compare r1.version r2.version in
         List.compare n_compare r1.args r2.args
+    | Convert c1, Convert c2 ->
+        let@ () = Scalar.compare c1.ty c2.ty in
+        n_compare c1.arg c2.arg
     | CastInt b1, CastInt b2 -> b_compare b1 b2
     | Var _, _ -> -1
     | _, Var _ -> 1
@@ -74,6 +78,8 @@ and bexp =
     | _, NCall _ -> 1
     | ReadResult _, _ -> -1
     | _, ReadResult _ -> 1
+    | Convert _, _ -> -1
+    | _, Convert _ -> 1
     | NIf _, _ -> -1
     | _, NIf _ -> 1
 
@@ -136,6 +142,7 @@ let rec n_eval_res (n : nexp) : (int, string) Result.t =
       Ok (N_binary.eval o n1 n2)
   | NCall (x, _) -> Error ("n_eval: call " ^ x)
   | ReadResult r -> Error ("n_eval: read " ^ Variable.name r.array)
+  | Convert c -> n_eval_res c.arg
   | NIf (b, n1, n2) ->
       let* b = b_eval_res b in
       if b then n_eval_res n1 else n_eval_res n2
@@ -438,6 +445,7 @@ let rec n_fold f e a =
   | NIf (b, e1, e2) -> b_fold f b a |> n_fold f e1 |> n_fold f e2
   | NCall (_, es) -> List.fold_left (fun a e -> n_fold f e a) a es
   | ReadResult r -> List.fold_left (fun a e -> n_fold f e a) a r.args
+  | Convert c -> n_fold f c.arg a
 
 and b_fold f e a =
   match e with
@@ -464,6 +472,10 @@ let b_free_names : bexp -> Variable.Set.t -> Variable.Set.t =
 let n_equal (a : nexp) (b : nexp) : bool = n_compare a b = 0
 let b_equal (a : bexp) (b : bexp) : bool = b_compare a b = 0
 
+let rec strip_convert : nexp -> nexp = function
+  | Convert c -> strip_convert c.arg
+  | n -> n
+
 let b_calls : bexp -> nexp list =
   let rec b_walk (acc : nexp list) (b : bexp) : nexp list =
     match b with
@@ -485,6 +497,7 @@ let b_calls : bexp -> nexp list =
     | NIf (b, n1, n2) -> n_walk (n_walk (b_walk acc b) n1) n2
     | NCall (_, args) -> List.fold_left n_walk (n :: acc) args
     | ReadResult r -> List.fold_left n_walk (n :: acc) r.args
+    | Convert c -> n_walk acc c.arg
   in
   fun b -> b_walk [] b |> List.sort_uniq n_compare
 
@@ -496,6 +509,7 @@ let rec n_exists (f : Variable.t -> bool) : nexp -> bool = function
   | Binary (_, e1, e2) -> n_exists f e1 || n_exists f e2
   | NCall (_, es) -> List.exists (n_exists f) es
   | ReadResult r -> List.exists (n_exists f) r.args
+  | Convert c -> n_exists f c.arg
   | Unary (_, e) -> n_exists f e
   | NIf (b, e1, e2) -> b_exists f b || n_exists f e1 || n_exists f e2
 
@@ -523,8 +537,27 @@ let n_intersects (s : Variable.Set.t) : nexp -> bool =
 let b_intersects (s : Variable.Set.t) : bexp -> bool =
   b_exists (fun x -> Variable.Set.mem x s)
 
-(* b_map only recurses to the first numeric expression it finds, not recursively
-   in numeric expressions. *)
+let rec erase_converts : nexp -> nexp = function
+  | (Var _ | Num _) as n -> n
+  | Convert c -> erase_converts c.arg
+  | Unary (o, e) -> Unary (o, erase_converts e)
+  | Binary (o, a, b) -> Binary (o, erase_converts a, erase_converts b)
+  | NCall (x, args) -> NCall (x, List.map erase_converts args)
+  | ReadResult r -> ReadResult { r with args = List.map erase_converts r.args }
+  | NIf (b, a, c) -> NIf (b_erase_converts b, erase_converts a, erase_converts c)
+  | CastInt b -> CastInt (b_erase_converts b)
+
+and b_erase_converts : bexp -> bexp = function
+  | (Bool _ | IsThreadUnif _) as b -> b
+  | NRel (o, a, b) -> NRel (o, erase_converts a, erase_converts b)
+  | BRel (o, a, b) -> BRel (o, b_erase_converts a, b_erase_converts b)
+  | BNot b -> BNot (b_erase_converts b)
+  | Pred (x, ns) -> Pred (x, List.map erase_converts ns)
+  | CastBool n -> CastBool (erase_converts n)
+  | Distinct ns -> Distinct (List.map erase_converts ns)
+  | AtomicResult a ->
+      AtomicResult { a with index = List.map erase_converts a.index }
+
 let rec b_map (f : nexp -> nexp) : bexp -> bexp = function
   | Bool _ as b -> b
   | NRel (o, n1, n2) -> NRel (o, f n1, f n2)
@@ -552,6 +585,7 @@ let reset_variable_kind_n ~kernel_parameters ~loop_variables : nexp -> nexp =
     | Unary (o, a) -> Unary (o, reset a)
     | NCall (g, es) -> NCall (g, List.map reset es)
     | ReadResult r -> ReadResult { r with args = List.map reset r.args }
+    | Convert c -> Convert { c with arg = reset c.arg }
     | NIf (b, a1, a2) -> NIf (b_map reset b, reset a1, reset a2)
     | CastInt b -> CastInt (b_map reset b)
   in
@@ -570,7 +604,8 @@ let rec n_par ?context (* ?side *) (n : nexp) : string =
       n_to_string n
   | _, Num _ | _, Var _ | _, NCall _ | _, ReadResult _ | _, CastInt _ ->
       n_to_string n
-  | _, NIf _ | _, Unary _ | _, Binary _ -> "(" ^ n_to_string n ^ ")"
+  | _, NIf _ | _, Unary _ | _, Binary _ | _, Convert _ ->
+      "(" ^ n_to_string n ^ ")"
 
 and n_to_string : nexp -> string = function
   | Num n -> string_of_int n
@@ -584,6 +619,7 @@ and n_to_string : nexp -> string = function
       ^ String.concat ", "
           (string_of_int r.version :: List.map n_to_string r.args)
       ^ ")"
+  | Convert c -> "(" ^ Scalar.to_string c.ty ^ ")" ^ n_par c.arg
   | NIf (b, n1, n2) -> b_par b ^ " ? " ^ n_par n1 ^ " : " ^ n_par n2
   | CastInt b -> "int(" ^ b_to_string b ^ ")"
 

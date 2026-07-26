@@ -14,6 +14,7 @@ let list_to_s (f : 'a -> string) (l : 'a list) : string =
    their existing module paths. *)
 type c_expr =
   | SizeOfExpr of Ty.t
+  | Convert of { arg : c_expr; ty : Ty.t }
   | CXXNewExpr of { arg : c_expr; ty : Ty.t }
   | CXXDeleteExpr of { arg : c_expr; ty : Ty.t }
   | RecoveryExpr of Ty.t
@@ -155,6 +156,7 @@ let c_stmt_from_list (l : c_stmt list) : c_stmt =
 
 let rec c_expr_to_type : c_expr -> Ty.t = function
   | SizeOfExpr _ -> J_type.int
+  | Convert c -> c.ty
   | CXXNewExpr c -> c.ty
   | CXXDeleteExpr c -> c.ty
   | CXXConstructExpr c -> c.ty
@@ -178,6 +180,13 @@ let rec c_expr_to_type : c_expr -> Ty.t = function
       J_type.unknown
   | PackExpansion e -> c_expr_to_type e
   | DependentScopeRef d -> d.ty
+
+let convert (ty : Ty.t) (arg : c_expr) : c_expr =
+  match (Ty.to_scalar (c_expr_to_type arg), Ty.to_scalar ty) with
+  | Some src, Some dst
+    when Scalar.is_int src && Scalar.is_int dst && not (Scalar.equal src dst) ->
+      Convert { arg; ty }
+  | _ -> arg
 
 let c_expr_compound (ty : Ty.t) (lhs : c_expr) (opcode : string)
     (rhs : c_expr) : c_expr =

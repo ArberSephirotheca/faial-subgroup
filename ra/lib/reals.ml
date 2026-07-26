@@ -230,6 +230,14 @@ let rec from_nexp : Exp.nexp -> t = function
      equal calls aliased to the same symbol. *)
   | NCall (name, _) -> Var (Variable.from_name name)
   | ReadResult r -> Var (Variable.from_name (Read_symbol.name r.array))
+  (* The cost analysis assumes every conversion is the identity. That is
+     exact wherever the value already fits and wrong where it wraps. The
+     assumption is not new, since the parser used to destroy the cast before
+     this point; recursing here is where it becomes visible. [Reals.t] is a
+     Maxima term over the reals and has no place to record a C type, so
+     whoever gives the node a meaning in the solver has to decide separately
+     what it means for a cost bound. *)
+  | Convert c -> from_nexp c.arg
   | NIf (e1, e2, e3) -> if_ (from_bexp e1) (from_nexp e2) (from_nexp e3)
   | CastInt e -> BoolToInt (from_bexp e)
 

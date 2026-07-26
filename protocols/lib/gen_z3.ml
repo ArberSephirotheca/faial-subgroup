@@ -584,6 +584,7 @@ module CodeGen (N : NUMERIC_OPS) = struct
     | ReadResult r ->
         n_to_expr ctx
           (NCall (Read_symbol.name r.array, Num r.version :: r.args))
+    | Convert c -> n_to_expr ctx c.arg
     | Num (n : int) -> N.mk_num ctx n
     | Binary (op, n1, n2) ->
         (nbin_to_expr op) ctx (n_to_expr ctx n1) (n_to_expr ctx n2)

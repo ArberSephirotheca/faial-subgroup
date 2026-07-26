@@ -18,6 +18,7 @@ let list_to_s (f : 'a -> string) (l : 'a list) : string =
 module Expr = struct
   type t =
     | SizeOfExpr of Ty.t
+    | Convert of { arg : t; ty : Ty.t }
     | CXXNewExpr of { arg : t; ty : Ty.t }
     | CXXDeleteExpr of { arg : t; ty : Ty.t }
     | RecoveryExpr of Ty.t
@@ -51,8 +52,9 @@ module Expr = struct
 
   let name = function
     | SizeOfExpr _ -> "SizeOfExpr"
+    | Convert _ -> "Convert"
     | CXXNewExpr _ -> "CXXNewExpr"
-    | CXXDeleteExpr _ -> "CXXNewExpr"
+    | CXXDeleteExpr _ -> "CXXDeleteExpr"
     | RecoveryExpr _ -> "RecoveryExpr"
     | CharacterLiteral _ -> "CharacterLiteral"
     | BinaryOperator _ -> "BinaryOperator"
@@ -70,6 +72,7 @@ module Expr = struct
 
   let rec to_type : t -> Ty.t = function
     | SizeOfExpr _ -> J_type.int
+    | Convert c -> c.ty
     | CXXNewExpr c -> c.ty
     | CXXDeleteExpr c -> c.ty
     | RecoveryExpr ty -> ty
@@ -100,6 +103,7 @@ module Expr = struct
       let par (e : t) : string =
         match e with
         | BinaryOperator _ | ConditionalOperator _ -> "(" ^ exp_to_s e ^ ")"
+        | Convert _ -> "(" ^ exp_to_s e ^ ")"
         | UnaryOperator _ | CXXNewExpr _ | CXXDeleteExpr _ | Ident _
         | UnresolvedLookupExpr _ | CallExpr _ | CXXOperatorCallExpr _
         | CXXConstructExpr _ | CXXBoolLiteralExpr _ | MemberExpr _
@@ -109,6 +113,7 @@ module Expr = struct
       in
       function
       | SizeOfExpr ty -> "sizeof(" ^ Ty.to_string ty ^ ")"
+      | Convert c -> "(" ^ Ty.to_string c.ty ^ ")" ^ par c.arg
       | CXXNewExpr c ->
           "new " ^ Ty.to_string c.ty ^ "(" ^ exp_to_s c.arg ^ ")"
       | CXXDeleteExpr c -> "del " ^ par c.arg
@@ -145,6 +150,9 @@ module Expr = struct
     | UnresolvedLookupExpr a, UnresolvedLookupExpr b ->
         let@ () = Variable.compare a.name b.name in
         Stdlib.compare a.tys b.tys
+    | Convert a, Convert b ->
+        let@ () = compare a.arg b.arg in
+        Stdlib.compare a.ty b.ty
     | CXXNewExpr a, CXXNewExpr b ->
         let@ () = compare a.arg b.arg in
         Stdlib.compare a.ty b.ty
@@ -193,6 +201,9 @@ module Expr = struct
     | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _ | Ident _
     | UnresolvedLookupExpr _ ->
         f e
+    | Convert { arg; ty } ->
+        let* arg = st_map f arg in
+        f (Convert { arg; ty })
     | CXXNewExpr { arg; ty } ->
         let* arg = st_map f arg in
         f (CXXNewExpr { arg; ty })
@@ -232,6 +243,9 @@ module Expr = struct
     | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _ | Ident _
     | UnresolvedLookupExpr _ ->
         f e
+    | Convert { arg; ty } ->
+        let arg = map f arg in
+        f (Convert { arg; ty })
     | CXXNewExpr { arg; ty } ->
         let arg = map f arg in
         f (CXXNewExpr { arg; ty })
@@ -1261,6 +1275,9 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       let* () = AccessState.add (stamp_guard cond then_pre) in
       let* () = AccessState.add (stamp_guard (not_ cond) else_pre) in
       return (ConditionalOperator { cond; then_expr; else_expr; ty })
+  | Convert { arg; ty } ->
+      let* arg = rewrite_exp arg in
+      return (Convert { arg; ty })
   | CXXNewExpr { arg; ty } ->
       let* arg = rewrite_exp arg in
       return (CXXNewExpr { arg; ty })
@@ -1384,7 +1401,15 @@ and rewrite_write (a : C_lang.Expr.c_array_subscript) (src : C_lang.Expr.t) :
     Expr.t state =
   let* src' = rewrite_exp src in
   let* a = rewrite_subscript a in
-  let payload = match src with IntegerLiteral x -> Some x | _ -> None in
+  (* Read through a conversion: [char *b; b[i] = 0] stores a literal, and
+     losing the payload would stop the write being paired off as benign. *)
+  let rec literal (e : C_lang.Expr.t) : int option =
+    match e with
+    | IntegerLiteral x -> Some x
+    | Convert c -> literal c.arg
+    | _ -> None
+  in
+  let payload = literal src in
   let* x = AccessState.add_write a src' payload in
   return (Expr.ident ~ty:(C_lang.Expr.to_type src) x)
 

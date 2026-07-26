@@ -14,6 +14,9 @@ let bool : t = { kind = Bool; size = Bit8 }
 let float : t = { kind = Float; size = Bit32 }
 let double : t = { kind = Float; size = Bit64 }
 
+let equal : t -> t -> bool = ( = )
+let compare : t -> t -> int = Stdlib.compare
+
 let is_int (x : t) : bool =
   match x.kind with Sint | Uint -> true | Float | Bool -> false
 

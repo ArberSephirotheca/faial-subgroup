@@ -615,6 +615,39 @@ let tests =
      freedom, which is exit 0 rather than the 1 expected here. *)
     ("vacuous-clz-pre.cu",
      [ "--check-pre-sat"; "--assume"; "__clz(n) > 40" ], 1);
+    (* An integer conversion carries a term of its own from clang's AST down
+       to [Exp.nexp]. These four pin that the term arrives and that it does
+       not yet prove anything: every consumer treats it as its operand, so
+       the verdicts are the ones faial gave when the parser discarded the
+       conversion.
+
+       The two below are the implicit and explicit syntaxes for the same
+       operation, and both build the identical protocol
+       [rw out[(char)(((int)threadIdx.x) * 256)]]. Both verdicts are wrong:
+       the low eight bits of a multiple of 256 are zero, so every thread
+       writes out[0]. They flip to racy once the node is given a meaning in
+       the solver, which is what makes them worth asserting now. *)
+    ("drf-cast-implicit.cu", [], 0);
+    ("drf-cast-explicit.cu", [], 0);
+    (* A conversion over a load. Reads are hoisted to statements before
+       [Infer_exp], so the node has to wrap the value the load was bound to
+       rather than the load expression; it comes out as
+       [rw out[(char)$read_a(0, (int)threadIdx.x)]]. Racy because the loaded
+       value is unconstrained beyond its element range, which is the verdict
+       from before the node existed. *)
+    ("racy-cast-read.cu", [], 1);
+    (* The third syntax a conversion arrives through, and the one this node
+       is not for: [__float2int_rz] is declared [__device__ int
+       __float2int_rz(float)], so its call site is a CallExpr with no cast
+       node and no two types to compare. It mints nothing and stays an
+       unknown value. Reaching it is the [Functions] registry's job. *)
+    ("racy-cast-intrinsic.cu", [], 1);
+    (* A literal stored into a narrow-element array is [int -> char], which
+       the keep-rule keeps, so [D_lang]'s benign-write payload has to read
+       through the conversion. Losing it drops the [rw(0)] tag, and a write
+       with no payload is never paired off as benign, which turns this DRF
+       kernel racy. *)
+    ("drf-cast-narrow-store.cu", [], 0);
   ]
 
 (* These are kernels that are being documented, but are

@@ -13,6 +13,7 @@ let rec eval_n (lookup : string -> int option) : nexp -> int option = function
      | _ -> None)
   | Unary (op, a) -> Option.map (N_unary.eval op) (eval_n lookup a)
   | NCall _ | ReadResult _ -> None
+  | Convert c -> eval_n lookup c.arg
   | NIf (b, t, f) ->
     (match eval_b lookup b with
      | Some true -> eval_n lookup t

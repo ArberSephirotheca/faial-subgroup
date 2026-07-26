@@ -35,6 +35,7 @@ let rec n_equal (a : nexp) (b : nexp) : bool =
   | NIf (c1, a1, a2), NIf (c2, b1, b2) ->
       b_equal c1 c2 && n_equal a1 b1 && n_equal a2 b2
   | CastInt c1, CastInt c2 -> b_equal c1 c2
+  | Convert c1, Convert c2 -> Scalar.equal c1.ty c2.ty && n_equal c1.arg c2.arg
   | _, _ -> false
 
 and b_equal (a : bexp) (b : bexp) : bool =
@@ -129,6 +130,10 @@ let rec match_nexp (pat : nexp) (subject : nexp) (s : subst) : subst Seq.t =
         when Variable.equal pr.array sr.array && pr.version = sr.version ->
           match_list pr.args sr.args s
       | _ -> Seq.empty)
+  | Convert pc -> (
+      match subject with
+      | Convert sc when Scalar.equal pc.ty sc.ty -> match_nexp pc.arg sc.arg s
+      | _ -> Seq.empty)
   | CastInt pb -> (
       match subject with
       | CastInt sb when b_equal pb sb -> Seq.return s
@@ -168,6 +173,7 @@ let rec instantiate (s : subst) (template : nexp) : nexp =
   | Unary (op, a) -> Unary (op, instantiate s a)
   | NCall (name, args) -> NCall (name, List.map (instantiate s) args)
   | ReadResult r -> ReadResult { r with args = List.map (instantiate s) r.args }
+  | Convert c -> Convert { c with arg = instantiate s c.arg }
   | NIf (b, a1, a2) ->
       NIf (instantiate_b s b, instantiate s a1, instantiate s a2)
   | CastInt b -> CastInt (instantiate_b s b)

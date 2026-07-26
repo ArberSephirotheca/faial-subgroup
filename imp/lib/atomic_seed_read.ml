@@ -126,6 +126,7 @@ let rec free_vars_n (acc : VarSet.t) : Infer_exp.n -> VarSet.t = function
   | Binary (_, l, r) -> free_vars (free_vars acc l) r
   | NCall (_, es) -> List.fold_left free_vars acc es
   | NIf (c, l, r) -> free_vars (free_vars (free_vars acc c) l) r
+  | Convert c -> free_vars acc c.arg
 
 and free_vars_b (acc : VarSet.t) : Infer_exp.b -> VarSet.t = function
   | Bool _ -> acc

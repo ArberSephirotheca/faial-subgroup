@@ -31,6 +31,7 @@ and n_to_vars : nexp -> Variable.t list = function
   | Unary (_, e) -> n_to_vars e
   | NCall (_, es) -> List.concat_map n_to_vars es
   | ReadResult r -> List.concat_map n_to_vars r.args
+  | Convert c -> n_to_vars c.arg
   | NIf (b, e1, e2) -> b_to_vars b @ n_to_vars e1 @ n_to_vars e2
   | CastInt e -> b_to_vars e
 

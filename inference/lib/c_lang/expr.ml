@@ -4,6 +4,7 @@ open Ast
 
 type t = c_expr =
   | SizeOfExpr of Ty.t
+  | Convert of { arg : t; ty : Ty.t }
   | CXXNewExpr of { arg : t; ty : Ty.t }
   | CXXDeleteExpr of { arg : t; ty : Ty.t }
   | RecoveryExpr of Ty.t
@@ -56,6 +57,7 @@ type nonrec c_array_subscript = c_array_subscript = {
 
 let rec to_type : t -> Ty.t = function
   | SizeOfExpr _ -> J_type.int
+  | Convert c -> c.ty
   | CXXNewExpr c -> c.ty
   | CXXDeleteExpr c -> c.ty
   | CXXConstructExpr c -> c.ty
@@ -93,6 +95,7 @@ let to_string ?(modifier : bool = false) ?(provenance : bool = false)
     let par (e : t) : string =
       match e with
       | BinaryOperator _ | ConditionalOperator _ -> "(" ^ exp_to_s e ^ ")"
+      | Convert _ -> "(" ^ exp_to_s e ^ ")"
       | UnaryOperator _ | CXXNewExpr _ | CXXDeleteExpr _ | Ident _
       | UnresolvedLookupExpr _ | CallExpr _ | CXXOperatorCallExpr _
       | CXXConstructExpr _ | CXXBoolLiteralExpr _ | ArraySubscriptExpr _
@@ -103,6 +106,7 @@ let to_string ?(modifier : bool = false) ?(provenance : bool = false)
     in
     function
     | SizeOfExpr ty -> "sizeof(" ^ Ty.to_string ty ^ ")"
+    | Convert c -> "(" ^ Ty.to_string c.ty ^ ")" ^ par c.arg
     | CXXNewExpr c ->
         "new " ^ Ty.to_string c.ty ^ "(" ^ exp_to_s c.arg ^ ")"
     | CXXDeleteExpr c -> "del " ^ par c.arg
@@ -169,6 +173,7 @@ let rec shallow_free_vars : t -> Decl_expr.Set.t =
   | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _
   | UnresolvedLookupExpr _ | DependentScopeRef _ ->
       Decl_expr.Set.empty
+  | Convert { arg; _ }
   | CXXNewExpr { arg; _ } | CXXDeleteExpr { arg; _ }
   | UnaryOperator { child = arg; _ } | MemberExpr { base = arg; _ }
   | PackExpansion arg ->
@@ -201,6 +206,7 @@ module Visit = struct
 
   type 'a t =
     | SizeOf of Ty.t
+    | Convert of { arg : 'a; ty : Ty.t }
     | CXXNew of { arg : 'a; ty : Ty.t }
     | CXXDelete of { arg : 'a; ty : Ty.t }
     | Recovery of Ty.t
@@ -244,6 +250,7 @@ module Visit = struct
 
   let rec fold (f : 'a t -> 'a) : expr_t -> 'a = function
     | SizeOfExpr e -> f (SizeOf e)
+    | Convert e -> f (Convert { arg = fold f e.arg; ty = e.ty })
     | CXXNewExpr e -> f (CXXNew { arg = fold f e.arg; ty = e.ty })
     | CXXDeleteExpr e -> f (CXXDelete { arg = fold f e.arg; ty = e.ty })
     | RecoveryExpr e -> f (Recovery e)
@@ -334,6 +341,7 @@ module Visit = struct
     | RecoveryExpr _ | SizeOfExpr _ | UnresolvedLookupExpr _
     | CXXBoolLiteralExpr _ | DependentScopeRef _ ->
         f e
+    | Convert { arg = a; ty } -> f (Convert { arg = ret a; ty })
     | CXXNewExpr { arg = a; ty } -> f (CXXNewExpr { arg = ret a; ty })
     | CXXDeleteExpr { arg = a; ty } -> f (CXXDeleteExpr { arg = ret a; ty })
     | ArraySubscriptExpr { lhs = e1; rhs = e2; ty; location = l } ->
@@ -378,6 +386,7 @@ let rec remove_comma : t -> t = function
   | BinaryOperator { opcode = ","; rhs; _ } ->
       (* we discard the previous elements *)
       rhs
+  | Convert { arg; ty } -> Convert { arg = remove_comma arg; ty }
   | CXXNewExpr { arg; ty } -> CXXNewExpr { arg = remove_comma arg; ty }
   | CXXDeleteExpr { arg; ty } -> CXXDeleteExpr { arg = remove_comma arg; ty }
   | ArraySubscriptExpr { lhs; rhs; ty; location } ->
@@ -444,6 +453,9 @@ let rewrite_comma : t -> t list * t =
         let* () = add lhs in
         return rhs
     | SizeOfExpr j -> return (SizeOfExpr j)
+    | Convert { arg; ty } ->
+        let* arg = rw arg in
+        return (Convert { arg; ty })
     | CXXNewExpr { arg; ty } ->
         let* arg = rw arg in
         return (CXXNewExpr { arg; ty })

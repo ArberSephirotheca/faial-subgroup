@@ -150,33 +150,46 @@ module Infer = struct
           (d, Stmt.seq s1 s2)
     | s -> (None, s)
 
+  let peel_shape (n : Exp.nexp) : Exp.nexp =
+    match Exp.strip_convert n with
+    | Binary (o, a, b) -> Binary (o, Exp.strip_convert a, Exp.strip_convert b)
+    | n -> n
+
   let parse_cond (x : Variable.t) :
       Exp.bexp -> (Comparator.t unop * Exp.bexp) option =
     let ( let* ) = Option.bind in
     let rec parse ~accum : Exp.bexp -> (Comparator.t unop * Exp.bexp) option =
       function
+      | NRel (o, lhs, arg) -> parse_rel ~accum o (peel_shape lhs) arg
       | BRel (BAnd, e1, e2) -> (
           match parse ~accum:(Exp.b_and e2 accum) e1 with
           | Some x -> Some x
           | None -> parse ~accum:(Exp.b_and e1 accum) e2)
+      | CastBool e -> (
+          match peel_shape e with
+          | Binary (Minus _, Var var, arg) ->
+              Some ({ var; op = RelMinus; arg }, accum)
+          | _ -> None)
+      | _ -> None
+    and parse_rel ~accum (o : N_rel.t) (lhs : Exp.nexp) (arg : Exp.nexp) :
+        (Comparator.t unop * Exp.bexp) option =
+      match lhs with
       (* x - e R arg ~~~> x R arg + e *)
-      | NRel (o, Binary (Minus _, Var var, e), arg) when Variable.equal var x ->
+      | Binary (Minus _, Var var, e) when Variable.equal var x ->
           let* op = Comparator.parse o in
           Some ({ var; op; arg = Exp.n_plus e arg }, accum)
       (* e + x R arg ~~~> x R arg - e *)
-      | NRel (o, Binary (Plus _, e, Var var), arg) when Variable.equal var x ->
+      | Binary (Plus _, e, Var var) when Variable.equal var x ->
           let* op = Comparator.parse o in
           Some ({ var; op; arg = Exp.n_minus arg e }, accum)
       (* x + e R arg ~~~> x R arg - e *)
-      | NRel (o, Binary (Plus _, Var var, e), arg) when Variable.equal var x ->
+      | Binary (Plus _, Var var, e) when Variable.equal var x ->
           let* op = Comparator.parse o in
           Some ({ var; op; arg = Exp.n_minus arg e }, accum)
       (* Default upper bound: x R o ~~~> x R o *)
-      | NRel (o, Var var, arg) when Variable.equal var x ->
+      | Var var when Variable.equal var x ->
           let* op = Comparator.parse o in
           Some ({ var; op; arg }, accum)
-      | CastBool (Binary (Minus _, Var var, arg)) ->
-          Some ({ var; op = RelMinus; arg }, accum)
       | _ -> None
     in
     parse ~accum:(Bool true)
@@ -190,17 +203,15 @@ module Infer = struct
       o |> Increment.parse |> Option.map (fun op -> { var; op; arg })
     in
     match s with
-    | Assign { var = l; data = Binary (o, Var l1, Var l2); _ } ->
-        if Variable.equal l l1 then parse l o (Var l2)
-        else if Variable.equal l l2 then parse l o (Var l1)
-        else None
-    | Assign
-        {
-          var = l;
-          data = Binary (o, r, Var l') | Binary (o, Var l', r);
-          _;
-        } ->
-        if Variable.equal l l' then parse l o r else None
+    | Assign a -> (
+        match peel_shape a.data with
+        | Binary (o, Var l1, Var l2) ->
+            if Variable.equal a.var l1 then parse a.var o (Var l2)
+            else if Variable.equal a.var l2 then parse a.var o (Var l1)
+            else None
+        | Binary (o, r, Var l') | Binary (o, Var l', r) ->
+            if Variable.equal a.var l' then parse a.var o r else None
+        | _ -> None)
     | _ -> None
 
   (** Find every increment that is possible to find. The remainding statements

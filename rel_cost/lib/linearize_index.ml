@@ -81,6 +81,7 @@ module Make (L : Logger.Logger) = struct
       |> Option.map (fun s ->
           let idx =
             a.index
+            |> List.map Exp.erase_converts
             |> (if Variable.Map.find a.array mem |> Memory.is_shared then
                   shared_multiplier ~bytes_per_word:cfg.bytes_per_word
                     ~byte_count:s.byte_count

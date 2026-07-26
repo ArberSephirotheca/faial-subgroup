@@ -129,6 +129,7 @@ let rec project_n (locals : Variable.Set.t) (t : Task.t) (n : nexp) : nexp =
   | NCall (x, ns) -> NCall (x, List.map (project_n locals t) ns)
   | ReadResult r ->
       ReadResult { r with args = List.map (project_n locals t) r.args }
+  | Convert c -> Convert { c with arg = project_n locals t c.arg }
 and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
   match b with
   | CastBool e -> CastBool (project_n locals t e)
@@ -227,6 +228,7 @@ module AtomicAxioms = struct
     | NIf (b, n1, n2) -> collect_n (collect_n (collect_b acc b) n1) n2
     | NCall (_, args) -> List.fold_left collect_n acc args
     | ReadResult r -> List.fold_left collect_n acc r.args
+    | Convert c -> collect_n acc c.arg
 
   let collect (k : Flatacc.Kernel.t) : marker list =
     let pre_markers = collect_b [] k.pre in
