@@ -212,8 +212,17 @@ let rec parse_expr (j : json) : c_expr j_result =
       match with_opt_field "argType" cast_string o with
       | Ok (Some arg_ty) -> Ok (SizeOfExpr (J_type.of_string arg_ty))
       | _ ->
+          let written_type (j : json) : Ty.t j_result =
+            let* o = cast_object j in
+            let* ty = get_field "type" o in
+            Ok (J_type.parse ty)
+          in
           let* arg = with_field "inner" (cast_first parse_expr) o in
-          Ok (SizeOfExpr (c_expr_to_type arg)))
+          let ty =
+            with_field "inner" (cast_first written_type) o
+            |> Result.value ~default:(c_expr_to_type arg)
+          in
+          Ok (SizeOfExpr ty))
   | "ParmVarDecl" ->
       let* name = parse_variable j in
       let* ty = get_field "type" o in

@@ -208,6 +208,13 @@ let tests =
      blockDim.x = 8 a modulus of 4 collides threads 0 and 4, whereas a
      modulus of 8 would leave every index distinct. *)
     ("racy-sizeof-mod.cu", [ "--blockDim=8" ], 1);
+    (* The companion for an expression operand, whose width has to come
+     from the operand's own type rather than from a re-derivation that
+     answers int for every literal. [sizeof(1L)] is 8, so at blockDim.x = 8
+     the index [threadIdx.x % 8] is the thread id and every thread writes
+     its own cell; the width of an int would give [threadIdx.x % 4] and
+     collide threads 0 and 4, which is the neighbouring verdict. *)
+    ("drf-sizeof-literal.cu", [ "--blockDim=8" ], 0);
     (* A device function bound to a function-pointer template parameter
      reaches the reader as a TemplateArgument carrying a FunctionDecl;
      the argument is read by name (TArgDecl). *)
