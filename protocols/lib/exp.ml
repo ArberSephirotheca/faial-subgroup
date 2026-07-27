@@ -136,10 +136,12 @@ let rec n_eval_res (n : nexp) : (int, string) Result.t =
   | Unary (o, n) ->
       let* n = n_eval_res n in
       Ok (N_unary.eval o n)
-  | Binary (o, n1, n2) ->
+  | Binary (o, n1, n2) -> (
       let* n1 = n_eval_res n1 in
       let* n2 = n_eval_res n2 in
-      Ok (N_binary.eval o n1 n2)
+      try Ok (N_binary.eval o n1 n2)
+      with N_binary.Unknown_width ->
+        Error ("n_eval: no width for " ^ N_binary.to_string o))
   | NCall (x, _) -> Error ("n_eval: call " ^ x)
   | ReadResult r -> Error ("n_eval: read " ^ Variable.name r.array)
   | Convert c -> n_eval_res c.arg
@@ -345,7 +347,7 @@ let n_bin o n1 n2 =
     | Mod Unsigned, _, _ -> n_umod n1 n2
     | LeftShift, _, _ -> n_left_shift n1 n2
     | _, _, _ -> Binary (o, n1, n2)
-  with Division_by_zero -> Binary (o, n1, n2)
+  with Division_by_zero | N_binary.Unknown_width -> Binary (o, n1, n2)
 
 let b_or b1 b2 =
   match (b1, b2) with

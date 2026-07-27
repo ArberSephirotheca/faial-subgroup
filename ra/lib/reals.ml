@@ -19,6 +19,16 @@ module BinOp = struct
     | BitXOr -> BitXOr
     | BitAnd -> BitAnd
     | LeftShift -> LeftShift
+    (* Both signednesses collapse onto one node because Maxima renders it as
+       [bit_rsh], which shifts a signed integer of unbounded width and is
+       therefore floor division by a power of two: [bit_rsh(-3, 1)] is -2 and
+       [bit_rsh(-2, 2)] is -1. That is the arithmetic shift at every width, so
+       it is exact for a signed shift, and exact for an unsigned one wherever
+       the operand is non-negative. An unsigned operand only reaches here
+       negative because the cost analysis erases conversions, which makes this
+       a corollary of that assumption rather than a new one. Keeping the
+       marker would buy nothing, since Maxima's integers have no width and the
+       zero-filling case has nothing faithful to render as. *)
     | RightShift _ -> RightShift
     | Plus _ -> Plus
     | Minus _ -> Minus
@@ -221,6 +231,16 @@ let int_to_bool : integer -> boolean = function
 let rec from_nexp : Exp.nexp -> t = function
   | Var x -> Var x
   | Num x -> Num x
+  (* The one shape where the collapse below is visibly wrong. A negative
+     value under an unsigned shift is a value no width produces; the protocol
+     holds one only because a conversion wrapped and the erasure below keeps
+     the unwrapped operand, which is why the literal is looked for underneath
+     the conversion. Maxima reads the node as an arithmetic shift and answers
+     -1 where the source answers a large positive number, so a loop bound
+     built from it collapses to nothing instead of staying symbolic. *)
+  | Binary (RightShift Unsigned, l, _) as e
+    when (match Exp.erase_converts l with Num a -> a < 0 | _ -> false) ->
+      failwith ("Reals.from_nexp: no width for " ^ Exp.n_to_string e)
   | Binary (b, e1, e2) -> bin (BinOp.from_nbin b) (from_nexp e1) (from_nexp e2)
   | Unary (o, e) -> Unary (o, from_nexp e)
   (* [NCall (f, args)] is a UF read whose value the resource-algebra

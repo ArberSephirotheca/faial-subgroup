@@ -12,6 +12,12 @@ type t =
   | Div of Signedness.t
   | Mod of Signedness.t
 
+(* An unsigned right shift reads its left operand at the source type's width,
+   and [int] carries no width. Every width agrees with OCaml's for a
+   non-negative operand, so that shift is answered; a negative one has no
+   answer to give and [eval] declines rather than invent a width. *)
+exception Unknown_width
+
 let eval : t -> int -> int -> int = function
   | BitAnd -> ( land )
   | BitXOr -> ( lxor )
@@ -23,7 +29,8 @@ let eval : t -> int -> int -> int = function
   | Mod _ -> Common.modulo
   | LeftShift -> ( lsl )
   | RightShift Signed -> ( asr )
-  | RightShift Unsigned -> ( lsr )
+  | RightShift Unsigned ->
+      fun l r -> if l < 0 then raise Unknown_width else l lsr r
 
 let to_string : t -> string = function
   | Plus s -> "+" ^ Signedness.suffix s

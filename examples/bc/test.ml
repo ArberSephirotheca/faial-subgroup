@@ -32,6 +32,15 @@ let bc_tests =
     ("28tid.cu", [ "--blockDim=1024"; "--gridDim=1" ], "3");
     ("30tid.cu", [ "--blockDim=1024"; "--gridDim=1" ], "1");
     ("32tid.cu", [ "--blockDim=1024"; "--gridDim=1" ], "31");
+    (* [m] is all ones, so C's unsigned shift [m >> 60] is 15 and the stride
+       is 16: two banks, sixteen threads each, which is 32tid's neighbour
+       16tid at cost 15. The protocol models [m] as -1, a value no width
+       produces, and the per-thread simulator used to shift it at OCaml's 63
+       bits, answering 7 for the shift, 8 for the stride and 7 for the cost,
+       which understates a cost that is meant to be an upper bound. The
+       simulator now declines the shift and the analysis falls back to the
+       whole warp, 31, which is above the true 15. *)
+    ("rsh-unsigned-wrap.cu", [], "31");
     ("assume.cu", [], "1");
     ("tidx-tidy.cu", [ "--blockDim=[16,16]" ], "1");
     ("tidx-tidy.cu", [ "--blockDim=[32,32]" ], "0");
