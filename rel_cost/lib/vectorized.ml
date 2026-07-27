@@ -60,7 +60,8 @@ let rec n_eval_res (n : Exp.nexp) (ctx : t) : (NMap.t, string) Result.t =
       | Some x -> Ok x
       | None -> Error ("undefined variable: " ^ Variable.name x))
   | Num n -> Ok (NMap.constant ~count:ctx.config.threads_per_warp ~value:n)
-  | CastInt (CastBool n) -> n_eval_res n ctx
+  | CastInt (CastBool _) ->
+      Error ("unsupported boolean-to-integer conversion: " ^ Exp.n_to_string n)
   | CastInt e ->
       let* e = b_eval_res e ctx in
       Ok

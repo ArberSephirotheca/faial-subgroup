@@ -28,14 +28,15 @@ module Increment = struct
 end
 
 module Comparator = struct
-  type t = Lt | Le | Gt | Ge | RelMinus
+  type t = Lt | Le | Gt | Ge | Neq
 
   let parse : N_rel.t -> t option = function
     | Lt _ -> Some Lt
     | Gt _ -> Some Gt
     | Le _ -> Some Le
     | Ge _ -> Some Ge
-    | _ -> None
+    | Neq -> Some Neq
+    | Eq -> None
 end
 
 module Infer = struct
@@ -160,6 +161,12 @@ module Infer = struct
     let ( let* ) = Option.bind in
     let rec parse ~accum : Exp.bexp -> (Comparator.t unop * Exp.bexp) option =
       function
+      (* Not-equal is symmetric, so the loop variable may sit on either
+         side: [i != n] and [n != i] are the same condition. *)
+      | NRel (N_rel.Neq, lhs, rhs) -> (
+          match parse_rel ~accum N_rel.Neq (peel_shape lhs) rhs with
+          | Some _ as o -> o
+          | None -> parse_rel ~accum N_rel.Neq (peel_shape rhs) lhs)
       | NRel (o, lhs, arg) -> parse_rel ~accum o (peel_shape lhs) arg
       | BRel (BAnd, e1, e2) -> (
           match parse ~accum:(Exp.b_and e2 accum) e1 with
@@ -168,7 +175,7 @@ module Infer = struct
       | CastBool e -> (
           match peel_shape e with
           | Binary (Minus _, Var var, arg) ->
-              Some ({ var; op = RelMinus; arg }, accum)
+              Some ({ var; op = Neq; arg }, accum)
           | _ -> None)
       | _ -> None
     and parse_rel ~accum (o : N_rel.t) (lhs : Exp.nexp) (arg : Exp.nexp) :
@@ -312,22 +319,6 @@ module Infer = struct
     |> Option.map (fun x ->
         { x with post_body = Stmt.seq x.post_body inc_stmt })
 
-  let infer_bounds (l : t) : Exp.nexp * Exp.nexp * Range.direction =
-    let init = Option.value ~default:(Var l.name) l.init in
-    match l.cond with
-    (* (int i = 0; i < 4; i++) *)
-    | { op = Lt; arg = ub; _ } ->
-        (init, Binary (Minus Signedness.Signed, ub, Num 1), Range.Increase)
-    (* (int i = 0; i <= 4; i++) *)
-    | { op = Le; arg = ub; _ } -> (init, ub, Increase)
-    (* (int i = 4; i - k; i++) *)
-    | { op = RelMinus; arg = ub; _ } -> (init, ub, Range.Increase)
-    (* (int i = 4; i >= 0; i--) *)
-    | { op = Ge; arg = lb; _ } -> (lb, init, Decrease)
-    (* (int i = 4; i > 0; i--) *)
-    | { op = Gt; arg = lb; _ } ->
-        (Binary (Plus Signedness.Signed, Num 1, lb), init, Decrease)
-
   (* Signed contribution of an additive increment. [Plus k] contributes
      +k, [Minus k] contributes -k. Returns None for non-additive ops. *)
   let signed_arg (i : Increment.t unop) : Exp.nexp option =
@@ -337,10 +328,54 @@ module Infer = struct
         match i.arg with Num n -> Some (Num (-n)) | a -> Some (Exp.n_uminus a))
     | _ -> None
 
-  let dir_from_cond (c : Comparator.t unop) : Range.direction =
-    match c.op with
-    | Lt | Le | RelMinus -> Range.Increase
-    | Ge | Gt -> Range.Decrease
+  (* A relational condition fixes the direction on its own, but a not-equal
+     one only names the value that stops the loop, never the side it is
+     approached from, so there the direction has to be read off the total
+     step. A step whose sign is not settled leaves the direction unknown and
+     the loop is declined rather than guessed at. *)
+  let direction (r : t) : Range.direction option =
+    match r.cond.op with
+    | Lt | Le -> Some Range.Increase
+    | Ge | Gt -> Some Decrease
+    | Neq -> (
+        let total =
+          List.fold_left
+            (fun acc i ->
+              let* acc = acc in
+              let* s = signed_arg i in
+              Some (Exp.n_plus acc s))
+            (Some (Exp.Num 0))
+            (r.inc :: r.extra_step)
+        in
+        match total with
+        | Some (Num k) when k > 0 -> Some Increase
+        | Some (Num k) when k < 0 -> Some Decrease
+        | _ -> None)
+
+  let infer_bounds (l : t) :
+      (Exp.nexp * Exp.nexp * Range.direction) option =
+    let init = Option.value ~default:(Exp.Var l.name) l.init in
+    match l.cond with
+    (* (int i = 0; i < 4; i++) *)
+    | { op = Lt; arg = ub; _ } ->
+        Some
+          (init, Binary (Minus Signedness.Signed, ub, Num 1), Range.Increase)
+    (* (int i = 0; i <= 4; i++) *)
+    | { op = Le; arg = ub; _ } -> Some (init, ub, Increase)
+    (* (int i = 4; i >= 0; i--) *)
+    | { op = Ge; arg = lb; _ } -> Some (lb, init, Decrease)
+    (* (int i = 4; i > 0; i--) *)
+    | { op = Gt; arg = lb; _ } ->
+        Some (Binary (Plus Signedness.Signed, Num 1, lb), init, Decrease)
+    (* (int i = 0; i != n; i++), (int i = n; i != 0; i--) and the same
+       three spellings written as a subtraction, (int i = 4; i - k; i++).
+       The loop stops on reaching [bound], so [bound] itself is the first
+       value the body does not see and the endpoint is the step before it. *)
+    | { op = Neq; arg = bound; _ } -> (
+        match direction l with
+        | Some Increase -> Some (init, Exp.n_dec bound, Range.Increase)
+        | Some Decrease -> Some (Exp.n_inc bound, init, Decrease)
+        | None -> None)
 
   let infer_step (r : t) : Range.Step.t option =
     if r.extra_step = [] then
@@ -374,17 +409,20 @@ module Infer = struct
                 | None -> acc)
               primary r.extra_step
           in
-          match (total, dir_from_cond r.cond) with
+          match (total, direction r) with
           | Num 0, _ -> None
-          | Num n, Increase when n > 0 -> Some (Range.Step.Plus (Num n))
-          | Num n, Decrease when n < 0 -> Some (Range.Step.Plus (Num (-n)))
-          | Num _, _ -> None (* sign mismatch with cond direction *)
-          | _, Increase -> Some (Range.Step.Plus total)
-          | _, Decrease -> None (* refuse symbolic step with decreasing cond *))
+          | Num n, Some Range.Increase when n > 0 ->
+              Some (Range.Step.Plus (Num n))
+          | Num n, Some Decrease when n < 0 ->
+              Some (Range.Step.Plus (Num (-n)))
+          | Num _, _ -> None (* sign mismatch with the loop's direction *)
+          | _, Some Increase -> Some (Range.Step.Plus total)
+          (* refuse symbolic step with decreasing or unknown direction *)
+          | _, (Some Decrease | None) -> None)
       | _ -> None
 
   let to_range (r : t) : Range.t option =
-    let lower_bound, upper_bound, dir = infer_bounds r in
+    let* lower_bound, upper_bound, dir = infer_bounds r in
     let* step = infer_step r in
     Some (Range.make ~lower_bound ~step ~dir r.name upper_bound)
 end

@@ -283,6 +283,32 @@ let tests =
     ("drf-loop5.cu", [], 0);
     (* (int j = 1; j + k < n; j++) *)
     ("drf-loop6.cu", [], 0);
+    (* A not-equal condition bounds a loop. Each kernel here counts with
+     [i != n] in one of its five spellings and writes [out[i]], while
+     thread 1 writes a single cell placed just outside the range. In C the
+     body runs for [i = 0, 1, ..., n - 1], because reaching [n] is what
+     stops the loop, so [out[n]] is never written and the two threads stay
+     disjoint. Taking the last iteration to be [n] instead, the endpoint
+     the subtraction spelling used to produce, has thread 0 write [out[n]]
+     as well and collide with thread 1; that is what [neq_bare] pins, and
+     it reported a race. [neq_bounded] pins the bound rather than its
+     endpoint by placing thread 1 on [out[n + 1]], a cell a range capped
+     at [n - 1] cannot reach but a havoc loop's free iteration variable
+     can, since the condition demoted into its body rules out only [n].
+     [neq_down] counts the other way, from [n] down to [1], leaving
+     [out[0]] to thread 1; its direction is read off the decrement,
+     because [i != 0] alone does not say which side [0] is reached from. *)
+    ("drf-loop-neq.cu", [], 0);
+    (* The other end of that endpoint. Thread 1 writes [out[n - 1]], which
+     the loop's last iteration also writes, so the race is real and a
+     bound that stopped one iteration early would clear it. *)
+    ("racy-loop-neq-last.cu", [], 1);
+    (* A decreasing not-equal loop must not come out empty. Reading the
+     direction off the condition instead of the decrement gives the
+     ascending range from [n] to [-1], which is empty for every positive
+     [n], and every access in the loop vanishes along with the race
+     between the threads writing [out[i]]. *)
+    ("racy-loop-neq-down.cu", [], 1);
     (* Literal-stride [+= blockDim.x * 2] loop with a [/ 2]
      access mirroring a [(half2* )src] cast. Drives
      [Range.normalize] / [Unsynced.normalize_loops]: the modulo
@@ -741,6 +767,19 @@ let tests =
        thread-uniform, so every thread writes the same cell, and each writes a
        different value. *)
     ("racy-shift-negative-amount.cu", [], 1);
+    (* Turning a proposition into an integer yields 0 or 1.
+       [!!threadIdx.x] is 0 for thread 0 and 1 for every other thread, so
+       threads 1 and 2 both write [out[1]], storing 1 and 2, which is a
+       real race. Handing back the proposition's operand instead makes the
+       index the thread id, every thread writes its own cell, and this
+       kernel came out data-race free. *)
+    ("racy-bool-to-int.cu", [], 1);
+    (* The companion, pinning that the conversion is 0 or 1 rather than an
+       unknown value. The index [2 * threadIdx.x + f] separates two threads
+       precisely because [f] cannot exceed 1: [2 * t1 + f1 = 2 * t2 + f2]
+       forces [t1 = t2] once both [f1] and [f2] lie in [0, 1]. An unknown
+       [f] admits a witness and reports a race. *)
+    ("drf-bool-to-int.cu", [], 0);
   ]
 
 (* These are kernels that are being documented, but are

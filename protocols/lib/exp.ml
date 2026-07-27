@@ -413,7 +413,6 @@ let convert (ty : Scalar.t) (arg : nexp) : nexp =
 let cast_int : bexp -> nexp = function
   | Bool true -> Num 1
   | Bool false -> Num 0
-  | CastBool n -> n
   | b -> CastInt b
 
 let cast_bool : nexp -> bexp = function

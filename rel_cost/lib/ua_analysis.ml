@@ -165,7 +165,7 @@ module Make (L : Logger.Logger) = struct
                 Cost.set_value v cost)
               else cost
           | Error msg ->
-              L.info (fun () ->
+              L.warning (fun () ->
                 "UA: could not simulate cost " ^ Exp.n_to_string index ^ ": "
                ^ msg);
               Vectorized.max_cost UncoalescedAccesses vec)
