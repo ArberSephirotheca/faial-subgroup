@@ -30,6 +30,11 @@ let tests =
     ("drf-loop-relminus.wgsl", [], 0);
     (* Kernel inlining with return value *)
     ("drf-inline-ret.wgsl", [], 0);
+    (* [select(f, t, cond)] as an operand of an arithmetic operator, so
+       the lowering asks for the select's own type. Thread [t] writes
+       [2t + 1] below 128 and [2t] at or above it, so every thread lands
+       on a distinct cell. *)
+    ("drf-select.wgsl", [], 0);
     (* Atomics: two atomics on one cell are serialised and do not
        conflict, the same rule the CUDA path applies. *)
     ("drf-atomic-same-cell.wgsl", [], 0);

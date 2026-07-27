@@ -70,7 +70,7 @@ module Expr = struct
     | UnresolvedLookupExpr _ -> "UnresolvedLookupExpr"
     | Ident _ -> "Ident"
 
-  let rec to_type : t -> Ty.t = function
+  let to_type : t -> Ty.t = function
     | SizeOfExpr _ -> J_type.int
     | Convert c -> c.ty
     | CXXNewExpr c -> c.ty
@@ -78,7 +78,7 @@ module Expr = struct
     | RecoveryExpr ty -> ty
     | CharacterLiteral _ -> J_type.char
     | BinaryOperator a -> a.ty
-    | ConditionalOperator c -> to_type c.then_expr
+    | ConditionalOperator c -> c.ty
     | CXXBoolLiteralExpr _ -> J_type.bool
     | Ident a -> Decl_expr.ty a
     | CXXConstructExpr c -> c.ty

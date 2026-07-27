@@ -163,7 +163,7 @@ let rec c_expr_to_type : c_expr -> Ty.t = function
   | CharacterLiteral _ -> J_type.char
   | ArraySubscriptExpr a -> a.ty
   | BinaryOperator a -> a.ty
-  | ConditionalOperator c -> c_expr_to_type c.then_expr
+  | ConditionalOperator c -> c.ty
   | CXXBoolLiteralExpr _ -> J_type.bool
   | FloatingLiteral _ -> J_type.float
   | Ident a -> a.ty

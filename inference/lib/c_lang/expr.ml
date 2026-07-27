@@ -55,32 +55,7 @@ type nonrec c_array_subscript = c_array_subscript = {
   location : Location.t;
 }
 
-let rec to_type : t -> Ty.t = function
-  | SizeOfExpr _ -> J_type.int
-  | Convert c -> c.ty
-  | CXXNewExpr c -> c.ty
-  | CXXDeleteExpr c -> c.ty
-  | CXXConstructExpr c -> c.ty
-  | CharacterLiteral _ -> J_type.char
-  | ArraySubscriptExpr a -> a.ty
-  | BinaryOperator a -> a.ty
-  | ConditionalOperator c -> to_type c.then_expr
-  | CXXBoolLiteralExpr _ -> J_type.bool
-  | FloatingLiteral _ -> J_type.float
-  | Ident a -> a.ty
-  | IntegerLiteral _ -> J_type.int
-  | UnaryOperator a -> a.ty
-  | CallExpr c -> c.ty
-  | CXXOperatorCallExpr a -> a.ty
-  | MemberExpr a -> a.ty
-  | UnresolvedLookupExpr _ -> J_type.unknown
-  | RecoveryExpr ty -> ty
-  | StmtExpr e -> e.ty
-  | LambdaExpr _ ->
-      (* Closure type — opaque from the analyser's POV before lifting. *)
-      J_type.unknown
-  | PackExpansion e -> to_type e
-  | DependentScopeRef d -> d.ty
+let to_type : t -> Ty.t = c_expr_to_type
 
 let to_string ?(modifier : bool = false) ?(provenance : bool = false)
     ?(types : bool = false) : t -> string =
