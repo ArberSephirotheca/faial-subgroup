@@ -30,8 +30,11 @@ let test_bool () : unit =
     (x |> Protocols.Ty.to_int_dom
     |> Option.map Protocols.Int_dom.to_string
     |> Option.value ~default:"-");
-  Alcotest.(check (option (pair int int)))
-    "bool ranges over 0..1" (Some (0, 1)) (Protocols.Ty.to_range x)
+  Alcotest.(check (option (pair (option int) (option int))))
+    "bool ranges over 0..1"
+    (Some (Some 0, Some 1))
+    (Protocols.Ty.to_bounds x
+    |> Option.map (fun (b : Protocols.Bounds.t) -> (b.lower, b.upper)))
 
 (* A width naga could emit but faial has no size for. *)
 let test_unrepresentable_width_is_opaque () : unit =

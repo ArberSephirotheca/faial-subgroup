@@ -36,16 +36,14 @@ let to_int_dom (x : t) : Int_dom.t option =
 let of_int_dom (d : Int_dom.t) : t =
   { kind = (if d.signed then Sint else Uint); size = d.size }
 
-let to_range (x : t) : (int * int) option =
+let to_bounds (x : t) : Bounds.t option =
   match x.kind with
-  | Bool -> Some (0, 1)
-  | Sint | Uint -> x |> to_int_dom |> Option.map Int_dom.to_range
+  | Bool -> Some (Bounds.between 0 1)
+  | Sint | Uint -> x |> to_int_dom |> Option.map Int_dom.to_bounds
   | Float -> None
 
 let contains (n : int) (x : t) : bool =
-  match to_range x with
-  | Some (lo, hi) -> n >= lo && n <= hi
-  | None -> false
+  match to_bounds x with Some b -> Bounds.contains n b | None -> false
 
 let to_string (x : t) : string =
   match (x.kind, x.size) with

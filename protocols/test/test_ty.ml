@@ -28,6 +28,13 @@ let check_bool (name : string) (f : Ty.t -> bool) (given : string)
     (expected : bool) =
   Alcotest.(check bool) (name ^ " " ^ given) expected (f (parse given))
 
+let check_bounds (given : string)
+    (expected : (int option * int option) option) =
+  Alcotest.(check (option (pair (option int) (option int))))
+    ("to_bounds " ^ given) expected
+    (Ty.to_bounds (parse given)
+    |> Option.map (fun (b : Bounds.t) -> (b.lower, b.upper)))
+
 let check_lanes (given : string) (expected : string list option) =
   Alcotest.(check (option (list string)))
     ("vector_lanes " ^ given) expected
@@ -129,10 +136,54 @@ let test_sizeof () : unit =
 
 let test_bool_has_no_integer_domain () : unit =
   check_int_dom "bool" "-";
-  Alcotest.(check (option (pair int int)))
-    "bool ranges over 0..1" (Some (0, 1)) (Ty.to_range (parse "bool"));
+  check_bounds "bool" (Some (Some 0, Some 1));
   check_bool "is_int" Ty.is_int "bool" true;
   check_bool "is_int" Ty.is_int "float" false
+
+(* Neither 64-bit end is an OCaml [int], so a 64-bit type states only the
+   end it can: nothing at all when signed, non-negativity when unsigned. *)
+let test_64_bit_bounds () : unit =
+  List.iter
+    (fun (given, expected) -> check_bounds given expected)
+    [
+      ("int", Some (Some (-2147483648), Some 2147483647));
+      ("unsigned int", Some (Some 0, Some 4294967295));
+      ("long", Some (None, None));
+      ("long long", Some (None, None));
+      ("int64_t", Some (None, None));
+      ("unsigned long", Some (Some 0, None));
+      ("size_t", Some (Some 0, None));
+      ("float", None);
+      ("T", None);
+    ]
+
+(* [is_int] decides whether a declaration is modelled, so it must not
+   follow whether a bound can be written for the type. *)
+let test_64_bit_is_an_integer () : unit =
+  List.iter
+    (fun given -> check_bool "is_int" Ty.is_int given true)
+    [ "long"; "long long"; "int64_t"; "unsigned long"; "size_t"; "uint64_t" ]
+
+(* Literal containment is exactly answerable, because the literal is itself
+   an OCaml [int]: every one of them fits a signed 64-bit type, and the
+   non-negative ones fit the unsigned domain. *)
+let test_64_bit_contains () : unit =
+  List.iter
+    (fun (n, ty, expected) ->
+      Alcotest.(check bool)
+        (string_of_int n ^ " in " ^ Scalar.to_string ty)
+        expected (Scalar.contains n ty))
+    [
+      (Int.max_int, Scalar.long, true);
+      (Int.min_int, Scalar.long, true);
+      (4294967296, Scalar.long, true);
+      (-1, Scalar.long, true);
+      (Int.max_int, Scalar.unsigned_long, true);
+      (0, Scalar.unsigned_long, true);
+      (-1, Scalar.unsigned_long, false);
+      (Int.min_int, Scalar.unsigned_long, false);
+      (4294967296, Scalar.int, false);
+    ]
 
 let test_signedness () : unit =
   List.iter
@@ -365,6 +416,9 @@ let tests : unit Alcotest.test_case list =
     ("sizeof of unsigned types", `Quick, test_sizeof_unsigned);
     ("sizeof", `Quick, test_sizeof);
     ("bool has no integer domain", `Quick, test_bool_has_no_integer_domain);
+    ("64-bit bounds", `Quick, test_64_bit_bounds);
+    ("64-bit is an integer", `Quick, test_64_bit_is_an_integer);
+    ("64-bit literal containment", `Quick, test_64_bit_contains);
     ("signedness", `Quick, test_signedness);
     ("arrays", `Quick, test_arrays);
     ("array length", `Quick, test_array_length);

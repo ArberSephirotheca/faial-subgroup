@@ -681,8 +681,21 @@ let b_to_s : bexp -> Indent.t list =
   in
   to_s true
 
-let range_bound (x : Variable.t) ((lb, ub) : int * int) : bexp =
-  b_and (n_le (Num lb) (Var x)) (n_le (Var x) (Num ub))
+(* The constraint a set of bounds imposes on a term: an end that cannot be
+   written contributes no inequality, so the result is anything from [Bool
+   true] through a single inequality to a conjunction of two. *)
+let in_bounds (n : nexp) (b : Bounds.t) : bexp =
+  [
+    b.lower |> Option.map (fun lo -> n_le (Num lo) n);
+    b.upper |> Option.map (fun hi -> n_le n (Num hi));
+  ]
+  |> List.filter_map Fun.id |> b_and_ex
 
-let int_dom_bound (x : Variable.t) (d : Int_dom.t) : bexp =
-  range_bound x (Int_dom.to_range d)
+let scalar_bound (n : nexp) (ty : Scalar.t) : bexp =
+  match Scalar.to_bounds ty with Some b -> in_bounds n b | None -> Bool true
+
+let ty_bound (n : nexp) (ty : Ty.t) : bexp =
+  match Ty.to_bounds ty with Some b -> in_bounds n b | None -> Bool true
+
+let int_dom_bound (n : nexp) (d : Int_dom.t) : bexp =
+  in_bounds n (Int_dom.to_bounds d)

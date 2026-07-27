@@ -4,16 +4,13 @@ let empty = Variable.Map.empty
 let union_left = Variable.MapUtil.union_left
 let union_right = Variable.MapUtil.union_right
 
-(* A parameter keeps its declared type for printing; the bound comes from
-   the value type underneath it, or from a signed int when there is
-   none. A bool bounds to 0..1. *)
+(* A parameter keeps its declared type for printing; the bound is the
+   constraint that type imposes on the parameter. The bound is a hypothesis
+   about an input, so a type the analysis cannot classify contributes none:
+   assuming one would rule out an argument the kernel accepts, and a race
+   that only that argument reaches would go unreported. *)
 let default_bound (x : Variable.t) (ty : Ty.t) : Exp.bexp * Ty.t =
-  let b =
-    ty |> Ty.to_range
-    |> Option.value ~default:(Int_dom.to_range Int_dom.signed_int)
-    |> Exp.range_bound x
-  in
-  (b, ty)
+  (Exp.ty_bound (Exp.Var x) ty, ty)
 
 let filter (to_keep : Variable.t -> bool) : t -> t =
   Variable.Map.filter (fun x _ -> to_keep x)

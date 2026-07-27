@@ -508,6 +508,19 @@ let tests =
      analyser as concrete two's-complement values, not the
      [Int.max_int] fallback. *)
     ("drf-uint64-sentinel.cu", [], 0);
+    (* A 64-bit parameter's bound is a hypothesis about an argument, and
+       neither end of a signed 64-bit domain is an OCaml int. Answering
+       with the 32-bit signed range rules out every argument beyond
+       2147483647, which is exactly where this kernel's race lives: the
+       verdict was data-race free and the witness now picks
+       [n = 3000000001]. *)
+    ("racy-int64-param.cu", [], 1);
+    (* The half of that domain that is still writable. An unsigned 64-bit
+       parameter keeps [n >= 0], which is what makes this companion's
+       [n + 1 == 0] branch unreachable; dropping both ends instead of the
+       upper one alone witnesses [n = -1] and reports a race the kernel
+       does not have. *)
+    ("drf-uint64-param.cu", [], 0);
     (* C++11 range-based for over a fixed-size array: the bound is
      extracted from the RangeStmt's qualType so the iteration
      variable becomes [arr[__idx]] inside a bounded foreach,

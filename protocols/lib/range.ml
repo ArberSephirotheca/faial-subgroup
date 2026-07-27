@@ -99,12 +99,6 @@ let make ?(lower_bound = Num 0) ?(step : Step.t = Plus (Num 1))
     : t =
   { var; lower_bound; upper_bound; step; dir; ty }
 
-(* A float has no range, and a declaration whose type carries none is
-   bounded as a signed int, which is what the string table did. *)
-let scalar_range (ty : Scalar.t) : int * int =
-  ty |> Scalar.to_range
-  |> Option.value ~default:(Int_dom.to_range Int_dom.signed_int)
-
 let eq_nums x l : bexp = List.map (fun i -> n_eq x (Num i)) l |> b_or_ex
 
 let pow ~base (n : nexp) : bexp =
@@ -116,20 +110,11 @@ let pow ~base (n : nexp) : bexp =
   in
   pows 0 |> eq_nums n
 
-let from_decl (var : Variable.t) (ty : Scalar.t) : t =
-  let lower_bound, upper_bound = scalar_range ty in
-  {
-    var;
-    ty;
-    dir = Increase;
-    step = Plus (Num 1);
-    lower_bound = Num lower_bound;
-    upper_bound = Num upper_bound;
-  }
-
-(* Convert a variable declaration into a range *)
+(* The constraint a declared type imposes on the variable it declares. A
+   type with no writable end imposes nothing, which leaves the variable to
+   whatever its enclosing range or condition says about it. *)
 let decl_to_bexp (var : Variable.t) (ty : Scalar.t) : bexp =
-  ty |> scalar_range |> Exp.range_bound var
+  Exp.scalar_bound (Var var) ty
 
 (* For a [Plus] range whose stride evaluates to a literal [k > 1],
    returns [k]. Detects strided additive loops that can be

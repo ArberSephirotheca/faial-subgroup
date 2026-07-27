@@ -155,10 +155,17 @@ let to_scalar (x : t) : Scalar.t option =
 let to_int_dom (x : t) : Int_dom.t option =
   x |> to_scalar |> Option.map Scalar.to_int_dom |> Option.join
 
-let to_range (x : t) : (int * int) option =
-  x |> to_scalar |> Option.map Scalar.to_range |> Option.join
+let to_bounds (x : t) : Bounds.t option =
+  x |> to_scalar |> Option.map Scalar.to_bounds |> Option.join
 
-let is_int (x : t) : bool = x |> to_range |> Option.is_some
+(* Being an integer is a question about the type, not about whether a bound
+   can be written for it: a [long] has no writable upper end and is still an
+   integer. A bool answers yes so that a local bool declaration is still
+   modelled. *)
+let is_int (x : t) : bool =
+  match to_scalar x with
+  | Some s -> Scalar.is_int s || Scalar.is_bool s
+  | None -> false
 
 let is_unsigned (x : t) : bool =
   match to_scalar x with Some s -> Scalar.is_unsigned s | None -> false
