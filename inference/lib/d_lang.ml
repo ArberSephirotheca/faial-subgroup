@@ -1401,15 +1401,23 @@ and rewrite_write (a : C_lang.Expr.c_array_subscript) (src : C_lang.Expr.t) :
     Expr.t state =
   let* src' = rewrite_exp src in
   let* a = rewrite_subscript a in
-  (* Read through a conversion: [char *b; b[i] = 0] stores a literal, and
-     losing the payload would stop the write being paired off as benign. *)
+  (* Reach the literal through a conversion, applying each one on the way
+     back out and once more for the element type the store lands in: it is
+     the converted value that reaches the cell, and [char *b; b[i] = 200]
+     leaves [-56] there. A payload left unconverted pairs off two writes
+     that store different values. *)
+  let convert (ty : Ty.t) (n : int) : int option =
+    match Ty.to_scalar ty with
+    | Some s when Scalar.is_int s -> Scalar.reduce n s
+    | _ -> Some n
+  in
   let rec literal (e : C_lang.Expr.t) : int option =
     match e with
     | IntegerLiteral x -> Some x
-    | Convert c -> literal c.arg
+    | Convert c -> Option.bind (literal c.arg) (convert c.ty)
     | _ -> None
   in
-  let payload = literal src in
+  let payload = Option.bind (literal src) (convert (Ty.strip_array a.ty)) in
   let* x = AccessState.add_write a src' payload in
   return (Expr.ident ~ty:(C_lang.Expr.to_type src) x)
 

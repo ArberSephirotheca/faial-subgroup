@@ -185,6 +185,39 @@ let test_64_bit_contains () : unit =
       (4294967296, Scalar.int, false);
     ]
 
+(* Converting a literal is answerable wherever the result is an OCaml [int].
+   Targets of one width share a residue class and differ only in which
+   representative they name, so a value out of a signed target's range comes
+   back negative where the unsigned target of that width keeps it. Neither
+   64-bit modulus can be divided by, so both sizes answer without one, and
+   the single case with no [int] to name is a negative value against an
+   unsigned 64-bit target. *)
+let test_reduce () : unit =
+  List.iter
+    (fun (n, ty, expected) ->
+      Alcotest.(check (option int))
+        (string_of_int n ^ " to " ^ Scalar.to_string ty)
+        expected (Scalar.reduce n ty))
+    [
+      (100, Scalar.char, Some 100);
+      (200, Scalar.char, Some (-56));
+      (-56, Scalar.char, Some (-56));
+      (200, Scalar.unsigned_char, Some 200);
+      (456, Scalar.unsigned_char, Some 200);
+      (-56, Scalar.unsigned_char, Some 200);
+      (70000, Scalar.short, Some 4464);
+      (-56, Scalar.unsigned_short, Some 65480);
+      (-1, Scalar.unsigned_int, Some 4294967295);
+      (4294967296, Scalar.int, Some 0);
+      (Int.max_int, Scalar.long, Some Int.max_int);
+      (Int.min_int, Scalar.long, Some Int.min_int);
+      (Int.max_int, Scalar.unsigned_long, Some Int.max_int);
+      (0, Scalar.unsigned_long, Some 0);
+      (-1, Scalar.unsigned_long, None);
+      (200, Scalar.float, None);
+      (200, Scalar.bool, None);
+    ]
+
 let test_signedness () : unit =
   List.iter
     (fun (given, expected) -> check_bool "is_unsigned" Ty.is_unsigned given expected)
@@ -419,6 +452,7 @@ let tests : unit Alcotest.test_case list =
     ("64-bit bounds", `Quick, test_64_bit_bounds);
     ("64-bit is an integer", `Quick, test_64_bit_is_an_integer);
     ("64-bit literal containment", `Quick, test_64_bit_contains);
+    ("converting a literal to a type", `Quick, test_reduce);
     ("signedness", `Quick, test_signedness);
     ("arrays", `Quick, test_arrays);
     ("array length", `Quick, test_array_length);

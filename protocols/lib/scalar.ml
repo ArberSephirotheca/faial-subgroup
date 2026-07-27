@@ -45,6 +45,24 @@ let to_bounds (x : t) : Bounds.t option =
 let contains (n : int) (x : t) : bool =
   match to_bounds x with Some b -> Bounds.contains n b | None -> false
 
+(* The value a conversion of [n] to this type yields, modulo the width.
+   Neither 64-bit modulus is an OCaml [int], so both sizes answer without
+   one: [int] is 63-bit, so a signed 64-bit target admits every [n]
+   unchanged, and an unsigned one admits every non-negative [n]. A
+   negative [n] would go to [n + 2^64], which is past [max_int] and so
+   has no answer to give. *)
+let reduce (n : int) (x : t) : int option =
+  match to_int_dom x with
+  | None -> None
+  | Some d -> (
+      match (d.size, d.signed) with
+      | Bit64, true -> Some n
+      | Bit64, false -> if n >= 0 then Some n else None
+      | size, signed ->
+          let m = 1 lsl (8 * Size.bytes size) in
+          let r = ((n mod m) + m) mod m in
+          Some (if signed && r >= m / 2 then r - m else r))
+
 let to_string (x : t) : string =
   match (x.kind, x.size) with
   | Bool, _ -> "bool"

@@ -685,6 +685,28 @@ let tests =
        with no payload is never paired off as benign, which turns this DRF
        kernel racy. *)
     ("drf-cast-narrow-store.cu", [], 0);
+    (* The payload is the value the cell ends up holding, not the value
+       written in the source. [(char)200] is [-56], so both threads leave
+       the same byte in [y[0]] and the two writes pair off as benign. *)
+    ("drf-payload-signed-wrap.cu", [], 0);
+    (* The same shape over two literals that stay apart once reduced:
+       [(char)200] is [-56] where [(char)100] is [100], so the threads leave
+       different bytes and the race is real. This is what stops the
+       reduction from being applied widely enough to discharge a genuine
+       race. *)
+    ("racy-payload-signed-wrap.cu", [], 1);
+    (* An unsigned destination keeps the other representative of the
+       residue: [(unsigned char)200] is [200], and [(unsigned char)456] is
+       [200] as well, where the signed reduction would have recorded [-56]
+       for both. Same byte from both threads, so this is benign. *)
+    ("drf-payload-unsigned-wrap.cu", [], 0);
+    (* Every conversion on the way to the cell counts, so reaching the
+       literal cannot mean reading past them: [(char)200] is [-56], and the
+       element type takes that to [(unsigned short)(-56)], which is [65480]
+       against the [200] the other thread stores. Reading past both
+       conversions recovers [200] twice and pairs off two writes that leave
+       different values behind. *)
+    ("racy-payload-cast-chain.cu", [], 1);
     (* A right shift rounds towards minus infinity and keeps the operand's
        signedness, and these four pin both halves of that on the three paths
        a shift can take through the folder.
