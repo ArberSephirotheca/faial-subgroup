@@ -139,9 +139,13 @@ let rec n_eval_res (n : nexp) : (int, string) Result.t =
   | Binary (o, n1, n2) -> (
       let* n1 = n_eval_res n1 in
       let* n2 = n_eval_res n2 in
-      try Ok (N_binary.eval o n1 n2)
-      with N_binary.Unknown_width ->
-        Error ("n_eval: no width for " ^ N_binary.to_string o))
+      try Ok (N_binary.eval o n1 n2) with
+      | N_binary.Unknown_width ->
+          Error ("n_eval: no width for " ^ N_binary.to_string o)
+      | N_binary.Shift_amount_out_of_range ->
+          Error
+            ("n_eval: shift amount out of range: " ^ N_binary.to_string o ^ " "
+           ^ string_of_int n2))
   | NCall (x, _) -> Error ("n_eval: call " ^ x)
   | ReadResult r -> Error ("n_eval: read " ^ Variable.name r.array)
   | Convert c -> n_eval_res c.arg
@@ -321,7 +325,8 @@ let n_umod n1 n2 =
 
 let n_left_shift (l : nexp) (r : nexp) : nexp =
   match (l, r) with
-  | a, Num n -> Binary (Mult Signedness.Signed, a, Num (Common.pow ~base:2 n))
+  | a, Num n when n >= 0 && n < Sys.int_size - 1 ->
+      Binary (Mult Signedness.Signed, a, Num (Common.pow ~base:2 n))
   | _, _ -> Binary (LeftShift, l, r)
 
 (* Shifting a negative value right as unsigned reads it at its own width's
@@ -347,7 +352,10 @@ let n_bin o n1 n2 =
     | Mod Unsigned, _, _ -> n_umod n1 n2
     | LeftShift, _, _ -> n_left_shift n1 n2
     | _, _, _ -> Binary (o, n1, n2)
-  with Division_by_zero | N_binary.Unknown_width -> Binary (o, n1, n2)
+  with
+  | Division_by_zero | N_binary.Unknown_width
+  | N_binary.Shift_amount_out_of_range ->
+      Binary (o, n1, n2)
 
 let b_or b1 b2 =
   match (b1, b2) with

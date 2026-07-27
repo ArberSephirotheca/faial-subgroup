@@ -732,6 +732,15 @@ let tests =
        a negative operand stays negative and the race is real. Guards against
        answering every shift with a zero fill. *)
     ("racy-shift-signed-keeps-sign.cu", [], 1);
+    (* A shift amount outside the range OCaml's shift operators answer over.
+       Clang warns and keeps the shift, so it reaches the folder, which used to
+       rewrite the shift into a multiplication by two raised to the amount and
+       raise out of that rewrite on a negative one, aborting the whole file.
+       The shift is now left for the solver, and the kernel is racy for a
+       reason that does not depend on what the shift means: the amount is
+       thread-uniform, so every thread writes the same cell, and each writes a
+       different value. *)
+    ("racy-shift-negative-amount.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are

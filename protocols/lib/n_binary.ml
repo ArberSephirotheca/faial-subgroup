@@ -18,7 +18,14 @@ type t =
    answer to give and [eval] declines rather than invent a width. *)
 exception Unknown_width
 
-let eval : t -> int -> int -> int = function
+exception Shift_amount_out_of_range
+
+let eval : t -> int -> int -> int =
+  let shift (f : int -> int -> int) (l : int) (r : int) : int =
+    if r < 0 || r >= Sys.int_size then raise Shift_amount_out_of_range
+    else f l r
+  in
+  function
   | BitAnd -> ( land )
   | BitXOr -> ( lxor )
   | BitOr -> ( lor )
@@ -27,10 +34,10 @@ let eval : t -> int -> int -> int = function
   | Mult _ -> ( * )
   | Div _ -> ( / )
   | Mod _ -> Common.modulo
-  | LeftShift -> ( lsl )
-  | RightShift Signed -> ( asr )
+  | LeftShift -> shift ( lsl )
+  | RightShift Signed -> shift ( asr )
   | RightShift Unsigned ->
-      fun l r -> if l < 0 then raise Unknown_width else l lsr r
+      shift (fun l r -> if l < 0 then raise Unknown_width else l lsr r)
 
 let to_string : t -> string = function
   | Plus s -> "+" ^ Signedness.suffix s

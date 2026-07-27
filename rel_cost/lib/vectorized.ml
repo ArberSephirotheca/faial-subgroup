@@ -77,7 +77,9 @@ let rec n_eval_res (n : Exp.nexp) (ctx : t) : (NMap.t, string) Result.t =
       try Ok (NMap.pointwise o n1 n2) with
       | Division_by_zero -> Error ("division by zero: " ^ Exp.n_to_string n)
       | N_binary.Unknown_width ->
-          Error ("shift of a negative value: " ^ Exp.n_to_string n))
+          Error ("shift of a negative value: " ^ Exp.n_to_string n)
+      | N_binary.Shift_amount_out_of_range ->
+          Error ("shift amount out of range: " ^ Exp.n_to_string n))
   | NIf (b, n1, n2) ->
       let* b = b_eval_res b ctx in
       let* n1 = n_eval_res n1 ctx in

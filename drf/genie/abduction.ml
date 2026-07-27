@@ -9,8 +9,10 @@ let rec eval_n (lookup : string -> int option) : nexp -> int option = function
   | Binary (op, a, b) ->
     (match eval_n lookup a, eval_n lookup b with
      | Some va, Some vb ->
-       (try Some (N_binary.eval op va vb)
-        with Division_by_zero | N_binary.Unknown_width -> None)
+       (try Some (N_binary.eval op va vb) with
+        | Division_by_zero | N_binary.Unknown_width
+        | N_binary.Shift_amount_out_of_range ->
+            None)
      | _ -> None)
   | Unary (op, a) -> Option.map (N_unary.eval op) (eval_n lookup a)
   | NCall _ | ReadResult _ -> None

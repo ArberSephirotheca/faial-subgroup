@@ -84,11 +84,73 @@ let subst_tests =
     ("substituting an out-of-range literal", `Quick, test_subst_keeps);
   ]
 
+let test_fold (name : string) (o : N_binary.t) (l : nexp) (r : nexp)
+    (expected : nexp) =
+  ( name,
+    `Quick,
+    fun () -> Alcotest.(check bool) name true (n_bin o l r = expected) )
+
+let test_eval (name : string) (o : N_binary.t) (l : int) (r : int)
+    (expected : int) =
+  ( name,
+    `Quick,
+    fun () -> Alcotest.(check int) name expected (N_binary.eval o l r) )
+
+let test_declines (name : string) (o : N_binary.t) (l : int) (r : int)
+    (expected : exn) =
+  ( name,
+    `Quick,
+    fun () ->
+      Alcotest.(check bool)
+        name true
+        (try
+           let (_ : int) = N_binary.eval o l r in
+           false
+         with e -> e = expected) )
+
+let x : nexp = var "x"
+
+let shift_tests =
+  let lsh = N_binary.LeftShift in
+  let rsh_s = N_binary.RightShift Signedness.Signed in
+  let rsh_u = N_binary.RightShift Signedness.Unsigned in
+  [
+    test_eval "an in-range amount is answered" lsh 1 10 1024;
+    test_eval "the last in-range amount is answered" rsh_s (-8) 62 (-1);
+    test_declines "an amount at the word size declines" lsh 1 63
+      N_binary.Shift_amount_out_of_range;
+    test_declines "a signed right shift at the word size declines" rsh_s (-8) 63
+      N_binary.Shift_amount_out_of_range;
+    test_declines "an unsigned right shift at the word size declines" rsh_u 8 63
+      N_binary.Shift_amount_out_of_range;
+    test_declines "an amount past the word size declines" lsh 1 100
+      N_binary.Shift_amount_out_of_range;
+    test_declines "a negative amount declines" lsh 1 (-1)
+      N_binary.Shift_amount_out_of_range;
+    test_declines "a negative operand still declines for want of a width" rsh_u
+      (-1) 4 N_binary.Unknown_width;
+    test_fold "an in-range literal shift is folded" lsh (Num 1) (Num 10)
+      (Num 1024);
+    test_fold "the largest representable power of two is folded" lsh x (Num 61)
+      (Binary (Mult Signedness.Signed, x, Num (1 lsl 61)));
+    test_fold "a multiplier past the largest is left alone" lsh x (Num 62)
+      (Binary (lsh, x, Num 62));
+    test_fold "a literal shift past the word size is left alone" lsh (Num 1)
+      (Num 100) (Binary (lsh, Num 1, Num 100));
+    test_fold "a negative amount over a symbolic operand is left alone" lsh x
+      (Num (-1)) (Binary (lsh, x, Num (-1)));
+    test_fold "a signed right shift past the word size is left alone" rsh_s
+      (Num (-8)) (Num 100) (Binary (rsh_s, Num (-8), Num 100));
+    test_fold "an unsigned right shift past the word size is left alone" rsh_u
+      (Num 8) (Num 100) (Binary (rsh_u, Num 8, Num 100));
+  ]
+
 let all_tests =
   [
     ("precedence", precedence_tests);
     ("convert elision", convert_tests);
     ("convert under substitution", subst_tests);
+    ("shift folding", shift_tests);
   ]
 
 (* Run the tests *)

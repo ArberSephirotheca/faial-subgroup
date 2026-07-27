@@ -498,10 +498,20 @@ let print_optimize (pre : bexp) (formula : nexp) : unit =
   prerr_endline
     (Printf.sprintf "optimize {\n  pre: %s\n  cost: %s\n}" pre formula)
 
+(* Milliseconds, bounding one optimizer call rather than a whole analysis: a
+   run issuing [n] queries spends up to [n] times this, so it caps a query and
+   not a run. Known limitation: a query that exceeds the bound yields no
+   result, and the metric analyses substitute the warp-wide maximum for the
+   exact cost without saying so on stdout, the substitution showing only in the
+   approximate-index count that [--json] reports. Pass [~timeout:0] to lift the
+   bound and let a query run to completion. *)
+let default_timeout : int = 120_000
+
 (** Optimizes a formula *)
 let optimize ?(verbose = false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(default_cost = 0)
-    ?(timeout = 0) (formula : nexp) (st : t) : (int, string) Result.t =
+    ?(timeout = default_timeout) (formula : nexp) (st : t) :
+    (int, string) Result.t =
   let module S = (val solver) in
   let pre = st.assumptions in
   (* pre: the generated runtime constraints (eg, tid is unique) *)
@@ -560,7 +570,7 @@ let encode_count_active_threads (_index : nexp) (st : t) : nexp =
 let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
     ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default)
-    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(timeout = 0)
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?timeout
     (config : Config.t) (locals : Variable.Set.t) (active_threads : bexp)
     (index : nexp) : int option =
   (* Compute free names from active_threads and index *)
@@ -573,7 +583,7 @@ let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
   State.run_result
     (let* n = cost_of metric index in
      let* st = State.get in
-     return (optimize ~verbose ~strategy ~solver ~default_cost:0 ~timeout n st))
+     return (optimize ~verbose ~strategy ~solver ~default_cost:0 ?timeout n st))
     (make generator config locals globals |> add_active_threads active_threads)
   |> Result.to_option
 
