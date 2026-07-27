@@ -182,10 +182,7 @@ let rec c_expr_to_type : c_expr -> Ty.t = function
   | DependentScopeRef d -> d.ty
 
 let fits (dst : Scalar.t) : c_expr -> bool = function
-  | IntegerLiteral n -> (
-      match Scalar.to_range dst with
-      | Some (lo, hi) -> n >= lo && n <= hi
-      | None -> false)
+  | IntegerLiteral n -> Scalar.contains n dst
   | _ -> false
 
 let convert (ty : Ty.t) (arg : c_expr) : c_expr =

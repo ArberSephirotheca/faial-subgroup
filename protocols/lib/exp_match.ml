@@ -173,7 +173,7 @@ let rec instantiate (s : subst) (template : nexp) : nexp =
   | Unary (op, a) -> Unary (op, instantiate s a)
   | NCall (name, args) -> NCall (name, List.map (instantiate s) args)
   | ReadResult r -> ReadResult { r with args = List.map (instantiate s) r.args }
-  | Convert c -> Convert { c with arg = instantiate s c.arg }
+  | Convert c -> convert c.ty (instantiate s c.arg)
   | NIf (b, a1, a2) ->
       NIf (instantiate_b s b, instantiate s a1, instantiate s a2)
   | CastInt b -> CastInt (instantiate_b s b)

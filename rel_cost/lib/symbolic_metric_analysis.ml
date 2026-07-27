@@ -31,7 +31,7 @@ module Proj = struct
     | NCall (x, ns) -> NCall (x, List.map (fun n -> proj_n n ctx) ns)
     | ReadResult r ->
         ReadResult { r with args = List.map (fun n -> proj_n n ctx) r.args }
-    | Convert c -> Convert { c with arg = proj_n c.arg ctx }
+    | Convert c -> convert c.ty (proj_n c.arg ctx)
 
   and proj_b (b : bexp) (ctx : t) : bexp =
     match b with
@@ -755,7 +755,7 @@ let rec n_inline_cost : nexp -> nexp state = function
       return (ReadResult { r with args = args' })
   | Convert c ->
       let* arg = n_inline_cost c.arg in
-      return (Convert { c with arg })
+      return (convert c.ty arg)
   | NIf (b, e1, e2) ->
       let* b' = b_inline_cost b in
       let* e1' = n_inline_cost e1 in

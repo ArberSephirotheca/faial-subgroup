@@ -129,7 +129,7 @@ let rec project_n (locals : Variable.Set.t) (t : Task.t) (n : nexp) : nexp =
   | NCall (x, ns) -> NCall (x, List.map (project_n locals t) ns)
   | ReadResult r ->
       ReadResult { r with args = List.map (project_n locals t) r.args }
-  | Convert c -> Convert { c with arg = project_n locals t c.arg }
+  | Convert c -> convert c.ty (project_n locals t c.arg)
 and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
   match b with
   | CastBool e -> CastBool (project_n locals t e)

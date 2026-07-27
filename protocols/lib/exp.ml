@@ -392,8 +392,8 @@ let n_bit_not : nexp -> nexp = function
   | e -> Unary (BitNot, e)
 
 let convert (ty : Scalar.t) (arg : nexp) : nexp =
-  match (arg, Scalar.to_range ty) with
-  | Num n, Some (lo, hi) when n >= lo && n <= hi -> arg
+  match arg with
+  | Num n when Scalar.contains n ty -> arg
   | _ -> Convert { ty; arg }
 
 let cast_int : bexp -> nexp = function
@@ -590,7 +590,7 @@ let reset_variable_kind_n ~kernel_parameters ~loop_variables : nexp -> nexp =
     | Unary (o, a) -> Unary (o, reset a)
     | NCall (g, es) -> NCall (g, List.map reset es)
     | ReadResult r -> ReadResult { r with args = List.map reset r.args }
-    | Convert c -> Convert { c with arg = reset c.arg }
+    | Convert c -> convert c.ty (reset c.arg)
     | NIf (b, a1, a2) -> NIf (b_map reset b, reset a1, reset a2)
     | CastInt b -> CastInt (b_map reset b)
   in

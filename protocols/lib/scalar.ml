@@ -42,6 +42,11 @@ let to_range (x : t) : (int * int) option =
   | Sint | Uint -> x |> to_int_dom |> Option.map Int_dom.to_range
   | Float -> None
 
+let contains (n : int) (x : t) : bool =
+  match to_range x with
+  | Some (lo, hi) -> n >= lo && n <= hi
+  | None -> false
+
 let to_string (x : t) : string =
   match (x.kind, x.size) with
   | Bool, _ -> "bool"

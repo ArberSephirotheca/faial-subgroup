@@ -45,7 +45,51 @@ let precedence_tests =
     ("simple serialization", `Quick, test_simple_serialization);
   ]
 
-let all_tests = [ ("precedence", precedence_tests) ]
+let kept (ty : Scalar.t) (n : int) : nexp = Convert { ty; arg = Num n }
+
+let test_convert (name : string) (ty : Scalar.t) (n : int) (expected : nexp) =
+  ( name,
+    `Quick,
+    fun () -> Alcotest.(check bool) name true (convert ty (Num n) = expected) )
+
+let convert_tests =
+  [
+    test_convert "char lower bound is elided" Scalar.char (-128) (Num (-128));
+    test_convert "char upper bound is elided" Scalar.char 127 (Num 127);
+    test_convert "char below range is kept" Scalar.char (-129)
+      (kept Scalar.char (-129));
+    test_convert "char above range is kept" Scalar.char 128
+      (kept Scalar.char 128);
+    test_convert "unsigned char upper bound is elided" Scalar.unsigned_char 255
+      (Num 255);
+    test_convert "unsigned char rejects a negative" Scalar.unsigned_char (-1)
+      (kept Scalar.unsigned_char (-1));
+  ]
+
+let test_subst_elides () =
+  let x = Variable.from_name "x" in
+  let e = Convert { ty = Scalar.char; arg = Var x } in
+  Alcotest.(check bool) "an in-range literal loses the conversion" true
+    (Subst.ReplacePair.n_subst (x, Num 5) e = Num 5)
+
+let test_subst_keeps () =
+  let x = Variable.from_name "x" in
+  let e = Convert { ty = Scalar.char; arg = Var x } in
+  Alcotest.(check bool) "an out-of-range literal keeps the conversion" true
+    (Subst.ReplacePair.n_subst (x, Num 300) e = kept Scalar.char 300)
+
+let subst_tests =
+  [
+    ("substituting an in-range literal", `Quick, test_subst_elides);
+    ("substituting an out-of-range literal", `Quick, test_subst_keeps);
+  ]
+
+let all_tests =
+  [
+    ("precedence", precedence_tests);
+    ("convert elision", convert_tests);
+    ("convert under substitution", subst_tests);
+  ]
 
 (* Run the tests *)
 let () = Alcotest.run "Expression" all_tests
