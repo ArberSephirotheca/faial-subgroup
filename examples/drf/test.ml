@@ -678,6 +678,31 @@ let tests =
        with no payload is never paired off as benign, which turns this DRF
        kernel racy. *)
     ("drf-cast-narrow-store.cu", [], 0);
+    (* A right shift rounds towards minus infinity and keeps the operand's
+       signedness, and these four pin both halves of that on the three paths
+       a shift can take through the folder.
+
+       Both operands literal: the answer is settled while folding, and a
+       negative left operand shifted as a machine-word logical shift comes
+       back a large positive number, which closes the guard and loses the
+       race. *)
+    ("racy-shift-literal-negative.cu", [], 1);
+    (* Literal shift amount over a value that may be negative. Rewriting the
+       shift into a division that truncates towards zero answers 0 for
+       n = -1, where the shift answers -1. The [&] in the index is what puts
+       this on the bit-vector backend, since the arithmetic encoder has no
+       bitwise operators; that backend is where truncation and flooring
+       differ. *)
+    ("drf-shift-signed-floor.cu", [], 0);
+    (* Non-literal shift amount over an unsigned operand, whose marker has to
+       survive folding: an unsigned shift fills zero, so an all-ones value
+       shifted by 1..63 is no longer all ones. Carrying it as a signed shift
+       fills with the sign and opens the branch. *)
+    ("drf-shift-unsigned-fill.cu", [], 0);
+    (* The other direction on the fill bit: a signed shift keeps the sign, so
+       a negative operand stays negative and the race is real. Guards against
+       answering every shift with a zero fill. *)
+    ("racy-shift-signed-keeps-sign.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are

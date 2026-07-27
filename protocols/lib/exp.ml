@@ -322,16 +322,21 @@ let n_left_shift (l : nexp) (r : nexp) : nexp =
   | a, Num n -> Binary (Mult Signedness.Signed, a, Num (Common.pow ~base:2 n))
   | _, _ -> Binary (LeftShift, l, r)
 
-let n_right_shift (l : nexp) (r : nexp) : nexp =
-  match (l, r) with
-  | a, Num n -> Binary (Div Signedness.Signed, a, Num (Common.pow ~base:2 n))
-  | _, _ -> Binary (RightShift Signedness.Signed, l, r)
+(* Shifting a negative value right as unsigned reads it at its own width's
+   two's complement, and nexp carries no width, so that fold is left to the
+   solver rather than answered at a width we would have to invent. *)
+let n_right_shift (s : Signedness.t) (l : nexp) (r : nexp) : nexp =
+  match (s, l, r) with
+  | Signedness.Signed, Num a, Num b when b >= 0 && b < 63 -> Num (a asr b)
+  | Unsigned, Num a, Num b when a >= 0 && b >= 0 && b < 63 -> Num (a asr b)
+  | _, _, _ -> Binary (RightShift s, l, r)
 
 let n_bin o n1 n2 =
   try
     match (o, n1, n2) with
+    | N_binary.RightShift s, _, _ -> n_right_shift s n1 n2
     | _, Num n1, Num n2 -> Num (N_binary.eval o n1 n2)
-    | N_binary.Plus _, _, _ -> n_plus n1 n2
+    | Plus _, _, _ -> n_plus n1 n2
     | Minus _, _, _ -> n_minus n1 n2
     | Mult _, _, _ -> n_mult n1 n2
     | Div Signed, _, _ -> n_div n1 n2
@@ -339,7 +344,6 @@ let n_bin o n1 n2 =
     | Mod Signed, _, _ -> n_mod n1 n2
     | Mod Unsigned, _, _ -> n_umod n1 n2
     | LeftShift, _, _ -> n_left_shift n1 n2
-    | RightShift _, _, _ -> n_right_shift n1 n2
     | _, _, _ -> Binary (o, n1, n2)
   with Division_by_zero -> Binary (o, n1, n2)
 

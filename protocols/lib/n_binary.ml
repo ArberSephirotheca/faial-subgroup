@@ -22,7 +22,8 @@ let eval : t -> int -> int -> int = function
   | Div _ -> ( / )
   | Mod _ -> Common.modulo
   | LeftShift -> ( lsl )
-  | RightShift _ -> ( lsr )
+  | RightShift Signed -> ( asr )
+  | RightShift Unsigned -> ( lsr )
 
 let to_string : t -> string = function
   | Plus s -> "+" ^ Signedness.suffix s
