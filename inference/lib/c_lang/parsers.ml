@@ -208,9 +208,12 @@ let rec parse_expr (j : json) : c_expr j_result =
              else_expr = e;
              ty = J_type.parse ty;
            })
-  | "UnaryExprOrTypeTraitExpr" ->
-      let* ty = get_field "type" o in
-      Ok (SizeOfExpr (J_type.parse ty))
+  | "UnaryExprOrTypeTraitExpr" -> (
+      match with_opt_field "argType" cast_string o with
+      | Ok (Some arg_ty) -> Ok (SizeOfExpr (J_type.of_string arg_ty))
+      | _ ->
+          let* arg = with_field "inner" (cast_first parse_expr) o in
+          Ok (SizeOfExpr (c_expr_to_type arg)))
   | "ParmVarDecl" ->
       let* name = parse_variable j in
       let* ty = get_field "type" o in

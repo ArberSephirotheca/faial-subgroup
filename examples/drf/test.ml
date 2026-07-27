@@ -191,6 +191,23 @@ let tests =
      a SizeOfPackExpr, whose count is unknown until instantiation and is
      read as an opaque unknown value. *)
     ("drf-sizeof-pack.cu", [], 0);
+    (* [x & 1] tests the low bit of [x], so it holds for the odd values of
+     [x] and fails for the even ones. Both polarities are pinned, and each
+     is pinned twice, once over a signed [i] and once over an unsigned one,
+     because the encoding fixes the remainder's signedness rather than
+     taking it from the operand. blockDim.x = 3 makes the two guards admit
+     sets of different size, {1} against {0, 2}, so the verdicts differ:
+     one author for y[0] against two. *)
+    ("drf-and1-odd.cu", [ "--blockDim=3" ], 0);
+    ("racy-and1-even.cu", [ "--blockDim=3" ], 1);
+    ("drf-and1-odd-unsigned.cu", [ "--blockDim=3" ], 0);
+    ("racy-and1-even-unsigned.cu", [ "--blockDim=3" ], 1);
+    (* [sizeof(int)] must be the width of the operand, 4, not the width of
+     the trait's own result type, [unsigned long]. Using the index modulus
+     [threadIdx.x % sizeof(int)] makes the difference observable: at
+     blockDim.x = 8 a modulus of 4 collides threads 0 and 4, whereas a
+     modulus of 8 would leave every index distinct. *)
+    ("racy-sizeof-mod.cu", [ "--blockDim=8" ], 1);
     (* A device function bound to a function-pointer template parameter
      reaches the reader as a TemplateArgument carrying a FunctionDecl;
      the argument is read by name (TArgDecl). *)

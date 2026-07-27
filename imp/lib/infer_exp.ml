@@ -66,6 +66,7 @@ let max (e1 : t) (e2 : t) : n = NIf (BExp (gt e1 e2), e1, e2)
 let or_ (e1 : t) (e2 : t) : b = BRel (BOr, e1, e2)
 let not_ (e : t) : b = BNot e
 let n_eq (e1 : t) (e2 : t) : b = NRel (Eq, e1, e2)
+let n_neq (e1 : t) (e2 : t) : b = NRel (Neq, e1, e2)
 let is_thread_unif (e : t) : b = IsThreadUnif e
 let is_thread_distinct (e : t) : b = BNot (BExp (IsThreadUnif e))
 let num (n : int) : t = NExp (Num n)

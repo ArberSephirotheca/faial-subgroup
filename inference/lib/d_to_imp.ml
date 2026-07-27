@@ -133,10 +133,9 @@ module Make (L : Logger) = struct
     | BinaryOperator { lhs = l; opcode = "&"; rhs = IntegerLiteral 1; _ } ->
         let n = infer_expr l in
         BExp
-          (NRel
-             ( Eq,
-               NExp (Binary (Mod Signedness.Signed, n, NExp (Num 2))),
-               NExp (Num 0) ))
+          (Infer_exp.n_neq
+             (NExp (Binary (Mod Signedness.Signed, n, NExp (Num 2))))
+             (NExp (Num 0)))
     | BinaryOperator
         {
           opcode = "==";
