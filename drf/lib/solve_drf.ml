@@ -13,14 +13,6 @@ module FuncDecl = Z3.FuncDecl
 module BitVector = Z3.BitVector
 module StringMap = Common.StringMap
 
-let gc_alloc_threshold : int64 =
-  let mb =
-    match Option.bind (Sys.getenv_opt "FAIAL_GC_MB") int_of_string_opt with
-    | Some n -> n
-    | None -> Defaults.gc_mb
-  in
-  Int64.mul (Int64.of_int mb) 1_000_000L
-
 type json = Yojson.Basic.t
 
 module Environ = struct
@@ -424,12 +416,7 @@ module Solution = struct
      | _ -> ());
     Streamutil.map
       (fun (p : Symbexp.Proof.t) ->
-        if
-          Int64.compare
-            (Z3.Statistics.get_estimated_alloc_size ())
-            gc_alloc_threshold
-          > 0
-        then Gc.full_major ();
+        Gc.full_major ();
         let want_core = extras <> [] in
         let options =
           [ ("model", "true"); ("proof", "false") ]
