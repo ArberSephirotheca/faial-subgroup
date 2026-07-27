@@ -391,6 +391,11 @@ let n_bit_not : nexp -> nexp = function
   | Num n -> Num Int32.(of_int n |> lognot |> to_int)
   | e -> Unary (BitNot, e)
 
+let convert (ty : Scalar.t) (arg : nexp) : nexp =
+  match (arg, Scalar.to_range ty) with
+  | Num n, Some (lo, hi) when n >= lo && n <= hi -> arg
+  | _ -> Convert { ty; arg }
+
 let cast_int : bexp -> nexp = function
   | Bool true -> Num 1
   | Bool false -> Num 0

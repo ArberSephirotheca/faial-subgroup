@@ -181,10 +181,18 @@ let rec c_expr_to_type : c_expr -> Ty.t = function
   | PackExpansion e -> c_expr_to_type e
   | DependentScopeRef d -> d.ty
 
+let fits (dst : Scalar.t) : c_expr -> bool = function
+  | IntegerLiteral n -> (
+      match Scalar.to_range dst with
+      | Some (lo, hi) -> n >= lo && n <= hi
+      | None -> false)
+  | _ -> false
+
 let convert (ty : Ty.t) (arg : c_expr) : c_expr =
   match (Ty.to_scalar (c_expr_to_type arg), Ty.to_scalar ty) with
   | Some src, Some dst
-    when Scalar.is_int src && Scalar.is_int dst && not (Scalar.equal src dst) ->
+    when Scalar.is_int src && Scalar.is_int dst && not (Scalar.equal src dst)
+         && not (fits dst arg) ->
       Convert { arg; ty }
   | _ -> arg
 

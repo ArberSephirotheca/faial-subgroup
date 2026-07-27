@@ -50,7 +50,7 @@ let rec n_opt (a : nexp) : nexp =
        | Some n -> n
        | None -> NCall (x, folded))
   | ReadResult r -> ReadResult { r with args = List.map n_opt r.args }
-  | Convert c -> Convert { c with arg = n_opt c.arg }
+  | Convert c -> convert c.ty (n_opt c.arg)
   | Unary (BitNot, e) -> n_bit_not (n_opt e)
   | Unary (Negate, e) -> n_uminus (n_opt e)
   | CastInt b -> cast_int (b_opt b)

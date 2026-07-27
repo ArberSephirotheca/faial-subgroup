@@ -82,7 +82,8 @@ let rec from_nexp ~(globals) (e: Exp.nexp): t =
   | Exp.Binary (N_binary.Plus _, a, b) -> from_nexp ~globals a + from_nexp ~globals b
   | Exp.Binary (N_binary.Mult _, a, b) -> from_nexp ~globals a * from_nexp ~globals b
   | Exp.Binary (N_binary.Minus _, a, b) -> from_nexp ~globals a - from_nexp ~globals b
-  | v -> of_indet (Indet.from_nexp ~globals v)
+  | Exp.Convert c -> from_nexp ~globals c.arg
+  | v -> of_indet (Indet.from_nexp ~globals (Exp.erase_converts v))
 
 let to_nexp (e: t): Exp.nexp =
   match to_mono_list e with

@@ -157,7 +157,7 @@ let rec to_nexp (e : t) : Exp.nexp state =
           return (Exp.NIf (b, n1, n2))
       | Convert c ->
           let* arg = to_nexp c.arg in
-          return (Exp.Convert { ty = c.ty; arg }))
+          return (Exp.convert c.ty arg))
   | BExp _ ->
       let* b = to_bexp e in
       return (Exp.cast_int b)
