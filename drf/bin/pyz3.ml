@@ -471,7 +471,9 @@ let serialize (oc : out_channel) (p : pyz3_proof) : unit =
     p.kernel p.array p.indices p.globals p.task1 p.task2 p.variables p.logic
     p.is_bv p.smt
 
-let render (filename : string) (output : Analysis.t list) : unit =
+let render (filename : string) ~(rejected : Imp.Rejected_kernel.t list)
+    (output : Analysis.t list) : unit =
+  ignore rejected;
   Out_channel.with_open_text filename (fun oc ->
       output_string oc (header Z3.Version.to_string);
       output

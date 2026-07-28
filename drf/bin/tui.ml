@@ -181,7 +181,8 @@ end
 
 let print_box : PrintBox.t -> unit = PrintBox_text.output stdout
 
-let render (output : Analysis.t list) : unit =
+let render ~(rejected : Imp.Rejected_kernel.t list)
+    (output : Analysis.t list) : unit =
   let render_one (solution : Analysis.t) : int =
       let kernel_name =
         let open Analysis in
@@ -310,4 +311,15 @@ let render (output : Analysis.t list) : unit =
           1
   in
   let total = List.fold_left (fun acc s -> acc + render_one s) 0 output in
+  let total =
+    List.fold_left
+      (fun acc (r : Imp.Rejected_kernel.t) ->
+        T.print_string
+          [ T.Bold; T.Foreground T.Yellow ]
+          ("Kernel '" ^ r.kernel
+           ^ "' was discarded; there is nothing to check. "
+           ^ Imp.Rejected_kernel.Reason.to_string r.reason ^ ".\n");
+        acc + 1)
+      total rejected
+  in
   if total > 0 then exit 1 else ()

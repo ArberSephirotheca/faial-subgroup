@@ -3,7 +3,11 @@ open Protocols
 
 type imp_kernel = Imp.Kernel.t
 type proto_kernel = Protocols.Kernel.t
-type 'a t = { options : Gv_parser.t; kernels : 'a list }
+type 'a t = {
+  options : Gv_parser.t;
+  kernels : 'a list;
+  rejected : Imp.Rejected_kernel.t list;
+}
 
 module Make (L : Logger.Logger) = struct
   module D = D_to_imp.Make (L)
@@ -43,7 +47,7 @@ module Make (L : Logger.Logger) = struct
             List.map Imp.Kernel.remove_global_asserts kernels
           else kernels
         in
-        { options; kernels }
+        { options; kernels; rejected = [] }
     | Error e ->
         Rjson.print_error e;
         exit exit_status
@@ -129,7 +133,7 @@ module Make (L : Logger.Logger) = struct
             List.map Imp.Kernel.remove_global_asserts kernels
           else kernels
         in
-        { options; kernels }
+        { options; kernels; rejected = [] }
     | Error e ->
         Rjson.print_error e;
         exit exit_status
@@ -163,10 +167,16 @@ module Make (L : Logger.Logger) = struct
         ~includes ~exit_status ~macros ~ignore_asserts ~assume_launch
         ~launch_params ~cbor fname
     in
-    let compiled =
+    let compiled, rejected =
       Phase_timer.measure "inference/imp-to-proto" (fun () ->
         Imp.Compiler.compile_all ~rules ~inline_calls ?infer_cond_bound
           parsed.kernels)
+    in
+    let global_names =
+      parsed.kernels
+      |> List.filter_map (fun (k : Imp.Kernel.t) ->
+          if Imp.Kernel.is_global k then Some k.name else None)
+      |> Common.StringSet.of_list
     in
     {
       parsed with
@@ -174,6 +184,10 @@ module Make (L : Logger.Logger) = struct
         compiled
         |> List.filter (fun k ->
             (not only_globals) || (only_globals && Protocols.Kernel.is_global k));
+      rejected =
+        rejected
+        |> List.filter (fun (r : Imp.Rejected_kernel.t) ->
+            (not only_globals) || Common.StringSet.mem r.kernel global_names);
     }
 end
 

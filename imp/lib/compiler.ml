@@ -55,7 +55,10 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
     }
 
 let compile_all ?(rules = Idiom_rewrite.all) ?(inline_calls = true)
-    ?infer_cond_bound (l : Kernel.t list) : Protocols.Kernel.t list =
+    ?infer_cond_bound (l : Kernel.t list) :
+    Protocols.Kernel.t list * Rejected_kernel.t list =
   let l = List.map Scoped.Kernel.from_imp l in
-  let l = if inline_calls then Inline_calls.inline_calls l else l in
-  List.map (compile ~rules ?infer_cond_bound) l
+  let l, rejected =
+    if inline_calls then Inline_calls.inline_calls l else (l, [])
+  in
+  (List.map (compile ~rules ?infer_cond_bound) l, rejected)

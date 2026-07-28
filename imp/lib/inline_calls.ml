@@ -207,6 +207,34 @@ let next (s : t) : StringSet.t =
   in
   StringSet.diff possible s.visited
 
+let unresolved (s : t) : StringSet.t =
+  s.targets
+  |> StringMap.filter (fun _ ts -> not (StringSet.is_empty ts))
+  |> key_set
+
+(* The path runs from [start] to the kernel that closes the cycle, which is
+   repeated as the last element. *)
+let path_to_cycle (s : t) (start : string) : string list option =
+  let rec walk (seen : string list) (node : string) : string list option =
+    if List.mem node seen then Some (List.rev (node :: seen))
+    else
+      StringMap.find_opt node s.targets
+      |> Option.value ~default:StringSet.empty
+      |> StringSet.elements
+      |> List.find_map (walk (node :: seen))
+  in
+  walk [] start
+
+let kernel_name (s : t) (id : string) : string =
+  match StringMap.find_opt id s.kernels with
+  | Some k -> k.Scoped.Kernel.name
+  | None -> id
+
+let recursive (s : t) : (string * string list) list =
+  unresolved s |> StringSet.elements
+  |> List.filter_map (fun id ->
+       path_to_cycle s id |> Option.map (fun path -> (id, path)))
+
 let from_list (ks : Scoped.Kernel.t list) : t =
   {
     targets =
@@ -232,5 +260,21 @@ let rec inline_all (s : t) : t =
     (* inline more *)
     inline_all (inline_kernels n s)
 
-let inline_calls (l : Scoped.Kernel.t list) : Scoped.Kernel.t list =
-  l |> from_list |> inline_all |> kernel_list
+let inline_calls (l : Scoped.Kernel.t list) :
+    Scoped.Kernel.t list * Rejected_kernel.t list =
+  let s = l |> from_list |> inline_all in
+  let found = recursive s in
+  let discarded = found |> List.map fst |> StringSet.of_list in
+  let kernels =
+    kernel_list s
+    |> List.filter (fun k ->
+        not (StringSet.mem (Scoped.Kernel.unique_id k) discarded))
+  in
+  let rejected =
+    found
+    |> List.map (fun (id, path) ->
+         Rejected_kernel.make ~kernel:(kernel_name s id)
+           ~reason:(Rejected_kernel.Reason.RecursiveCall
+                      { path = List.map (kernel_name s) path }))
+  in
+  (kernels, rejected)

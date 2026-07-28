@@ -3,7 +3,8 @@ open Protocols
 open Drf
 open Solve_drf
 
-let render (output : Analysis.t list) : unit =
+let render ~(rejected : Imp.Rejected_kernel.t list)
+    (output : Analysis.t list) : unit =
   let kernels =
     output
     |> List.map (fun analysis ->
@@ -58,9 +59,22 @@ let render (output : Analysis.t list) : unit =
                    errors) );
           ])
   in
+  let rejected =
+    rejected
+    |> List.map (fun (r : Imp.Rejected_kernel.t) ->
+        match r.reason with
+        | Imp.Rejected_kernel.Reason.RecursiveCall { path } ->
+            `Assoc
+              [
+                ("kernel_name", `String r.kernel);
+                ("reason", `String "recursive-call");
+                ("path", `List (List.map (fun x -> `String x) path));
+              ])
+  in
   `Assoc
     [
       ("kernels", `List kernels);
+      ("rejected", `List rejected);
       ("phase_times", Phase_timer.to_json ());
       ("stats", Stats.to_json ());
       ( "argv",

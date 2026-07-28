@@ -855,6 +855,24 @@ let tests =
        than data-race freedom would make the new status fire on kernels
        that are simply easy to clear. *)
     ("drf-read-plus-atomic.cu", [], 0);
+    (* A kernel whose calls reach a cycle in the call graph is discarded
+       rather than analysed: the inliner cannot substitute a recursive
+       callee, and analysing what is left would answer for a program with
+       the callee's accesses missing. Like zero-accesses, a discarded
+       kernel exits 1. *)
+    ("discarded-recursion-direct.cu", [], 1);
+    (* The cycle need not be a self-call; mutual recursion is the same
+       condition on the call graph. *)
+    ("discarded-recursion-mutual.cu", [], 1);
+    (* The kernel itself calls nothing recursive: it calls [helper], which
+       calls [rec]. Rejection follows reachability, so [k] goes too, and
+       [helper]'s own write does not reach the analysis. *)
+    ("discarded-recursion-via-helper.cu", [], 1);
+    (* The case the zero-accesses status cannot catch: the kernel keeps a
+       write of its own, so its protocol is non-empty and it used to clear
+       as data-race free at exit 0, while the race lives in the accesses
+       the recursive callee contributed. *)
+    ("discarded-recursion-partial.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are

@@ -165,7 +165,7 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
         && not (StringSet.mem k.Imp.Kernel.name stdlib_kernel_names))
   in
   let scoped = List.map Imp.Scoped.Kernel.from_imp k3 in
-  let inlined = Imp.Inline_calls.inline_calls scoped in
+  let inlined, rejected = Imp.Inline_calls.inline_calls scoped in
   let proto = List.map Imp.Compiler.compile inlined in
   let keep_named (name : string) (is_global : bool) : bool =
     ((not only_global) || is_global)
@@ -195,6 +195,9 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
     List.iter Imp.Scoped.Kernel.print scoped_filtered;
     print_endline "==================== STAGE 5: Scoped, calls inlined\n";
     List.iter Imp.Scoped.Kernel.print inlined_filtered;
+    List.iter
+      (fun r -> print_endline (Imp.Rejected_kernel.to_string r))
+      rejected;
     print_endline "==================== STAGE 6: Protocols\n";
     List.iter Protocols.Kernel.print proto_filtered;
     print_endline "==================== STAGE 7: stats\n");

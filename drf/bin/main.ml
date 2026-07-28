@@ -586,7 +586,7 @@ let main =
            "Kernel ... is DRF!", which is misleading when no analysis
            actually ran. *)
         let _ = App.run app in ()
-      else App.run app |> ui
+      else App.run app |> ui ~rejected:app.rejected
     in
     (try run (); Ok ()
      with App.Kernel_not_found name ->

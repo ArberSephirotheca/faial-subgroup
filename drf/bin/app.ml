@@ -67,6 +67,7 @@ module Delin_algo = Delinearize.Algo
 type t = {
   filename : string;
   kernels : Kernel.t list;
+  rejected : Imp.Rejected_kernel.t list;
   timeout : int option;
   show_proofs : bool;
   show_proto : bool;
@@ -154,6 +155,7 @@ let to_string (app : t) : string =
   | {
    filename;
    kernels;
+   rejected = _;
    timeout;
    show_proofs;
    show_proto;
@@ -267,6 +269,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
   let grid_dim = if all_dims then None else Some parsed.options.grid_dim in
   {
     filename;
+    rejected = parsed.rejected;
     timeout;
     show_proofs;
     show_proto;

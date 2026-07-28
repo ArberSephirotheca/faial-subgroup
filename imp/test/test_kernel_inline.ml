@@ -115,5 +115,74 @@ let inline_expansion_tests =
        kernel "main" [] expected_code);
   ]
 
-let all_tests = [ ("inline expansions", inline_expansion_tests) ]
+let calling (name : string) (callees : string list) : Scoped.Kernel.t =
+  let call_to (callee : string) (body : Scoped.Code.t) : Scoped.Code.t =
+    Scoped.Code.Call
+      ({ result = None; kernel = callee; ty = ""; args = [] }, body)
+  in
+  kernel name [] (List.fold_right call_to callees Scoped.Code.Skip)
+
+let survivors (ks : Scoped.Kernel.t list) : string list =
+  Inline_calls.inline_calls ks
+  |> fst
+  |> List.map (fun (k : Scoped.Kernel.t) -> k.Scoped.Kernel.name)
+
+let rejections (ks : Scoped.Kernel.t list) : (string * string list) list =
+  Inline_calls.inline_calls ks
+  |> snd
+  |> List.map (fun (r : Rejected_kernel.t) ->
+      match r.reason with
+      | Rejected_kernel.Reason.RecursiveCall { path } -> (r.kernel, path))
+
+let test_fixpoint (name : string) (ks : Scoped.Kernel.t list)
+    (expected_survivors : string list)
+    (expected_rejections : (string * string list) list) =
+  ( name,
+    `Quick,
+    fun () ->
+      Alcotest.(check (list string)) (name ^ ": survivors")
+        expected_survivors (survivors ks);
+      Alcotest.(check (list (pair string (list string))))
+        (name ^ ": rejections") expected_rejections (rejections ks) )
+
+let fixpoint_tests =
+  [
+    test_fixpoint "an acyclic call graph resolves and rejects nothing"
+      [ calling "k" [ "f" ]; calling "f" [] ]
+      [ "f"; "k" ] [];
+    test_fixpoint "a self-call rejects the callee and its caller"
+      [ calling "k" [ "r" ]; calling "r" [ "r" ] ]
+      []
+      [ ("k", [ "k"; "r"; "r" ]); ("r", [ "r"; "r" ]) ];
+    test_fixpoint "mutual recursion is the same condition on the graph"
+      [ calling "k" [ "even" ]; calling "even" [ "odd" ];
+        calling "odd" [ "even" ] ]
+      []
+      [
+        ("even", [ "even"; "odd"; "even" ]);
+        ("k", [ "k"; "even"; "odd"; "even" ]);
+        ("odd", [ "odd"; "even"; "odd" ]);
+      ];
+    test_fixpoint "rejection follows reachability through a non-recursive callee"
+      [ calling "k" [ "helper" ]; calling "helper" [ "r" ];
+        calling "r" [ "r" ] ]
+      []
+      [
+        ("helper", [ "helper"; "r"; "r" ]);
+        ("k", [ "k"; "helper"; "r"; "r" ]);
+        ("r", [ "r"; "r" ]);
+      ];
+    test_fixpoint "a kernel that shares no callee with a cycle is unaffected"
+      [ calling "k1" [ "r" ]; calling "r" [ "r" ]; calling "k2" [ "f" ];
+        calling "f" [] ]
+      [ "f"; "k2" ]
+      [ ("k1", [ "k1"; "r"; "r" ]); ("r", [ "r"; "r" ]) ];
+  ]
+
+let all_tests =
+  [
+    ("inline expansions", inline_expansion_tests);
+    ("call-graph fixpoint", fixpoint_tests);
+  ]
+
 let () = Alcotest.run "Kernel Inline" all_tests
