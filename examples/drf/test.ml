@@ -475,6 +475,22 @@ let tests =
      suppressing the race (false-negative DRF). *)
     ("racy-launch-opaque-block.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
+    (* A pointer kernel arg taken out of a host-side array of pointers
+     ([int *d[4]] launched with [d[2]]). Reading the element yields a
+     value the host never exposes, so the argument aliases [d] itself
+     and the kernel's writes land on that array. The subscript used to
+     abstract into an opaque scalar, and a formal bound to a scalar has
+     no location to record accesses against, so every access through
+     [out] was dropped and this kernel reported DRF while all 32 threads
+     write [out[0]]. *)
+    ("racy-launch-ptr-array.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
+    (* The companion for the same aliasing, pinning that recovering the
+     accesses does not by itself make the kernel racy: each thread writes
+     [out[threadIdx.x]], one cell per thread. It also reported DRF before
+     the aliasing, but with no access in the protocol at all. *)
+    ("drf-launch-ptr-array.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)

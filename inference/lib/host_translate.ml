@@ -119,36 +119,56 @@ let abstract (e : D_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
   )
 
 
+(** A pointer-valued launch argument spelled [arr[i]], where [arr] is a
+    host-side array, names one of the pointers stored in [arr]. Reading
+    that element would abstract the argument into an opaque scalar, and
+    a kernel parameter bound to a scalar has no location for its
+    accesses to land on, so every access through the parameter would be
+    dropped. The argument aliases [arr] itself instead. This conflates
+    the elements of [arr]: two arguments taken from the same array are
+    seen as one location, so their accesses are compared rather than
+    ignored. *)
+let pointer_array_base (e : C_lang.Expr.t) : Decl_expr.t option =
+  let rec base : C_lang.Expr.t -> Decl_expr.t option = function
+    | ArraySubscriptExpr { lhs = Ident d; _ } when Ty.is_array d.ty -> Some d
+    | ArraySubscriptExpr { lhs; _ } -> base lhs
+    | _ -> None
+  in
+  if Ty.is_array_or_pointer (C_lang.Expr.to_type e) then base e else None
+
 let rewrite_expr (e : C_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
-  e
-  (* convert from C_lang.Expr.t to D_lang.Expr.t *)
-  |> D_lang.rewrite_exp
-  (* unpack from the monadic result *)
-  |> D_lang.run0
-  (* apply rewrites of reads *)
-  |> inline_reads
-  (* abstract these following operations *)
-  |> D_lang.Expr.st_map (fun e ->
-      match e with
-      (* Calls to whitelisted pure functions / predicates survive into
-         [D_lang.Expr] so [d_to_imp] can lift them to [NCall] / [Pred].
-         The Z3 encoder then treats matching names as the same UF
-         symbol across launches, preserving cross-call-site sharing
-         that an opaque [@LaunchN] abstraction would lose. *)
-      | CallExpr { func = Ident { name = f; _ }; _ }
-        when Functions.supported (Variable.name f)
-             || Predicates.supported (Variable.name f)
-             || Exp.is_uniformity_intrinsic (Variable.name f) ->
+  match pointer_array_base e with
+  | Some d -> State.return (D_lang.Expr.Ident d)
+  | None ->
+      e
+      (* convert from C_lang.Expr.t to D_lang.Expr.t *)
+      |> D_lang.rewrite_exp
+      (* unpack from the monadic result *)
+      |> D_lang.run0
+      (* apply rewrites of reads *)
+      |> inline_reads
+      (* abstract these following operations *)
+      |> D_lang.Expr.st_map (fun e ->
+          match e with
+          (* Calls to whitelisted pure functions / predicates survive into
+             [D_lang.Expr] so [d_to_imp] can lift them to [NCall] / [Pred].
+             The Z3 encoder then treats matching names as the same UF
+             symbol across launches, preserving cross-call-site sharing
+             that an opaque [@LaunchN] abstraction would lose. *)
+          | CallExpr { func = Ident { name = f; _ }; _ }
+            when Functions.supported (Variable.name f)
+                 || Predicates.supported (Variable.name f)
+                 || Exp.is_uniformity_intrinsic (Variable.name f) ->
+              State.return e
+          | CXXNewExpr _
+          | CXXDeleteExpr _
+          | CallExpr _
+          | CXXConstructExpr _
+          | MemberExpr _ -> abstract e
+          | _ ->
+          (* Otherwise, leave intact *)
           State.return e
-      | CXXNewExpr _
-      | CXXDeleteExpr _
-      | CallExpr _
-      | CXXConstructExpr _
-      | MemberExpr _ -> abstract e
-      | _ ->
-      (* Otherwise, leave intact *)
-      State.return e
-    )
+        )
 
 
 let unpack_dim3 (e : C_lang.Expr.t) :
