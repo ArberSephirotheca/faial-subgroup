@@ -187,6 +187,13 @@ let fits (dst : Scalar.t) : c_expr -> bool = function
 
 let convert (ty : Ty.t) (arg : c_expr) : c_expr =
   match (Ty.to_scalar (c_expr_to_type arg), Ty.to_scalar ty) with
+  | Some src, Some dst when Scalar.is_bool dst && not (Scalar.is_bool src) -> (
+      match arg with
+      | IntegerLiteral n | CharacterLiteral n ->
+          IntegerLiteral (if n = 0 then 0 else 1)
+      | _ ->
+          BinaryOperator
+            { opcode = "!="; lhs = arg; rhs = IntegerLiteral 0; ty })
   | Some src, Some dst
     when Scalar.is_int src && Scalar.is_int dst && not (Scalar.equal src dst)
          && not (fits dst arg) ->

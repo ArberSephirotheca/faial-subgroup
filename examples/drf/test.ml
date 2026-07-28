@@ -780,6 +780,18 @@ let tests =
        forces [t1 = t2] once both [f1] and [f2] lie in [0, 1]. An unknown
        [f] admits a witness and reports a race. *)
     ("drf-bool-to-int.cu", [], 0);
+    (* A conversion to bool is a test against zero. [threadIdx.x + 1] is
+       never zero, so every thread assigns [b] the value 1 and every
+       thread writes [out[1]] a different value, which is a real race.
+       Dropping the conversion makes the index the sum itself, one cell
+       per thread, and the kernel came out data-race free. *)
+    ("racy-bool-cond.cu", [], 1);
+    (* [for (int i = 4; i; i--)] is the same loop as [i != 0]. The bound
+       is what separates the threads: [i] runs over [1, 4], so the stride
+       of 8 in [8 * threadIdx.x + i] keeps two threads apart. A condition
+       the range inference does not read leaves an unbounded loop whose
+       counter is free, and then the two threads collide. *)
+    ("drf-loop-bare-cond.cu", [], 0);
   ]
 
 (* These are kernels that are being documented, but are
