@@ -456,39 +456,6 @@ module Expressions = struct
     no_unknowns Imp.Infer_exp.to_nexp e
 end
 
-module Signature = struct
-  open W_lang
-
-  type t = (string * Type.t) list
-
-  let from_function (f : Function.t) : t =
-    f.arguments
-    |> List.map (fun a ->
-        let open FunctionArgument in
-        (a.name, a.ty))
-end
-
-module Typing = struct
-  open W_lang
-  open Stage0.Common
-
-  type t = Signature.t StringMap.t
-
-  let add_function (f : Function.t) (self : t) : t =
-    let f_ty = Signature.from_function f in
-    StringMap.add f.name f_ty self
-
-  let add (d : ProgramEntry.t) (self : t) : t =
-    match d with
-    | EntryPoint e -> add_function e.function_ self
-    | Function f -> add_function f self
-    | Declaration _ -> self
-
-  let empty : t = StringMap.empty
-  let from_program : Program.t -> t = List.fold_left (fun s d -> add d s) empty
-  let lookup (name : string) (ctx : t) : Signature.t = StringMap.find name ctx
-end
-
 module Globals = struct
   type t = { var : Variable.t; ty : Ty.t; init : Exp.nexp option }
 
@@ -540,17 +507,11 @@ module Context = struct
   type t = {
     arrays : Memory.t Variable.Map.t;
     params : Params.t;
-    typing : Typing.t;
     assigns : Const.t list;
   }
 
   let empty : t =
-    {
-      arrays = Variable.Map.empty;
-      params = Params.empty;
-      typing = Typing.empty;
-      assigns = [];
-    }
+    { arrays = Variable.Map.empty; params = Params.empty; assigns = [] }
 
   let add_to_arrays (p : ProgramEntry.t) (arrays : Memory.t Variable.Map.t) :
       Memory.t Variable.Map.t =
@@ -580,12 +541,7 @@ module Context = struct
     | _ -> ctx
 
   let add (p : ProgramEntry.t) (ctx : t) : t =
-    {
-      ctx with
-      arrays = add_to_arrays p ctx.arrays;
-      typing = Typing.add p ctx.typing;
-    }
-    |> add_scalar p
+    { ctx with arrays = add_to_arrays p ctx.arrays } |> add_scalar p
 
   let from_program (p : Program.t) : t =
     p
@@ -597,16 +553,13 @@ module Context = struct
     ctx.assigns |> List.rev
     |> List.filter_map Const.to_stmt
     |> Imp.Stmt.from_list
-
-  let lookup (name : string) (ctx : t) : Signature.t =
-    Typing.lookup name ctx.typing
 end
 
 module Statements = struct
   open Imp
   open Stage0 (* make the state monad available *)
 
-  let tr (ctx : Context.t) : W_lang.Statement.t list -> Infer_stmt.t =
+  let tr : W_lang.Statement.t list -> Infer_stmt.t =
     let rec tr : W_lang.Statement.t -> Infer_stmt.t =
      fun s ->
       let r =
@@ -783,33 +736,10 @@ module Statements = struct
                  })
         | Barrier _ -> Some (Infer_stmt.Sync (Sync.syncthreads ()))
         | Call { result; function_ = kernel; arguments = args } ->
-            let k = Context.lookup kernel ctx in
             Some
               (let open State.Syntax in
                Expressions.run
                  (let* args = State.list_map Expressions.tr args in
-                  let args : Infer_stmt.Arg.t list =
-                    List.map2
-                      (fun (arg : Infer_exp.t) (_, ty) ->
-                        let arg =
-                          let open Imp in
-                          if W_lang.Type.is_array ty then
-                            match arg with
-                            | Infer_exp.NExp (Var x) ->
-                                Infer_stmt.Arg.Array
-                                  (Infer_stmt.Array_use.make x)
-                            | _ -> Unsupported (W_lang.Type.to_ty ty)
-                          else if W_lang.Type.is_int ty then
-                            (* handle scalar *)
-                            Scalar arg
-                          else
-                            (* unsupported; retain the translated
-                               [Ty.t] from [W_lang.Type.to_ty]. *)
-                            Unsupported (W_lang.Type.to_ty ty)
-                        in
-                        arg)
-                      args k
-                  in
                   let result =
                     Option.map
                       (fun r ->
@@ -864,7 +794,7 @@ module Functions = struct
   let tr (ctx : Context.t) (e : W_lang.Function.t) : Imp.Kernel.t =
     let open Imp in
     let body, return =
-      let body = e.body |> Statements.tr ctx in
+      let body = e.body |> Statements.tr in
       Infer_stmt.seq (LocalDeclarations.tr e.locals) body
       |> Imp.Atomic_seed_read.rewrite
       |> Infer_stmt.infer

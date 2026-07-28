@@ -187,6 +187,13 @@ module Make (L : Logger) = struct
     | UnaryOperator u when u.opcode = "!" ->
         let b = infer_expr u.child in
         BExp (BNot b)
+    (* [&x] denotes the same location as [x], and the argument classifier
+       reads the base variable out of the expression, so the address-of
+       must not reach the unknown arm below. Only a bare variable is
+       unwrapped: [&a[i]] would sequence a read of [a] that the source
+       never performs. *)
+    | UnaryOperator { opcode = "&"; child = Ident _ as child; _ } ->
+        infer_expr child
     | CXXConstructExpr { args = [ Ident v ]; ty }
       when Ty.vector_lanes ty |> Option.is_some ->
         NExp (Var v.name)
@@ -205,42 +212,6 @@ module Make (L : Logger) = struct
 
   let try_to_nexp (e : D_lang.Expr.t) : Exp.nexp option =
     e |> infer_expr |> Infer_exp.to_nexp |> Infer_exp.no_unknowns
-
-  let infer_arg (e : D_lang.Expr.t) : Infer_stmt.Arg.t =
-    let rec to_array_use : D_lang.Expr.t -> Infer_stmt.Array_use.t option =
-      function
-      | Ident v -> Some (Infer_stmt.Array_use.make v.name)
-      | UnaryOperator { opcode; child = Ident _ as v; _ } when opcode = "&" ->
-          to_array_use v
-      | BinaryOperator o when o.opcode = "+" ->
-          let lhs_ty = D_lang.Expr.to_type o.lhs in
-          let address, offset =
-            if Ty.is_array_or_pointer lhs_ty then (o.lhs, o.rhs) else (o.rhs, o.lhs)
-          in
-          address
-          (* try to parse array use *)
-          |> to_array_use
-          (* add offset *)
-          |> Option.map (fun arr ->
-              let offset = infer_expr offset in
-              Infer_stmt.Array_use.add offset arr)
-      | _ -> None
-    in
-    let ty = D_lang.Expr.to_type e in
-    if Ty.is_array_or_pointer ty then
-      e |> to_array_use
-      (* If we have an array, wrap it under Array *)
-      |> Option.map (fun o -> Infer_stmt.Arg.Array o)
-      (* Otherwise, return unsupported retaining the source type. *)
-      |> Option.value ~default:(Infer_stmt.Arg.Unsupported ty)
-    else if Ty.is_int ty then
-      (* Handle scalars *)
-      Scalar (infer_expr e)
-    else if Ty.vector_lanes ty |> Option.is_some then
-      (* A vector argument is carried as its variable so the inliner can
-         bind the callee's per-lane parameter reads to it. *)
-      Scalar (infer_expr e)
-    else Unsupported ty
 
   (* -------------------------------------------------------------- *)
 
@@ -439,7 +410,7 @@ module Make (L : Logger) = struct
                   result;
                   kernel = s.kernel;
                   ty = s.ty;
-                  args = List.map infer_arg args;
+                  args = List.map infer_expr args;
                 }
           (* Either no signature found, or the matched signature has a
              different param count — happens with variadic-template /
@@ -702,6 +673,15 @@ module Make (L : Logger) = struct
       }
     in
     let ty = Context.resolve p.ty_var.ty ctx in
+    (* A const reference cannot be assigned through, so the parameter
+       binds the referent's value and is classified as the referent. A
+       mutable reference names storage the callee can write, which the
+       substrate has no term for, so it stays unsupported. *)
+    let ty =
+      Ty.deref_const ty
+      |> Option.map (fun ty -> Context.resolve ty ctx)
+      |> Option.value ~default:ty
+    in
     let x = p.ty_var.name in
     if Context.is_enum ty ctx then
       [ Kernel.Parameter.enum x (Context.get_enum ty ctx) ]

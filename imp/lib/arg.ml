@@ -16,12 +16,3 @@ let to_string : t -> string = function
 let array : t -> Variable.t option = function
   | Unsupported _ | Scalar _ -> None
   | Array a -> Some a.array
-
-let map (f : Exp.nexp -> Exp.nexp) : t -> t = function
-  | Unsupported ty -> Unsupported ty
-  | Scalar e -> Scalar (f e)
-  | Array a -> Array (Array_use.map f a)
-
-let loc_subst (alias : Alias.t) : t -> t = function
-  | (Unsupported _ | Scalar _) as i -> i
-  | Array a -> Array (Array_use.loc_subst alias a)

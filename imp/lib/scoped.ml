@@ -289,11 +289,8 @@ module Code = struct
   let mentioned : t -> Variable.Set.t =
     let n = Exp.n_free_names in
     let b = Exp.b_free_names in
-    let collect_arg (acc : Variable.Set.t) (a : Arg.t) : Variable.Set.t =
-      match a with
-      | Arg.Scalar e -> n e acc
-      | Arg.Array u -> Variable.Set.add u.array (n u.offset acc)
-      | Arg.Unsupported _ -> acc
+    let collect_arg (acc : Variable.Set.t) (a : Exp.nexp) : Variable.Set.t =
+      n a acc
     in
     let rec go (acc : Variable.Set.t) : t -> Variable.Set.t = function
       | Skip -> acc
@@ -603,6 +600,14 @@ module Kernel = struct
 
   let local_set (k : t) : Variable.Set.t = ParameterList.to_set k.parameters
   let global_set (k : t) : Variable.Set.t = Params.to_set k.global_variables
+
+  (* Merge globally-defined arrays and arrays defined in parameters. *)
+  let array_map (k : t) : Memory.t Variable.Map.t =
+    k.global_arrays
+    |> Variable.MapUtil.union_left (ParameterList.to_arrays k.parameters)
+
+  let arrays (k : t) : Variable.Set.t =
+    k |> array_map |> Variable.MapSetUtil.map_to_set
 
   let variable_set (k : t) : Variable.Set.t =
     Variable.Set.union (local_set k) (global_set k)

@@ -41,10 +41,22 @@ module Context = struct
     bindings : binding Variable.Map.t;
     (* Synthetic kernels in reverse order of synthesis. *)
     synthetics : Kernel.t list;
+    (* Argument types observed at each synthetic's call sites, keyed by
+       the synthetic's name. A generic lambda writes [auto], so the
+       call site is the only place its parameter type exists. Two call
+       sites that disagree map to [None]: one lifted body cannot serve
+       both instantiations, and picking either would substitute a body
+       the source never wrote. *)
+    arg_types : Ty.t list option Variable.Map.t;
   }
 
   let make (next : int) : t =
-    { next; bindings = Variable.Map.empty; synthetics = [] }
+    {
+      next;
+      bindings = Variable.Map.empty;
+      synthetics = [];
+      arg_types = Variable.Map.empty;
+    }
 
   let bindings : (t, binding Variable.Map.t) State.t =
     State.get_return (fun s -> s.bindings)
@@ -63,6 +75,22 @@ module Context = struct
 
   let add_synthetic (k : Kernel.t) : (t, unit) State.t =
     State.update (fun s -> { s with synthetics = k :: s.synthetics })
+
+  let add_arg_types (fname : Variable.t) (tys : Ty.t list) : (t, unit) State.t =
+    let same (a : Ty.t list) (b : Ty.t list) : bool =
+      List.length a = List.length b
+      && List.for_all2 (fun x y -> Ty.to_string x = Ty.to_string y) a b
+    in
+    State.update (fun s ->
+        let arg_types =
+          Variable.Map.update fname
+            (function
+              | None -> Some (Some tys)
+              | Some (Some prev) when same prev tys -> Some (Some prev)
+              | Some _ -> Some None)
+            s.arg_types
+        in
+        { s with arg_types })
 
   (* Resolve lambda-of-lambda captures: replace a capture whose name is
      itself a lambda binding with the lambda's effective captures. Then
@@ -108,14 +136,19 @@ let rewrite_expr (e : Expr.t) : Expr.t state =
     in
     Expr.CallExpr { func; args = cap_args @ args; ty }
   in
+  let call (v : Variable.t) (args : Expr.t list) (ty : Ty.t) : Expr.t state =
+    let b = Variable.Map.find v env in
+    let* () = Context.add_arg_types b.fname (List.map Expr.to_type args) in
+    return (synth_call b args ty)
+  in
   Expr.st_map
     (function
       | CallExpr { func = Ident { name = v; _ }; args; ty }
         when Variable.Map.mem v env ->
-          return (synth_call (Variable.Map.find v env) args ty)
+          call v args ty
       | CXXOperatorCallExpr { args = Ident { name = v; _ } :: args; ty; _ }
         when Variable.Map.mem v env ->
-          return (synth_call (Variable.Map.find v env) args ty)
+          call v args ty
       | e -> return e)
     e
 
@@ -144,7 +177,7 @@ let rewrite_stmt (st : Stmt.t) : Stmt.t state =
           let* fname = Context.fresh_name (Variable.name var) in
           let cap_params =
             List.map
-              (fun (n, _) -> mk_param ~name:n ~ty:J_type.unknown)
+              (fun (n, e) -> mk_param ~name:n ~ty:(Expr.to_type e))
               effective
           in
           let synth : Kernel.t =
@@ -165,9 +198,40 @@ let rewrite_stmt (st : Stmt.t) : Stmt.t state =
       | st -> Stmt.st_map_expr rewrite_expr st)
     st
 
+(* A generic lambda writes [auto] for its parameters, so the lifted
+   function has no type by which to bind an argument. Take the type from
+   the call site, the only place it exists. The lambda's own parameters
+   are the tail of the list, since the captures were prepended. *)
+let deduce_auto (tys : Ty.t list) (k : Kernel.t) : Kernel.t =
+  let captures = List.length k.params - List.length tys in
+  if captures < 0 then k
+  else
+    let params =
+      List.mapi
+        (fun i (p : Param.t) ->
+          let ty_var = Param.ty_var p in
+          if i < captures || not (Ty.is_auto (Ty_variable.ty ty_var)) then p
+          else
+            match List.nth_opt tys (i - captures) with
+            | Some ty ->
+                Param.make
+                  ~ty_var:(Ty_variable.make ~ty ~name:(Ty_variable.name ty_var))
+                  ~is_used:true ~is_shared:false
+            | None -> p)
+        k.params
+    in
+    { k with params }
+
 let lift_kernel (next : int) (k : Kernel.t) : int * Kernel.t list * Kernel.t =
   let s, code = State.run (rewrite_stmt k.code) (Context.make next) in
-  (s.next, List.rev s.synthetics, { k with code })
+  let refine (synth : Kernel.t) : Kernel.t =
+    match
+      Variable.Map.find_opt (Variable.from_name synth.name) s.arg_types
+    with
+    | Some (Some tys) -> deduce_auto tys synth
+    | Some None | None -> synth
+  in
+  (s.next, s.synthetics |> List.rev |> List.map refine, { k with code })
 
 (* Lift every [Def.Kernel] in [p], producing a new program where each
    kernel's synthetic auxiliaries appear *before* the kernel itself.

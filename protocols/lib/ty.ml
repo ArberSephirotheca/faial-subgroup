@@ -11,6 +11,11 @@ and inner =
   | Atomic of Scalar.t
   | Array of { base : t; size : int option }
   | Pointer of t
+  (* A reference names the referent's storage rather than a value of its
+     own, so it is not a pointer: nothing indexes through it. It is kept
+     distinct so a const reference, which cannot be assigned through, can
+     be read as its referent while a mutable one stays visibly unmodelled. *)
+  | Reference of t
   | Struct of { members : (string * t) list }
   | Function
   | Void
@@ -47,6 +52,7 @@ let rec inner_to_string : inner -> string = function
       in
       to_string a.base ^ "[" ^ size ^ "]"
   | Pointer p -> to_string p ^ " *"
+  | Reference p -> to_string p ^ " &"
   | Struct { members = [] } -> "struct"
   | Struct { members } ->
       "struct {"
@@ -104,7 +110,18 @@ let rec is_const (x : t) : bool =
   match x.inner with
   | Array a -> is_const a.base
   | Pointer p -> is_const p
+  | Reference p -> is_const p
   | _ -> false
+
+let is_reference (x : t) : bool =
+  match x.inner with Reference _ -> true | _ -> false
+
+(* A const reference cannot be assigned through, so it denotes the
+   referent's value and is read as the referent. A mutable one denotes
+   storage the callee can write, which the substrate does not model, so
+   it is left alone rather than silently read as a value. *)
+let deref_const (x : t) : t option =
+  match x.inner with Reference p when is_const x -> Some p | _ -> None
 
 let strip_const (x : t) : t =
   if Qualifier.Set.mem Const x.qualifiers then
@@ -291,6 +308,16 @@ and parse_shape (s : string) : t =
       | None ->
           if String.ends_with ~suffix:"*" s then
             make (Pointer (parse (String.sub s 0 (String.length s - 1))))
+          else if String.ends_with ~suffix:"&" s then
+            (* [T &] and [T &&] both name the referent's storage. *)
+            let s = String.sub s 0 (String.length s - 1) in
+            let s =
+              if String.ends_with ~suffix:"&" (String.trim s) then
+                let s = String.trim s in
+                String.sub s 0 (String.length s - 1)
+              else s
+            in
+            make (Reference (parse s))
           else (
             match leading_qualifier s with
             | Some (q, rest) -> add q (parse rest)

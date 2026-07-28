@@ -6,12 +6,8 @@ open Exp
 
 let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
     (k : Scoped.Kernel.t) : Protocols.Kernel.t =
-  (* Merge globally-defined arrays and arrays defined in parameters. *)
-  let arrays =
-    k.global_arrays
-    |> Variable.MapUtil.union_left (ParameterList.to_arrays k.parameters)
-  in
-  let array_set = arrays |> Variable.MapSetUtil.map_to_set in
+  let arrays = Scoped.Kernel.array_map k in
+  let array_set = Scoped.Kernel.arrays k in
   let p =
     k.code
     |> Scoped.Code.filter_locs array_set

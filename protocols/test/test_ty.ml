@@ -390,8 +390,6 @@ let test_opaque () : unit =
       "__int128";
       "unsigned __int128";
       "T";
-      "T &";
-      "T &&";
       "Args &&...";
       "<dependent type>";
       "std::initializer_list<T>";
@@ -403,12 +401,28 @@ let test_opaque () : unit =
     ];
   check_bool "is_auto" Ty.is_auto "auto" true;
   check_bool "is_unknown" Ty.is_unknown "?" true;
-  (* a qualifier is lifted onto the wrapper, so the payload loses it *)
   check_bool "is_const" Ty.is_const "const T &" true;
-  check_to_string "const T &" "const T &";
+  check_to_string "const T &" "const T &"
+
+(* A reference names the referent's storage. A const one cannot be
+   assigned through, so it reads as its referent; a mutable one is left
+   alone, since nothing in the substrate models writing through it. *)
+let test_reference () : unit =
+  check_bool "is_reference" Ty.is_reference "int &" true;
+  check_bool "is_reference" Ty.is_reference "T &&" true;
+  check_bool "is_reference" Ty.is_reference "int *" false;
+  check_bool "is_array_or_pointer" Ty.is_array_or_pointer "int &" false;
+  check_to_string "T &" "T &";
+  let deref (s : string) : string option =
+    parse s |> Ty.deref_const |> Option.map Ty.to_string
+  in
+  (* [const int &] is a reference to a const int, so the const sits on the
+     referent and survives the dereference. *)
   Alcotest.(check (option string))
-    "opaque const T &" (Some "T &")
-    (Ty.to_opaque (parse "const T &"))
+    "const int &" (Some "const int") (deref "const int &");
+  Alcotest.(check (option string))
+    "const T &" (Some "const T") (deref "const T &");
+  Alcotest.(check (option string)) "int &" None (deref "int &")
 
 let test_shapes () : unit =
   check_bool "is_void" Ty.is_void "void" true;
@@ -467,6 +481,7 @@ let tests : unit Alcotest.test_case list =
       `Quick,
       test_opaque_carries_the_resolved_spelling );
     ("opaque", `Quick, test_opaque);
+    ("references", `Quick, test_reference);
     ("shapes", `Quick, test_shapes);
     ("to_string round trip", `Quick, test_to_string_round_trip);
   ]

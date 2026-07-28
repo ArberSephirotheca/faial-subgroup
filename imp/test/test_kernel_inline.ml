@@ -82,7 +82,7 @@ let inline_expansion_tests =
                result = Some (g_var, Ty.int);
                kernel = "f";
                ty = "";
-               args = [ Arg.Scalar (Num 1); Arg.Scalar (Num 2) ];
+               args = [ Num 1; Num 2 ];
              },
              array_access )
        in

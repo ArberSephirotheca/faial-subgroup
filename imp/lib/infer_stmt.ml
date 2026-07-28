@@ -5,40 +5,6 @@
 open Stage0
 open Protocols
 open State.Syntax
-module O_Array_use = Array_use (* Refer to the root Array_use *)
-
-module Array_use = struct
-  type t = { array : Variable.t; offset : Infer_exp.t }
-
-  let make ?(offset = Infer_exp.num 0) (array : Variable.t) : t =
-    { array; offset }
-
-  let add (e : Infer_exp.t) (u : t) : t =
-    { u with offset = NExp (Infer_exp.plus u.offset e) }
-
-  let infer : t -> O_Array_use.t Infer_exp.state = function
-    | { array; offset } ->
-        let* offset = Infer_exp.to_nexp offset in
-        return { O_Array_use.array; O_Array_use.offset }
-end
-
-module O_Arg = Arg (* Refer to the root Arg *)
-
-module Arg = struct
-  type t =
-    | Scalar of Infer_exp.t
-    | Array of Array_use.t
-    | Unsupported of Ty.t
-
-  let infer : t -> O_Arg.t Infer_exp.state = function
-    | Scalar e ->
-        let* e = Infer_exp.to_nexp e in
-        return (O_Arg.Scalar e)
-    | Array { array; offset } ->
-        let* offset = Infer_exp.to_nexp offset in
-        return (O_Arg.Array { array; offset })
-    | Unsupported ty -> return (O_Arg.Unsupported ty)
-end
 
 type t =
   | Skip
@@ -83,7 +49,7 @@ type t =
       result : (Variable.t * Ty.t) option;
       kernel : string;
       ty : string;
-      args : Arg.t list;
+      args : Infer_exp.t list;
     }
   | Break
   | Continue
@@ -178,7 +144,7 @@ let rec to_stmt : t -> Stmt.t =
               (to_stmt body)))
   | Call { result; kernel; ty; args } ->
       Infer_exp.unknowns
-        (let* args = State.list_map Arg.infer args in
+        (let* args = State.list_map Infer_exp.to_nexp args in
          return (Stmt.Call { result; kernel; ty; args }))
   | Break -> Skip
   | Continue -> Skip
@@ -212,12 +178,6 @@ module Convert_assigns = struct
   let subst (env : IE.t Variable.Map.t) (e : IE.t) : IE.t =
     if Variable.Map.is_empty env then e
     else IE.subst (fun x -> Variable.Map.find_opt x env) e
-
-  let subst_arg (env : IE.t Variable.Map.t) : Arg.t -> Arg.t = function
-    | Arg.Scalar e -> Arg.Scalar (subst env e)
-    | Arg.Array { array; offset } ->
-        Arg.Array { array; offset = subst env offset }
-    | Arg.Unsupported _ as a -> a
 
   let keep (a : arm) (s : t) : arm = { a with residual = seq a.residual s }
 
@@ -281,7 +241,7 @@ module Convert_assigns = struct
              (bind_target a (Some (ty, target)))
              (Atomic { target; ty; atomic; array; index; guard }))
     | Call { result; kernel; ty; args } ->
-        let args = List.map (subst_arg a.env) args in
+        let args = List.map (subst a.env) args in
         let a = bind_target a (Option.map (fun (x, ty) -> (ty, x)) result) in
         Some (keep a (Call { result; kernel; ty; args }))
     | If _ | While _ | DoWhile _ | For _ | Break | Continue | Return _ -> None

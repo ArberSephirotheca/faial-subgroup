@@ -29,9 +29,9 @@ module Inline = struct
   module Variable = Protocols.Variable
   module Ty = Protocols.Ty
 
-  let apply (vars : Variable.Set.t) (result : (Variable.t * Ty.t) option)
-      (args : Arg.t list) (k : Scoped.Kernel.t) (s : Scoped.Code.t) :
-      Scoped.Code.t =
+  let apply ~(arrays : Variable.Set.t) (vars : Variable.Set.t)
+      (result : (Variable.t * Ty.t) option) (args : Protocols.Exp.nexp list)
+      (k : Scoped.Kernel.t) (s : Scoped.Code.t) : Scoped.Code.t =
     let open Scoped.Code in
     let s =
       match (result, k.return) with
@@ -101,37 +101,38 @@ module Inline = struct
     |> Scoped.Code.vars_distinct ~vars
     (* prepend the assignments of arguments to parameters *)
     |> List.fold_right
-         (fun ((x, ty), a) s ->
+         (fun ((x, p_ty), a) s ->
            let open Scoped.Code in
-           let open Arg in
-           match (Ty.vector_lanes ty, a) with
+           let ty = K.Parameter.Type.to_c_type p_ty in
+           match Classify_arg.classify ~arrays p_ty a with
            (* A vector argument [v] passed to a vector parameter [x]:
               bind each lane [x.axis := v.axis] so the callee's
               per-lane reads resolve to the caller's value. *)
-           | Some axes, Scalar (Protocols.Exp.Var v) ->
+           | Arg.Scalar (Protocols.Exp.Var v)
+             when Ty.vector_lanes ty <> None ->
+               let axes = Option.get (Ty.vector_lanes ty) in
                List.fold_left
                  (fun s axis ->
                    let lane = Variable.update_name (fun n -> n ^ "." ^ axis) in
                    decl_set (lane x) (Protocols.Exp.Var (lane v)) s)
                  s axes
-           | _ -> (
-               match a with
-               | Scalar e ->
-                   let x, s = rename_param vars x s in
-                   decl_set ~ty x e s
-               | Unsupported _ ->
-                   let x, s = rename_param vars x s in
-                   decl_unset ~ty x s
-               | Array u ->
-                   Scoped.Code.loc_subst
-                     { target = x; source = u.array; offset = u.offset }
-                     s))
-         (Common.zip (K.ParameterList.to_c_type k.parameters) args)
+           | Arg.Scalar e ->
+               let x, s = rename_param vars x s in
+               decl_set ~ty x e s
+           | Arg.Unsupported _ ->
+               let x, s = rename_param vars x s in
+               decl_unset ~ty x s
+           | Arg.Array u ->
+               Scoped.Code.loc_subst
+                 { target = x; source = u.array; offset = u.offset }
+                 s)
+         (Common.zip k.parameters args)
     (* then add inside the child, meaning that the free-variables of the
        outer-context are preserved  *)
     |> Scoped.Code.add_inside ~child:s
 
-  let inline_stmt (funcs : Scoped.Kernel.t StringMap.t) :
+  let inline_stmt ~(arrays : Variable.Set.t)
+      (funcs : Scoped.Kernel.t StringMap.t) :
       Variable.Set.t -> Scoped.Code.t -> Scoped.Code.t =
     let rec inline (vars : Variable.Set.t) : Scoped.Code.t -> Scoped.Code.t =
       function
@@ -148,7 +149,8 @@ module Inline = struct
              inlined and the tail remains as opaque [Call] nodes. *)
           let s = inline vars s in
           match StringMap.find_opt (Call.unique_id c) funcs with
-          | Some (k : Scoped.Kernel.t) -> apply vars c.result c.args k s
+          | Some (k : Scoped.Kernel.t) ->
+              apply ~arrays vars c.result c.args k s
           | None -> Call (c, s))
       | Seq (p, q) -> Seq (inline vars p, inline vars q)
       | If (b, s1, s2) -> If (b, inline vars s1, inline vars s2)
@@ -164,7 +166,9 @@ let inline (funcs : Scoped.Kernel.t StringMap.t) (k : Scoped.Kernel.t) :
     Scoped.Kernel.t =
   {
     k with
-    code = Inline.inline_stmt funcs (Scoped.Kernel.variable_set k) k.code;
+    code =
+      Inline.inline_stmt ~arrays:(Scoped.Kernel.arrays k) funcs
+        (Scoped.Kernel.variable_set k) k.code;
   }
 
 let inline_kernels (kernels : StringSet.t) (s : t) : t =

@@ -241,6 +241,20 @@ let tests =
      actually analysed, not dropped (a dropped body would false-negative
      as DRF). *)
     ("racy-generic-lambda.cu", [], 1);
+    (* The same generic lambda called at [int] and at [unsigned]. One
+     lifted body cannot serve both, so no type is deduced for [auto v]
+     and it stays an unbound local. The kernel races for real: the
+     second call writes [A[n]] from every thread with a per-thread
+     payload. *)
+    ("racy-generic-lambda-two-types.cu", [], 1);
+    (* The callee's parameter type decides how an argument binds, so a
+     const reference binds the referent's value: [i] reaches [put] and
+     each thread writes a distinct cell. A mutable reference would stay
+     unsupported, which is what racy-device-ref.cu documents. *)
+    ("drf-const-ref-param.cu", [], 0);
+    (* An array argument carries an additive offset, so the callee's
+     [P[i]] resolves to [A[i + 1]] and threads stay disjoint. *)
+    ("drf-arg-offset.cu", [], 0);
     (* Aliasing using shared memory (example 1) *)
     ("racy-alias-shmem1.cu", [], 1);
     (* Aliasing using shared memory (example 1) *)
