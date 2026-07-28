@@ -172,11 +172,7 @@ module Infer = struct
           match parse ~accum:(Exp.b_and e2 accum) e1 with
           | Some x -> Some x
           | None -> parse ~accum:(Exp.b_and e1 accum) e2)
-      | CastBool e -> (
-          match peel_shape e with
-          | Binary (Minus _, Var var, arg) ->
-              Some ({ var; op = Neq; arg }, accum)
-          | _ -> None)
+      | CastBool e -> parse_rel ~accum N_rel.Neq (peel_shape e) (Num 0)
       | _ -> None
     and parse_rel ~accum (o : N_rel.t) (lhs : Exp.nexp) (arg : Exp.nexp) :
         (Comparator.t unop * Exp.bexp) option =

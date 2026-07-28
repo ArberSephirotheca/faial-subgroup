@@ -233,6 +233,147 @@ let test_mixed_inc_and_body_sums () =
         1
         (count_self_assigns i for_body)
 
+(* --- Conditions that stand in for a comparison against zero ---------- *)
+
+(* [for (int i = n; i; i--)] and [for (int i = n; i != 0; i--)] are the same
+   loop in C, so both spellings must yield the same descending range. *)
+let truthiness_loop (cond : bexp) : Stmt.t =
+  let i = var "i" in
+  let init = Stmt.decl_set i (Var (var "n")) in
+  let inc = Stmt.assign Ty.int i (n_minus (Var i) (Num 1)) in
+  let body =
+    Stmt.Write
+      { array = var "S"; index = [ Var i ]; payload = None; guard = None }
+  in
+  For.to_stmt { init; cond; inc } body
+
+let test_bare_variable_is_bounded () =
+  let out = truthiness_loop (cast_bool (Var (var "i"))) in
+  Alcotest.(check bool) "no Star fall-through" false (has_star out);
+  match find_for out with
+  | None -> Alcotest.failf "expected a For; got: %s" (Stmt.to_string out)
+  | Some (r, _) ->
+      Alcotest.(check string) "loop var" "i" (Variable.name r.var);
+      (match r.dir with
+      | Decrease -> ()
+      | Increase -> Alcotest.failf "expected Decrease, got Increase");
+      (match r.step with
+      | Plus (Num 1) -> ()
+      | s ->
+          Alcotest.failf "expected step Plus(1), got %s"
+            (Range.Step.to_string s));
+      (match r.lower_bound with
+      | Num 1 -> ()
+      | e ->
+          Alcotest.failf "expected lower_bound = 1, got %s"
+            (Exp.n_to_string e));
+      (match r.upper_bound with
+      | Var v when Variable.name v = "n" -> ()
+      | e ->
+          Alcotest.failf "expected upper_bound = n, got %s"
+            (Exp.n_to_string e))
+
+let test_bare_variable_matches_neq_zero () =
+  let range_of (cond : bexp) : string =
+    match find_for (truthiness_loop cond) with
+    | Some (r, _) -> Range.to_string r
+    | None ->
+        Alcotest.failf "expected a For for condition %s" (Exp.b_to_string cond)
+  in
+  Alcotest.(check string)
+    "bare variable agrees with an explicit != 0"
+    (range_of (n_neq (Var (var "i")) (Num 0)))
+    (range_of (cast_bool (Var (var "i"))))
+
+(* The subtraction spelling [for (int i = 0; i - n; i++)] already worked and
+   must keep the same bounds now that it routes through the shared
+   comparison parser. *)
+let test_subtraction_shape_preserved () =
+  let i = var "i" in
+  let init = Stmt.decl_set i (Num 0) in
+  let cond = cast_bool (n_minus (Var i) (Var (var "n"))) in
+  let inc = Stmt.assign Ty.int i (n_plus (Var i) (Num 1)) in
+  let body =
+    Stmt.Write
+      { array = var "S"; index = [ Var i ]; payload = None; guard = None }
+  in
+  let out = For.to_stmt { init; cond; inc } body in
+  match find_for out with
+  | None -> Alcotest.failf "expected a For; got: %s" (Stmt.to_string out)
+  | Some (r, _) ->
+      Alcotest.(check string) "loop var" "i" (Variable.name r.var);
+      (match r.lower_bound with
+      | Num 0 -> ()
+      | e ->
+          Alcotest.failf "expected lower_bound = 0, got %s"
+            (Exp.n_to_string e));
+      (match r.upper_bound with
+      | Binary (Minus _, Var v, Num 1) when Variable.name v = "n" -> ()
+      | e ->
+          Alcotest.failf "expected upper_bound = n - 1, got %s"
+            (Exp.n_to_string e))
+
+(* [for (int i = 0; j - n; i++)] says nothing about [i], so no range over [i]
+   may be derived from it. *)
+let test_other_variable_declined () =
+  let i = var "i" in
+  let init = Stmt.decl_set i (Num 0) in
+  let cond = cast_bool (n_minus (Var (var "j")) (Var (var "n"))) in
+  let inc = Stmt.assign Ty.int i (n_plus (Var i) (Num 1)) in
+  let body =
+    Stmt.Write
+      { array = var "S"; index = [ Var i ]; payload = None; guard = None }
+  in
+  let out = For.to_stmt { init; cond; inc } body in
+  match find_for out with
+  | None -> Alcotest.(check bool) "degrades to Star" true (has_star out)
+  | Some (r, _) ->
+      Alcotest.failf "expected no range; got one over %s" (Range.to_string r)
+
+(* With two increments, the condition picks which one carries the range:
+   [for (int i = 0; j - n; j++, i++)] is a loop over [j]. *)
+let test_condition_selects_its_own_variable () =
+  let i = var "i" and j = var "j" in
+  let init = Stmt.decl_set i (Num 0) in
+  let cond = cast_bool (n_minus (Var j) (Var (var "n"))) in
+  let inc =
+    Stmt.from_list
+      [
+        Stmt.assign Ty.int j (n_plus (Var j) (Num 1));
+        Stmt.assign Ty.int i (n_plus (Var i) (Num 1));
+      ]
+  in
+  let body =
+    Stmt.Write
+      { array = var "S"; index = [ Var i ]; payload = None; guard = None }
+  in
+  let out = For.to_stmt { init; cond; inc } body in
+  match find_for out with
+  | None -> Alcotest.failf "expected a For; got: %s" (Stmt.to_string out)
+  | Some (r, _) ->
+      Alcotest.(check string)
+        "range is over the variable the condition constrains" "j"
+        (Variable.name r.var)
+
+let truthiness_tests =
+  [
+    ( "a bare variable is a comparison against zero",
+      `Quick,
+      test_bare_variable_is_bounded );
+    ( "a bare variable agrees with the != 0 spelling",
+      `Quick,
+      test_bare_variable_matches_neq_zero );
+    ( "the subtraction spelling keeps its bounds",
+      `Quick,
+      test_subtraction_shape_preserved );
+    ( "a condition on another variable yields no range",
+      `Quick,
+      test_other_variable_declined );
+    ( "the condition selects which increment carries the range",
+      `Quick,
+      test_condition_selects_its_own_variable );
+  ]
+
 let body_increment_tests =
   [
     ( "body-internal decrements produce structured For",
@@ -252,5 +393,9 @@ let body_increment_tests =
       test_mixed_inc_and_body_sums );
   ]
 
-let all_tests = [ ("body-internal increments", body_increment_tests) ]
+let all_tests =
+  [
+    ("body-internal increments", body_increment_tests);
+    ("zero-comparison conditions", truthiness_tests);
+  ]
 let () = Alcotest.run "for" all_tests
