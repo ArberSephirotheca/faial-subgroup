@@ -808,6 +808,22 @@ let tests =
        the range inference does not read leaves an unbounded loop whose
        counter is free, and then the two threads collide. *)
     ("drf-loop-bare-cond.cu", [], 0);
+    (* [for (; j != n; j++, i++)] leaves the loop counter uninitialised
+       in the init slot, so the loop starts at whatever [j] holds on
+       entry. That entry value is bound ahead of the loop, because the
+       closed form for the harvested [i++], [i = (j - entry) / step + i],
+       is placed inside the body, where [j] denotes the range variable.
+       Naming the entry value [j] there made the difference [j - j],
+       collapsing every iteration onto the value [i] had on entry: the
+       write became [out[threadIdx.x]], one cell per thread, and the
+       kernel reported DRF. The write is really [out[threadIdx.x + j]],
+       which two threads one apart share. *)
+    ("racy-loop-no-init.cu", [], 1);
+    (* The companion, pinning that reading the counter back does not by
+       itself make such a loop racy: eight consecutive cells per thread
+       starting at [8 * threadIdx.x] stay disjoint. It also reported DRF
+       before, but for the collapsed index [out[8 * threadIdx.x]]. *)
+    ("drf-loop-no-init.cu", [], 0);
   ]
 
 (* These are kernels that are being documented, but are

@@ -240,6 +240,23 @@ module Infer = struct
   let parse_body_top_incs (s : Stmt.t) : Increment.t unop list =
     Stmt.to_list s |> List.filter_map match_inc
 
+  (* A loop whose chosen variable is not initialised in the init slot
+     starts from whatever value that variable holds on entry. Naming
+     the entry value [Var name] is unusable, because [extract_incs] and
+     [post_for_assigns] read the lower bound back inside the loop body,
+     where [name] denotes the range variable rather than the value on
+     entry. Binding the entry value to a separate variable ahead of the
+     loop keeps the two apart. *)
+  let capture_entry_value (x : t) : t =
+    match x.init with
+    | Some _ -> x
+    | None ->
+        let entry = Variable.update_name (fun n -> "@" ^ n ^ "_init") x.name in
+        {
+          x with
+          init = Some (Exp.Var entry);
+          pre_loop = Stmt.seq x.pre_loop (Stmt.decl_set entry (Var x.name));
+        }
 
   let parse ~(body : Stmt.t) (loop : for_) : t option =
     let inc_incs, inc_stmt = parse_inc loop.inc in
@@ -314,6 +331,7 @@ module Infer = struct
     (* And if we find it, add the non-increments to post_body *)
     |> Option.map (fun x ->
         { x with post_body = Stmt.seq x.post_body inc_stmt })
+    |> Option.map capture_entry_value
 
   (* Signed contribution of an additive increment. [Plus k] contributes
      +k, [Minus k] contributes -k. Returns None for non-additive ops. *)
