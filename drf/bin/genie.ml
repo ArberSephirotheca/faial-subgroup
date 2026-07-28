@@ -1179,9 +1179,6 @@ let main =
   and+ ignore_parsing_errors =
     Arg.(value & flag
          & info [ "ignore-parsing-errors" ] ~doc:"Ignore parsing errors.")
-  and+ ignore_calls =
-    Arg.(value & flag
-         & info [ "ignore-calls" ] ~doc:"Skip kernel-call inlining.")
   and+ ignore_asserts =
     Arg.(value & flag
          & info [ "ignore-asserts" ] ~doc:"Ignore asserts.")
@@ -1301,7 +1298,6 @@ let main =
       ~thread_idx_1:None ~thread_idx_2:None
       ~block_idx_1:None ~block_idx_2:None
       ~archs
-      ~inline_calls:(not ignore_calls)
       ~ignore_parsing_errors
       ~includes
       ~block_dim:None ~grid_dim:None

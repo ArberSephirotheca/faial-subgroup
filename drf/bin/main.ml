@@ -186,11 +186,6 @@ let main =
       & info [ "I"; "include-dir" ] ~docv:"DIR"
           ~doc:
             "Add the specified directory to the search path for include files.")
-  and+ ignore_calls =
-    Arg.(
-      value & flag
-      & info [ "ignore-calls" ]
-          ~doc:"By default we inline kernel calls, this option skips that step.")
   and+ ge_index =
     Arg.(
       value & opt conv_int_list []
@@ -556,7 +551,7 @@ let main =
         ~show_symbexp ~logic ~solve_tactic ~deterministic_sat ~ge_index ~le_index
         ~eq_index ~only_array
         ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~archs
-        ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
+        ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
         ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
         ~rewrite_delin:(not no_rewrite_delin)

@@ -236,7 +236,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~logic ~solve_tactic ~deterministic_sat ~ge_index ~le_index ~eq_index
     ~only_array ~only_kernel
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
-    ~block_dim ~grid_dim ~includes ~inline_calls ~archs ~ignore_parsing_errors
+    ~block_dim ~grid_dim ~includes ~archs ~ignore_parsing_errors
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
     ~assume_delin ~rewrite_delin ~delin_elide ~delin_algo
     ~delin_check_vacuosity ~delin_weak_in_range ~delin_weak_in_range_for
@@ -257,7 +257,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     Phase_timer.measure "inference" (fun () ->
       Protocol_parser.Silent.to_proto ~rules ~infer_cond_bound
         ~abort_on_parsing_failure:(not ignore_parsing_errors)
-        ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
+        ~includes ~block_dim ~grid_dim ~macros ~cu_to_json
         ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor
         filename)
   in

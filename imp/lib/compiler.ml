@@ -54,11 +54,9 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
       grid_dim = k.grid_dim;
     }
 
-let compile_all ?(rules = Idiom_rewrite.all) ?(inline_calls = true)
-    ?infer_cond_bound (l : Kernel.t list) :
-    Protocols.Kernel.t list * Rejected_kernel.t list =
-  let l = List.map Scoped.Kernel.from_imp l in
+let compile_all ?(rules = Idiom_rewrite.all) ?infer_cond_bound
+    (l : Kernel.t list) : Protocols.Kernel.t list * Rejected_kernel.t list =
   let l, rejected =
-    if inline_calls then Inline_calls.inline_calls l else (l, [])
+    l |> List.map Scoped.Kernel.from_imp |> Inline_calls.inline_calls
   in
   (List.map (compile ~rules ?infer_cond_bound) l, rejected)

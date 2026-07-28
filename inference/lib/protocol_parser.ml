@@ -157,7 +157,7 @@ module Make (L : Logger.Logger) = struct
 
   let to_proto ?(abort_on_parsing_failure = true) ?(block_dim = None)
       ?(grid_dim = None) ?(includes = []) ?(exit_status = 2)
-      ?(inline_calls = true) ?(only_globals = true) ?(macros = [])
+      ?(only_globals = true) ?(macros = [])
       ?(cu_to_json = "cu-to-json") ?(ignore_asserts = false)
       ?(assume_launch = false) ?(launch_params = false) ?(cbor = false)
       ?(rules = Imp.Idiom_rewrite.all) ?infer_cond_bound (fname : string) :
@@ -169,8 +169,7 @@ module Make (L : Logger.Logger) = struct
     in
     let compiled, rejected =
       Phase_timer.measure "inference/imp-to-proto" (fun () ->
-        Imp.Compiler.compile_all ~rules ~inline_calls ?infer_cond_bound
-          parsed.kernels)
+        Imp.Compiler.compile_all ~rules ?infer_cond_bound parsed.kernels)
     in
     let global_names =
       parsed.kernels
