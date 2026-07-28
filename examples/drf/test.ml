@@ -824,6 +824,18 @@ let tests =
        starting at [8 * threadIdx.x] stay disjoint. It also reported DRF
        before, but for the collapsed index [out[8 * threadIdx.x]]. *)
     ("drf-loop-no-init.cu", [], 0);
+    (* A store of a literal [true] records the payload [1], the same way
+       [= 1] does. Two threads storing the same value into [y[0]] agree
+       on what ends up there, so the pair is benign. The literal was
+       read for integers only, leaving the bool store with no payload at
+       all, and two payload-less writes to one cell are reported as a
+       race. *)
+    ("drf-payload-bool-literal.cu", [], 0);
+    (* The companion, pinning that the payload is the literal's value
+       rather than a fixed one: [true] and [false] record 1 and 0, the
+       two threads disagree on what [y[0]] ends up holding, and the race
+       is real. *)
+    ("racy-payload-bool-literal.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are

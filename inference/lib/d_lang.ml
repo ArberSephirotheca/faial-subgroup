@@ -1414,6 +1414,7 @@ and rewrite_write (a : C_lang.Expr.c_array_subscript) (src : C_lang.Expr.t) :
   let rec literal (e : C_lang.Expr.t) : int option =
     match e with
     | IntegerLiteral x -> Some x
+    | CXXBoolLiteralExpr b -> Some (if b then 1 else 0)
     | Convert c -> Option.bind (literal c.arg) (convert c.ty)
     | _ -> None
   in
