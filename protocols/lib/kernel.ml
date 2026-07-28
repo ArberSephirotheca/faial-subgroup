@@ -140,6 +140,9 @@ let global_arrays (k : t) : Variable.Set.t =
 let used_arrays (k : t) : Variable.Set.t =
   Code.used_arrays k.code Variable.Set.empty
 
+let has_accesses (k : t) : bool =
+  Code.exists (function Code.Access _ -> true | _ -> false) k.code
+
 let constants (k : t) =
   let rec constants (b : bexp) (kvs : (string * int) list) : (string * int) list
       =

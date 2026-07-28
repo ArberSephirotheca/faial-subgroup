@@ -836,6 +836,25 @@ let tests =
        two threads disagree on what [y[0]] ends up holding, and the race
        is real. *)
     ("racy-payload-bool-literal.cu", [], 1);
+    (* A protocol with no memory access at all is reported as
+       zero-accesses, not as data-race freedom: with nothing to compare
+       there is no race to find, and a GPU kernel that never touches
+       memory points at accesses lost while inferring the protocol.
+       Like the vacuous verdict, zero-accesses exits 1. The expected
+       value here is that exit status, which does not tell zero-accesses
+       apart from racy; run the file under --json to read the status
+       itself. *)
+    ("zero-accesses-no-memory.cu", [], 1);
+    (* The same kernel shape once it reaches memory: one write per
+       thread, each to its own cell. The accesses are present, so this
+       stays plain data-race freedom. *)
+    ("drf-one-write-per-thread.cu", [], 0);
+    (* The boundary the zero-accesses check must respect: reads and an
+       atomic increment give a race proof that is trivial, yet the
+       protocol holds three accesses. Reporting it as anything other
+       than data-race freedom would make the new status fire on kernels
+       that are simply easy to clear. *)
+    ("drf-read-plus-atomic.cu", [], 0);
   ]
 
 (* These are kernels that are being documented, but are

@@ -273,6 +273,14 @@ let render (output : Analysis.t list) : unit =
                print_endline ""
            | None -> ());
           1
+      | Analysis.Verdict.Zero_accesses ->
+          T.print_string
+            [ T.Bold; T.Foreground T.Yellow ]
+            ("Kernel '" ^ kernel_name
+             ^ "' has no memory accesses; there is nothing to check. \
+                Expect accesses to have been dropped while inferring the \
+                protocol.\n");
+          1
       | Analysis.Verdict.Drf ->
           T.print_string
             [ T.Bold; T.Foreground T.Green ]

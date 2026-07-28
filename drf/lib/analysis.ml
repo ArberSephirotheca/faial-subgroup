@@ -9,15 +9,24 @@
    is neither proven DRF nor refuted, and the cap is the
    load-bearing reason. [Vacuous] is set when the kernel's
    merged precondition is UNSAT; the race pipeline is skipped
-   because every race goal would inherit the contradiction. *)
+   because every race goal would inherit the contradiction.
+   [Zero_accesses] is set when the kernel's protocol holds no
+   memory access at all, so there is no pair of accesses for the
+   race pipeline to compare and the kernel would otherwise clear
+   as [Drf]. A GPU kernel that touches no memory is almost never
+   what was written, so an access-free protocol points at accesses
+   dropped during inference rather than at a race-free kernel.
+   This is a distinct condition from [Vacuous]: the precondition
+   is satisfiable, it is the code that is empty. *)
 module Verdict = struct
-  type t = Drf | Racy | Timeout | Vacuous
+  type t = Drf | Racy | Timeout | Vacuous | Zero_accesses
 
   let to_string : t -> string = function
     | Drf -> "drf"
     | Racy -> "racy"
     | Timeout -> "timeout"
     | Vacuous -> "vacuous"
+    | Zero_accesses -> "zero-accesses"
 end
 
 type t = {
@@ -35,6 +44,8 @@ let is_safe (a : t) : bool = a.report |> List.for_all Solve_drf.Solution.is_safe
 let verdict (a : t) : Verdict.t =
   match a.vacuous with
   | Some _ -> Verdict.Vacuous
+  | None when not (Protocols.Kernel.has_accesses a.kernel) ->
+    Verdict.Zero_accesses
   | None ->
     let has_race, has_unknown =
       List.fold_left
