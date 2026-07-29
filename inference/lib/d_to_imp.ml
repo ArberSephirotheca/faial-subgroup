@@ -313,6 +313,38 @@ module Make (L : Logger) = struct
         Some { l with offset }
     | _ -> None
 
+  (* Rewrite the additive spine of a pointer expression so that every term
+     counts bytes. C scales each term by the step of the type at which that
+     addition happens, so a char view of [A + 5], plus 3, on an [int]
+     array is 23 bytes, where reading only the outermost type would say 8.
+     All-or-nothing: a node whose type has no step declines the whole
+     expression, since a partly converted offset has no unit at all. *)
+  let rec to_byte_offset (resolve : Ty.t -> Ty.t) (e : D_lang.Expr.t) :
+      D_lang.Expr.t option =
+    let ( let* ) = Option.bind in
+    match e with
+    | BinaryOperator b ->
+        let* lhs = to_byte_offset resolve b.lhs in
+        let* step = b.ty |> resolve |> Ty.pointee_size in
+        let rhs : D_lang.Expr.t =
+          if step = 1 then b.rhs
+          else
+            BinaryOperator
+              {
+                opcode = "*";
+                lhs = b.rhs;
+                rhs = IntegerLiteral step;
+                ty = J_type.int;
+              }
+        in
+        let e : D_lang.Expr.t = BinaryOperator { b with lhs; rhs } in
+        Some e
+    | Ident x ->
+        let* _ = Decl_expr.ty x |> resolve |> Ty.pointee_size in
+        Some e
+    | IntegerLiteral _ -> Some e
+    | _ -> None
+
   let asserts : Variable.Set.t =
     Variable.Set.of_list
       [
@@ -348,8 +380,23 @@ module Make (L : Logger) = struct
     let infer_location_alias (s : d_location_alias) : Imp.Infer_stmt.t =
       let source = parse_var s.source in
       let target = parse_var s.target in
-      let offset = infer_expr s.offset in
-      Infer_stmt.LocationAlias { target; source; offset }
+      let step (e : D_lang.Expr.t) : int option =
+        e |> D_lang.Expr.to_type |> infer_type |> Ty.pointee_size
+      in
+      (* The steps and the offset's unit are one decision: bytes when both
+         sides have a step and the spine converts, source units otherwise. *)
+      let scaled =
+        let ( let* ) = Option.bind in
+        let* view = step s.target in
+        let* elem = step s.source in
+        let* offset = to_byte_offset infer_type s.offset in
+        Some (Some view, Some elem, offset)
+      in
+      let view, elem, offset =
+        Option.value scaled ~default:(None, None, s.offset)
+      in
+      Infer_stmt.LocationAlias
+        { target; source; offset = infer_expr offset; view; elem }
     in
 
     let infer_decl (d : D_lang.Decl.t) : Infer_stmt.t =
@@ -402,10 +449,25 @@ module Make (L : Logger) = struct
             fields args
           |> Infer_stmt.from_list
       | _ -> (
+          (* Only the arguments that can reach [Array_use.from_nexp] as an
+             array binding are converted, and never [infer_expr] itself. A
+             blanket rule over pointer-typed additions would also rewrite
+             [(q + 1) - p] and [p < A + k], neither of which becomes an
+             alias, moving values that no alias ever converts back. *)
+          let byte_arg (a : D_lang.Expr.t) : D_lang.Expr.t =
+            if a |> D_lang.Expr.to_type |> infer_type |> Ty.is_array_or_pointer
+            then Option.value (to_byte_offset infer_type a) ~default:a
+            else a
+          in
           match Context.lookup_sig func arg_count ctx with
           | Some s when List.length s.params = arg_count ->
               let open Imp.Infer_stmt in
-              Call { result; id = s.id; args = List.map infer_expr args }
+              Call
+                {
+                  result;
+                  id = s.id;
+                  args = List.map (fun a -> infer_expr (byte_arg a)) args;
+                }
           | Some _ | None -> Skip)
     in
 

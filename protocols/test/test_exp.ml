@@ -145,12 +145,47 @@ let shift_tests =
       (Num 8) (Num 100) (Binary (rsh_u, Num 8, Num 100));
   ]
 
+let test_exact_div (name : string) (e : nexp) (k : int) (expected : nexp option)
+    =
+  ( name,
+    `Quick,
+    fun () ->
+      Alcotest.(check string)
+        name
+        (expected |> Option.map n_to_string |> Option.value ~default:"-")
+        (exact_div e k |> Option.map n_to_string
+       |> Option.value ~default:"-") )
+
+let exact_div_tests =
+  let i = var "i" in
+  [
+    test_exact_div "a literal multiple" (Num 20) 4 (Some (Num 5));
+    test_exact_div "a literal that does not divide" (Num 21) 4 None;
+    test_exact_div "the identity divisor" i 1 (Some i);
+    (* [&y[i]] becomes [4*i] and recovers [i] *)
+    test_exact_div "a scaled variable" (n_mult (Num 4) i) 4 (Some i);
+    (* [&sram[i * 3]] becomes [12*i] and recovers [3*i] *)
+    test_exact_div "a scaled multiple" (n_mult (Num 12) i) 4
+      (Some (n_mult (Num 3) i));
+    test_exact_div "a coefficient that does not divide" (n_mult (Num 6) i) 4
+      None;
+    test_exact_div "a sum of multiples"
+      (n_plus (n_mult (Num 8) i) (Num 4))
+      4
+      (Some (n_plus (n_mult (Num 2) i) (Num 1)));
+    test_exact_div "a sum with one term that does not divide"
+      (n_plus (n_mult (Num 8) i) (Num 2))
+      4 None;
+    test_exact_div "a bare variable" i 4 None;
+  ]
+
 let all_tests =
   [
     ("precedence", precedence_tests);
     ("convert elision", convert_tests);
     ("convert under substitution", subst_tests);
     ("shift folding", shift_tests);
+    ("exact division", exact_div_tests);
   ]
 
 (* Run the tests *)

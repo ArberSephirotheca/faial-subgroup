@@ -287,6 +287,46 @@ let test_strip_array () : unit =
       ("int", "int");
     ]
 
+let test_width () : unit =
+  List.iter
+    (fun (given, expected) ->
+      Alcotest.(check (option int))
+        ("width " ^ given) expected (Ty.width (parse given)))
+    [
+      ("char", Some 1);
+      ("int", Some 4);
+      ("long", Some 8);
+      ("float", Some 4);
+      ("double", Some 8);
+      ("float4", Some 16);
+      ("char4", Some 4);
+      (* [half] is not in [vector_table], so [half2] is opaque *)
+      ("half2", None);
+      ("void", Some 1);
+      ("int *", Some 8);
+      ("int[4]", None);
+      ("T", None);
+    ]
+
+let test_pointee_size () : unit =
+  List.iter
+    (fun (given, expected) ->
+      Alcotest.(check (option int))
+        ("pointee_size " ^ given) expected (Ty.pointee_size (parse given)))
+    [
+      ("int *", Some 4);
+      ("const float *", Some 4);
+      ("int **", Some 8);
+      ("float4 *", Some 16);
+      ("void *", Some 1);
+      ("int[16]", Some 4);
+      (* one level of [int[4][4]] is a row, and a flat single-index view
+         is not indexing in rows *)
+      ("int[4][4]", None);
+      ("float (*)[256]", None);
+      ("int", None);
+    ]
+
 (* ------------------------------ pointers ------------------------------ *)
 
 let test_pointers () : unit =
@@ -487,6 +527,8 @@ let tests : unit Alcotest.test_case list =
     ("array length", `Quick, test_array_length);
     ("array element type", `Quick, test_array_type);
     ("strip_array", `Quick, test_strip_array);
+    ("width", `Quick, test_width);
+    ("pointee_size", `Quick, test_pointee_size);
     ("pointers", `Quick, test_pointers);
     ("qualifiers", `Quick, test_qualifiers);
     ("vector lanes", `Quick, test_vector_lanes);

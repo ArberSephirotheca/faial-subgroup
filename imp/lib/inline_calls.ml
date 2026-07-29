@@ -31,10 +31,12 @@ module Inline = struct
   module Variable = Protocols.Variable
   module Ty = Protocols.Ty
 
-  let apply ~(arrays : Variable.Set.t) (vars : Variable.Set.t)
-      (result : (Variable.t * Ty.t) option) (args : Protocols.Exp.nexp list)
-      (k : Scoped.Kernel.t) (s : Scoped.Code.t) : Scoped.Code.t =
+  let apply ~(arrays : Protocols.Memory.t Variable.Map.t)
+      (vars : Variable.Set.t) (result : (Variable.t * Ty.t) option)
+      (args : Protocols.Exp.nexp list) (k : Scoped.Kernel.t)
+      (s : Scoped.Code.t) : Scoped.Code.t =
     let open Scoped.Code in
+    let array_set = Variable.MapSetUtil.map_to_set arrays in
     let s =
       match (result, k.return) with
       | Some (var, ty), Some data ->
@@ -106,7 +108,7 @@ module Inline = struct
          (fun ((x, p_ty), a) s ->
            let open Scoped.Code in
            let ty = K.Parameter.Type.to_c_type p_ty in
-           match Classify_arg.classify ~arrays p_ty a with
+           match Classify_arg.classify ~arrays:array_set p_ty a with
            (* A vector argument [v] passed to a vector parameter [x]:
               bind each lane [x.axis := v.axis] so the callee's
               per-lane reads resolve to the caller's value. *)
@@ -125,15 +127,35 @@ module Inline = struct
                let x, s = rename_param vars x s in
                decl_unset ~ty x s
            | Arg.Array u ->
+               (* The callee indexes in its parameter's step and the caller
+                  supplied an array in its own, which is where a [void]
+                  pointer parameter over an [int] array gets its 1 against
+                  4. *)
+               let view =
+                 match p_ty with
+                 | K.Parameter.Type.Array m -> Protocols.Memory.step m
+                 | _ -> None
+               in
+               let elem =
+                 Variable.Map.find_opt u.array arrays
+                 |> Option.map Protocols.Memory.step
+                 |> Option.join
+               in
                Scoped.Code.loc_subst
-                 { target = x; source = u.array; offset = u.offset }
+                 {
+                   target = x;
+                   source = u.array;
+                   offset = u.offset;
+                   view;
+                   elem;
+                 }
                  s)
          (Common.zip k.parameters args)
     (* then add inside the child, meaning that the free-variables of the
        outer-context are preserved  *)
     |> Scoped.Code.add_inside ~child:s
 
-  let inline_stmt ~(arrays : Variable.Set.t)
+  let inline_stmt ~(arrays : Protocols.Memory.t Variable.Map.t)
       (funcs : Scoped.Kernel.t IdMap.t) :
       Variable.Set.t -> Scoped.Code.t -> Scoped.Code.t =
     let rec inline (vars : Variable.Set.t) : Scoped.Code.t -> Scoped.Code.t =
@@ -169,7 +191,7 @@ let inline (funcs : Scoped.Kernel.t IdMap.t) (k : Scoped.Kernel.t) :
   {
     k with
     code =
-      Inline.inline_stmt ~arrays:(Scoped.Kernel.arrays k) funcs
+      Inline.inline_stmt ~arrays:(Scoped.Kernel.array_map k) funcs
         (Scoped.Kernel.variable_set k) k.code;
   }
 

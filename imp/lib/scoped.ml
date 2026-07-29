@@ -85,25 +85,57 @@ module Code = struct
     fun p -> to_s p |> Indent.to_string
 
   let loc_subst (alias : Alias.t) : t -> t =
+    (* The head index is the one the alias's offset applies to, so the
+       truncation rule applies to it whatever the arity. A span never meets a
+       multi-element index: its target would have to be a pointer to an array
+       or an array of arrays, and neither has a step. *)
+    let rewrite (view : int) (elem : int) (a : Access.t) : t =
+      (* The payload records the literal stored, and two writes of the same
+         literal are taken not to conflict. Once the index changes units the
+         two land on one cell, and storing 1 as a byte does not store the
+         bits that storing 1 as an [int] does, so the payload stops holding.
+         Only a change of units drops it. *)
+      let a =
+        match a.mode with
+        | Access.Mode.Write (Some _) when view <> elem ->
+            { a with mode = Access.Mode.Write None }
+        | _ -> a
+      in
+      match a.index with
+      | n :: l -> (
+          match Alias.elements ~off:alias.offset ~view ~elem n with
+          | Alias.Single n -> Access { a with index = n :: l }
+          | Alias.Span { first; last } ->
+              let e =
+                Variable.Set.empty
+                |> Exp.n_free_names first |> Exp.n_free_names last
+                |> fun xs -> Variable.fresh xs (Variable.from_name "@view")
+              in
+              For
+                ( Range.make ~lower_bound:first e last,
+                  Access { a with index = Exp.Var e :: l } ))
+      | [] -> failwith "Impossible to have 0 elements."
+    in
     let rec loc_subst : t -> t = function
       | Access a as i ->
           if Variable.equal a.array alias.target then
             (* Update the name of the resolved array,
             but keep the original location *)
             let new_x = { alias.source with location = a.array.location } in
-            let new_a =
-              if alias.offset = Num 0 then
-                (* No offset, so same index *)
-                a
-              else
-                match a.index with
-                | n :: l ->
-                    (* use the inlined variable but with the location of the alias,
-                  so that the error message appears in the right place. *)
-                    { a with index = Exp.n_plus alias.offset n :: l }
-                | [] -> failwith "Impossible to have 0 elements."
-            in
-            Access { new_a with array = new_x }
+            let a = { a with array = new_x } in
+            match (alias.view, alias.elem) with
+            | Some view, Some elem -> rewrite view elem a
+            | _ ->
+                if alias.offset = Num 0 then
+                  (* No offset, so same index *)
+                  Access a
+                else (
+                  match a.index with
+                  | n :: l ->
+                      (* use the inlined variable but with the location of the alias,
+                    so that the error message appears in the right place. *)
+                      Access { a with index = Exp.n_plus alias.offset n :: l }
+                  | [] -> failwith "Impossible to have 0 elements.")
           else i
       | Decl (d, l) -> Decl (d, loc_subst l)
       | Assign a -> Assign { a with body = loc_subst a.body }

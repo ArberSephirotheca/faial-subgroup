@@ -313,6 +313,29 @@ let n_udiv n1 n2 =
   | Num n1, Num n2 -> Num (n1 / n2)
   | _, _ -> Binary (Div Signedness.Unsigned, n1, n2)
 
+(* [Some m] when the expression is [k * m], so that dividing by [k] is an
+   identity rather than a [Div] node. Answering [None] costs the shape of
+   an expression and never its value, which is why staying conservative is
+   safe. *)
+let rec exact_div (e : nexp) (k : int) : nexp option =
+  let ( let* ) = Option.bind in
+  if k = 0 then None
+  else if k = 1 then Some e
+  else
+    match e with
+    | Num n when n mod k = 0 -> Some (Num (n / k))
+    | Binary (Mult _, Num c, e) when c mod k = 0 -> Some (n_mult (Num (c / k)) e)
+    | Binary (Mult _, e, Num c) when c mod k = 0 -> Some (n_mult (Num (c / k)) e)
+    | Binary (Plus _, e1, e2) ->
+        let* e1 = exact_div e1 k in
+        let* e2 = exact_div e2 k in
+        Some (n_plus e1 e2)
+    | Binary (Minus _, e1, e2) ->
+        let* e1 = exact_div e1 k in
+        let* e2 = exact_div e2 k in
+        Some (n_minus e1 e2)
+    | _ -> None
+
 let n_mod n1 n2 =
   match (n1, n2) with
   | Num n1, Num n2 -> Num (Common.modulo n1 n2)

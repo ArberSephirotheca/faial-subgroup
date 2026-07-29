@@ -176,6 +176,32 @@ let sizeof (x : t) : int option =
   | Scalar s -> Some (Scalar.sizeof s)
   | _ -> None
 
+(* [width] and [sizeof] differ only on [void]: [sizeof] answers how many
+   bytes a value occupies, where [void] has no answer, while [width]
+   answers how far [+ 1] moves a pointer, where GNU C says one. Keep them
+   apart. *)
+let width (x : t) : int option =
+  match x.inner with
+  | Scalar s -> Some (Scalar.sizeof s)
+  | Vector v -> Some (Vector_size.to_int v.size * Scalar.sizeof v.scalar)
+  | Void -> Some 1
+  | Pointer _ -> Some 8
+  | _ -> None
+
+(* How far [+ 1] moves a pointer, which is one level rather than every
+   dimension: [int **] steps by 8 where [strip_array] would say 4. A step
+   exists only when one level leaves something that is not itself an
+   array, so [int[4][4]] has none: one level there is a row, and a flat
+   single-index view of it is not indexing in rows. *)
+let pointee_size (x : t) : int option =
+  let elem =
+    match x.inner with
+    | Pointer p -> Some p
+    | Array a -> Some a.base
+    | _ -> None
+  in
+  match elem with Some e when not (is_array e) -> width e | _ -> None
+
 let to_scalar (x : t) : Scalar.t option =
   match x.inner with Scalar s -> Some s | _ -> None
 

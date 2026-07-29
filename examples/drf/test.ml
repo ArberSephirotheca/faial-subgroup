@@ -263,6 +263,33 @@ let tests =
     ("racy-alias-shmem3.cu", [], 1);
     (* Aliasing with increment *)
     ("racy-alias-assign.cu", [], 1);
+    (* A pointer view whose element differs in width from the array's
+     indexes in its own units, so the index is a byte address to be
+     truncated by the array's step rather than an element index. A
+     narrower view puts several of its cells inside one element: byte 1
+     is element 0 and collides, byte 5 is element 1 and does not. *)
+    ("racy-ptr-view-narrow.cu", [], 1);
+    ("drf-ptr-view-narrow.cu", [], 0);
+    (* Two writes of one literal are taken not to conflict, which stops
+     holding once the view lands them on the same cell, since storing 1
+     as a byte does not store the bits that storing 1 as an int does. A
+     scaled access therefore gives up its payload. *)
+    ("racy-ptr-view-payload.cu", [], 1);
+    (* A wider view covers several elements per access, so the collision
+     is with the last of them and modelling one element would lose it. *)
+    ("racy-ptr-view-wide.cu", [], 1);
+    ("racy-ptr-view-float4.cu", [], 1);
+    (* A flat view of a two-dimensional array is not indexing in rows, so
+     a multi-dimensional array has no step and the view is left alone.
+     Truncating by the row would put these two distinct ints in one cell
+     and invent a collision. *)
+    ("drf-ptr-view-flat-2d.cu", [], 0);
+    (* An array argument's offset is a byte count, and the step that
+     converts it back has to be the same one that converted it. The racy
+     shape is the guard: with the two apart, the call-side write lands a
+     row width away and the collision disappears. *)
+    ("racy-2d-arg-offset.cu", [], 1);
+    ("drf-2d-arg-offset.cu", [], 0);
     (* Array accesses of local memory should not introduce data-races. *)
     ("drf-local-array.cu", [], 0);
     (* Check support for macros *)
@@ -963,6 +990,17 @@ let unsupported : Fpath.t list =
     "racy-struct.cu";
     (* A racy example that calls a device function without array as args *)
     "racy-device-no-args.cu";
+    (* A pointer view written at the subscript rather than at a
+     declaration: the parser deletes the cast and no trace of the width
+     survives. *)
+    "racy-ptr-view-subscript.cu";
+    (* A byte view of a two-dimensional array. The residual is the arity,
+     a one-index access on an array whose other accesses carry two, not
+     the scaling. *)
+    "racy-ptr-view-arity.cu";
+    (* memcpy's byte loop truncated to elements. Not checked because the
+     stub carries a body only in c-to-json's dist-include header. *)
+    "drf-memcpy-extent.cu";
   ]
   |> List.map (fun x -> Fpath.(v "." / x))
 
