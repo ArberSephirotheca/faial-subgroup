@@ -202,26 +202,10 @@ let vars_distinct (k : t) : t =
    duplicates skip suffixes that would collide with another kernel's
    existing name. *)
 let uniquify_names (ks : t list) : t list =
-  let module SS = Stage0.Common.StringSet in
-  let initial =
-    List.fold_left (fun acc (k : t) -> SS.add k.name acc) SS.empty ks
-  in
-  let used = ref SS.empty in
-  List.map (fun (k : t) ->
-    if not (SS.mem k.name !used) then begin
-      used := SS.add k.name !used;
-      k
-    end else
-      let rec fresh n =
-        let candidate = Printf.sprintf "%s_%d" k.name n in
-        if SS.mem candidate !used || SS.mem candidate initial
-        then fresh (n + 1)
-        else candidate
-      in
-      let new_name = fresh 2 in
-      used := SS.add new_name !used;
-      { k with name = new_name })
-    ks
+  Stage0.Common.uniquify
+    ~name:(fun (k : t) -> k.name)
+    ~rename:(fun (k : t) (name : string) -> { k with name })
+    ~taken:Stage0.Common.StringSet.empty ks
 
 (* One-line-per-param signature; useful for the [--list-kernels
    --show-signature] CLI path. Signed types render bare (the C

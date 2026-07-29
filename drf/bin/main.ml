@@ -219,7 +219,11 @@ let main =
     Arg.(
       value
       & opt (some string) None
-      & info [ "kernel" ] ~doc:"Only check a specific kernel.")
+      & info [ "kernel" ]
+          ~doc:
+            "Only check a specific kernel. Accepts any name \
+             $(b,--list-kernels) reports, including a kernel that gets \
+             discarded, which answers with that kernel's discard result.")
   and+ only_true_data_races =
     Arg.(
       value & flag
@@ -508,15 +512,19 @@ let main =
       value & flag
       & info [ "list-kernels" ]
           ~doc:
-            "Print one kernel name per line on stdout, taken from the \
-             parsed protocol-level kernel list, then exit. No analysis \
-             is run. Synthesised pseudo-kernels emitted by \
-             [--assume-launch] are included if that flag is also set. \
-             Duplicate names in the parsed list are uniquified with a \
-             [_N] suffix so each printed name is a distinct identifier \
+            "Print one kernel name per line on stdout, sorted by name, \
+             then exit. No analysis is run. Every kernel the \
+             translation unit names is reported, including one that \
+             gets discarded, so the listing is the complete set of \
+             names [--kernel] accepts. Synthesised pseudo-kernels \
+             emitted by [--assume-launch] are included if that flag is \
+             also set. Duplicate names are uniquified with a [_N] \
+             suffix so each printed name is a distinct identifier \
              suitable for [--kernel] / [--assume KERNEL:...] filters. \
              Combine with [--show-signature] to also print each \
-             kernel's parameter list with C type and signedness.")
+             kernel's parameter list with C type and signedness; a \
+             discarded kernel has no protocol, so it prints as a bare \
+             name.")
   and+ show_signature =
     Arg.(
       value & flag
@@ -582,11 +590,12 @@ let main =
     in
     let run () =
       if list_kernels then
-        app.kernels
-        |> List.iter (fun k ->
-          if show_signature
-          then print_endline (Protocols.Kernel.signature_string k)
-          else print_endline (Protocols.Kernel.name k))
+        App.Listing.of_app app
+        |> List.iter (fun (e : App.Listing.entry) ->
+          match e with
+          | App.Listing.Analysable k when show_signature ->
+              print_endline (Protocols.Kernel.signature_string k)
+          | e -> print_endline (App.Listing.name e))
       else if Option.is_some stop_at then
         (* Run the pipeline for its printing side effects (each
            [show_or_stop] dumps the IR at its stage when matched), but
@@ -595,7 +604,7 @@ let main =
            "Kernel ... is DRF!", which is misleading when no analysis
            actually ran. *)
         let _ = App.run app in ()
-      else App.run app |> ui ~rejected:app.rejected
+      else App.run app |> ui ~rejected:(App.only_rejected app)
     in
     (try run (); Ok ()
      with App.Kernel_not_found name ->

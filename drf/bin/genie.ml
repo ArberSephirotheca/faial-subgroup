@@ -16,6 +16,7 @@ type verdict =
   | Drf of { source : verdict_source; assumes : (string * Exp.bexp list) list }
   | Drf_vacuous
   | Racy
+  | Discarded
 
 (* [--assume "[<preamble>:] BEXP"]: an optional comma-separated
    [key=value] preamble ([kernel=], [binder=], [line=]) scopes the clause
@@ -1073,8 +1074,12 @@ let compute_verdict ~(use_core_shrink : bool) ~(iter_cap : int)
            ~usage_pins app
   with Z3.Error _ -> Racy
 
-let report_prose (v : verdict) : unit =
+let report_prose ~(rejected : Imp.Rejected_kernel.t list) (v : verdict) : unit =
+  rejected
+  |> List.iter (fun (r : Imp.Rejected_kernel.t) ->
+      print_endline (Imp.Rejected_kernel.to_string r));
   match v with
+  | Discarded -> ()
   | Drf_vacuous ->
     print_endline
       "Baseline preconditions are unsatisfiable — kernel is vacuously DRF.";
@@ -1095,7 +1100,8 @@ let report_prose (v : verdict) : unit =
     print_endline
       "Racy; either a real race or a modelling gap (or vacuous DRF rejected)."
 
-let report_json (app : App.t) (v : verdict) : unit =
+let report_json ~(rejected : Imp.Rejected_kernel.t list) (app : App.t)
+    (v : verdict) : unit =
   (* The [assumes] field is per-kernel: an [Assoc] from kernel name
      to the list of clauses discovered for that kernel. A kernel with
      no clauses appears with an empty list, so consumers can iterate
@@ -1112,6 +1118,7 @@ let report_json (app : App.t) (v : verdict) : unit =
       assumes_to_json assumes
     | Drf_vacuous -> "drf_vacuous", `Null, `Assoc []
     | Racy -> "racy", `Null, `Assoc []
+    | Discarded -> "discarded", `Null, `Assoc []
   in
   let status = match v with Racy -> "racy" | _ -> "drf" in
   let kernels =
@@ -1127,6 +1134,7 @@ let report_json (app : App.t) (v : verdict) : unit =
     ("source", source_json);
     ("assumes", assumes_json);
     ("kernels", `List kernels);
+    ("rejected", `List (List.map Imp.Rejected_kernel.to_json rejected));
     ("phase_times", Phase_timer.to_json ());
     ("genie_stats", Stats.to_json ());
     ("argv",
@@ -1184,7 +1192,10 @@ let main =
          & info [ "ignore-asserts" ] ~doc:"Ignore asserts.")
   and+ only_kernel =
     Arg.(value & opt (some string) None
-         & info [ "kernel" ] ~doc:"Only check a specific kernel.")
+         & info [ "kernel" ]
+             ~doc:"Only check a specific kernel. Accepts any name \
+                   --list-kernels reports, including a kernel that gets \
+                   discarded, which answers with the discarded verdict.")
   and+ extra_assumes =
     Arg.(value & opt_all conv_assume []
          & info [ "assume" ] ~docv:"[PREAMBLE:]BEXP"
@@ -1325,13 +1336,20 @@ let main =
   in
   try
   if list_kernels then begin
-    app.kernels
-    |> List.iter (fun k ->
-      if show_signature
-      then print_endline (Protocols.Kernel.signature_string k)
-      else print_endline (Protocols.Kernel.name k));
+    App.Listing.of_app app
+    |> List.iter (fun (e : App.Listing.entry) ->
+      match e with
+      | App.Listing.Analysable k when show_signature ->
+          print_endline (Protocols.Kernel.signature_string k)
+      | e -> print_endline (App.Listing.name e));
     Ok ()
   end else
+    let rejected = App.only_rejected app in
+    if App.only_kernel app app.kernels = [] && rejected <> [] then begin
+      (if output_json then report_json ~rejected app Discarded
+       else report_prose ~rejected Discarded);
+      Ok ()
+    end else
     let app, usage_pins =
       (* Compute use-derived dim pins only for kernels [App.only_kernel]
          would analyse. Each [usage_constrained_kernel] call issues 6
@@ -1365,7 +1383,8 @@ let main =
       compute_verdict ~use_core_shrink ~iter_cap ~cached_gate ~legacy_gate
         ~prune_timeout_ms ~usage_pins app
     in
-    if output_json then report_json app v else report_prose v;
+    if output_json then report_json ~rejected app v
+    else report_prose ~rejected v;
     Ok ()
   with App.Kernel_not_found name ->
     Error (Printf.sprintf "kernel '%s' not found!" name)

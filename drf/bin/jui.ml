@@ -59,25 +59,7 @@ let render ~(rejected : Imp.Rejected_kernel.t list)
                    errors) );
           ])
   in
-  let rejected =
-    rejected
-    |> List.map (fun (r : Imp.Rejected_kernel.t) ->
-        match r.reason with
-        | Imp.Rejected_kernel.Reason.RecursiveCall { path } ->
-            `Assoc
-              [
-                ("kernel_name", `String r.kernel);
-                ("reason", `String "recursive-call");
-                ("path", `List (List.map (fun x -> `String x) path));
-              ]
-        | Imp.Rejected_kernel.Reason.UndefinedKernel { path } ->
-            `Assoc
-              [
-                ("kernel_name", `String r.kernel);
-                ("reason", `String "undefined-kernel");
-                ("path", `List (List.map (fun x -> `String x) path));
-              ])
-  in
+  let rejected = List.map Imp.Rejected_kernel.to_json rejected in
   `Assoc
     [
       ("kernels", `List kernels);

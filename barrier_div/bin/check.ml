@@ -86,7 +86,8 @@ module JUI = struct
           `List (List.map (fun p -> property_to_json p k) properties) );
       ]
 
-  let run (properties : Analysis.Property.t list)
+  let run ~(rejected : Imp.Rejected_kernel.t list)
+      (properties : Analysis.Property.t list)
       (protocol_kernels : Protocols.Kernel.t list) : unit =
     let kernels_json =
       `List (List.map (kernel_to_json properties) protocol_kernels)
@@ -94,6 +95,7 @@ module JUI = struct
     `Assoc
       [
         ("kernels", kernels_json);
+        ("rejected", `List (List.map Imp.Rejected_kernel.to_json rejected));
         ( "argv",
           `List (Sys.argv |> Array.to_list |> List.map (fun s -> `String s)) );
         ("executable_name", `String Sys.executable_name);
@@ -255,6 +257,15 @@ module TUI = struct
         all_safe && safe)
       true properties
 
+  let render_rejected (rejected : Imp.Rejected_kernel.t list) : unit =
+    rejected
+    |> List.iter (fun (r : Imp.Rejected_kernel.t) ->
+        T.print_string
+          [ T.Bold; T.Foreground T.Yellow ]
+          ("Kernel '" ^ r.kernel
+           ^ "' was discarded; there is nothing to check. "
+           ^ Imp.Rejected_kernel.Reason.to_string r.reason ^ ".\n"))
+
   let run ~(properties : Analysis.Property.t list)
       ~show_map ~show_check ~show_symbexp ~stop_at
       (protocol_kernels : Protocols.Kernel.t list) : bool =
@@ -333,7 +344,10 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
       fname
   in
   if list_kernels then begin
-    parsed.kernels |> List.iter (fun k -> print_endline (Kernel.name k));
+    List.map Kernel.name parsed.kernels
+    @ List.map (fun (r : Imp.Rejected_kernel.t) -> r.kernel) parsed.rejected
+    |> List.sort String.compare
+    |> List.iter print_endline;
     exit 0
   end;
   (* parsed.options has merged the user overrides on top of any
@@ -346,24 +360,29 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
   let grid_dim =
     if all_dims then None else Some parsed.options.grid_dim
   in
-  let parsed_kernels =
+  let parsed_kernels, rejected =
     match only_kernel with
-    | None -> parsed.kernels
+    | None -> (parsed.kernels, parsed.rejected)
     | Some name ->
         let ks =
           List.filter (fun k -> Kernel.name k = name) parsed.kernels
         in
-        if ks = [] then (
+        let rs =
+          List.filter
+            (fun (r : Imp.Rejected_kernel.t) -> r.kernel = name)
+            parsed.rejected
+        in
+        if ks = [] && rs = [] then (
           Logger.Colors.error (fun () -> "kernel '" ^ name ^ "' not found!");
           exit (-1))
-        else ks
+        else (ks, rs)
   in
   let kernels =
     List.map
       (preprocess ~block_dim ~grid_dim ~assumes ~assume_dims params)
       parsed_kernels
   in
-  if output_json then JUI.run properties kernels
+  if output_json then JUI.run ~rejected properties kernels
   else if Option.is_some stop_at then
     (* Run the pipeline for its printing side effects only (every
        [show_or_stop]-equivalent in [check_kernel] /
@@ -378,10 +397,12 @@ let main (fname : string) (ignore_parsing_errors : bool) (output_json : bool)
     ignore
       (TUI.run ~properties ~show_map ~show_check ~show_symbexp ~stop_at
          kernels)
-  else if
-    not (TUI.run ~properties ~show_map ~show_check ~show_symbexp ~stop_at
-           kernels)
-  then exit 1
+  else
+    let safe =
+      TUI.run ~properties ~show_map ~show_check ~show_symbexp ~stop_at kernels
+    in
+    TUI.render_rejected rejected;
+    if (not safe) || rejected <> [] then exit 1
 
 open Cmdliner
 
@@ -532,15 +553,20 @@ let assume_launch_arg : bool Term.t =
   Arg.(value & flag & info [ "assume-launch" ] ~doc)
 
 let only_kernel_arg : string option Term.t =
-  let doc = "Only check a specific kernel." in
+  let doc =
+    "Only check a specific kernel. Accepts any name [--list-kernels] \
+     reports, including a kernel that gets discarded, which answers \
+     with that kernel's discard result."
+  in
   Arg.(value & opt (some string) None & info [ "kernel" ] ~docv:"NAME" ~doc)
 
 let list_kernels_arg : bool Term.t =
   let doc =
-    "Print one kernel name per line on stdout, taken from the parsed \
-     protocol-level kernel list, then exit. No analysis is run. \
-     Intended for scripting (e.g. piping into xargs or [--kernel] \
-     filters)."
+    "Print one kernel name per line on stdout, sorted by name, then \
+     exit. No analysis is run. Every kernel the translation unit names \
+     is reported, including one that gets discarded, so the listing is \
+     the complete set of names [--kernel] accepts. Intended for \
+     scripting (e.g. piping into xargs or [--kernel] filters)."
   in
   Arg.(value & flag & info [ "list-kernels" ] ~doc)
 

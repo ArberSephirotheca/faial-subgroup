@@ -267,13 +267,27 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
   in
   (* Uniquify duplicate kernel names so that a [--assume kernel=K:BEXP]
      clause, the [--list-kernels] output, and the genie verdict JSON all
-     address each kernel by a distinct identifier. *)
+     address each kernel by a distinct identifier. Discarded kernels are
+     enumerated and selected by name too, so they are uniquified against
+     the analysable names: the analysable kernel keeps the shared name
+     and the discarded one takes the suffix. *)
   let kernels = parsed.kernels |> Protocols.Kernel.uniquify_names in
+  let rejected =
+    parsed.rejected
+    |> Common.uniquify
+         ~name:(fun (r : Imp.Rejected_kernel.t) -> r.kernel)
+         ~rename:(fun (r : Imp.Rejected_kernel.t) (kernel : string) ->
+           { r with kernel })
+         ~taken:
+           (kernels
+            |> List.map Protocols.Kernel.name
+            |> Common.StringSet.of_list)
+  in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
   let grid_dim = if all_dims then None else Some parsed.options.grid_dim in
   {
     filename;
-    rejected = parsed.rejected;
+    rejected;
     timeout;
     show_proofs;
     show_proto;
@@ -440,14 +454,46 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
   |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Flat_acc
        ~show:a.show_flat_acc Flatacc.print_kernels
 
+(* A discarded kernel is a name [--kernel] answers to, so an empty
+   selection is only an error when the name matches no kernel at all,
+   analysable or discarded. Naming a discarded kernel selects no
+   analysable kernel and leaves [only_rejected] to report it. *)
 let only_kernel (a : t) (ks : Protocols.Kernel.t list) : Protocols.Kernel.t list
     =
   match a.only_kernel with
   | Some name ->
       let ks = ks |> List.filter (fun k -> Protocols.Kernel.name k = name) in
-      if ks = [] then raise (Kernel_not_found name)
-      else ks
+      if ks <> [] then ks
+      else if
+        List.exists (fun (r : Imp.Rejected_kernel.t) -> r.kernel = name)
+          a.rejected
+      then []
+      else raise (Kernel_not_found name)
   | None -> ks
+
+let only_rejected (a : t) : Imp.Rejected_kernel.t list =
+  match a.only_kernel with
+  | Some name ->
+      a.rejected
+      |> List.filter (fun (r : Imp.Rejected_kernel.t) -> r.kernel = name)
+  | None -> a.rejected
+
+(* The kernels the translation unit names, analysable and discarded
+   alike, as [--list-kernels] enumerates them. *)
+module Listing = struct
+  type entry =
+    | Analysable of Protocols.Kernel.t
+    | Discarded of Imp.Rejected_kernel.t
+
+  let name : entry -> string = function
+    | Analysable k -> Protocols.Kernel.name k
+    | Discarded r -> r.kernel
+
+  let of_app (a : t) : entry list =
+    List.map (fun k -> Analysable k) a.kernels
+    @ List.map (fun r -> Discarded r) a.rejected
+    |> List.sort (fun x y -> String.compare (name x) (name y))
+end
 
 let run (a : t) : Analysis.t list =
   let check_kernel arch (kernel : Protocols.Kernel.t) : Analysis.t =

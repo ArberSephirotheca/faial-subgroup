@@ -895,6 +895,17 @@ let tests =
     (* The policy that restores the old behaviour: the call is ignored and
        the kernel is analysed as though it were never written. *)
     ("undefined-call.cu", [ "--opaque-calls=skip-all" ], 0);
+    (* A discarded kernel answers to its own name: selecting it reports
+       the discard, where naming it used to fail as though the kernel
+       were absent from the file. *)
+    ("undefined-call.cu", [ "--kernel"; "k" ], 1);
+    (* One kernel is discarded and the other is analysable. Selecting the
+       discarded one reports the discard; selecting the survivor reports
+       only the survivor, where the discard of the kernel that was not
+       selected used to be reported alongside it. *)
+    ("discarded-with-survivor.cu", [], 1);
+    ("discarded-with-survivor.cu", [ "--kernel"; "declined" ], 1);
+    ("discarded-with-survivor.cu", [ "--kernel"; "analysed" ], 0);
     (* Rejection follows reachability: [k] calls [helper], and [helper] is
        the one that calls the undefined function. *)
     ("undefined-call-indirect.cu", [], 1);
@@ -1054,6 +1065,23 @@ let () =
         print_endline ("Missing unsupported file: " ^ Fpath.to_string f);
         exit 1)
       else print_endline ("TODO:  " ^ Fpath.to_string f));
+  (* [--list-kernels] is checked on its output rather than its exit
+     status, which is 0 whatever it prints. Enumeration must name the
+     discarded kernel too, since a name it omits is a name [--kernel]
+     cannot be given back. *)
+  let listing =
+    faial_drf ~args:[ "--list-kernels" ] (v "discarded-with-survivor.cu")
+    |> Subprocess.run_split
+  in
+  print_string "LIST:  faial-drf --list-kernels discarded-with-survivor.cu";
+  if listing.stdout = "analysed\ndeclined\n" then print_endline " ✔"
+  else (
+    print_endline " ✘";
+    print_endline "------------------------ OUTPUT ------------------------";
+    print_endline listing.stdout;
+    print_endline listing.stderr;
+    print_endline "ERROR: Expected the analysable and the discarded kernel.";
+    exit 1);
   let missed = missed_files (v ".") in
   if not (Fpath.Set.is_empty missed) then (
     let missed =
