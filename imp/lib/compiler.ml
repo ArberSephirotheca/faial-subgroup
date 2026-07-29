@@ -39,7 +39,7 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
     *)
   Protocols.Kernel.reset_variable_kind
     {
-      name = k.name;
+      name = Scoped.Kernel.name k;
       pre;
       arrays;
       local_variables = locals;

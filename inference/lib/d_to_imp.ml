@@ -405,17 +405,7 @@ module Make (L : Logger) = struct
           match Context.lookup_sig func arg_count ctx with
           | Some s when List.length s.params = arg_count ->
               let open Imp.Infer_stmt in
-              Call
-                {
-                  result;
-                  kernel = s.kernel;
-                  ty = s.ty;
-                  args = List.map infer_expr args;
-                }
-          (* Either no signature found, or the matched signature has a
-             different param count — happens with variadic-template /
-             pack-expansion specialisations whose ty-string aliases a
-             stored entry. Skip rather than abort the whole analysis. *)
+              Call { result; id = s.id; args = List.map infer_expr args }
           | Some _ | None -> Skip)
     in
 
@@ -789,8 +779,7 @@ module Make (L : Logger) = struct
     let open Imp.Kernel in
     ( ctx,
       {
-        name = k.name;
-        ty = k.ty;
+        id = k.D_lang.Kernel.id;
         code;
         parameters;
         global_arrays = ctx.arrays;

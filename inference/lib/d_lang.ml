@@ -842,8 +842,8 @@ let for_loop_vars (f : Stmt.d_for) : Variable.t list =
 
 module Kernel = struct
   type t = {
-    ty : string;
-    name : string;
+    id : Imp.Function_id.t;
+    decl_id : string option;
     code : Stmt.t;
     type_params : Ty_param.t list;
     params : Param.t list;
@@ -851,6 +851,12 @@ module Kernel = struct
   }
 
   let is_global (k : t) : bool = k.attribute |> KernelAttr.is_global
+
+  (* [name] is the bare name clang reports, [label] adds the enclosing
+     namespaces and the template arguments. *)
+  let name (k : t) : string = Imp.Function_id.name k.id
+  let label (k : t) : string = Imp.Function_id.label k.id
+  let ty (k : t) : string = Imp.Function_id.ty k.id
 
   let header (k : t) : string =
     let open C_lang in
@@ -860,7 +866,7 @@ module Kernel = struct
       else ""
     in
     KernelAttr.to_string k.attribute
-    ^ " " ^ k.name ^ " " ^ tps ^ "("
+    ^ " " ^ label k ^ " " ^ tps ^ "("
     ^ list_to_s Param.to_string k.params
     ^ ")"
 
@@ -924,78 +930,116 @@ module Program = struct
 end
 
 module SignatureDB = struct
+  module Function_id = Imp.Function_id
+
   module Signature = struct
-    type t = { kernel : string; ty : string; params : Variable.t list }
+    type t = { id : Function_id.t; params : Variable.t list }
 
     let to_string (s : t) : string =
-      s.kernel ^ "(" ^ Variable.list_to_string s.params ^ "):" ^ s.ty
+      Function_id.label s.id
+      ^ "(" ^ Variable.list_to_string s.params ^ "):"
+      ^ Function_id.ty s.id
 
     let from_kernel (k : Kernel.t) : t =
-      let open Kernel in
-      { kernel = k.name; ty = k.ty; params = List.map Param.name k.params }
+      { id = k.Kernel.id; params = List.map Param.name k.Kernel.params }
   end
 
-  type t = Kernel.t StringMap.t StringMap.t
+  type t = {
+    (* Every function we can see, keyed by what makes it distinct. A
+       prototype and the definition it declares reach the same key, which
+       is what merges them. *)
+    by_id : Kernel.t Function_id.Map.t;
+    (* Which function a declaration belongs to. A call site names the
+       declaration clang resolved it to, and several declarations of one
+       function land on one identity. *)
+    by_decl : Function_id.t StringMap.t;
+    (* Candidates for a call that names no declaration: an unresolved
+       overload, or a call synthesised by faial itself. *)
+    by_name : Function_id.t list StringMap.t;
+  }
+
+  let empty : t =
+    { by_id = Function_id.Map.empty; by_decl = StringMap.empty;
+      by_name = StringMap.empty }
+
+  let index (k : Kernel.t) (db : t) : t =
+    let id = k.Kernel.id in
+    let name = Function_id.name id in
+    let ids = db.by_name |> StringMap.find_opt name |> Option.value ~default:[] in
+    {
+      db with
+      by_decl =
+        (match k.Kernel.decl_id with
+         | Some d -> StringMap.add d id db.by_decl
+         | None -> db.by_decl);
+      by_name =
+        StringMap.add name
+          (if List.exists (Function_id.equal id) ids then ids else ids @ [ id ])
+          db.by_name;
+    }
 
   let add (k : Kernel.t) (db : t) : t =
-    let sigs : Kernel.t StringMap.t =
-      db |> StringMap.find_opt k.name |> Option.value ~default:StringMap.empty
-    in
-    let sigs : Kernel.t StringMap.t = StringMap.add k.ty k sigs in
-    StringMap.add k.name sigs db
+    let db = index k db in
+    { db with by_id = Function_id.Map.add k.Kernel.id k db.by_id }
 
+  (* A body-less declaration must not displace the body it declares. *)
   let add_if_absent (k : Kernel.t) (db : t) : t =
-    let occupied =
-      db |> StringMap.find_opt k.name
-      |> Option.map (StringMap.mem k.ty)
-      |> Option.value ~default:false
-    in
-    if occupied then db else add k db
+    let db = index k db in
+    if Function_id.Map.mem k.Kernel.id db.by_id then db
+    else { db with by_id = Function_id.Map.add k.Kernel.id k db.by_id }
 
   let to_string (db : t) : string =
     let curr =
-      db |> StringMap.bindings |> List.map snd
-      |> List.concat_map (fun tys ->
-          tys |> StringMap.bindings |> List.map snd
-          |> List.map Signature.from_kernel
-          |> List.map Signature.to_string)
+      db.by_id |> Function_id.Map.bindings |> List.map snd
+      |> List.map Signature.from_kernel
+      |> List.map Signature.to_string
       |> String.concat ", "
     in
     "[" ^ curr ^ "]"
 
-  let get ~kernel ~ty ~arg_count (db : t) : Kernel.t option =
-    db |> StringMap.find_opt kernel
-    |> Option.map (fun sigs ->
-        match StringMap.find_opt ty sigs with
-        | Some e -> Some e
-        | None when ty = "?" ->
-            (* Unresolved-lookup call: clang couldn't resolve the
-               overload at parse time, so we fall back to the
-               first kernel whose arity matches. A concrete [ty]
-               that doesn't appear as a key means the call's
-               source type doesn't match any registered kernel
-               signature, and falling back here would silently
-               bind the call to an unrelated overload (e.g.
-               picking [std::get<T1,T2>(pair<T1,T2>&)] for a
-               user-declared [unsigned int get(int)] whose body
-               isn't in the DB). *)
-            sigs |> StringMap.bindings |> List.map snd
-            |> List.find_opt (fun k ->
-                let open Kernel in
-                List.length k.params = arg_count)
-        | None -> None)
-    |> Option.join
+  let get_id (id : Function_id.t) (db : t) : Kernel.t option =
+    Function_id.Map.find_opt id db.by_id
+
+  let named (name : string) (db : t) : Kernel.t list =
+    db.by_name |> StringMap.find_opt name
+    |> Option.value ~default:[]
+    |> List.filter_map (fun id -> get_id id db)
+
+  (* A call that names no declaration: clang could not resolve the
+     overload, or faial synthesised the call. [ty] is "?" for the
+     former, where the arity is all there is to go on; otherwise the
+     type still has to match, because a name alone would bind the call
+     to an unrelated overload. *)
+  let get_unresolved ~(name : string) ~(ty : string) ~(arg_count : int)
+      (db : t) : Kernel.t option =
+    let candidates = named name db in
+    if ty = "?" then
+      List.find_opt
+        (fun (k : Kernel.t) -> List.length k.params = arg_count)
+        candidates
+    else
+      List.find_opt
+        (fun (k : Kernel.t) -> Function_id.ty k.Kernel.id = ty)
+        candidates
 
   let lookup (e : Expr.t) (arg_count : int) (db : t) : Signature.t option =
-    let ( let* ) = Option.bind in
-    let* kernel, ty =
-      match e with
-      | UnresolvedLookupExpr { name = n; _ } -> Some (Variable.name n, "?")
-      | Ident { name = n; kind = Function; ty } ->
-          Some (Variable.name n, Ty.to_string ty)
-      | _ -> None
+    let by_decl (d : string option) : Kernel.t option =
+      let ( let* ) = Option.bind in
+      let* d = d in
+      let* id = StringMap.find_opt d db.by_decl in
+      get_id id db
     in
-    get ~kernel ~ty ~arg_count db |> Option.map Signature.from_kernel
+    (match e with
+     | UnresolvedLookupExpr { name = n; _ } ->
+         get_unresolved ~name:(Variable.name n) ~ty:"?" ~arg_count db
+     | Ident { name = n; kind = Function; ty; decl_id } -> (
+         match by_decl decl_id with
+         | Some k -> Some k
+         | None ->
+             get_unresolved ~name:(Variable.name n) ~ty:(Ty.to_string ty)
+               ~arg_count db)
+     | _ -> None)
+    |> Option.map Signature.from_kernel
 
   let from_program ?(policy = Opaque_call_policy.default) (p : Program.t) : t =
     List.fold_left
@@ -1005,11 +1049,12 @@ module SignatureDB = struct
         | Kernel k -> add k kernels
         | Prototype k ->
             if
-              Opaque_call_policy.is_opaque policy ~name:k.name ~params:k.params
+              Opaque_call_policy.is_opaque policy ~name:(Kernel.name k)
+                ~params:k.params
             then add_if_absent k kernels
             else kernels
         | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> kernels)
-      StringMap.empty p
+      empty p
 end
 
 (* ------------------------------------- *)
@@ -1797,8 +1842,8 @@ let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
 
 let rewrite_kernel (k : C_lang.Kernel.t) : Kernel.t =
   {
-    ty = k.ty;
-    name = k.name;
+    id = C_lang.Kernel.id k;
+    decl_id = C_lang.Kernel.decl_id k;
     code = rewrite_stmt k.code;
     params = k.params;
     type_params = k.type_params;

@@ -43,11 +43,9 @@ let call_stmt (kernel : Decl_expr.t) (args : C_lang.Expr.t list) :
     args
     |> State.list_map Host_translate.rewrite_expr
   in
-  let func : Expr.t =
-    Ident
-      (Decl_expr.from_name ~ty:kernel.ty ~kind:Decl_expr.Kind.Function
-         kernel.name)
-  in
+  (* Keep the launch site's [decl_id]: it is what resolves the call to
+     the launched instantiation rather than to a same-named sibling. *)
+  let func : Expr.t = Ident { kernel with kind = Decl_expr.Kind.Function } in
   return (Stmt.SExpr (CallExpr { func; args; ty = kernel.ty }))
 
 let synth_name (lp : C_lang.LaunchParam.t) : string =
@@ -194,8 +192,8 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
   let name = synth_name lp in
   let ty = Ty.to_string lp.kernel.ty in
   {
-    Kernel.ty;
-    name;
+    Kernel.id = Imp.Function_id.make ~name ~ty ();
+    decl_id = None;
     code = body;
     type_params = [];
     params;
@@ -205,7 +203,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
 (** {1 Demote launched kernels} *)
 
 let demote_if_launched (launched : Variable.Set.t) (k : Kernel.t) : Kernel.t =
-  let n = Variable.from_name k.name in
+  let n = Variable.from_name (Kernel.name k) in
   if Variable.Set.mem n launched && k.attribute = C_lang.KernelAttr.Default
   then { k with attribute = C_lang.KernelAttr.Auxiliary }
   else k

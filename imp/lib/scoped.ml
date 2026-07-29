@@ -35,16 +35,16 @@ module Code = struct
   let decl_unset ?(ty = Ty.int) (x : Variable.t) (s : t) : t =
     Decl (Decl.unset ~ty x, s)
 
-  let calls : t -> StringSet.t =
-    let rec calls (cs : StringSet.t) : t -> StringSet.t = function
+  let calls : t -> Function_id.Set.t =
+    let rec calls (cs : Function_id.Set.t) : t -> Function_id.Set.t = function
       | Skip | Sync _ | Assert _ | Access _ -> cs
       | Call (c, s) ->
-          let cs = StringSet.add (Call.unique_id c) cs in
+          let cs = Function_id.Set.add (Call.unique_id c) cs in
           calls cs s
       | If (_, s1, s2) | Seq (s1, s2) -> calls (calls cs s1) s2
       | For (_, s) | Decl (_, s) | Assign { body = s; _ } -> calls cs s
     in
-    calls StringSet.empty
+    calls Function_id.Set.empty
 
   let to_string : t -> string =
     let rec to_s : t -> Indent.t list = function
@@ -586,8 +586,7 @@ module Kernel = struct
   module Code = C
 
   type t = {
-    name : string;
-    ty : string;
+    id : Function_id.t;
     parameters : ParameterList.t;
     global_arrays : Memory.t Variable.Map.t;
     global_variables : Params.t;
@@ -612,9 +611,9 @@ module Kernel = struct
   let variable_set (k : t) : Variable.Set.t =
     Variable.Set.union (local_set k) (global_set k)
 
-  (* Generate a unique id that pairs the name and type. *)
-  let unique_id (k : t) : string = Call.kernel_id ~kernel:k.name ~ty:k.ty
-  let calls (k : t) : StringSet.t = Code.calls k.code
+  let unique_id (k : t) : Function_id.t = k.id
+  let name (k : t) : string = Function_id.label k.id
+  let calls (k : t) : Function_id.Set.t = Code.calls k.code
 
   let from_imp (k : Kernel.t) : t =
     let globals =
@@ -625,8 +624,7 @@ module Kernel = struct
     (* Add any globals defined from scoped *)
     let globals, p = Code.from_stmt (globals, k.code) in
     {
-      name = k.name;
-      ty = k.ty;
+      id = k.id;
       parameters = k.parameters;
       global_arrays = k.global_arrays;
       global_variables = globals;
@@ -642,7 +640,7 @@ module Kernel = struct
   let to_string (k : t) : string =
     Printf.sprintf "%s %s (%s)\nglobal {arrays: %s} {scalars: %s}\n{\n%s}\n"
       (Visibility.to_string k.visibility)
-      k.name
+      (name k)
       (ParameterList.to_string k.parameters)
       (Memory.map_to_string k.global_arrays)
       (Params.to_string k.global_variables)

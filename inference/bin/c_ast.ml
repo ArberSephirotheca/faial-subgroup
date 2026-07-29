@@ -66,13 +66,13 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
        (let open D_lang in
         let open Def in
         function
-        | Kernel k -> Hashtbl.add k2_ht k.name k
+        | Kernel k -> Hashtbl.add k2_ht (Imp.Function_id.to_string k.id) k
         | Prototype _ | Declaration _ | Typedef _ | Enum _ | LaunchParam _ ->
             ());
   k3
   |> List.iter (fun k ->
-      let open Imp.Kernel in
-      Hashtbl.add k3_ht k.name k);
+      Hashtbl.add k3_ht
+        (Imp.Function_id.to_string (Imp.Kernel.unique_id k)) k);
   let l =
     List.fold_left
       (fun ((decls : Decl.t list), js) ->
@@ -82,7 +82,10 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
         | Kernel k -> (
             try
               (*         let k2 = Hashtbl.find k2_ht k.name in *)
-              let k3 = Hashtbl.find k3_ht k.name in
+              let k3 =
+                Hashtbl.find k3_ht
+                  (Imp.Function_id.to_string (C_lang.Kernel.id k))
+              in
               ( decls,
                 `Assoc
                   [
@@ -150,9 +153,10 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
     match d with
     | Kernel k ->
         ((not only_global) || Kernel.is_global k)
-        && not (StringSet.mem k.name stdlib_kernel_names)
+        && not (StringSet.mem (Kernel.name k) stdlib_kernel_names)
     | Prototype k ->
-        (not only_global) && not (StringSet.mem k.name stdlib_kernel_names)
+        (not only_global)
+        && not (StringSet.mem (Kernel.name k) stdlib_kernel_names)
     | Declaration d ->
         (not only_global) && keep_loc (Variable.location (Decl.var d))
     | Typedef d -> (not only_global) && keep_loc (Typedef.location d)
@@ -165,7 +169,7 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
     k3
     |> List.filter (fun k ->
         ((not only_global) || Imp.Kernel.is_global k)
-        && not (StringSet.mem k.Imp.Kernel.name stdlib_kernel_names))
+        && not (StringSet.mem (Imp.Kernel.name k) stdlib_kernel_names))
   in
   let scoped = List.map Imp.Scoped.Kernel.from_imp k3 in
   let inlined, rejected = Imp.Inline_calls.inline_calls scoped in
@@ -176,7 +180,7 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
   in
   let scoped_filter =
     List.filter (fun k ->
-        keep_named k.Imp.Scoped.Kernel.name (Imp.Scoped.Kernel.is_global k))
+        keep_named (Imp.Scoped.Kernel.name k) (Imp.Scoped.Kernel.is_global k))
   in
   let scoped_filtered = scoped_filter scoped in
   let inlined_filtered = scoped_filter inlined in

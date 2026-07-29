@@ -25,6 +25,15 @@ let parse_variable (j : json) : Variable.t j_result =
    | None -> Ok (Variable.from_name name))
   |> Rjson.add_reason "parse_variable" j
 
+(* Clang's identifier for a declaration node, emitted under
+   [cu-to-json --print-id]. The same identifier appears on a
+   [DeclRefExpr]'s [referencedDecl], which is the only thing tying a
+   call site to the instantiation it calls. *)
+let parse_decl_id (o : j_object) : string option =
+  let open Rjson in
+  with_opt_field "id" cast_string o
+  |> Result.value ~default:None
+
 let is_invalid (o : j_object) : bool =
   let open Rjson in
   with_opt_field "isInvalid" cast_bool o

@@ -179,7 +179,7 @@ module Make (L : Logger.Logger) = struct
     let global_names =
       parsed.kernels
       |> List.filter_map (fun (k : Imp.Kernel.t) ->
-          if Imp.Kernel.is_global k then Some k.name else None)
+          if Imp.Kernel.is_global k then Some (Imp.Kernel.name k) else None)
       |> Common.StringSet.of_list
     in
     {

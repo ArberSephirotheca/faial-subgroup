@@ -49,16 +49,16 @@ let rec has_sync : t -> bool = function
       false
   | For (_, p) | Star p -> has_sync p
 
-let calls : t -> StringSet.t =
-  let rec calls (cs : StringSet.t) : t -> StringSet.t = function
+let calls : t -> Function_id.Set.t =
+  let rec calls (cs : Function_id.Set.t) : t -> Function_id.Set.t = function
     | Skip | Decl _ | LocationAlias _ | Sync _ | Assert _ | Read _ | Write _
     | Atomic _ | Assign _ ->
         cs
     | If (_, s1, s2) | Seq (s1, s2) -> calls (calls cs s1) s2
     | For (_, s) | Star s -> calls cs s
-    | Call c -> StringSet.add (Call.unique_id c) cs
+    | Call c -> Function_id.Set.add (Call.unique_id c) cs
   in
-  calls StringSet.empty
+  calls Function_id.Set.empty
 
 let fold : 'a. (t -> 'a -> 'a) -> t -> 'a -> 'a =
  fun (f : t -> 'a -> 'a) (p : t) (init : 'a) ->

@@ -3,13 +3,11 @@ module S = Subst.Make (Subst.SubstPair)
 
 type t = {
   result : (Variable.t * Ty.t) option;
-  kernel : string;
-  ty : string;
+  id : Function_id.t;
   args : Exp.nexp list;
 }
 
-let kernel_id ~kernel ~ty : string = kernel ^ ":" ^ ty
-let unique_id (c : t) : string = kernel_id ~kernel:c.kernel ~ty:c.ty
+let unique_id (c : t) : Function_id.t = c.id
 let map (f : Exp.nexp -> Exp.nexp) (a : t) : t = { a with args = List.map f a.args }
 
 (* Returns the arrays in arguments *)
@@ -26,4 +24,4 @@ let to_string (c : t) : string =
     | Some (v, ty) -> Variable.name v ^ " : " ^ Ty.to_string ty ^ " = "
     | None -> ""
   in
-  pre ^ c.kernel ^ "(" ^ args ^ ")"
+  pre ^ Function_id.label c.id ^ "(" ^ args ^ ")"

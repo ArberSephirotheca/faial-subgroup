@@ -62,6 +62,7 @@ let rec parse_expr (j : json) : c_expr j_result =
             name = Variable.from_name builtin_name;
             ty = J_type.parse ty;
             kind = Decl_expr.Kind.Function;
+            decl_id = None;
           }
       in
       Ok (CallExpr { func; args; ty = J_type.parse ty })
@@ -175,7 +176,8 @@ let rec parse_expr (j : json) : c_expr j_result =
   | "EnumConstantDecl" ->
       let* name = parse_variable j in
       let* ty = get_field "type" o in
-      Ok (Ident { name; ty = J_type.parse ty; kind = EnumConstant })
+      Ok (Ident { name; ty = J_type.parse ty; kind = EnumConstant;
+                  decl_id = None })
   | "VarDecl" | "VarTemplateSpecializationDecl" | "BindingDecl" ->
       (* [VarTemplateSpecializationDecl] is a C++14 variable-template
          instantiation (e.g. [HASHTABLE_EMPTY_VALUE<uint64, uint32>]); it
@@ -185,16 +187,22 @@ let rec parse_expr (j : json) : c_expr j_result =
          [name]/[type] shape. *)
       let* name = parse_variable j in
       let* ty = get_field "type" o in
-      Ok (Ident { name; ty = J_type.parse ty; kind = Var })
+      Ok (Ident { name; ty = J_type.parse ty; kind = Var; decl_id = None })
   | "FunctionDecl" ->
       let* v = parse_variable j in
       let* ty = get_field "type" o in
-      Ok (Ident { name = v; ty = J_type.parse ty; kind = Function })
+      Ok
+        (Ident
+           { name = v; ty = J_type.parse ty; kind = Function;
+             decl_id = parse_decl_id o })
   | "CXXMethodDecl" | "CXXConstructorDecl" | "CXXDestructorDecl"
   | "CXXConversionDecl" ->
       let* name = parse_variable j in
       let* ty = get_field "type" o in
-      Ok (Ident { name; ty = J_type.parse ty; kind = CXXMethod })
+      Ok
+        (Ident
+           { name; ty = J_type.parse ty; kind = CXXMethod;
+             decl_id = parse_decl_id o })
   | "ConditionalOperator" ->
       let* c, t, e =
         with_field "inner" (cast_list_3 parse_expr parse_expr parse_expr) o
@@ -226,12 +234,14 @@ let rec parse_expr (j : json) : c_expr j_result =
   | "ParmVarDecl" ->
       let* name = parse_variable j in
       let* ty = get_field "type" o in
-      Ok (Ident { name; ty = J_type.parse ty; kind = ParmVar })
+      Ok (Ident { name; ty = J_type.parse ty; kind = ParmVar;
+                  decl_id = None })
   | "NonTypeTemplateParmDecl" ->
       let* name = parse_variable j in
       let* ty = get_field "type" o in
       Ok
-        (Ident { name; ty = J_type.parse ty; kind = NonTypeTemplateParm })
+        (Ident { name; ty = J_type.parse ty; kind = NonTypeTemplateParm;
+                 decl_id = None })
   | "UnresolvedLookupExpr" ->
       let* v = parse_variable j in
       let* tys = get_field "lookups" o >>= cast_list in
@@ -742,6 +752,7 @@ and parse_stmt (j : json) : c_stmt j_result =
                         name = Variable.from_name "static_assert";
                         ty = J_type.void;
                         kind = Decl_expr.Kind.Function;
+                        decl_id = None;
                       }
                     in
                     let func = Ident static_assert in

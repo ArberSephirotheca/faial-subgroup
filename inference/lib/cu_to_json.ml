@@ -20,7 +20,12 @@ let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
   let includes = List.map (fun x -> "-I" ^ x) includes in
   let macros = List.map (fun x -> "-D" ^ x) macros in
   let extra =
-    (if launch_params then [ "--launch-params" ] else [])
+    (* [--print-id] is what makes a call site resolvable to a definition.
+       A [DeclRefExpr] carries only the referenced function's name and
+       type, which two instantiations of one template share, so without
+       the declaration identifier the two call sites are indistinguishable. *)
+    [ "--print-id" ]
+    @ (if launch_params then [ "--launch-params" ] else [])
     @ if cbor then [ "--cbor" ] else []
   in
   let args = [ fname ] @ includes @ macros @ extra in

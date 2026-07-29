@@ -108,10 +108,8 @@ module ParameterList = struct
 end
 
 type t = {
-  (* The kernel name *)
-  name : string;
-  (* The type signature of the kernel *)
-  ty : string;
+  (* What makes this function distinct from every other one. *)
+  id : Function_id.t;
   (* Kernel parameters *)
   parameters : ParameterList.t;
   (* Globally-defined arrays that can be accessed by the kernel. *)
@@ -130,8 +128,8 @@ type t = {
   block_dim : Dim3.t option;
 }
 
-(* Generate a unique id that pairs the name and type. *)
-let unique_id (k : t) : string = Call.kernel_id ~kernel:k.name ~ty:k.ty
+let unique_id (k : t) : Function_id.t = k.id
+let name (k : t) : string = Function_id.label k.id
 
 let to_s (k : t) : Indent.t list =
   [
@@ -139,7 +137,7 @@ let to_s (k : t) : Indent.t list =
     Line
       (Printf.sprintf "%s %s (%s)"
          (Visibility.to_string k.visibility)
-         k.name
+         (name k)
          (ParameterList.to_string k.parameters));
     Line
       (Printf.sprintf "global {arrays: %s} {scalars: %s}"
@@ -162,4 +160,4 @@ let is_global (k : t) : bool = k.visibility = Visibility.Global
 let remove_global_asserts (k : t) : t =
   { k with code = Stmt.filter_asserts Assert.is_local k.code }
 
-let calls (k : t) : StringSet.t = Stmt.calls k.code
+let calls (k : t) : Function_id.Set.t = Stmt.calls k.code

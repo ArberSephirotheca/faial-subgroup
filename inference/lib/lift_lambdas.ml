@@ -182,8 +182,10 @@ let rewrite_stmt (st : Stmt.t) : Stmt.t state =
           in
           let synth : Kernel.t =
             {
-              ty = Ty.to_string ret_ty;
-              name = Variable.name fname;
+              id =
+                Imp.Function_id.make ~name:(Variable.name fname)
+                  ~ty:(Ty.to_string ret_ty) ();
+              decl_id = None;
               code = body;
               type_params = [];
               params = cap_params @ params;
@@ -226,7 +228,7 @@ let lift_kernel (next : int) (k : Kernel.t) : int * Kernel.t list * Kernel.t =
   let s, code = State.run (rewrite_stmt k.code) (Context.make next) in
   let refine (synth : Kernel.t) : Kernel.t =
     match
-      Variable.Map.find_opt (Variable.from_name synth.name) s.arg_types
+      Variable.Map.find_opt (Variable.from_name (Kernel.name synth)) s.arg_types
     with
     | Some (Some tys) -> deduce_auto tys synth
     | Some None | None -> synth

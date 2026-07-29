@@ -1,29 +1,31 @@
 open Stage0
-module StringMap = Common.StringMap
-module StringSet = Common.StringSet
+module IdMap = Function_id.Map
+module IdSet = Function_id.Set
 module K = Kernel
 
 type t = {
-  kernels : Scoped.Kernel.t StringMap.t; (* Kernel name to kernel *)
-  targets : StringSet.t StringMap.t;
+  kernels : Scoped.Kernel.t IdMap.t;
+  targets : IdSet.t IdMap.t;
       (* For each kernel which other kernels it is calling *)
-  visited : StringSet.t;
+  visited : IdSet.t;
 }
 
-let key_set (s : 'a StringMap.t) : StringSet.t =
-  s |> StringMap.bindings |> List.map fst |> StringSet.of_list
+let key_set (s : 'a IdMap.t) : IdSet.t =
+  s |> IdMap.bindings |> List.map fst |> IdSet.of_list
 
 let to_string (s : t) : string =
-  let string_set (s : StringSet.t) =
-    "[" ^ (StringSet.elements s |> String.concat ", ") ^ "]"
+  let id_set (s : IdSet.t) =
+    "["
+    ^ (IdSet.elements s |> List.map Function_id.to_string |> String.concat ", ")
+    ^ "]"
   in
   "{\n" ^ "\tkernels = "
-  ^ (key_set s.kernels |> string_set)
+  ^ (key_set s.kernels |> id_set)
   ^ "\n" ^ "\ttargets = "
   ^ String.concat ", "
-      (s.targets |> StringMap.bindings
-      |> List.map (fun (k, v) -> k ^ "=" ^ string_set v))
-  ^ "\n" ^ "\tvisited = " ^ string_set s.visited ^ "\n" ^ "}"
+      (s.targets |> IdMap.bindings
+      |> List.map (fun (k, v) -> Function_id.to_string k ^ "=" ^ id_set v))
+  ^ "\n" ^ "\tvisited = " ^ id_set s.visited ^ "\n" ^ "}"
 
 module Inline = struct
   module Variable = Protocols.Variable
@@ -132,7 +134,7 @@ module Inline = struct
     |> Scoped.Code.add_inside ~child:s
 
   let inline_stmt ~(arrays : Variable.Set.t)
-      (funcs : Scoped.Kernel.t StringMap.t) :
+      (funcs : Scoped.Kernel.t IdMap.t) :
       Variable.Set.t -> Scoped.Code.t -> Scoped.Code.t =
     let rec inline (vars : Variable.Set.t) : Scoped.Code.t -> Scoped.Code.t =
       function
@@ -148,7 +150,7 @@ module Inline = struct
              recursing into [s] here, only the head call ever gets
              inlined and the tail remains as opaque [Call] nodes. *)
           let s = inline vars s in
-          match StringMap.find_opt (Call.unique_id c) funcs with
+          match IdMap.find_opt (Call.unique_id c) funcs with
           | Some (k : Scoped.Kernel.t) ->
               apply ~arrays vars c.result c.args k s
           | None -> Call (c, s))
@@ -162,7 +164,7 @@ module Inline = struct
     inline
 end
 
-let inline (funcs : Scoped.Kernel.t StringMap.t) (k : Scoped.Kernel.t) :
+let inline (funcs : Scoped.Kernel.t IdMap.t) (k : Scoped.Kernel.t) :
     Scoped.Kernel.t =
   {
     k with
@@ -171,27 +173,27 @@ let inline (funcs : Scoped.Kernel.t StringMap.t) (k : Scoped.Kernel.t) :
         (Scoped.Kernel.variable_set k) k.code;
   }
 
-let inline_kernels (kernels : StringSet.t) (s : t) : t =
+let inline_kernels (kernels : IdSet.t) (s : t) : t =
   (* Get the code of the kernels to call *)
   let leaves =
-    StringMap.filter (fun k _ -> StringSet.mem k kernels) s.kernels
+    IdMap.filter (fun k _ -> IdSet.mem k kernels) s.kernels
   in
   let leaf_set = key_set leaves in
   (* Get the set of all kernels that call `kernel` *)
-  let to_inline : StringSet.t =
+  let to_inline : IdSet.t =
     s.targets
-    |> StringMap.filter (fun _ x ->
+    |> IdMap.filter (fun _ x ->
         (* any kernel that depends on a leaf *)
-        not (StringSet.is_empty (StringSet.inter leaf_set x)))
+        not (IdSet.is_empty (IdSet.inter leaf_set x)))
     |> key_set
   in
   {
     (* inline each call to a leaf *)
     kernels =
-      StringMap.mapi
+      IdMap.mapi
         (fun name k ->
           (* if this kernel calls any of the leaves *)
-          if StringSet.mem name to_inline then
+          if IdSet.mem name to_inline then
             (* Inline leaves in k *)
             inline leaves k
           else
@@ -199,32 +201,34 @@ let inline_kernels (kernels : StringSet.t) (s : t) : t =
             k)
         s.kernels;
     (* remove the leaves from all dependencies *)
-    targets = StringMap.map (fun s -> StringSet.diff s leaf_set) s.targets;
+    targets = IdMap.map (fun s -> IdSet.diff s leaf_set) s.targets;
     (* add leaves to the set of all visited *)
-    visited = StringSet.union leaf_set s.visited;
+    visited = IdSet.union leaf_set s.visited;
   }
 
 (* Calculate the set of next possible kernels to inline *)
-let next (s : t) : StringSet.t =
+let next (s : t) : IdSet.t =
   let possible =
-    s.targets |> StringMap.filter (fun _ ts -> StringSet.is_empty ts) |> key_set
+    s.targets |> IdMap.filter (fun _ ts -> IdSet.is_empty ts) |> key_set
   in
-  StringSet.diff possible s.visited
+  IdSet.diff possible s.visited
 
-let unresolved (s : t) : StringSet.t =
+let unresolved (s : t) : IdSet.t =
   s.targets
-  |> StringMap.filter (fun _ ts -> not (StringSet.is_empty ts))
+  |> IdMap.filter (fun _ ts -> not (IdSet.is_empty ts))
   |> key_set
 
 (* The path runs from [start] to the kernel that closes the cycle, which is
    repeated as the last element. *)
-let path_to_cycle (s : t) (start : string) : string list option =
-  let rec walk (seen : string list) (node : string) : string list option =
-    if List.mem node seen then Some (List.rev (node :: seen))
+let path_to_cycle (s : t) (start : Function_id.t) : Function_id.t list option =
+  let rec walk (seen : Function_id.t list) (node : Function_id.t) :
+      Function_id.t list option =
+    if List.exists (Function_id.equal node) seen then
+      Some (List.rev (node :: seen))
     else
-      StringMap.find_opt node s.targets
-      |> Option.value ~default:StringSet.empty
-      |> StringSet.elements
+      IdMap.find_opt node s.targets
+      |> Option.value ~default:IdSet.empty
+      |> IdSet.elements
       |> List.find_map (walk (node :: seen))
   in
   walk [] start
@@ -234,42 +238,39 @@ let path_to_cycle (s : t) (start : string) : string list option =
    entry in [kernels] is a call to a function with no visible body: the
    front end recorded the call precisely so that it would be missing
    here. *)
-let path_to_undefined (s : t) (start : string) : string list option =
-  let rec walk (seen : string list) (node : string) : string list option =
-    if not (StringMap.mem node s.kernels) then Some (List.rev (node :: seen))
-    else if List.mem node seen then None
+let path_to_undefined (s : t) (start : Function_id.t) :
+    Function_id.t list option =
+  let rec walk (seen : Function_id.t list) (node : Function_id.t) :
+      Function_id.t list option =
+    if not (IdMap.mem node s.kernels) then Some (List.rev (node :: seen))
+    else if List.exists (Function_id.equal node) seen then None
     else
-      StringMap.find_opt node s.targets
-      |> Option.value ~default:StringSet.empty
-      |> StringSet.elements
+      IdMap.find_opt node s.targets
+      |> Option.value ~default:IdSet.empty
+      |> IdSet.elements
       |> List.find_map (walk (node :: seen))
   in
   walk [] start
-
-let kernel_name (s : t) (id : string) : string =
-  match StringMap.find_opt id s.kernels with
-  | Some k -> k.Scoped.Kernel.name
-  | None -> id
 
 let from_list (ks : Scoped.Kernel.t list) : t =
   {
     targets =
       ks
       |> List.map (fun k -> (Scoped.Kernel.unique_id k, Scoped.Kernel.calls k))
-      |> StringMap.of_list;
+      |> IdMap.of_list;
     kernels =
       ks
       |> List.map (fun k -> (Scoped.Kernel.unique_id k, k))
-      |> StringMap.of_list;
-    visited = StringSet.empty;
+      |> IdMap.of_list;
+    visited = IdSet.empty;
   }
 
 let kernel_list (s : t) : Scoped.Kernel.t list =
-  s.kernels |> StringMap.bindings |> List.map snd
+  s.kernels |> IdMap.bindings |> List.map snd
 
 let rec inline_all (s : t) : t =
   let n = next s in
-  if StringSet.is_empty n then
+  if IdSet.is_empty n then
     (* we are done *)
     s
   else
@@ -283,25 +284,24 @@ let rec inline_all (s : t) : t =
 let inline_calls (l : Scoped.Kernel.t list) :
     Scoped.Kernel.t list * Rejected_kernel.t list =
   let s = l |> from_list |> inline_all in
-  let name = kernel_name s in
   let discarded = unresolved s in
-  let reason (id : string) : Rejected_kernel.Reason.t =
-    let names = List.map name in
+  let reason (id : Function_id.t) : Rejected_kernel.Reason.t =
+    let names = List.map Function_id.label in
     match path_to_cycle s id with
     | Some path -> RecursiveCall { path = names path }
     | None -> (
         match path_to_undefined s id with
         | Some path -> UndefinedKernel { path = names path }
-        | None -> UndefinedKernel { path = [ name id ] })
+        | None -> UndefinedKernel { path = [ Function_id.label id ] })
   in
   let kernels =
     kernel_list s
     |> List.filter (fun k ->
-        not (StringSet.mem (Scoped.Kernel.unique_id k) discarded))
+        not (IdSet.mem (Scoped.Kernel.unique_id k) discarded))
   in
   let rejected =
-    discarded |> StringSet.elements
+    discarded |> IdSet.elements
     |> List.map (fun id ->
-         Rejected_kernel.make ~kernel:(name id) ~reason:(reason id))
+         Rejected_kernel.make ~kernel:(Function_id.label id) ~reason:(reason id))
   in
   (kernels, rejected)

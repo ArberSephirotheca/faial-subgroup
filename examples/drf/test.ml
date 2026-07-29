@@ -913,6 +913,27 @@ let tests =
        database entry must stay the definition, so the call inlines and
        the kernel is analysed rather than discarded. *)
     ("redeclared-callee.cu", [], 0);
+    (* Two instantiations of one template share a name and a function
+       type, and a call site names neither of them: its [DeclRefExpr]
+       carries the same name and type for both. The instantiation is
+       recovered from the declaration the call resolves to, so the body
+       substituted at a call site is the body that call runs.
+
+       [k] calls the safe [f<0>]; substituting [f<1>] instead reports a
+       race the kernel does not have. *)
+    ("template-instances.cu", [], 0);
+    (* The same in the other direction: [k] calls the racy [f<0>], and
+       substituting the safe [f<1>] clears a kernel that races. *)
+    ("template-instance-racy.cu", [], 1);
+    (* [f<0>] calls a function with no visible body and [f<1>] does not,
+       so which instantiation [k] reaches decides whether it is
+       analysable at all. *)
+    ("template-instance-undefined.cu", [], 1);
+    (* Two namespaces declaring the same signature is the same collapse
+       without templates: clang reports the name unqualified, so the
+       identity has to carry the enclosing namespace. *)
+    ("namespace-overload.cu", [], 0);
+    ("namespace-overload-racy.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are

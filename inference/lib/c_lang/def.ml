@@ -165,14 +165,14 @@ let parse_enum (j : Yojson.Basic.t) : Imp.Enum.t j_result =
   in
   Ok { var; constants }
 
-let rec parse (j : Yojson.Basic.t) : t list j_result =
+let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
   let open Rjson in
   let* o = cast_object j in
   let* k = get_kind o in
   let parse_k (type_params : Ty_param.t list) (j : Yojson.Basic.t) :
       t list j_result =
     if is_kernel j then
-      let* k = C_kernel.parse type_params j in
+      let* k = C_kernel.parse ~qualifier type_params j in
       if not (C_kernel.has_body k) then Ok [ Prototype k ]
       else if k.code = Skip then Ok []
       else Ok [ Kernel k ]
@@ -222,8 +222,19 @@ let rec parse (j : Yojson.Basic.t) : t list j_result =
       match Decl.parse j with
       | Ok (Some d) -> Ok [ Declaration d ]
       | _ -> Ok [])
-  | "LinkageSpecDecl" | "NamespaceDecl" ->
-      let* defs = with_field_or "inner" (cast_map parse) [] o in
+  | "LinkageSpecDecl" ->
+      (* [extern "C"] changes linkage, not the qualified name. *)
+      let* defs = with_field_or "inner" (cast_map (parse ~qualifier)) [] o in
+      Ok (List.concat defs)
+  | "NamespaceDecl" ->
+      let qualifier =
+        match with_opt_field "name" cast_string o with
+        | Ok (Some n) -> qualifier @ [ n ]
+        (* An anonymous namespace has no name to qualify with; its
+           members are unreachable from any other namespace anyway. *)
+        | Ok None | Error _ -> qualifier
+      in
+      let* defs = with_field_or "inner" (cast_map (parse ~qualifier)) [] o in
       Ok (List.concat defs)
   | "TypedefDecl" | "TypeAliasDecl" -> (
       let* name = with_field "name" cast_string o in

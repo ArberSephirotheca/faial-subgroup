@@ -747,7 +747,8 @@ module Statements = struct
                         (r.var, W_lang.Type.to_ty r.ty))
                       result
                   in
-                  return (Infer_stmt.Call { result; args; kernel; ty = kernel })))
+                  return (Infer_stmt.Call
+                             { result; args; id = Function_id.of_name kernel })))
         | Return e ->
             Some
               (let open State.Syntax in
@@ -800,8 +801,7 @@ module Functions = struct
       |> Infer_stmt.infer
     in
     {
-      name = e.name;
-      ty = e.name;
+      id = Function_id.of_name e.name;
       global_arrays = ctx.arrays;
       global_variables = ctx.params;
       parameters = List.filter_map FunctionArguments.tr e.arguments;

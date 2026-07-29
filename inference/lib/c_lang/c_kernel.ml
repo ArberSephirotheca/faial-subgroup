@@ -6,10 +6,18 @@ open Parse_util
 
 module KernelAttr = Kernel_attr
 module TemplateArgument = Template_argument
+module Function_id = Imp.Function_id
 
 type t = {
   name : string;
   ty : string;
+  (* Enclosing namespaces, outermost first. Two functions of the same
+     signature in different namespaces are different functions, and the
+     name clang reports is unqualified. *)
+  qualifier : string list;
+  (* Clang's identifier for this declaration, used to resolve a call
+     site to the definition it names. *)
+  decl_id : string option;
   code : Stmt.t;
   (* Whether the declaration carried a body. A prototype and a function
      defined with an empty body both parse to [code = Skip], so the code
@@ -24,11 +32,14 @@ type t = {
   location : Location.t;
 }
 
-let make ~ty ~name ~code ~has_body ~type_params ~params ~attribute
-    ~template_args ~specialization_kind ~primary_template_name ~location =
+let make ~ty ~name ~qualifier ~decl_id ~code ~has_body ~type_params ~params
+    ~attribute ~template_args ~specialization_kind ~primary_template_name
+    ~location =
   {
     name;
     ty;
+    qualifier;
+    decl_id;
     code;
     has_body;
     type_params;
@@ -41,6 +52,15 @@ let make ~ty ~name ~code ~has_body ~type_params ~params ~attribute
   }
 
 let name (x : t) : string = x.name
+let decl_id (x : t) : string option = x.decl_id
+
+(* What separates this declaration from every other function. A
+   redeclaration reaches the same value as its definition, which is what
+   merges a prototype with the body it declares. *)
+let id (x : t) : Function_id.t =
+  Function_id.make ~qualifier:x.qualifier
+    ~template_args:(List.map TemplateArgument.to_string x.template_args)
+    ~name:x.name ~ty:x.ty ()
 let params (x : t) : Param.t list = x.params
 let type_params (x : t) : Ty_param.t list = x.type_params
 let attribute (x : t) : KernelAttr.t = x.attribute
@@ -79,9 +99,12 @@ let to_s (k : t) : Indent.t list =
       "<" ^ list_to_s TemplateArgument.to_string k.template_args ^ ">"
     else ""
   in
+  let quals =
+    String.concat "" (List.map (fun q -> q ^ "::") k.qualifier)
+  in
   let header =
     KernelAttr.to_string k.attribute
-    ^ " " ^ k.name ^ targs ^ " " ^ tps ^ "("
+    ^ " " ^ quals ^ k.name ^ targs ^ " " ^ tps ^ "("
     ^ list_to_s Param.to_string k.params
     ^ ")"
   in
@@ -95,7 +118,8 @@ let wrap_error (msg : string) (j : Yojson.Basic.t) :
   | Ok e -> Ok e
   | Error e -> Rjson.because msg j e
 
-let parse (type_params : Ty_param.t list) (j : Yojson.Basic.t) : t j_result =
+let parse ?(qualifier = []) (type_params : Ty_param.t list)
+    (j : Yojson.Basic.t) : t j_result =
   let open Rjson in
   (let* o = cast_object j in
    let* ty = get_field "type" o |> Result.map J_type.parse in
@@ -138,7 +162,7 @@ let parse (type_params : Ty_param.t list) (j : Yojson.Basic.t) : t j_result =
      |> Result.value ~default:Location.empty
    in
    Ok
-     (make ~ty ~name ~code:body ~has_body ~params:ps ~type_params ~attribute:m
-        ~template_args ~specialization_kind ~primary_template_name
-        ~location))
+     (make ~ty ~name ~qualifier ~decl_id:(parse_decl_id o) ~code:body ~has_body
+        ~params:ps ~type_params ~attribute:m ~template_args
+        ~specialization_kind ~primary_template_name ~location))
   |> wrap_error "Kernel" j

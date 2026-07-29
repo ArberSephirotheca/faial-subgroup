@@ -47,8 +47,7 @@ type t =
   | If of (Infer_exp.t * t * t)
   | Call of {
       result : (Variable.t * Ty.t) option;
-      kernel : string;
-      ty : string;
+      id : Function_id.t;
       args : Infer_exp.t list;
     }
   | Break
@@ -142,10 +141,10 @@ let rec to_stmt : t -> Stmt.t =
            (For.to_stmt
               { init = to_stmt init; cond; inc = to_stmt inc }
               (to_stmt body)))
-  | Call { result; kernel; ty; args } ->
+  | Call { result; id; args } ->
       Infer_exp.unknowns
         (let* args = State.list_map Infer_exp.to_nexp args in
-         return (Stmt.Call { result; kernel; ty; args }))
+         return (Stmt.Call { result; id; args }))
   | Break -> Skip
   | Continue -> Skip
   | Return _ -> Skip
@@ -240,10 +239,10 @@ module Convert_assigns = struct
           (keep
              (bind_target a (Some (ty, target)))
              (Atomic { target; ty; atomic; array; index; guard }))
-    | Call { result; kernel; ty; args } ->
+    | Call { result; id; args } ->
         let args = List.map (subst a.env) args in
         let a = bind_target a (Option.map (fun (x, ty) -> (ty, x)) result) in
-        Some (keep a (Call { result; kernel; ty; args }))
+        Some (keep a (Call { result; id; args }))
     | If _ | While _ | DoWhile _ | For _ | Break | Continue | Return _ -> None
 
   let convert (cond : IE.t) (p : t) (q : t) : t =

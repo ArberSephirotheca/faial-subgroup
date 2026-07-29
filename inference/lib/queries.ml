@@ -787,5 +787,6 @@ module Kernel = struct
               ("data_type", `List (List.map (fun x -> `String x) a.data_type));
             ])
     in
-    `Assoc [ ("name", `String k.name); ("arrays", `List arrays) ]
+    `Assoc
+      [ ("name", `String (Imp.Kernel.name k)); ("arrays", `List arrays) ]
 end
