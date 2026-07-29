@@ -887,6 +887,32 @@ let tests =
        as data-race free at exit 0, while the race lives in the accesses
        the recursive callee contributed. *)
     ("discarded-recursion-partial.cu", [], 1);
+    (* A callee declared but never defined. The kernel keeps a write of
+       its own, so its protocol is non-empty and the zero-accesses status
+       cannot catch it: before the discard it cleared as data-race free
+       while the race lived in the accesses [touch] contributed. *)
+    ("undefined-call.cu", [], 1);
+    (* The policy that restores the old behaviour: the call is ignored and
+       the kernel is analysed as though it were never written. *)
+    ("undefined-call.cu", [ "--opaque-calls=skip-all" ], 0);
+    (* Rejection follows reachability: [k] calls [helper], and [helper] is
+       the one that calls the undefined function. *)
+    ("undefined-call-indirect.cu", [], 1);
+    ("undefined-call-indirect.cu", [ "--opaque-calls=skip-all" ], 0);
+    (* A callee that cannot write through any parameter is skipped under
+       the default and taken under the strictest policy. *)
+    ("undefined-call-scalar.cu", [], 0);
+    ("undefined-call-scalar.cu", [ "--opaque-calls=skip-none" ], 1);
+    (* A function the [Functions] registry models is never opaque, whatever
+       the policy: its applications are lowered by the signature lookup
+       missing, so recording the declaration would turn [log2(n)] into a
+       call to a body that does not exist. *)
+    ("registry-call.cu", [], 0);
+    ("registry-call.cu", [ "--opaque-calls=skip-none" ], 0);
+    (* A definition followed by a re-declaration of the same function. The
+       database entry must stay the definition, so the call inlines and
+       the kernel is analysed rather than discarded. *)
+    ("redeclared-callee.cu", [], 0);
   ]
 
 (* These are kernels that are being documented, but are

@@ -116,6 +116,16 @@ let rec is_const (x : t) : bool =
 let is_reference (x : t) : bool =
   match x.inner with Reference _ -> true | _ -> false
 
+(* Storage a callee can assign through. The qualifier that decides it is
+   the one on the referent, not the one on the pointer: [int *const p]
+   forbids rebinding [p] and permits [p[0] = 1], while [const int *p]
+   is the other way round. *)
+let writes_through (x : t) : bool =
+  match x.inner with
+  | Array a -> not (is_const a.base)
+  | Pointer p | Reference p -> not (is_const p)
+  | _ -> false
+
 (* A const reference cannot be assigned through, so it denotes the
    referent's value and is read as the referent. A mutable one denotes
    storage the callee can write, which the substrate does not model, so

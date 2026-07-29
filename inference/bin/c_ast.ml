@@ -67,7 +67,8 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
         let open Def in
         function
         | Kernel k -> Hashtbl.add k2_ht k.name k
-        | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> ());
+        | Prototype _ | Declaration _ | Typedef _ | Enum _ | LaunchParam _ ->
+            ());
   k3
   |> List.iter (fun k ->
       let open Imp.Kernel in
@@ -107,7 +108,7 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
               else decls
             in
             (decls, js)
-        | Typedef _ | Enum _ | LaunchParam _ -> (decls, js))
+        | Prototype _ | Typedef _ | Enum _ | LaunchParam _ -> (decls, js))
       ([], []) k1
     |> snd
   in
@@ -132,8 +133,8 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
     |> List.fold_left
          (fun acc d ->
            match d with
-           | C_lang.Def.Kernel k when not (keep_loc (C_lang.Kernel.location k))
-             ->
+           | (C_lang.Def.Kernel k | C_lang.Def.Prototype k)
+             when not (keep_loc (C_lang.Kernel.location k)) ->
                StringSet.add k.name acc
            | _ -> acc)
          StringSet.empty
@@ -150,6 +151,8 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
     | Kernel k ->
         ((not only_global) || Kernel.is_global k)
         && not (StringSet.mem k.name stdlib_kernel_names)
+    | Prototype k ->
+        (not only_global) && not (StringSet.mem k.name stdlib_kernel_names)
     | Declaration d ->
         (not only_global) && keep_loc (Variable.location (Decl.var d))
     | Typedef d -> (not only_global) && keep_loc (Typedef.location d)

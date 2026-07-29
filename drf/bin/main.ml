@@ -320,6 +320,20 @@ let main =
              assumed and any resulting vacuity is caught by the \
              $(b,--check-pre-sat) pre-flight, which $(b,--assume-delin) forces \
              on.")
+  and+ opaque_calls =
+    Arg.(
+      last
+      & opt_all (enum App.Opaque_calls.enum) [ App.Opaque_calls.default ]
+      & info [ "opaque-calls" ] ~docv:"POLICY"
+          ~doc:
+            "How to treat a call whose callee is declared but never \
+             defined, so that its accesses are invisible. \
+             $(b,skip-all): ignore every such call, which analyses the \
+             kernel as though it were never written. \
+             $(b,skip-without-arrays): ignore only a callee that cannot \
+             write through a parameter, and discard a kernel that reaches \
+             any other. $(b,skip-none): discard a kernel that reaches any \
+             callee with no visible body.")
   and+ delin_algo =
     Arg.(
       last
@@ -553,7 +567,7 @@ let main =
         ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~archs
         ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
-        ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
+        ~cu_to_json ~all_dims ~ignore_asserts ~opaque_calls ~assume_delin
         ~rewrite_delin:(not no_rewrite_delin)
         ~delin_elide:(not no_delin_elide) ~delin_algo ~delin_check_vacuosity
         ~delin_weak_in_range ~delin_weak_in_range_for

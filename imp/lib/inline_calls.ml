@@ -229,15 +229,27 @@ let path_to_cycle (s : t) (start : string) : string list option =
   in
   walk [] start
 
+(* The path runs from [start] to a callee that is not a kernel we hold,
+   which is repeated as the last element. A call node whose callee has no
+   entry in [kernels] is a call to a function with no visible body: the
+   front end recorded the call precisely so that it would be missing
+   here. *)
+let path_to_undefined (s : t) (start : string) : string list option =
+  let rec walk (seen : string list) (node : string) : string list option =
+    if not (StringMap.mem node s.kernels) then Some (List.rev (node :: seen))
+    else if List.mem node seen then None
+    else
+      StringMap.find_opt node s.targets
+      |> Option.value ~default:StringSet.empty
+      |> StringSet.elements
+      |> List.find_map (walk (node :: seen))
+  in
+  walk [] start
+
 let kernel_name (s : t) (id : string) : string =
   match StringMap.find_opt id s.kernels with
   | Some k -> k.Scoped.Kernel.name
   | None -> id
-
-let recursive (s : t) : (string * string list) list =
-  unresolved s |> StringSet.elements
-  |> List.filter_map (fun id ->
-       path_to_cycle s id |> Option.map (fun path -> (id, path)))
 
 let from_list (ks : Scoped.Kernel.t list) : t =
   {
@@ -264,21 +276,32 @@ let rec inline_all (s : t) : t =
     (* inline more *)
     inline_all (inline_kernels n s)
 
+(* Every kernel whose calls did not all resolve is discarded, not just the
+   recursive ones. Keeping one would leave a [Call] node in its body, and
+   [Encode_assigns] drops such a node without trace, so the kernel would be
+   analysed as a strict subset of what was written. *)
 let inline_calls (l : Scoped.Kernel.t list) :
     Scoped.Kernel.t list * Rejected_kernel.t list =
   let s = l |> from_list |> inline_all in
-  let found = recursive s in
-  let discarded = found |> List.map fst |> StringSet.of_list in
+  let name = kernel_name s in
+  let discarded = unresolved s in
+  let reason (id : string) : Rejected_kernel.Reason.t =
+    let names = List.map name in
+    match path_to_cycle s id with
+    | Some path -> RecursiveCall { path = names path }
+    | None -> (
+        match path_to_undefined s id with
+        | Some path -> UndefinedKernel { path = names path }
+        | None -> UndefinedKernel { path = [ name id ] })
+  in
   let kernels =
     kernel_list s
     |> List.filter (fun k ->
         not (StringSet.mem (Scoped.Kernel.unique_id k) discarded))
   in
   let rejected =
-    found
-    |> List.map (fun (id, path) ->
-         Rejected_kernel.make ~kernel:(kernel_name s id)
-           ~reason:(Rejected_kernel.Reason.RecursiveCall
-                      { path = List.map (kernel_name s) path }))
+    discarded |> StringSet.elements
+    |> List.map (fun id ->
+         Rejected_kernel.make ~kernel:(name id) ~reason:(reason id))
   in
   (kernels, rejected)

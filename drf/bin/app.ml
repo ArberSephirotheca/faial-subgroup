@@ -63,6 +63,7 @@ exception Assumption_error of string
 
 (* CLI re-export; the type and driver mapping live in [Delinearize.Algo]. *)
 module Delin_algo = Delinearize.Algo
+module Opaque_calls = Opaque_call_policy
 
 type t = {
   filename : string;
@@ -105,6 +106,7 @@ type t = {
   params : (string * int) list;
   macros : string list;
   ignore_asserts : bool;
+  opaque_calls : Opaque_call_policy.t;
   (* [assume_delin] runs delin in assume mode: the recovered axis bounds
      are assumed rather than proven (the consistency oracle, unsound but
      guarded against vacuity). [rewrite_delin] re-encodes accesses as
@@ -186,6 +188,7 @@ let to_string (app : t) : string =
    macros;
    only_true_data_races;
    ignore_asserts;
+   opaque_calls;
    assume_delin;
    rewrite_delin;
    delin_elide;
@@ -222,6 +225,7 @@ let to_string (app : t) : string =
       ^ "\ndelin_weak_in_range = " ^ bool delin_weak_in_range
       ^ "\ndelin_weak_in_range_for = " ^ list_string delin_weak_in_range_for
       ^ "\nignore_asserts = " ^ bool ignore_asserts
+      ^ "\nopaque_calls = " ^ Opaque_call_policy.to_string opaque_calls
       ^ "\nassume_dims = " ^ bool assume_dims
       ^ "\nassume_launch = " ^ bool assume_launch
       ^ "\ncheck_pre_sat = " ^ bool check_pre_sat
@@ -237,7 +241,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~only_array ~only_kernel
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
     ~block_dim ~grid_dim ~includes ~archs ~ignore_parsing_errors
-    ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts
+    ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~opaque_calls
     ~assume_delin ~rewrite_delin ~delin_elide ~delin_algo
     ~delin_check_vacuosity ~delin_weak_in_range ~delin_weak_in_range_for
     ~assumptions ~assume_dims ~assume_launch ~check_pre_sat
@@ -259,7 +263,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
         ~abort_on_parsing_failure:(not ignore_parsing_errors)
         ~includes ~block_dim ~grid_dim ~macros ~cu_to_json
         ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor
-        filename)
+        ~opaque_calls filename)
   in
   (* Uniquify duplicate kernel names so that a [--assume kernel=K:BEXP]
      clause, the [--list-kernels] output, and the genie verdict JSON all
@@ -301,6 +305,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     only_true_data_races;
     macros;
     ignore_asserts;
+    opaque_calls;
     assume_delin;
     rewrite_delin;
     delin_elide;

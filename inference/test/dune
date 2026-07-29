@@ -1,6 +1,7 @@
 (tests
  (names
     test_dlang
+    test_signature_db
     test_host_translate
     test_queries
     test_wgsl

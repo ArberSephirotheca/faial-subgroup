@@ -319,6 +319,13 @@ let render ~(rejected : Imp.Rejected_kernel.t list)
           ("Kernel '" ^ r.kernel
            ^ "' was discarded; there is nothing to check. "
            ^ Imp.Rejected_kernel.Reason.to_string r.reason ^ ".\n");
+        (match r.reason with
+         | Imp.Rejected_kernel.Reason.UndefinedKernel _ ->
+             T.print_string [ T.Foreground T.Yellow ]
+               ("Pass --opaque-calls=skip-all to analyse it anyway, which \
+                 ignores every such call, or --opaque-calls=skip-none to \
+                 discard on any call with no visible body.\n")
+         | Imp.Rejected_kernel.Reason.RecursiveCall _ -> ());
         acc + 1)
       total rejected
   in

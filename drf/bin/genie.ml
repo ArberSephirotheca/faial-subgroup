@@ -1306,6 +1306,7 @@ let main =
       ~cu_to_json
       ~all_dims:true
       ~ignore_asserts
+      ~opaque_calls:Inference.Opaque_call_policy.default
       ~assume_delin:false
       ~rewrite_delin:true
       ~delin_elide:true

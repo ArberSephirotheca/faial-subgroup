@@ -11,6 +11,10 @@ type t = {
   name : string;
   ty : string;
   code : Stmt.t;
+  (* Whether the declaration carried a body. A prototype and a function
+     defined with an empty body both parse to [code = Skip], so the code
+     alone cannot tell them apart. *)
+  has_body : bool;
   type_params : Ty_param.t list;
   params : Param.t list;
   attribute : KernelAttr.t;
@@ -20,12 +24,13 @@ type t = {
   location : Location.t;
 }
 
-let make ~ty ~name ~code ~type_params ~params ~attribute
+let make ~ty ~name ~code ~has_body ~type_params ~params ~attribute
     ~template_args ~specialization_kind ~primary_template_name ~location =
   {
     name;
     ty;
     code;
+    has_body;
     type_params;
     params;
     attribute;
@@ -61,6 +66,7 @@ let rewrite_barriers (k : t) : t =
   { k with code = Stmt.rewrite_barriers k.code }
 
 let is_global (k : t) : bool = KernelAttr.is_global k.attribute
+let has_body (k : t) : bool = k.has_body
 
 let to_s (k : t) : Indent.t list =
   let tps =
@@ -73,16 +79,16 @@ let to_s (k : t) : Indent.t list =
       "<" ^ list_to_s TemplateArgument.to_string k.template_args ^ ">"
     else ""
   in
+  let header =
+    KernelAttr.to_string k.attribute
+    ^ " " ^ k.name ^ targs ^ " " ^ tps ^ "("
+    ^ list_to_s Param.to_string k.params
+    ^ ")"
+  in
   let open Indent in
-  [
-    Line
-      (KernelAttr.to_string k.attribute
-      ^ " " ^ k.name ^ targs ^ " " ^ tps ^ "("
-      ^ list_to_s Param.to_string k.params
-      ^ ") {");
-    Block (Stmt.to_s k.code);
-    Line "}";
-  ]
+  if k.has_body then
+    [ Line (header ^ " {"); Block (Stmt.to_s k.code); Line "}" ]
+  else [ Line (header ^ ";") ]
 
 let wrap_error (msg : string) (j : Yojson.Basic.t) :
     'a j_result -> 'a j_result = function
@@ -108,6 +114,7 @@ let parse (type_params : Ty_param.t list) (j : Yojson.Basic.t) : t j_result =
    let m : KernelAttr.t =
      List.find_map KernelAttr.parse attrs |> Option.get
    in
+   let has_body = body <> [] in
    let* body : Stmt.t = Stmt.parse_list (`List body) in
    let* name : string = with_field "name" cast_string o in
    let ps = List.map Param.parse ps |> List.concat_map Result.to_list in
@@ -131,7 +138,7 @@ let parse (type_params : Ty_param.t list) (j : Yojson.Basic.t) : t j_result =
      |> Result.value ~default:Location.empty
    in
    Ok
-     (make ~ty ~name ~code:body ~params:ps ~type_params ~attribute:m
+     (make ~ty ~name ~code:body ~has_body ~params:ps ~type_params ~attribute:m
         ~template_args ~specialization_kind ~primary_template_name
         ~location))
   |> wrap_error "Kernel" j

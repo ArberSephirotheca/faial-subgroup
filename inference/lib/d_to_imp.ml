@@ -804,7 +804,8 @@ module Make (L : Logger) = struct
         return;
       } )
 
-  let parse_program (p : D_lang.Program.t) : Imp.Kernel.t list =
+  let parse_program ?(policy = Opaque_call_policy.default)
+      (p : D_lang.Program.t) : Imp.Kernel.t list =
     (* Hoist C++ lambdas into synthetic [D_lang.Kernel.t] entries with
        [Auxiliary] visibility before parsing. The synthetic kernels
        become regular [Imp.Kernel.t] with [Visibility.Device] and are
@@ -856,6 +857,7 @@ module Make (L : Logger) = struct
           let ctx, k = parse_kernel ctx k in
           let ks = parse_p ctx l in
           k :: ks
+      | Prototype _ :: l -> parse_p ctx l
       | Typedef d :: l -> parse_p (Context.add_typedef d ctx) l
       | Enum e :: l -> parse_p (Context.add_enum e ctx) l
       | LaunchParam _ :: l ->
@@ -865,7 +867,7 @@ module Make (L : Logger) = struct
           parse_p ctx l
       | [] -> []
     in
-    let sigs = D_lang.SignatureDB.from_program p in
+    let sigs = D_lang.SignatureDB.from_program ~policy p in
     parse_p (Context.from_signature_db sigs) p
 end
 

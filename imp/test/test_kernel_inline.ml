@@ -127,22 +127,26 @@ let survivors (ks : Scoped.Kernel.t list) : string list =
   |> fst
   |> List.map (fun (k : Scoped.Kernel.t) -> k.Scoped.Kernel.name)
 
-let rejections (ks : Scoped.Kernel.t list) : (string * string list) list =
+let rejections (ks : Scoped.Kernel.t list) :
+    (string * (string * string list)) list =
   Inline_calls.inline_calls ks
   |> snd
   |> List.map (fun (r : Rejected_kernel.t) ->
       match r.reason with
-      | Rejected_kernel.Reason.RecursiveCall { path } -> (r.kernel, path))
+      | Rejected_kernel.Reason.RecursiveCall { path } ->
+          (r.kernel, ("recursive", path))
+      | Rejected_kernel.Reason.UndefinedKernel { path } ->
+          (r.kernel, ("undefined", path)))
 
 let test_fixpoint (name : string) (ks : Scoped.Kernel.t list)
     (expected_survivors : string list)
-    (expected_rejections : (string * string list) list) =
+    (expected_rejections : (string * (string * string list)) list) =
   ( name,
     `Quick,
     fun () ->
       Alcotest.(check (list string)) (name ^ ": survivors")
         expected_survivors (survivors ks);
-      Alcotest.(check (list (pair string (list string))))
+      Alcotest.(check (list (pair string (pair string (list string)))))
         (name ^ ": rejections") expected_rejections (rejections ks) )
 
 let fixpoint_tests =
@@ -153,30 +157,51 @@ let fixpoint_tests =
     test_fixpoint "a self-call rejects the callee and its caller"
       [ calling "k" [ "r" ]; calling "r" [ "r" ] ]
       []
-      [ ("k", [ "k"; "r"; "r" ]); ("r", [ "r"; "r" ]) ];
+      [ ("k", ("recursive", [ "k"; "r"; "r" ]));
+        ("r", ("recursive", [ "r"; "r" ])) ];
     test_fixpoint "mutual recursion is the same condition on the graph"
       [ calling "k" [ "even" ]; calling "even" [ "odd" ];
         calling "odd" [ "even" ] ]
       []
       [
-        ("even", [ "even"; "odd"; "even" ]);
-        ("k", [ "k"; "even"; "odd"; "even" ]);
-        ("odd", [ "odd"; "even"; "odd" ]);
+        ("even", ("recursive", [ "even"; "odd"; "even" ]));
+        ("k", ("recursive", [ "k"; "even"; "odd"; "even" ]));
+        ("odd", ("recursive", [ "odd"; "even"; "odd" ]));
       ];
     test_fixpoint "rejection follows reachability through a non-recursive callee"
       [ calling "k" [ "helper" ]; calling "helper" [ "r" ];
         calling "r" [ "r" ] ]
       []
       [
-        ("helper", [ "helper"; "r"; "r" ]);
-        ("k", [ "k"; "helper"; "r"; "r" ]);
-        ("r", [ "r"; "r" ]);
+        ("helper", ("recursive", [ "helper"; "r"; "r" ]));
+        ("k", ("recursive", [ "k"; "helper"; "r"; "r" ]));
+        ("r", ("recursive", [ "r"; "r" ]));
       ];
     test_fixpoint "a kernel that shares no callee with a cycle is unaffected"
       [ calling "k1" [ "r" ]; calling "r" [ "r" ]; calling "k2" [ "f" ];
         calling "f" [] ]
       [ "f"; "k2" ]
-      [ ("k1", [ "k1"; "r"; "r" ]); ("r", [ "r"; "r" ]) ];
+      [ ("k1", ("recursive", [ "k1"; "r"; "r" ]));
+        ("r", ("recursive", [ "r"; "r" ])) ];
+    (* A callee with no entry in the kernel list is a call the front end
+       recorded precisely because it could not see the body. Such a
+       callee has no record to read a name from, so the path names it by
+       its [Call.kernel_id], which is [name ^ ":" ^ ty]. *)
+    test_fixpoint "a callee that is not a kernel rejects its caller"
+      [ calling "k" [ "touch" ] ]
+      []
+      [ ("k", ("undefined", [ "k"; "touch:" ])) ];
+    test_fixpoint "the undefined-callee rejection is transitive"
+      [ calling "k" [ "helper" ]; calling "helper" [ "touch" ] ]
+      []
+      [
+        ("helper", ("undefined", [ "helper"; "touch:" ]));
+        ("k", ("undefined", [ "k"; "helper"; "touch:" ]));
+      ];
+    test_fixpoint "a kernel that reaches no undefined callee is unaffected"
+      [ calling "k1" [ "touch" ]; calling "k2" [ "f" ]; calling "f" [] ]
+      [ "f"; "k2" ]
+      [ ("k1", ("undefined", [ "k1"; "touch:" ])) ];
   ]
 
 let all_tests =

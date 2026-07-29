@@ -16,7 +16,8 @@ module Make (L : Logger.Logger) = struct
      subprocess) and [cjson_to_imp] (cached cu-to-json output on disk). *)
   let imp_of_json ?(block_dim = None) ?(grid_dim = None)
       ?(ignore_asserts = false) ?(assume_launch = false) ?(exit_status = 2)
-      (options : Gv_parser.t) (j : Yojson.Basic.t) : imp_kernel t =
+      ?(opaque_calls = Opaque_call_policy.default) (options : Gv_parser.t)
+      (j : Yojson.Basic.t) : imp_kernel t =
     (* Override block_dim/grid_dim if they user provided *)
     let options =
       {
@@ -40,7 +41,7 @@ module Make (L : Logger.Logger) = struct
         in
         let kernels =
           Phase_timer.measure "inference/d-to-imp" (fun () ->
-            D.parse_program d_ast)
+            D.parse_program ~policy:opaque_calls d_ast)
         in
         let kernels =
           if ignore_asserts then
@@ -56,7 +57,8 @@ module Make (L : Logger.Logger) = struct
       ?(grid_dim = None) ?(includes = []) ?(macros = []) ?(exit_status = 2)
       ?(cu_to_json = "cu-to-json") ?(ignore_asserts = false)
       ?(assume_launch = false) ?(launch_params = false) ?(cbor = false)
-      (fname : string) : imp_kernel t =
+      ?(opaque_calls = Opaque_call_policy.default) (fname : string) :
+      imp_kernel t =
     (* [Cu_to_json.cu_to_json] internally records "inference/cu-to-json"
        (subprocess + pipe read) and either "inference/yojson-parse" or
        "inference/cbor-decode" depending on the wire format. *)
@@ -75,14 +77,15 @@ module Make (L : Logger.Logger) = struct
       | None -> Gv_parser.make ()
     in
     imp_of_json ~block_dim ~grid_dim ~ignore_asserts ~assume_launch
-      ~exit_status options j
+      ~exit_status ~opaque_calls options j
 
   (* Loads a cached cu-to-json output (.cjson). [Gv_parser] is intentionally
      skipped — the source file's // args: header isn't reachable from the
      cache path, so block/grid/etc. must come from CLI flags. *)
   let cjson_to_imp ?(block_dim = None) ?(grid_dim = None)
       ?(ignore_asserts = false) ?(assume_launch = false) ?(exit_status = 2)
-      (fname : string) : imp_kernel t =
+      ?(opaque_calls = Opaque_call_policy.default) (fname : string) :
+      imp_kernel t =
     (* Mirror the cu-to-json split: time the read separately from the
        Yojson parse. The "inference/yojson-parse" label is shared with
        the cu-to-json path so dataset sweeps can compare like-for-like. *)
@@ -99,7 +102,7 @@ module Make (L : Logger.Logger) = struct
           exit exit_status)
     in
     imp_of_json ~block_dim ~grid_dim ~ignore_asserts ~assume_launch
-      ~exit_status (Gv_parser.make ()) j
+      ~exit_status ~opaque_calls (Gv_parser.make ()) j
 
   let wgsl_to_imp ?(block_dim = None) ?(grid_dim = None) ?(exit_status = 2)
       ?(wgsl_to_json = "wgsl-to-json") ?(ignore_asserts = false)
@@ -142,30 +145,32 @@ module Make (L : Logger.Logger) = struct
       ?(grid_dim = None) ?(includes = []) ?(macros = []) ?(exit_status = 2)
       ?(cu_to_json = "cu-to-json") ?(wgsl_to_json = "wgsl-to-json")
       ?(ignore_asserts = false) ?(assume_launch = false)
-      ?(launch_params = false) ?(cbor = false) (fname : string) :
+      ?(launch_params = false) ?(cbor = false)
+      ?(opaque_calls = Opaque_call_policy.default) (fname : string) :
       imp_kernel t =
     if String.ends_with ~suffix:".wgsl" fname then
       wgsl_to_imp ~block_dim ~grid_dim ~exit_status ~wgsl_to_json
         ~ignore_asserts fname
     else if String.ends_with ~suffix:".cjson" fname then
       cjson_to_imp ~block_dim ~grid_dim ~exit_status ~ignore_asserts
-        ~assume_launch fname
+        ~assume_launch ~opaque_calls fname
     else
       cu_to_imp ~abort_on_parsing_failure ~block_dim ~grid_dim ~includes ~macros
         ~exit_status ~cu_to_json ~ignore_asserts ~assume_launch ~launch_params
-        ~cbor fname
+        ~cbor ~opaque_calls fname
 
   let to_proto ?(abort_on_parsing_failure = true) ?(block_dim = None)
       ?(grid_dim = None) ?(includes = []) ?(exit_status = 2)
       ?(only_globals = true) ?(macros = [])
       ?(cu_to_json = "cu-to-json") ?(ignore_asserts = false)
       ?(assume_launch = false) ?(launch_params = false) ?(cbor = false)
-      ?(rules = Imp.Idiom_rewrite.all) ?infer_cond_bound (fname : string) :
+      ?(rules = Imp.Idiom_rewrite.all) ?infer_cond_bound
+      ?(opaque_calls = Opaque_call_policy.default) (fname : string) :
       proto_kernel t =
     let parsed =
       to_imp ~cu_to_json ~abort_on_parsing_failure ~block_dim ~grid_dim
         ~includes ~exit_status ~macros ~ignore_asserts ~assume_launch
-        ~launch_params ~cbor fname
+        ~launch_params ~cbor ~opaque_calls fname
     in
     let compiled, rejected =
       Phase_timer.measure "inference/imp-to-proto" (fun () ->

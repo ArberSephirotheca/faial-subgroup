@@ -9,6 +9,10 @@ module LaunchParam = Launch_param
 
 type t =
   | Kernel of C_kernel.t
+  (* A function declared without a body. It is kept so that a call to it
+     can be recognised as reaching code faial cannot see, rather than
+     silently vanishing. Its [code] is [Skip] and must not be read. *)
+  | Prototype of C_kernel.t
   | Declaration of Decl.t
   | Typedef of Typedef.t
   | Enum of Imp.Enum.t
@@ -17,23 +21,23 @@ type t =
 let remove_comma : t -> t = function
   | Kernel k -> Kernel (C_kernel.rewrite_comma k)
   | Declaration d -> Declaration (Decl.map_expr Expr.remove_comma d)
-  | (Typedef _ | Enum _ | LaunchParam _) as d -> d
+  | (Prototype _ | Typedef _ | Enum _ | LaunchParam _) as d -> d
 
 let rewrite_barriers : t -> t = function
   | Kernel k -> Kernel (C_kernel.rewrite_barriers k)
-  | (Declaration _ | Typedef _ | Enum _ | LaunchParam _) as d -> d
+  | (Prototype _ | Declaration _ | Typedef _ | Enum _ | LaunchParam _) as d -> d
 
 let to_s (d : t) : Indent.t list =
   match d with
   | Declaration d -> Decl.to_s d
-  | Kernel k -> C_kernel.to_s k
+  | Kernel k | Prototype k -> C_kernel.to_s k
   | Typedef d -> Typedef.to_s d
   | Enum e -> Imp.Enum.to_s e
   | LaunchParam lp -> LaunchParam.to_s lp
 
 let location : t -> Location.t = function
   | Declaration d -> Decl.location d
-  | Kernel k -> C_kernel.location k
+  | Kernel k | Prototype k -> C_kernel.location k
   | Typedef d -> Typedef.location d
   | Enum e -> Imp.Enum.location e
   | LaunchParam lp -> LaunchParam.location lp
@@ -169,7 +173,9 @@ let rec parse (j : Yojson.Basic.t) : t list j_result =
       t list j_result =
     if is_kernel j then
       let* k = C_kernel.parse type_params j in
-      if k.code = Skip then Ok [] else Ok [ Kernel k ]
+      if not (C_kernel.has_body k) then Ok [ Prototype k ]
+      else if k.code = Skip then Ok []
+      else Ok [ Kernel k ]
     else Ok []
   in
   match k with

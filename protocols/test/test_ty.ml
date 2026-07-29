@@ -424,6 +424,21 @@ let test_reference () : unit =
     "const T &" (Some "const T") (deref "const T &");
   Alcotest.(check (option string)) "int &" None (deref "int &")
 
+let test_writes_through () : unit =
+  let check = check_bool "writes_through" Ty.writes_through in
+  check "int *" true;
+  check "int []" true;
+  check "int &" true;
+  (* The const on the referent forbids the assignment. *)
+  check "const int *" false;
+  check "const int &" false;
+  (* [int *const p] forbids rebinding [p] and permits [p[0] = 1], so the
+     const on the pointer itself does not close the write channel. *)
+  check "int *const" true;
+  check "int" false;
+  check "float" false;
+  check "struct float2" false
+
 let test_shapes () : unit =
   check_bool "is_void" Ty.is_void "void" true;
   check_bool "is_struct" Ty.is_struct "struct float2" true;
@@ -482,6 +497,7 @@ let tests : unit Alcotest.test_case list =
       test_opaque_carries_the_resolved_spelling );
     ("opaque", `Quick, test_opaque);
     ("references", `Quick, test_reference);
+    ("writes_through", `Quick, test_writes_through);
     ("shapes", `Quick, test_shapes);
     ("to_string round trip", `Quick, test_to_string_round_trip);
   ]

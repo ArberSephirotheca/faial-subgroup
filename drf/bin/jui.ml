@@ -69,6 +69,13 @@ let render ~(rejected : Imp.Rejected_kernel.t list)
                 ("kernel_name", `String r.kernel);
                 ("reason", `String "recursive-call");
                 ("path", `List (List.map (fun x -> `String x) path));
+              ]
+        | Imp.Rejected_kernel.Reason.UndefinedKernel { path } ->
+            `Assoc
+              [
+                ("kernel_name", `String r.kernel);
+                ("reason", `String "undefined-kernel");
+                ("path", `List (List.map (fun x -> `String x) path));
               ])
   in
   `Assoc

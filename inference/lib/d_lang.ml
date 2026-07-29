@@ -852,29 +852,31 @@ module Kernel = struct
 
   let is_global (k : t) : bool = k.attribute |> KernelAttr.is_global
 
-  let to_s (k : t) : Indent.t list =
+  let header (k : t) : string =
+    let open C_lang in
     let tps =
-      let open C_lang in
       if k.type_params <> [] then
         "[" ^ list_to_s Ty_param.to_string k.type_params ^ "]"
       else ""
     in
+    KernelAttr.to_string k.attribute
+    ^ " " ^ k.name ^ " " ^ tps ^ "("
+    ^ list_to_s Param.to_string k.params
+    ^ ")"
+
+  let to_s (k : t) : Indent.t list =
     let open Indent in
-    [
-      (let open C_lang in
-       Line
-         (KernelAttr.to_string k.attribute
-         ^ " " ^ k.name ^ " " ^ tps ^ "("
-         ^ list_to_s Param.to_string k.params
-         ^ ") {"));
-      Block (Stmt.to_s k.code);
-      Line "}";
-    ]
+    [ Line (header k ^ " {"); Block (Stmt.to_s k.code); Line "}" ]
+
+  let signature_to_s (k : t) : Indent.t list =
+    let open Indent in
+    [ Line (header k ^ ";") ]
 end
 
 module Def = struct
   type t =
     | Kernel of Kernel.t
+    | Prototype of Kernel.t
     | Declaration of Decl.t
     | Typedef of Typedef.t
     | Enum of Imp.Enum.t
@@ -895,6 +897,7 @@ module Def = struct
     match d with
     | Declaration d -> [ Line (Decl.to_string d ^ ";") ]
     | Kernel k -> Kernel.to_s k
+    | Prototype k -> Kernel.signature_to_s k
     | Typedef d -> Typedef.to_s d
     | Enum e -> Imp.Enum.to_s e
     | LaunchParam lp -> C_lang.LaunchParam.to_s lp
@@ -941,6 +944,14 @@ module SignatureDB = struct
     let sigs : Kernel.t StringMap.t = StringMap.add k.ty k sigs in
     StringMap.add k.name sigs db
 
+  let add_if_absent (k : Kernel.t) (db : t) : t =
+    let occupied =
+      db |> StringMap.find_opt k.name
+      |> Option.map (StringMap.mem k.ty)
+      |> Option.value ~default:false
+    in
+    if occupied then db else add k db
+
   let to_string (db : t) : string =
     let curr =
       db |> StringMap.bindings |> List.map snd
@@ -986,13 +997,17 @@ module SignatureDB = struct
     in
     get ~kernel ~ty ~arg_count db |> Option.map Signature.from_kernel
 
-  (* Returns a map from kernel name to name of parameters *)
-  let from_program (p : Program.t) : t =
+  let from_program ?(policy = Opaque_call_policy.default) (p : Program.t) : t =
     List.fold_left
       (fun kernels d ->
         let open Def in
         match d with
         | Kernel k -> add k kernels
+        | Prototype k ->
+            if
+              Opaque_call_policy.is_opaque policy ~name:k.name ~params:k.params
+            then add_if_absent k kernels
+            else kernels
         | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> kernels)
       StringMap.empty p
 end
@@ -1793,6 +1808,7 @@ let rewrite_kernel (k : C_lang.Kernel.t) : Kernel.t =
 let rewrite_def (d : C_lang.Def.t) : Def.t =
   match d with
   | Kernel k -> Kernel (rewrite_kernel k)
+  | Prototype k -> Prototype (rewrite_kernel k)
   | Declaration d ->
       let _, d = run0 (rewrite_decl d) in
       Declaration d

@@ -138,6 +138,7 @@ let rewrite_shared_arrays : t -> t =
         Def.Declaration d :: rw_p vars p
     | Def.Kernel k :: p ->
         Def.Kernel { k with code = rw_stmt vars k.code } :: rw_p vars p
+    | Def.Prototype k :: p -> Def.Prototype k :: rw_p vars p
     | Def.Typedef d :: p -> Def.Typedef d :: rw_p vars p
     | Def.Enum e :: p -> Def.Enum e :: rw_p vars p
     | Def.LaunchParam lp :: p -> Def.LaunchParam lp :: rw_p vars p
