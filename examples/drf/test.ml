@@ -922,6 +922,21 @@ let tests =
     (* The policy that restores the old behaviour: the call is ignored and
        the kernel is analysed as though it were never written. *)
     ("undefined-call.cu", [ "--opaque-calls=skip-all" ], 0);
+    (* The body [touch] lacks is not absent from the project, only from
+       this file. Handing over the sibling that defines it resolves the
+       call and the kernel is analysed: the file that is discarded on its
+       own clears as data-race free, since its own write and the one
+       [touch] contributes are both to [A[threadIdx.x]], and a thread does
+       not race with itself. *)
+    ("undefined-call.cu", [ "undefined-call-sibling.cu" ], 0);
+    (* The sibling's accesses arrive, they are not merely counted as
+       resolved: this body writes [A[i / 2]], which two threads share.
+       The flags are the ones that clear the kernel above, so the race can
+       only come from the file that was added. [--opaque-calls] does not
+       hold it back either, because that policy speaks for a call whose
+       body is invisible and this body is now visible. *)
+    ("undefined-call.cu",
+     [ "--opaque-calls=skip-all"; "undefined-call-sibling-racy.cu" ], 1);
     (* A discarded kernel answers to its own name: selecting it reports
        the discard, where naming it used to fail as though the kernel
        were absent from the file. *)
@@ -1028,8 +1043,11 @@ let faial_drf ?(args = []) (fname : Fpath.t) : Subprocess.t =
 
 let used_files : Fpath.Set.t =
   tests
-  (* get just the filenames as paths *)
-  |> List.map (fun (x, _, _) -> Fpath.(v "." / x))
+  (* get just the filenames as paths; a case may name further sources
+     among its arguments, which faial-drf takes as extra input files *)
+  |> List.concat_map (fun (x, args, _) ->
+      x :: List.filter (fun (a : string) -> Filename.check_suffix a ".cu") args)
+  |> List.map (fun (x : string) -> Fpath.(v "." / x))
   (* convert to a set *)
   |> Fpath.Set.of_list
 

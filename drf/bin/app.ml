@@ -66,7 +66,7 @@ module Delin_algo = Delinearize.Algo
 module Opaque_calls = Opaque_call_policy
 
 type t = {
-  filename : string;
+  filenames : string list;
   kernels : Kernel.t list;
   rejected : Imp.Rejected_kernel.t list;
   timeout : int option;
@@ -155,7 +155,7 @@ let to_string (app : t) : string =
   in
   match app with
   | {
-   filename;
+   filenames;
    kernels;
    rejected = _;
    timeout;
@@ -205,7 +205,7 @@ let to_string (app : t) : string =
   } ->
       let only_kernel = Option.value ~default:"(null)" only_kernel in
       let kernels = List.length kernels |> string_of_int in
-      "filename: " ^ filename ^ "\nonly_kernel: " ^ only_kernel
+      "filenames: " ^ list_string filenames ^ "\nonly_kernel: " ^ only_kernel
       ^ "\nblock_dim: " ^ opt dim3 block_dim ^ "\ngrid_dim: "
       ^ opt dim3 grid_dim ^ "\nkernels: " ^ kernels ^ "\ntimeout: "
       ^ opt int timeout ^ "\nlogic: " ^ opt_s logic ^ "\narchs: "
@@ -287,7 +287,7 @@ let parse ~extra_files ~filename ~timeout ~show_proofs ~show_proto
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
   let grid_dim = if all_dims then None else Some parsed.options.grid_dim in
   {
-    filename;
+    filenames = filename :: extra_files;
     rejected;
     timeout;
     show_proofs;

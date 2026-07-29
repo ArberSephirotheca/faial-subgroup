@@ -82,7 +82,7 @@ let main =
              CUDA source given is parsed in one cu-to-json invocation and \
              analysed as a single program, so a kernel in one file resolves \
              its calls against definitions in another. Only the first file \
-             is consulted for a GPUVerify $(b,// args:) header.")
+             is read for the legacy two-line launch-shape header.")
   and+ timeout =
     Arg.(
       value
