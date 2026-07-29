@@ -235,8 +235,9 @@ let to_string (app : t) : string =
       ^ list_string (List.map Assumption.to_string assumptions)
       ^ "\n"
 
-let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
-    ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc ~show_symbexp
+let parse ~extra_files ~filename ~timeout ~show_proofs ~show_proto
+    ~show_wf ~show_align ~show_delin ~show_phase_split ~show_loc_split
+    ~show_flat_acc ~show_symbexp
     ~logic ~solve_tactic ~deterministic_sat ~ge_index ~le_index ~eq_index
     ~only_array ~only_kernel
     ~only_true_data_races ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2
@@ -263,7 +264,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
         ~abort_on_parsing_failure:(not ignore_parsing_errors)
         ~includes ~block_dim ~grid_dim ~macros ~cu_to_json
         ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor
-        ~opaque_calls filename)
+        ~opaque_calls ~extra_files filename)
   in
   (* Uniquify duplicate kernel names so that a [--assume kernel=K:BEXP]
      clause, the [--list-kernels] output, and the genie verdict JSON all

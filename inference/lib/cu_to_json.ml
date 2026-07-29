@@ -15,8 +15,8 @@ let read_all (ic : in_channel) : string =
   Buffer.contents buf
 
 let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
-    ?(macros = []) ?(launch_params = false) ?(cbor = false) (fname : string) :
-    (Yojson.Basic.t, int * string) Result.t =
+    ?(macros = []) ?(launch_params = false) ?(cbor = false)
+    (fnames : string list) : (Yojson.Basic.t, int * string) Result.t =
   let includes = List.map (fun x -> "-I" ^ x) includes in
   let macros = List.map (fun x -> "-D" ^ x) macros in
   let extra =
@@ -28,7 +28,7 @@ let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
     @ (if launch_params then [ "--launch-params" ] else [])
     @ if cbor then [ "--cbor" ] else []
   in
-  let args = [ fname ] @ includes @ macros @ extra in
+  let args = fnames @ includes @ macros @ extra in
   let cmd = Filename.quote_command exe args in
   let r, raw =
     Phase_timer.measure "inference/cu-to-json" (fun () ->
@@ -58,10 +58,10 @@ let cu_to_json ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
     ?(macros = []) ?(launch_params = false) ?(cbor = false)
     (* If some integer is given, then we return that on exit, otherwise we return
      whatever cu-to-json returns *)
-    ?(on_error = exit) (fname : string) : Yojson.Basic.t =
+    ?(on_error = exit) (fnames : string list) : Yojson.Basic.t =
   match
     cu_to_json_res ~exe ~includes ~ignore_fail ~macros ~launch_params ~cbor
-      fname
+      fnames
   with
   | Ok x -> x
   | Error (r, m) ->

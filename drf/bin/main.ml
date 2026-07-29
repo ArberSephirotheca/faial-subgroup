@@ -72,11 +72,17 @@ let main =
   Cmd.v info
   @@
   let open Cmdliner.Term.Syntax in
-  let+ filename =
+  let+ filenames =
     Arg.(
-      required
-      & pos 0 (some file) None
-      & info [] ~docv:"FILENAME" ~doc:"The path $(docv) of the GPU program.")
+      non_empty
+      & pos_all file []
+      & info [] ~docv:"FILENAME"
+          ~doc:
+            "The path $(docv) of the GPU program. May be repeated: every \
+             CUDA source given is parsed in one cu-to-json invocation and \
+             analysed as a single program, so a kernel in one file resolves \
+             its calls against definitions in another. Only the first file \
+             is consulted for a GPUVerify $(b,// args:) header.")
   and+ timeout =
     Arg.(
       value
@@ -567,8 +573,11 @@ let main =
       else if grid_level then [ Architecture.Grid ]
       else [ Architecture.Block ]
     in
+    let filename = List.hd filenames in
+    let extra_files = List.tl filenames in
     let app =
-      App.parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
+      App.parse ~extra_files ~filename ~timeout ~show_proofs ~show_proto
+        ~show_wf ~show_align
         ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc
         ~show_symbexp ~logic ~solve_tactic ~deterministic_sat ~ge_index ~le_index
         ~eq_index ~only_array

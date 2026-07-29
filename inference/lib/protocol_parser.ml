@@ -57,8 +57,8 @@ module Make (L : Logger.Logger) = struct
       ?(grid_dim = None) ?(includes = []) ?(macros = []) ?(exit_status = 2)
       ?(cu_to_json = "cu-to-json") ?(ignore_asserts = false)
       ?(assume_launch = false) ?(launch_params = false) ?(cbor = false)
-      ?(opaque_calls = Opaque_call_policy.default) (fname : string) :
-      imp_kernel t =
+      ?(opaque_calls = Opaque_call_policy.default) ?(extra_files = [])
+      (fname : string) : imp_kernel t =
     (* [Cu_to_json.cu_to_json] internally records "inference/cu-to-json"
        (subprocess + pipe read) and either "inference/yojson-parse" or
        "inference/cbor-decode" depending on the wire format. *)
@@ -66,7 +66,8 @@ module Make (L : Logger.Logger) = struct
       Cu_to_json.cu_to_json
         ~ignore_fail:(not abort_on_parsing_failure)
         ~on_error:(fun _ -> exit exit_status)
-        ~includes ~macros ~exe:cu_to_json ~launch_params ~cbor fname
+        ~includes ~macros ~exe:cu_to_json ~launch_params ~cbor
+        (fname :: extra_files)
     in
     let options : Gv_parser.t =
       match Gv_parser.parse fname with
@@ -146,18 +147,27 @@ module Make (L : Logger.Logger) = struct
       ?(cu_to_json = "cu-to-json") ?(wgsl_to_json = "wgsl-to-json")
       ?(ignore_asserts = false) ?(assume_launch = false)
       ?(launch_params = false) ?(cbor = false)
-      ?(opaque_calls = Opaque_call_policy.default) (fname : string) :
-      imp_kernel t =
-    if String.ends_with ~suffix:".wgsl" fname then
+      ?(opaque_calls = Opaque_call_policy.default) ?(extra_files = [])
+      (fname : string) : imp_kernel t =
+    let single_file (kind : string) : unit =
+      if extra_files <> [] then (
+        prerr_endline
+          ("Several input files are only supported for CUDA sources, not "
+           ^ kind ^ ".");
+        exit exit_status)
+    in
+    if String.ends_with ~suffix:".wgsl" fname then (
+      single_file "WGSL";
       wgsl_to_imp ~block_dim ~grid_dim ~exit_status ~wgsl_to_json
-        ~ignore_asserts fname
-    else if String.ends_with ~suffix:".cjson" fname then
+        ~ignore_asserts fname)
+    else if String.ends_with ~suffix:".cjson" fname then (
+      single_file "cached cu-to-json output";
       cjson_to_imp ~block_dim ~grid_dim ~exit_status ~ignore_asserts
-        ~assume_launch ~opaque_calls fname
+        ~assume_launch ~opaque_calls fname)
     else
       cu_to_imp ~abort_on_parsing_failure ~block_dim ~grid_dim ~includes ~macros
         ~exit_status ~cu_to_json ~ignore_asserts ~assume_launch ~launch_params
-        ~cbor ~opaque_calls fname
+        ~cbor ~opaque_calls ~extra_files fname
 
   let to_proto ?(abort_on_parsing_failure = true) ?(block_dim = None)
       ?(grid_dim = None) ?(includes = []) ?(exit_status = 2)
@@ -165,12 +175,12 @@ module Make (L : Logger.Logger) = struct
       ?(cu_to_json = "cu-to-json") ?(ignore_asserts = false)
       ?(assume_launch = false) ?(launch_params = false) ?(cbor = false)
       ?(rules = Imp.Idiom_rewrite.all) ?infer_cond_bound
-      ?(opaque_calls = Opaque_call_policy.default) (fname : string) :
-      proto_kernel t =
+      ?(opaque_calls = Opaque_call_policy.default) ?(extra_files = [])
+      (fname : string) : proto_kernel t =
     let parsed =
       to_imp ~cu_to_json ~abort_on_parsing_failure ~block_dim ~grid_dim
         ~includes ~exit_status ~macros ~ignore_asserts ~assume_launch
-        ~launch_params ~cbor ~opaque_calls fname
+        ~launch_params ~cbor ~opaque_calls ~extra_files fname
     in
     let compiled, rejected =
       Phase_timer.measure "inference/imp-to-proto" (fun () ->

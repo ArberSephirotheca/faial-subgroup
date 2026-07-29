@@ -122,7 +122,7 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
     (includes : string list) (macros : string list) : unit =
   let j =
     Cu_to_json.cu_to_json ~ignore_fail:true ~launch_params:true ~includes
-      ~macros fname
+      ~macros [ fname ]
   in
   let k1, k2, k3 = analyze verbose assume_launch j in
   let keep_loc (loc : Location.t) : bool = show_stdlib || not (is_stdlib loc) in

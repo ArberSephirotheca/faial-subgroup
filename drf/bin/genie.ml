@@ -1298,7 +1298,7 @@ let main =
   let archs = [ Architecture.Block ] in
   let app =
     App.parse
-      ~filename ~timeout
+      ~extra_files:[] ~filename ~timeout
       ~show_proofs:false ~show_proto:false ~show_wf:false ~show_align:false
       ~show_delin:false ~show_phase_split:false ~show_loc_split:false
       ~show_flat_acc:false ~show_symbexp:false
