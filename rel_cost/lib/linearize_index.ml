@@ -67,8 +67,7 @@ module Make (L : Logger.Logger) = struct
     mem
     |> Variable.Map.filter_map (fun _ v ->
         let open Memory in
-        let ty = String.concat " " v.data_type |> Ty.of_c_string in
-        match Ty.sizeof ty with
+        match Ty.sizeof (Memory.data_ty v) with
         | Some n -> Some { byte_count = n; dim = v.size }
         | None -> Some { byte_count = bytes_per_word; dim = v.size })
 

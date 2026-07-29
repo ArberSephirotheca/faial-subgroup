@@ -290,6 +290,11 @@ let tests =
      row width away and the collision disappears. *)
     ("racy-2d-arg-offset.cu", [], 1);
     ("drf-2d-arg-offset.cu", [], 0);
+    (* memcpy copies bytes, so its stub's loop runs one iteration per byte
+     and the index has to be truncated to an element before it names a
+     cell. Reading the byte count as an element count would have thread t
+     cover elements t to t + 3 and collide with its neighbours. *)
+    ("drf-memcpy-extent.cu", [], 0);
     (* Array accesses of local memory should not introduce data-races. *)
     ("drf-local-array.cu", [], 0);
     (* Check support for macros *)
@@ -1013,9 +1018,6 @@ let unsupported : Fpath.t list =
      a one-index access on an array whose other accesses carry two, not
      the scaling. *)
     "racy-ptr-view-arity.cu";
-    (* memcpy's byte loop truncated to elements. Not checked because the
-     stub carries a body only in c-to-json's dist-include header. *)
-    "drf-memcpy-extent.cu";
   ]
   |> List.map (fun x -> Fpath.(v "." / x))
 

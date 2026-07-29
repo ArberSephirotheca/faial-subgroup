@@ -18,12 +18,13 @@ let from_type (h : Mem_hierarchy.t) (ty : Ty.t) : t =
     data_type = Ty.get_array_type ty;
   }
 
-(* [data_type] was already stripped by [Ty.get_array_type], so this reads
+let data_ty (x : t) : Ty.t = x.data_type |> String.concat " " |> Ty.of_c_string
+
+(* [data_ty] was already stripped by [Ty.get_array_type], so this reads
    [Ty.width] rather than [Ty.pointee_size]. More than one dimension has no
    step, matching [Ty.pointee_size] on the type this record came from. *)
 let step (x : t) : int option =
-  if List.length x.size > 1 then None
-  else x.data_type |> String.concat " " |> Ty.of_c_string |> Ty.width
+  if List.length x.size > 1 then None else x |> data_ty |> Ty.width
 
 let make_map (h : Mem_hierarchy.t) (vs : Variable.t list) : t Variable.Map.t =
   vs |> List.map (fun x -> (x, make h)) |> Variable.Map.of_list
