@@ -142,17 +142,48 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
            | _ -> acc)
          StringSet.empty
   in
+  let reachable_kernel_names : StringSet.t =
+    let by_id =
+      k3
+      |> List.fold_left
+           (fun m k -> Imp.Function_id.Map.add (Imp.Kernel.unique_id k) k m)
+           Imp.Function_id.Map.empty
+    in
+    let rec reach (seen : Imp.Function_id.Set.t)
+        (todo : Imp.Function_id.t list) : Imp.Function_id.Set.t =
+      match todo with
+      | [] -> seen
+      | id :: todo when Imp.Function_id.Set.mem id seen -> reach seen todo
+      | id :: todo ->
+          let callees =
+            match Imp.Function_id.Map.find_opt id by_id with
+            | Some k -> Imp.Kernel.calls k |> Imp.Function_id.Set.elements
+            | None -> []
+          in
+          reach (Imp.Function_id.Set.add id seen) (callees @ todo)
+    in
+    k3
+    |> List.filter Imp.Kernel.is_global
+    |> List.map Imp.Kernel.unique_id
+    |> reach Imp.Function_id.Set.empty
+    |> Imp.Function_id.Set.elements
+    |> List.concat_map (fun id ->
+           [ Imp.Function_id.name id; Imp.Function_id.label id ])
+    |> StringSet.of_list
+  in
+  let keep_reached (name : string) : bool =
+    (not only_global) || StringSet.mem name reachable_kernel_names
+  in
   let c_lang_keep (d : C_lang.Def.t) : bool =
     let open C_lang in
-    (match d with Def.Kernel k -> (not only_global) || Kernel.is_global k
-     | _ -> not only_global)
+    (match d with Def.Kernel k -> keep_reached k.name | _ -> not only_global)
     && keep_loc (C_lang.Def.location d)
   in
   let d_lang_keep (d : D_lang.Def.t) : bool =
     let open D_lang in
     match d with
     | Kernel k ->
-        ((not only_global) || Kernel.is_global k)
+        keep_reached (Kernel.name k)
         && not (StringSet.mem (Kernel.name k) stdlib_kernel_names)
     | Prototype k ->
         (not only_global)
@@ -168,26 +199,22 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
   let k3_filtered =
     k3
     |> List.filter (fun k ->
-        ((not only_global) || Imp.Kernel.is_global k)
+        keep_reached (Imp.Kernel.name k)
         && not (StringSet.mem (Imp.Kernel.name k) stdlib_kernel_names))
   in
   let scoped = List.map Imp.Scoped.Kernel.from_imp k3 in
   let inlined, rejected = Imp.Inline_calls.inline_calls scoped in
   let proto = List.map Imp.Compiler.compile inlined in
-  let keep_named (name : string) (is_global : bool) : bool =
-    ((not only_global) || is_global)
-    && not (StringSet.mem name stdlib_kernel_names)
+  let keep_named (name : string) : bool =
+    keep_reached name && not (StringSet.mem name stdlib_kernel_names)
   in
   let scoped_filter =
-    List.filter (fun k ->
-        keep_named (Imp.Scoped.Kernel.name k) (Imp.Scoped.Kernel.is_global k))
+    List.filter (fun k -> keep_named (Imp.Scoped.Kernel.name k))
   in
   let scoped_filtered = scoped_filter scoped in
   let inlined_filtered = scoped_filter inlined in
   let proto_filtered =
-    proto
-    |> List.filter (fun k ->
-        keep_named (Protocols.Kernel.name k) (Protocols.Kernel.is_global k))
+    proto |> List.filter (fun k -> keep_named (Protocols.Kernel.name k))
   in
   if silent then ()
   else (
@@ -229,7 +256,11 @@ let verbose =
   Arg.(value & flag & info [ "verbose"; "v" ] ~doc)
 
 let only_global =
-  let doc = "Only print __global__ kernels" in
+  let doc =
+    "Only print __global__ kernels and the functions they call. Under \
+     --assume-launch the launched kernel is demoted to __device__ and \
+     reached through the synthesised wrapper, so it is printed too."
+  in
   Arg.(value & flag & info [ "only-global" ] ~doc)
 
 let show_stdlib =
