@@ -79,10 +79,10 @@ let main =
       & info [] ~docv:"FILENAME"
           ~doc:
             "The path $(docv) of the GPU program. May be repeated: every \
-             CUDA source given is parsed in one cu-to-json invocation and \
-             analysed as a single program, so a kernel in one file resolves \
-             its calls against definitions in another. Only the first file \
-             is read for the legacy two-line launch-shape header.")
+             CUDA source given is parsed together and analysed as a single \
+             program, so a kernel in one file resolves its calls against \
+             definitions in another. Only the first file is read for the \
+             legacy two-line launch-shape header.")
   and+ timeout =
     Arg.(
       value
