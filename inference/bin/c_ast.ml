@@ -278,9 +278,9 @@ let only_global =
 
 let show_stdlib =
   let doc =
-    "Include the c-to-json stdlib (cuda.h, stdio.h, iostream, \
-     compiler-builtin typedefs, etc.). By default these are hidden so \
-     only user-authored declarations remain."
+    "Include declarations from the standard and CUDA headers (cuda.h, \
+     stdio.h, iostream, compiler-builtin typedefs, etc.). By default \
+     these are hidden so only user-authored declarations remain."
   in
   Arg.(value & flag & info [ "show-stdlib" ] ~doc)
 
