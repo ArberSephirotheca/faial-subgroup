@@ -1120,7 +1120,8 @@ let () =
   unsupported
   |> List.iter (fun f ->
       if not (Files.exists f) then (
-        print_endline ("Missing unsupported file: " ^ Fpath.to_string f);
+        print_endline
+          (" ✘ ERROR: Missing unsupported file: " ^ Fpath.to_string f);
         exit 1)
       else print_endline ("TODO:  " ^ Fpath.to_string f));
   (* [--list-kernels] is checked on its output rather than its exit
@@ -1147,6 +1148,7 @@ let () =
       |> List.map Fpath.to_string |> String.concat " "
     in
     print_endline "";
-    print_endline ("ERROR: The following files are not being checked: " ^ missed);
+    print_endline
+      (" ✘ ERROR: The following files are not being checked: " ^ missed);
     exit (-1))
   else ()
