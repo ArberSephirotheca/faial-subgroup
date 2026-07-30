@@ -1104,8 +1104,8 @@ module AccessState = struct
             in
             let ty_var = Ty_variable.make ~name:x ~ty in
             Seq
-              ( wr (Decl_expr.from_name x),
-                DeclStmt [ Decl.from_expr ty_var source ] ))
+              ( DeclStmt [ Decl.from_expr ty_var source ],
+                wr (Decl_expr.from_name x) ))
 
   let add_read (a : d_subscript) : Variable.t state =
     add_var ~kind:ReadResult (subscript_to_s a) (fun x -> Stmt.read_access x a)
