@@ -1151,8 +1151,34 @@ let rec stamp_guard (g : Expr.t) (s : Stmt.t) : Stmt.t =
 
 let capture (m : 'a state) : Stmt.t * 'a = State.run m Stmt.Skip
 
+let to_subscript : C_lang.Expr.t -> C_lang.Expr.c_array_subscript option =
+  let cell (x : Decl_expr.t) (rhs : C_lang.Expr.t) :
+      C_lang.Expr.c_array_subscript option =
+    Some
+      { lhs = Ident x; rhs; ty = x.ty; location = Variable.location x.name }
+  in
+  function
+  | ArraySubscriptExpr a -> Some a
+  | UnaryOperator { opcode = "*"; child = Ident x; _ } ->
+      cell x (IntegerLiteral 0)
+  | UnaryOperator
+      {
+        opcode = "*";
+        child = BinaryOperator { lhs = Ident x; rhs; opcode = "+"; _ };
+        _;
+      } ->
+      cell x rhs
+  | CXXOperatorCallExpr
+      { func = UnresolvedLookupExpr { name = v; _ }; args = [ Ident x ]; _ }
+    when Variable.name v = "operator*" ->
+      cell x (IntegerLiteral 0)
+  | _ -> None
+
 let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   let open Expr in
+  match to_subscript c with
+  | Some a -> rewrite_read a
+  | None -> (
   match c with
   (* When an atomic happens *)
   | CallExpr { func = Ident f; args = (e : C_lang.Expr.t) :: args; ty }
@@ -1199,80 +1225,41 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
                ~location:(Variable.location f.name) ~ty)
       | _ -> return (CallExpr { func = Ident f; args = e :: args; ty }))
   (* When a write happens *)
-  | BinaryOperator { lhs = ArraySubscriptExpr a; rhs = src; opcode = "="; _ } ->
-      rewrite_write a src
-  (*   *w = *)
-  | BinaryOperator
-      {
-        lhs =
-          UnaryOperator
-            { opcode = "*"; child = Ident { name = x; ty; _ } as lhs; _ };
-        rhs = src;
-        opcode = "=";
-        _;
-      } ->
-      rewrite_write
-        { lhs; rhs = IntegerLiteral 0; ty; location = Variable.location x }
-        src
-  (*   *w = *)
-  | BinaryOperator
-      {
-        lhs =
-          UnaryOperator
-            {
-              opcode = "*";
-              child =
-                BinaryOperator
-                  {
-                    lhs = Ident { name = x; ty; _ } as lhs;
-                    rhs;
-                    opcode = "+";
-                    _;
-                  };
-              _;
-            };
-        rhs = src;
-        opcode = "=";
-        _;
-      } ->
-      rewrite_write { lhs; rhs; ty; location = Variable.location x } src
-  (* operator*[w] = *)
-  | BinaryOperator
-      {
-        lhs =
-          CXXOperatorCallExpr
-            {
-              func = UnresolvedLookupExpr { name = v; _ };
-              args = [ (Ident { name = x; ty; _ } as lhs) ];
-              _;
-            };
-        rhs = src;
-        opcode = "=";
-        _;
-      }
-    when Variable.name v = "operator*" ->
-      rewrite_write
-        { lhs; rhs = IntegerLiteral 0; ty; location = Variable.location x }
-        src
+  | BinaryOperator { lhs; rhs = src; opcode = "="; ty } -> (
+      match to_subscript lhs with
+      | Some a -> rewrite_write a src
+      | None -> (
+          match lhs with
+          (* Nested scalar assignment [x = e] used as an expression value
+             (e.g. [(idx /= k) % m] after [c_lang] desugars to
+             [(idx = idx / k) % m]). Lift the assignment as a sequenced
+             [SExpr] side-effect and substitute the LHS identifier for the
+             expression's value, matching C's "assignment-expression
+             evaluates to the new value of [x]". The [SExpr] is then
+             lowered by [d_to_imp]'s existing arm to an
+             [Infer_stmt.Assign]. *)
+          | Ident d ->
+              let* src = rewrite_exp src in
+              let* () =
+                AccessState.add
+                  (SExpr
+                     (BinaryOperator
+                        { lhs = Ident d; opcode = "="; rhs = src; ty }))
+              in
+              return (Ident d)
+          | lhs ->
+              let* lhs = rewrite_exp lhs in
+              let* rhs = rewrite_exp src in
+              return (BinaryOperator { lhs; rhs; opcode = "="; ty })))
   | CXXOperatorCallExpr
-      { func = Ident { name = v; _ }; args = [ ArraySubscriptExpr a; src ]; _ }
-    when Variable.name v = "operator=" ->
-      rewrite_write a src
-  (* Nested scalar assignment [x = e] used as an expression value (e.g.
-     [(idx /= k) % m] after [c_lang] desugars to [(idx = idx / k) % m]).
-     Lift the assignment as a sequenced [SExpr] side-effect and
-     substitute the LHS identifier for the expression's value, matching
-     C's "assignment-expression evaluates to the new value of [x]". The
-     [SExpr] is then lowered by [d_to_imp]'s existing arm to an
-     [Infer_stmt.Assign]. *)
-  | BinaryOperator { lhs = Ident d; opcode = "="; rhs = src; ty } ->
-      let* src = rewrite_exp src in
-      let* () =
-        AccessState.add
-          (SExpr
-             (BinaryOperator { lhs = Ident d; opcode = "="; rhs = src; ty }))
-      in
-      return (Ident d)
+      { func = Ident { name = v; _ } as func; args = [ lhs; src ]; ty }
+    when Variable.name v = "operator=" -> (
+      match to_subscript lhs with
+      | Some a -> rewrite_write a src
+      | None ->
+          let* func = rewrite_exp func in
+          let* args = State.list_map rewrite_exp [ lhs; src ] in
+          return (CXXOperatorCallExpr { func; args; ty }))
   (* When a read happens *)
   | ArraySubscriptExpr a -> rewrite_read a
   | CallExpr
@@ -1352,35 +1339,6 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   | UnaryOperator { child = ArraySubscriptExpr a; opcode = "&"; ty } ->
       rewrite_exp
         (BinaryOperator { lhs = a.lhs; opcode = "+"; rhs = a.rhs; ty })
-  (* *p — bare-deref read; emit p[0] symmetrically with the bare-deref
-     write at the top of this match. Without this case the read falls
-     through to the UnaryOperator catch-all below and never becomes a
-     memory access. *)
-  | UnaryOperator
-      { opcode = "*"; child = Ident { name = x; ty; _ } as lhs; _ } ->
-      let a : C_lang.Expr.c_array_subscript =
-        { lhs; rhs = IntegerLiteral 0; ty; location = Variable.location x }
-      in
-      rewrite_read a
-  (* *(p + offset) — offset-deref read; emit p[offset] symmetrically
-     with the offset-deref write. *)
-  | UnaryOperator
-      {
-        opcode = "*";
-        child =
-          BinaryOperator
-            {
-              lhs = Ident { name = x; ty; _ } as lhs;
-              rhs;
-              opcode = "+";
-              _;
-            };
-        _;
-      } ->
-      let a : C_lang.Expr.c_array_subscript =
-        { lhs; rhs; ty; location = Variable.location x }
-      in
-      rewrite_read a
   | UnaryOperator { child; opcode; ty } ->
       let* child = rewrite_exp child in
       return (UnaryOperator { child; opcode; ty })
@@ -1422,7 +1380,7 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
          identity. D_lang has no consumer that uses this today, so
          lower to [RecoveryExpr]. Mirror in [D_lang.Expr.t] when a
          downstream stage starts caring. *)
-      return (RecoveryExpr d.ty)
+      return (RecoveryExpr d.ty))
 
 and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
   let rec rewrite_subscript (c : C_lang.Expr.c_array_subscript)
@@ -1803,9 +1761,6 @@ let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
       let rec target_to_subscript (e : C_lang.Expr.t)
           (indices : Expr.t list) : d_subscript state =
         match e with
-        | ArraySubscriptExpr a ->
-            let* idx = rewrite_exp a.rhs in
-            target_to_subscript a.lhs (idx :: indices)
         | UnaryOperator { opcode = "&"; child; _ }
         | UnaryOperator { opcode = "*"; child; _ } ->
             target_to_subscript child indices
@@ -1820,10 +1775,15 @@ let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
                 ty;
                 location = Variable.location name;
               }
-        | _ ->
-            failwith
-              ("BarrierOp: unsupported target shape: "
-             ^ C_lang.Expr.to_string e)
+        | e -> (
+            match to_subscript e with
+            | Some a ->
+                let* idx = rewrite_exp a.rhs in
+                target_to_subscript a.lhs (idx :: indices)
+            | None ->
+                failwith
+                  ("BarrierOp: unsupported target shape: "
+                 ^ C_lang.Expr.to_string e))
       in
       run
         (let* target = target_to_subscript target [] in

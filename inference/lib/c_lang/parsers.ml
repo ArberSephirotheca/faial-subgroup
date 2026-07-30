@@ -292,6 +292,16 @@ let rec parse_expr (j : json) : c_expr j_result =
                     lhs = IntegerLiteral 0;
                     rhs = c;
                   })
+        | "*" -> (
+            match c with
+            | UnaryOperator { opcode = "&"; child; _ } -> child
+            | _ ->
+                UnaryOperator { ty = J_type.parse ty; opcode = op; child = c })
+        | "&" -> (
+            match c with
+            | UnaryOperator { opcode = "*"; child; _ } -> child
+            | _ ->
+                UnaryOperator { ty = J_type.parse ty; opcode = op; child = c })
         | _ ->
             UnaryOperator { ty = J_type.parse ty; opcode = op; child = c })
   | "CompoundAssignOperator" -> (

@@ -284,6 +284,12 @@ let tests =
      Truncating by the row would put these two distinct ints in one cell
      and invent a collision. *)
     ("drf-ptr-view-flat-2d.cu", [], 0);
+    (* A dereference of an address-of names the cell the address was
+     taken from, and the address-of of a dereference is an address rather
+     than a read. Left standing, the first pair drops a store and the
+     second invents a read. *)
+    ("racy-deref-address-of.cu", [], 1);
+    ("drf-address-of-deref.cu", [], 0);
     (* An array argument's offset is a byte count, and the step that
      converts it back has to be the same one that converted it. The racy
      shape is the guard: with the two apart, the call-side write lands a
