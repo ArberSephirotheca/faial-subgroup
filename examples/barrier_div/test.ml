@@ -207,15 +207,18 @@ let bullet_for : int -> string = function
   | 1 -> "FAIL:  "
   | _ -> "?:     "
 
-let run_one ~(label : string) ~(exe : Fpath.t) (filename : string)
-    (args : string list) (expected_status : int) : unit =
+let exec_one ~(exe : Fpath.t) ((filename : string), (args : string list), (_ : int))
+    : float * Subprocess.Completed2.t =
+  Phase_timer.time_it (fun () ->
+      make_subprocess exe ~args (Fpath.v filename) |> Subprocess.run_split)
+
+let report_one ~(label : string) ~(exe : Fpath.t) (filename : string)
+    (args : string list) (expected_status : int) (elapsed : float)
+    (given : Subprocess.Completed2.t) : unit =
   let str_args = if args = [] then "" else String.concat " " args ^ " " in
   print_string (bullet_for expected_status ^ label ^ " " ^ str_args ^ filename);
-  Stdlib.flush_all ();
-  let given =
-    make_subprocess exe ~args (Fpath.v filename) |> Subprocess.run_split
-  in
-  if given.status = Unix.WEXITED expected_status then print_endline " ✔"
+  if given.status = Unix.WEXITED expected_status then
+    Printf.printf " ✔ %.2fs\n" elapsed
   else (
     let exit_code = Subprocess.exit_code given.status |> string_of_int in
     print_endline " ✘";
@@ -248,19 +251,23 @@ let run_one ~(label : string) ~(exe : Fpath.t) (filename : string)
     exit 1);
   Stdlib.flush_all ()
 
+let run_group ~jobs ~label ~exe tests : unit =
+  tests
+  |> Parallel.map ~jobs (exec_one ~exe)
+  |> List.combine tests
+  |> List.iter
+       (fun ((filename, args, expected_status), (elapsed, given)) ->
+         report_one ~label ~exe filename args expected_status elapsed given)
+
 let () =
+  let jobs = Parallel.test_jobs () in
   print_endline "Checking examples for synchronization properties:";
+  print_endline (Parallel.test_jobs_banner ());
   Unix.chdir (Fpath.to_string test_dir);
-  sync_tests
-  |> List.iter (fun (filename, args, expected_status) ->
-         run_one ~label:"faial-sync" ~exe:faial_sync_exe filename args
-           expected_status);
+  run_group ~jobs ~label:"faial-sync" ~exe:faial_sync_exe sync_tests;
   print_endline "";
   print_endline "Checking documented divergences with faial-sync-sym:";
-  sym_tests
-  |> List.iter (fun (filename, args, expected_status) ->
-         run_one ~label:"faial-sync-sym" ~exe:faial_sync_sym_exe filename
-           args expected_status);
+  run_group ~jobs ~label:"faial-sync-sym" ~exe:faial_sync_sym_exe sym_tests;
   unsupported
   |> List.iter (fun f ->
          if not (Files.exists f) then (

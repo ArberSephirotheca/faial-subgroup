@@ -86,9 +86,17 @@ let check_wgsl_to_json () : unit =
 let () =
   let open Fpath in
   check_wgsl_to_json ();
+  let jobs = Parallel.test_jobs () in
   print_endline "Checking examples for DRF:";
+  print_endline (Parallel.test_jobs_banner ());
+  Stdlib.flush_all ();
   tests
-  |> List.iter (fun (filename, args, expected_status) ->
+  |> Parallel.map ~jobs (fun (filename, args, _) ->
+         Phase_timer.time_it (fun () ->
+             faial_drf ~args (v filename) |> Subprocess.run_split))
+  |> List.combine tests
+  |> List.iter (fun ( (filename, args, expected_status),
+                      (elapsed, (given : Subprocess.Completed2.t)) ) ->
       let str_args = if args = [] then "" else String.concat " " args ^ " " in
       let bullet =
         match expected_status with
@@ -98,9 +106,8 @@ let () =
         | _ -> "?:     "
       in
       print_string (bullet ^ "faial-drf " ^ str_args ^ filename);
-      Stdlib.flush_all ();
-      let given = faial_drf ~args (v filename) |> Subprocess.run_split in
-      (if given.status = Unix.WEXITED expected_status then print_endline " ✔"
+      (if given.status = Unix.WEXITED expected_status then
+         Printf.printf " ✔ %.2fs\n" elapsed
        else
          let exit_code = Subprocess.exit_code given.status |> string_of_int in
          print_endline " ✘";

@@ -31,6 +31,11 @@ let add (name : string) (dt : float) : unit =
   | None -> Hashtbl.add table name dt
   | Some t -> Hashtbl.replace table name (t +. dt)
 
+let time_it (f : unit -> 'a) : float * 'a =
+  let start = Unix.gettimeofday () in
+  let result = f () in
+  (Unix.gettimeofday () -. start, result)
+
 (* Time [f ()] against [name]. [Fun.protect] ensures the elapsed time
    is still recorded if [f] raises (notably [Stop_at_stage], which
    unwinds the per-kernel pipeline in [App.run]).

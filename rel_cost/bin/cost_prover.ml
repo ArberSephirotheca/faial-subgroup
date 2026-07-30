@@ -63,12 +63,6 @@ module SolverBackend = struct
   let all : t list = [ IntGen; Bv32Gen; Bv64Gen ]
 end
 
-let time_it (f : unit -> unit) : float =
-  let start_time = Unix.gettimeofday () in
-  f ();
-  let end_time = Unix.gettimeofday () in
-  end_time -. start_time
-
 (* Load and parse tactic from file *)
 let load_tactic_from_file = function
   | None -> None
@@ -219,11 +213,12 @@ let print_theorem_result (theorem : Theorem.t) = function
 
 (* Unified benchmark function for all theorem execution modes *)
 let run ~generator ~tactic ~debug ~verbose ~solver ~theorem =
-  time_it (fun () ->
+  Stage0.Phase_timer.time_it (fun () ->
       let results =
         Theorem.execute ~generator ~tactic ~debug ~verbose ~solver theorem
       in
       List.iter (print_theorem_result theorem) results)
+  |> fst
 
 let run_all ~(strategy : Constraints.t) ~(threads_per_warp : int) ~(all : bool)
     ~(filename : string) ~(mode : RunMode.t) ~(tactic_file : string option)

@@ -1086,10 +1086,18 @@ let missed_files (dir : Fpath.t) : Fpath.Set.t =
 
 let () =
   let open Fpath in
+  let jobs = Parallel.test_jobs () in
   print_endline "Checking examples for DRF:";
+  print_endline (Parallel.test_jobs_banner ());
+  Stdlib.flush_all ();
   Unix.chdir (Fpath.to_string test_dir);
   tests
-  |> List.iter (fun (filename, args, expected_status) ->
+  |> Parallel.map ~jobs (fun (filename, args, _) ->
+         Phase_timer.time_it (fun () ->
+             faial_drf ~args (v filename) |> Subprocess.run_split))
+  |> List.combine tests
+  |> List.iter (fun ( (filename, args, expected_status),
+                      (elapsed, (given : Subprocess.Completed2.t)) ) ->
       let str_args = if args = [] then "" else String.concat " " args ^ " " in
       let bullet =
         match expected_status with
@@ -1099,9 +1107,8 @@ let () =
         | _ -> "?:     "
       in
       print_string (bullet ^ "faial-drf " ^ str_args ^ filename);
-      Stdlib.flush_all ();
-      let given = faial_drf ~args (v filename) |> Subprocess.run_split in
-      (if given.status = Unix.WEXITED expected_status then print_endline " ✔"
+      (if given.status = Unix.WEXITED expected_status then
+         Printf.printf " ✔ %.2fs\n" elapsed
        else
          let exit_code = Subprocess.exit_code given.status |> string_of_int in
          print_endline " ✘";
@@ -1150,12 +1157,14 @@ let () =
      status, which is 0 whatever it prints. Enumeration must name the
      discarded kernel too, since a name it omits is a name [--kernel]
      cannot be given back. *)
-  let listing =
-    faial_drf ~args:[ "--list-kernels" ] (v "discarded-with-survivor.cu")
-    |> Subprocess.run_split
+  let elapsed, listing =
+    Phase_timer.time_it (fun () ->
+        faial_drf ~args:[ "--list-kernels" ] (v "discarded-with-survivor.cu")
+        |> Subprocess.run_split)
   in
   print_string "LIST:  faial-drf --list-kernels discarded-with-survivor.cu";
-  if listing.stdout = "analysed\ndeclined\n" then print_endline " ✔"
+  if listing.stdout = "analysed\ndeclined\n" then
+    Printf.printf " ✔ %.2fs\n" elapsed
   else (
     print_endline " ✘";
     print_endline "------------------------ OUTPUT ------------------------";
