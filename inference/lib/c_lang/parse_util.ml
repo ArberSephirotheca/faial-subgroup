@@ -34,6 +34,19 @@ let parse_decl_id (o : j_object) : string option =
   with_opt_field "id" cast_string o
   |> Result.value ~default:None
 
+(* The type that identifies a function. [canonicalType] resolves typedefs
+   and drops the top-level parameter qualifiers a redeclaration may add or
+   omit, so a prototype and the definition it declares reach one string
+   where [type] gives two: a definition writing [int *__restrict__ p] for
+   a prototype's [int *p] declares the same function, and only the parser
+   can tell that qualifier from one below the top level. cu-to-json emits
+   the field beside [type]; a [.cjson] recorded before it existed has
+   only [type]. *)
+let get_signature_type (o : j_object) : json j_result =
+  match List.assoc_opt "canonicalType" o with
+  | Some j -> Ok j
+  | None -> Rjson.get_field "type" o
+
 let is_invalid (o : j_object) : bool =
   let open Rjson in
   with_opt_field "isInvalid" cast_bool o

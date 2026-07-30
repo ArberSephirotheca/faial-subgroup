@@ -122,7 +122,7 @@ let parse ?(qualifier = []) (type_params : Ty_param.t list)
     (j : Yojson.Basic.t) : t j_result =
   let open Rjson in
   (let* o = cast_object j in
-   let* ty = get_field "type" o |> Result.map J_type.parse in
+   let* ty = get_signature_type o |> Result.map J_type.parse in
    let ty = Ty.to_string ty in
    let* inner = with_field "inner" cast_list o in
    let attrs, inner =

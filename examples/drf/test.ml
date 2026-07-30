@@ -934,6 +934,13 @@ let tests =
        [touch] contributes are both to [A[threadIdx.x]], and a thread does
        not race with itself. *)
     ("undefined-call.cu", [ "undefined-call-sibling.cu" ], 0);
+    (* The same sibling, whose definition writes [int *__restrict__ A]
+       where the prototype writes [int *A]. A top-level qualifier on a
+       parameter is not part of the function type, so these declare one
+       function and the kernel resolves exactly as above. The identity is
+       taken from the canonical type for that reason: the written spelling
+       separates a prototype from its own definition. *)
+    ("undefined-call.cu", [ "undefined-call-sibling-restrict.cu" ], 0);
     (* The sibling's accesses arrive, they are not merely counted as
        resolved: this body writes [A[i / 2]], which two threads share.
        The flags are the ones that clear the kernel above, so the race can

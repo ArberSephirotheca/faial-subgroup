@@ -190,7 +190,7 @@ let rec parse_expr (j : json) : c_expr j_result =
       Ok (Ident { name; ty = J_type.parse ty; kind = Var; decl_id = None })
   | "FunctionDecl" ->
       let* v = parse_variable j in
-      let* ty = get_field "type" o in
+      let* ty = get_signature_type o in
       Ok
         (Ident
            { name = v; ty = J_type.parse ty; kind = Function;
@@ -198,7 +198,7 @@ let rec parse_expr (j : json) : c_expr j_result =
   | "CXXMethodDecl" | "CXXConstructorDecl" | "CXXDestructorDecl"
   | "CXXConversionDecl" ->
       let* name = parse_variable j in
-      let* ty = get_field "type" o in
+      let* ty = get_signature_type o in
       Ok
         (Ident
            { name; ty = J_type.parse ty; kind = CXXMethod;
