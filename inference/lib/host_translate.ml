@@ -11,13 +11,9 @@ open Protocols
     opaque sub-expressions behind fresh variables (deduped per
     launch). *)
 
-(* TODO: replace the string-keyed dedup with an E-graph so equivalence
-   classes are captured structurally rather than by stringifying every
-   expression we look up. *)
-
-(** Translator state: a per-launch dedup cache keyed by canonical
-    (location-stripped) stringification, plus the running list of
-    fresh params minted for this launch, newest-first. *)
+(** Translator state: a per-launch dedup cache keyed structurally by
+    [D_lang.Expr.compare], plus the running list of fresh params minted
+    for this launch, newest-first. *)
 type t = {
   cache : Variable.t D_lang.Expr.Map.t;
   fresh : Ty_variable.t list;
