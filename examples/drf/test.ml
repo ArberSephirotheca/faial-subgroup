@@ -441,6 +441,13 @@ let tests =
      races. *)
     ("racy-launch-mismatch.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
+    (* Two overloads share a bare name and only one of them is
+     launched. The launched overload is demoted and checked through
+     its pseudo-kernel; the unlaunched one stays an entry point and is
+     checked with free dims, where it races. Resolving the launch
+     target by bare name demotes both, and the race goes unreported. *)
+    ("racy-launch-overload-sibling.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
     (* A scalar kernel arg supplied by a non-Ident launch-site
      expression (here [params[0]]). The launch-arg resolver folds
      the array-subscript into a fresh uniform pseudo-parameter so

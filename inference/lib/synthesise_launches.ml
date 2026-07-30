@@ -202,9 +202,32 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
 
 (** {1 Demote launched kernels} *)
 
-let demote_if_launched (launched : Variable.Set.t) (k : Kernel.t) : Kernel.t =
-  let n = Variable.from_name (Kernel.name k) in
-  if Variable.Set.mem n launched && k.attribute = C_lang.KernelAttr.Default
+(** Resolves every launch target the same way the synthesised call
+    will, so a kernel is demoted exactly when a wrapper stands in for
+    it. Matching on the bare name instead demotes every same-named
+    sibling, which leaves an unlaunched overload or namespace member
+    with neither an entry point nor a wrapper, and therefore no
+    verdict at all. *)
+let launched_ids (p : Program.t) : Imp.Function_id.Set.t =
+  let db = SignatureDB.from_program p in
+  List.fold_left
+    (fun acc def ->
+      match def with
+      | Def.LaunchParam lp -> (
+          let func : Expr.t =
+            Ident { lp.kernel with kind = Decl_expr.Kind.Function }
+          in
+          match SignatureDB.lookup func (List.length lp.args) db with
+          | Some s -> Imp.Function_id.Set.add s.id acc
+          | None -> acc)
+      | _ -> acc)
+    Imp.Function_id.Set.empty p
+
+let demote_if_launched (launched : Imp.Function_id.Set.t) (k : Kernel.t) :
+    Kernel.t =
+  if
+    Imp.Function_id.Set.mem k.id launched
+    && k.attribute = C_lang.KernelAttr.Default
   then { k with attribute = C_lang.KernelAttr.Auxiliary }
   else k
 
@@ -214,7 +237,7 @@ let demote_if_launched (launched : Variable.Set.t) (k : Kernel.t) : Kernel.t =
 let rewrite_program (p : Program.t) : Program.t =
   (* Synth kernels are emitted before demoted originals so the
      call-inliner sees callees before callers. *)
-  let launched = Program.launched_kernel_names p in
+  let launched = launched_ids p in
   let push_synth def = State.update (fun synth -> def :: synth) in
   let m =
     State.list_fold_left

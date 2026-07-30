@@ -917,16 +917,6 @@ module Program = struct
 
   let print (p : t) : unit = Indent.print (to_s p)
   let filter (pred : Def.t -> bool) (p : t) : t = List.filter pred p
-
-  (* Names of every kernel that is the target of at least one
-     [LaunchParam] in the program. *)
-  let launched_kernel_names (p : t) : Variable.Set.t =
-    List.fold_left
-      (fun acc def ->
-        match def with
-        | Def.LaunchParam lp -> Variable.Set.add lp.kernel.name acc
-        | _ -> acc)
-      Variable.Set.empty p
 end
 
 module SignatureDB = struct
