@@ -472,6 +472,18 @@ let tests =
      threadIdx.x) pair writes a distinct address. *)
     ("drf-launch-const-arg.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* The same const-argument shape with an initialiser cu-to-json
+     cannot resolve to a value. It inlines the opaque call into every
+     slot naming the const, so nothing in the launch record says the
+     block dimension and the argument came from one variable. The
+     per-launch dedup cache recovers it structurally: both copies
+     translate to the same [@Launch] parameter, and the DRF verdict
+     rests on that sharing. The racy sibling gives the argument its own
+     binding, which must not converge. *)
+    ("drf-launch-impure-const-arg.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ("racy-launch-unrelated-const-arg.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
     (* A structured-binding variable ([const auto [slot, token] = ...])
      passed as a scalar launch argument. The launch-arg walk reads the
      [slot] reference, whose [DeclRefExpr] resolves to a [BindingDecl];
