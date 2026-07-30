@@ -124,6 +124,17 @@ let parse ?(qualifier = []) (type_params : Ty_param.t list)
   (let* o = cast_object j in
    let* ty = get_signature_type o |> Result.map J_type.parse in
    let ty = Ty.to_string ty in
+   (* The scopes cu-to-json computes from the semantic declaration
+      context, which hold for a definition written out of line with a
+      qualified name where the enclosing [NamespaceDecl] nodes, all the
+      caller can offer, do not. Absent from a [.cjson] recorded before
+      the field existed, and from a function at translation-unit
+      scope. *)
+   let qualifier =
+     match with_opt_field "qualifier" (cast_map cast_string) o with
+     | Ok (Some qs) -> qs
+     | Ok None | Error _ -> qualifier
+   in
    let* inner = with_field "inner" cast_list o in
    let attrs, inner =
      inner |> List.partition (j_filter_kind (String.ends_with ~suffix:"Attr"))

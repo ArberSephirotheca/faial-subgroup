@@ -999,6 +999,14 @@ let tests =
        identity has to carry the enclosing namespace. *)
     ("namespace-overload.cu", [], 0);
     ("namespace-overload-racy.cu", [], 1);
+    (* A namespace member defined out of line, under its qualified name,
+       so the definition is written at file scope while belonging to [N].
+       The enclosing [NamespaceDecl] nodes are the wrong place to read the
+       namespaces from: they hold for a definition written inside the
+       braces and say nothing about this one. Alone the kernel is
+       discarded, and the sibling that defines [N::touch] resolves it. *)
+    ("namespace-out-of-line.cu", [], 1);
+    ("namespace-out-of-line.cu", [ "namespace-out-of-line-sibling.cu" ], 0);
   ]
 
 (* These are kernels that are being documented, but are
