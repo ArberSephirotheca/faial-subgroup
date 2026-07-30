@@ -885,6 +885,7 @@ module Def = struct
     | Prototype of Kernel.t
     | Declaration of Decl.t
     | Typedef of Typedef.t
+    | Record of Record.t
     | Enum of Imp.Enum.t
     (* Launch metadata is propagated through the C->D lowering as-is:
        the expression slots stay in [C_lang.Expr.t] form because no
@@ -905,6 +906,7 @@ module Def = struct
     | Kernel k -> Kernel.to_s k
     | Prototype k -> Kernel.signature_to_s k
     | Typedef d -> Typedef.to_s d
+    | Record r -> Record.to_s r
     | Enum e -> Imp.Enum.to_s e
     | LaunchParam lp -> C_lang.LaunchParam.to_s lp
 end
@@ -1043,7 +1045,8 @@ module SignatureDB = struct
                 ~params:k.params
             then add_if_absent k kernels
             else kernels
-        | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> kernels)
+        | Declaration _ | Typedef _ | Record _ | Enum _ | LaunchParam _ ->
+            kernels)
       empty p
 end
 
@@ -1396,6 +1399,9 @@ and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
     match c.lhs with
     | ArraySubscriptExpr a -> rewrite_subscript a indices loc
     | Ident { name; ty; _ } ->
+        return { name; index = indices; ty; location = Option.get loc }
+    | MemberExpr { base = Ident b; name = field; ty } ->
+        let name = Variable.update_name (fun n -> n ^ "." ^ field) b.name in
         return { name; index = indices; ty; location = Option.get loc }
     | e ->
         let ty = C_lang.Expr.to_type e in
@@ -1808,6 +1814,7 @@ let rewrite_def (d : C_lang.Def.t) : Def.t =
       let _, d = run0 (rewrite_decl d) in
       Declaration d
   | Typedef d -> Typedef d
+  | Record r -> Record r
   | Enum e -> Enum e
   | LaunchParam lp -> LaunchParam lp
 

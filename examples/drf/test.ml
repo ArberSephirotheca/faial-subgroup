@@ -1042,6 +1042,44 @@ let tests =
     (* The same call with a per-thread index, so the argument has to bind
        through the qualified name for [A[i]] to stay disjoint. *)
     ("drf-static-method.cu", [], 0);
+    (* A pointer member of a struct parameter is memory of its own, so
+       [v.p] is an array and every thread writing [v.p[0]] races. The write
+       to [B] is what keeps the kernel from reporting no accesses at all,
+       which would pass this test without expanding the parameter. *)
+    ("racy-pointer-field.cu", [], 1);
+    (* The same expansion has to carry the scalar member too: [v.n] is a
+       uniform parameter, so [v.p[threadIdx.x + v.n]] stays disjoint. *)
+    ("drf-pointer-field.cu", [], 0);
+    (* [s->p] reaches the subscript as the same shape as [v.p], so a
+       pointer-to-struct parameter expands the same way. *)
+    ("racy-arrow-field.cu", [], 1);
+    (* With [f.x] a free variable the prover gave each thread its own, and
+       the kernel reported a race that cannot happen; expanded, [f.x] is
+       uniform and the indices are disjoint. *)
+    ("drf-field-in-param.cu", [], 0);
+    (* An array member of a [__shared__] struct is shared memory of its
+       own. Before it was, the write was discarded and a read of the
+       enclosing struct was fabricated in its place, and reads do not race
+       with reads, so the kernel was reported race-free. *)
+    ("racy-shared-struct-field.cu", [], 1);
+    (* Two members are two arrays, so a write to [s.a[i]] and a read of
+       [s.b[i + 1]] do not meet. Collapsing both onto the enclosing struct
+       would put them one cell apart and report a race. *)
+    ("drf-shared-struct-field.cu", [], 0);
+    (* The same expansion for a file-scope [__device__] struct. The write
+       to [B] is what keeps the kernel from reporting no accesses at all. *)
+    ("racy-device-struct-field.cu", [], 1);
+    (* A struct argument expands into its members at the call site the way
+       the callee's parameter does, so the two lists still line up and
+       [v.p] inside [put] binds to the caller's [v.p]. *)
+    ("racy-struct-arg.cu", [], 1);
+    (* The same call with a per-thread index, so the binding has to carry
+       the array rather than merely produce an access. *)
+    ("drf-struct-arg.cu", [], 0);
+    (* A pointer member reached through a cast and an offset: the local
+       [row] has to alias the member, so the byte-view machinery sees
+       [v.ptr] where before the member had no name to alias to. *)
+    ("racy-struct-ptr-view.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are
@@ -1054,8 +1092,6 @@ let unsupported : Fpath.t list =
     (* example where assignment is used as an expression, rather
      than a statement *)
     "drf-assign-exp.cu";
-    (* Data-race free requires understanding fields in parameters. *)
-    "drf-field-in-param.cu";
     (* A racy example that uses structs *)
     "racy-struct.cu";
     (* A racy example that calls a device function without array as args *)

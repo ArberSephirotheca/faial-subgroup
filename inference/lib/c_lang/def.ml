@@ -15,23 +15,27 @@ type t =
   | Prototype of C_kernel.t
   | Declaration of Decl.t
   | Typedef of Typedef.t
+  | Record of Record.t
   | Enum of Imp.Enum.t
   | LaunchParam of LaunchParam.t
 
 let remove_comma : t -> t = function
   | Kernel k -> Kernel (C_kernel.rewrite_comma k)
   | Declaration d -> Declaration (Decl.map_expr Expr.remove_comma d)
-  | (Prototype _ | Typedef _ | Enum _ | LaunchParam _) as d -> d
+  | (Prototype _ | Typedef _ | Record _ | Enum _ | LaunchParam _) as d -> d
 
 let rewrite_barriers : t -> t = function
   | Kernel k -> Kernel (C_kernel.rewrite_barriers k)
-  | (Prototype _ | Declaration _ | Typedef _ | Enum _ | LaunchParam _) as d -> d
+  | ( Prototype _ | Declaration _ | Typedef _ | Record _ | Enum _
+    | LaunchParam _ ) as d ->
+      d
 
 let to_s (d : t) : Indent.t list =
   match d with
   | Declaration d -> Decl.to_s d
   | Kernel k | Prototype k -> C_kernel.to_s k
   | Typedef d -> Typedef.to_s d
+  | Record r -> Record.to_s r
   | Enum e -> Imp.Enum.to_s e
   | LaunchParam lp -> LaunchParam.to_s lp
 
@@ -39,6 +43,7 @@ let location : t -> Location.t = function
   | Declaration d -> Decl.location d
   | Kernel k | Prototype k -> C_kernel.location k
   | Typedef d -> Typedef.location d
+  | Record r -> Record.location r
   | Enum e -> Imp.Enum.location e
   | LaunchParam lp -> LaunchParam.location lp
 
@@ -218,9 +223,10 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
              "Error parsing FunctionTemplateDecl: no FunctionDecl found" j
        | _ -> parse_all to_parse)
   | "FunctionDecl" | "CXXMethodDecl" -> parse_k [] j
-  | "CXXRecordDecl" ->
+  | "CXXRecordDecl" -> (
+      let name = with_opt_field "name" cast_string o in
       let qualifier =
-        match with_opt_field "name" cast_string o with
+        match name with
         | Ok (Some n) -> qualifier @ [ n ]
         | Ok None | Error _ -> qualifier
       in
@@ -229,7 +235,28 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
         inner |> List.filter (j_filter_kind (fun k -> k = "CXXMethodDecl"))
       in
       let* defs = cast_map (parse ~qualifier) (`List methods) in
-      Ok (List.concat defs)
+      let defs = List.concat defs in
+      match name with
+      | Ok (Some name) ->
+          let fields =
+            inner
+            |> List.filter (j_filter_kind (fun k -> k = "FieldDecl"))
+            |> List.filter_map (fun j ->
+                let field =
+                  let* o = cast_object j in
+                  let* n = with_field "name" cast_string o in
+                  let* ty = get_field "type" o in
+                  Ok (n, J_type.parse ty)
+                in
+                Result.to_option field)
+          in
+          let location =
+            with_field "range" parse_location o
+            |> Result.value ~default:Location.empty
+          in
+          if fields = [] then Ok defs
+          else Ok (Record { Record.name; fields; location } :: defs)
+      | Ok None | Error _ -> Ok defs)
   | "VarDecl" -> (
       match Decl.parse j with
       | Ok (Some d) -> Ok [ Declaration d ]

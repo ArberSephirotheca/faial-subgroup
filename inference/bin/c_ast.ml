@@ -67,7 +67,8 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
         let open Def in
         function
         | Kernel k -> Hashtbl.add k2_ht (Imp.Function_id.to_string k.id) k
-        | Prototype _ | Declaration _ | Typedef _ | Enum _ | LaunchParam _ ->
+        | Prototype _ | Declaration _ | Typedef _ | Record _ | Enum _
+        | LaunchParam _ ->
             ());
   k3
   |> List.iter (fun k ->
@@ -111,7 +112,8 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
               else decls
             in
             (decls, js)
-        | Prototype _ | Typedef _ | Enum _ | LaunchParam _ -> (decls, js))
+        | Prototype _ | Typedef _ | Record _ | Enum _ | LaunchParam _ ->
+            (decls, js))
       ([], []) k1
     |> snd
   in
@@ -205,6 +207,7 @@ let main (fnames : string list) (silent : bool) (json : bool) (verbose : bool)
     | Declaration d ->
         (not only_global) && keep_loc (Variable.location (Decl.var d))
     | Typedef d -> (not only_global) && keep_loc (Typedef.location d)
+    | Record r -> (not only_global) && keep_loc (Record.location r)
     | Enum e -> (not only_global) && keep_loc (Imp.Enum.location e)
     | LaunchParam lp -> (not only_global) && keep_loc lp.loc
   in

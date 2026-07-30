@@ -8,8 +8,20 @@ module ForInit = For_init
 type t = Def.t list
 type 'a state = (Variable.Set.t, 'a) State.t
 
-let rewrite_shared_arrays : t -> t =
+let rewrite_shared_arrays (p : t) : t =
   let open Stage0.State.Syntax in
+  let records =
+    p
+    |> List.filter_map (function
+        | Def.Record r -> Some (Variable.from_name r.Record.name)
+        | _ -> None)
+    |> Variable.Set.of_list
+  in
+  let is_record (ty : Ty.t) : bool =
+    match Record.type_name ty with
+    | Some n -> Variable.Set.mem (Variable.from_name n) records
+    | None -> false
+  in
   let rw_exp (vars : Variable.Set.t) (e : Expr.t) : Expr.t =
     if Variable.Set.is_empty vars then e
     else
@@ -32,8 +44,11 @@ let rewrite_shared_arrays : t -> t =
     State.update_return (fun vars ->
         let vars =
           let name = Decl.var d in
-          if Decl.is_shared d && not (Decl.matches Ty.is_array_or_pointer d) then
-            Variable.Set.add name vars
+          if
+            Decl.is_shared d
+            && (not (Decl.matches Ty.is_array_or_pointer d))
+            && not (Decl.matches is_record d)
+          then Variable.Set.add name vars
           else Variable.Set.remove name vars
         in
         (vars, Decl.map_expr (rw_exp vars) d))
@@ -131,8 +146,11 @@ let rewrite_shared_arrays : t -> t =
   let rec rw_p (vars : Variable.Set.t) : t -> t = function
     | Def.Declaration d :: p ->
         let vars =
-          if Decl.is_shared d && not (Decl.matches Ty.is_array_or_pointer d) then
-            Variable.Set.add (Decl.var d) vars
+          if
+            Decl.is_shared d
+            && (not (Decl.matches Ty.is_array_or_pointer d))
+            && not (Decl.matches is_record d)
+          then Variable.Set.add (Decl.var d) vars
           else vars
         in
         Def.Declaration d :: rw_p vars p
@@ -140,11 +158,12 @@ let rewrite_shared_arrays : t -> t =
         Def.Kernel { k with code = rw_stmt vars k.code } :: rw_p vars p
     | Def.Prototype k :: p -> Def.Prototype k :: rw_p vars p
     | Def.Typedef d :: p -> Def.Typedef d :: rw_p vars p
+    | Def.Record r :: p -> Def.Record r :: rw_p vars p
     | Def.Enum e :: p -> Def.Enum e :: rw_p vars p
     | Def.LaunchParam lp :: p -> Def.LaunchParam lp :: rw_p vars p
     | [] -> []
   in
-  rw_p Variable.Set.empty
+  rw_p Variable.Set.empty p
 
 let remove_comma : t -> t = List.map Def.remove_comma
 let rewrite_barriers : t -> t = List.map Def.rewrite_barriers

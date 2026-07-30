@@ -14,6 +14,8 @@ open Exp
 
 let parse_var : D_lang.Expr.t -> Variable.t = function
   | Ident v -> v.name
+  | MemberExpr { base = Ident v; name = field; _ } ->
+      Variable.update_name (fun n -> n ^ "." ^ field) v.name
   | e ->
       failwith ("parse_var: unexpected expression: " ^ D_lang.Expr.to_string e)
 
@@ -223,6 +225,7 @@ module Make (L : Logger) = struct
       assigns : (Variable.t * nexp) list;
       typedefs : TypeAlias.t;
       enums : Enum.t Variable.Map.t;
+      records : (string * Ty.t) list Variable.Map.t;
     }
 
     let to_string (ctx : t) : string =
@@ -243,6 +246,7 @@ module Make (L : Logger) = struct
         assigns = [];
         typedefs = TypeAlias.empty;
         enums = Variable.Map.empty;
+        records = Variable.Map.empty;
       }
 
     let resolve (ty : Ty.t) (b : t) : Ty.t =
@@ -275,6 +279,21 @@ module Make (L : Logger) = struct
     let add_typedef (d : Typedef.t) (b : t) : t =
       { b with typedefs = TypeAlias.add d b.typedefs }
 
+    let add_record (r : Record.t) (b : t) : t =
+      {
+        b with
+        records =
+          Variable.Map.add (Variable.from_name r.name) r.fields b.records;
+      }
+
+    let lookup_record (ty : Ty.t) (b : t) : (string * Ty.t) list option =
+      match ty.inner with
+      | Ty.Struct { members = _ :: _ as members } -> Some members
+      | _ ->
+          Record.type_name ty
+          |> Option.map Variable.from_name
+          |> Fun.flip Option.bind (fun x -> Variable.Map.find_opt x b.records)
+
     let add_enum (e : Enum.t) (b : t) : t =
       let assigns =
         if Enum.ignore e then b.assigns else Enum.to_assigns e @ b.assigns
@@ -288,6 +307,17 @@ module Make (L : Logger) = struct
       |> Stmt.from_list
   end
 
+  let kept_members (ctx : Context.t) (ty : Ty.t) : (string * Ty.t) list =
+    match Context.lookup_record ty ctx with
+    | None -> []
+    | Some fields ->
+        fields
+        |> List.filter_map (fun (field, ty) ->
+            let ty = Context.resolve ty ctx in
+            if Ty.is_array_or_pointer ty || Context.is_int ty ctx then
+              Some (field, ty)
+            else None)
+
   let rec infer_load_expr (target : D_lang.Expr.t) (exp : D_lang.Expr.t) :
       d_location_alias option =
     let ( let* ) = Option.bind in
@@ -295,6 +325,8 @@ module Make (L : Logger) = struct
     | Ident { ty; _ }
       when Ty.is_pointer ty
            || Ty.is_array_or_pointer ty ->
+        Some { target; source = exp; offset = IntegerLiteral 0 }
+    | MemberExpr { base = Ident _; ty; _ } when Ty.is_array_or_pointer ty ->
         Some { target; source = exp; offset = IntegerLiteral 0 }
     | CXXOperatorCallExpr
         { func = UnresolvedLookupExpr { name = n; _ }; args = [ lhs; rhs ]; ty }
@@ -427,6 +459,37 @@ module Make (L : Logger) = struct
           Skip
     in
 
+    let kept_members (ty : Ty.t) : (string * Ty.t) list =
+      kept_members ctx ty
+    in
+    let expand_arg (a : D_lang.Expr.t) : Infer_exp.t list =
+      let ty = Context.resolve (D_lang.Expr.to_type a) ctx in
+      let pointee =
+        match ty.inner with
+        | Ty.Pointer p | Ty.Array { base = p; _ } -> Some (Context.resolve p ctx)
+        | _ -> None
+      in
+      let base, members =
+        match pointee with
+        | Some p when kept_members p <> [] -> ([ infer_expr a ], kept_members p)
+        | _ -> ([], kept_members ty)
+      in
+      let rec base_var (a : D_lang.Expr.t) : Variable.t option =
+        match a with
+        | Ident v -> Some v.name
+        | CXXConstructExpr { args = [ a ]; _ } -> base_var a
+        | _ -> None
+      in
+      let member (field : string) : Infer_exp.t =
+        match base_var a with
+        | Some v ->
+            NExp (Var (Variable.update_name (fun n -> n ^ "." ^ field) v))
+        | None -> Unknown (D_lang.Expr.to_string a ^ "." ^ field)
+      in
+      match members with
+      | [] -> [ infer_expr a ]
+      | _ -> base @ List.map (fun (field, _) -> member field) members
+    in
     let infer_call ?(result = None) (func : D_lang.Expr.t)
         (args : D_lang.Expr.t list) : Infer_stmt.t =
       let arg_count = List.length args in
@@ -466,7 +529,7 @@ module Make (L : Logger) = struct
                 {
                   result;
                   id = s.id;
-                  args = List.map (fun a -> infer_expr (byte_arg a)) args;
+                  args = List.concat_map (fun a -> expand_arg (byte_arg a)) args;
                 }
           | Some _ | None -> Skip)
     in
@@ -735,15 +798,35 @@ module Make (L : Logger) = struct
       |> Option.value ~default:ty
     in
     let x = p.ty_var.name in
+    let h =
+      if p.is_shared then Mem_hierarchy.SharedMemory
+      else Mem_hierarchy.GlobalMemory
+    in
+    let members (ty : Ty.t) : Kernel.Parameter.t list =
+      kept_members ctx ty
+      |> List.map (fun (field, ty) ->
+          let v = Variable.update_name (fun n -> n ^ "." ^ field) x in
+          if Ty.is_array_or_pointer ty then
+            Kernel.Parameter.array v (mk_array h ty)
+          else Kernel.Parameter.scalar v ty)
+    in
+    let pointee (ty : Ty.t) : Ty.t option =
+      match ty.inner with
+      | Ty.Pointer p -> Some p
+      | Ty.Array a -> Some a.base
+      | _ -> None
+    in
     if Context.is_enum ty ctx then
       [ Kernel.Parameter.enum x (Context.get_enum ty ctx) ]
     else if Context.is_int ty ctx then [ Kernel.Parameter.scalar x ty ]
     else if Ty.is_array_or_pointer ty then
-      let h =
-        if p.is_shared then Mem_hierarchy.SharedMemory
-        else Mem_hierarchy.GlobalMemory
+      let fields =
+        pointee ty
+        |> Option.map (fun ty -> members (Context.resolve ty ctx))
+        |> Option.value ~default:[]
       in
-      [ Kernel.Parameter.array x (mk_array h ty) ]
+      Kernel.Parameter.array x (mk_array h ty) :: fields
+    else if members ty <> [] then members ty
     else
       match (if expand_vectors then vector_type_axes p.ty_var.ty else None) with
       (* A vector param [uintN v] exposes each lane [v.x], [v.y], ... as
@@ -772,14 +855,29 @@ module Make (L : Logger) = struct
       C_lang.BarrierOp.is_barrier_c_type resolved
       || C_lang.BarrierOp.is_barrier_base_type d.ty
     in
+    let members (d : Decl.t) : (Variable.t * array_t) list =
+      match Context.lookup_record (Context.resolve d.ty ctx) ctx with
+      | None -> []
+      | Some fields ->
+          fields
+          |> List.filter_map (fun (field, ty) ->
+              let ty = Context.resolve ty ctx in
+              if Ty.is_array_or_pointer ty then
+                let v = Variable.update_name (fun n -> n ^ "." ^ field) d.var in
+                Some (v, Memory.from_type SharedMemory ty)
+              else None)
+    in
     let rec find_shared (arrays : (Variable.t * array_t) list) (s : Stmt.t) :
         (Variable.t * array_t) list =
       match s with
       | DeclStmt l ->
-          List.filter_map
+          List.concat_map
             (fun (d : Decl.t) ->
-              if is_barrier_decl d then None
-              else Decl.get_shared d |> Option.map (fun a -> (d.var, a)))
+              if is_barrier_decl d then []
+              else
+                match Decl.get_shared d with
+                | None -> []
+                | Some a -> (d.var, a) :: members d)
             l
           |> Common.append_tr arrays
       | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _ | GotoStmt
@@ -873,12 +971,32 @@ module Make (L : Logger) = struct
               (* make sure we resolve the type before we query it *)
               let ty = Context.resolve v.ty ctx in
               let is_mut = not (Ty.is_const ty) in
+              let add_members (h : Mem_hierarchy.t) (ctx : Context.t) :
+                  Context.t =
+                match Context.lookup_record ty ctx with
+                | None -> ctx
+                | Some fields ->
+                    List.fold_left
+                      (fun ctx (field, ty) ->
+                        let ty = Context.resolve ty ctx in
+                        if Ty.is_array_or_pointer ty then
+                          let x =
+                            Variable.update_name
+                              (fun n -> n ^ "." ^ field)
+                              v.var
+                          in
+                          Context.add_array x (Memory.from_type h ty) ctx
+                        else ctx)
+                      ctx fields
+              in
               if is_mut && List.mem C_lang.c_attr_shared v.attrs then
                 Context.add_array v.var
                   (Memory.from_type SharedMemory ty) ctx
+                |> add_members SharedMemory
               else if is_mut && List.mem C_lang.c_attr_device v.attrs then
                 Context.add_array v.var
                   (Memory.from_type GlobalMemory ty) ctx
+                |> add_members GlobalMemory
               else if Context.is_int ty ctx then
                 (* Fold a global's initializer into a constant only
                    when it is immutable: a C-level [const], or a
@@ -910,6 +1028,7 @@ module Make (L : Logger) = struct
           k :: ks
       | Prototype _ :: l -> parse_p ctx l
       | Typedef d :: l -> parse_p (Context.add_typedef d ctx) l
+      | Record r :: l -> parse_p (Context.add_record r ctx) l
       | Enum e :: l -> parse_p (Context.add_enum e ctx) l
       | LaunchParam _ :: l ->
           (* Launch metadata flows through the pipeline as data only;
