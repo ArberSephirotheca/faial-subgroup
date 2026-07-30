@@ -56,7 +56,7 @@ let is_kernel (j : Yojson.Basic.t) : bool =
   let is_kernel =
     let* o = cast_object j in
     let* k = get_kind o in
-    if k = "FunctionDecl" then
+    if k = "FunctionDecl" || k = "CXXMethodDecl" then
       let* inner = with_field "inner" cast_list o in
       let attrs, inner =
         inner
@@ -217,7 +217,19 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
            root_cause
              "Error parsing FunctionTemplateDecl: no FunctionDecl found" j
        | _ -> parse_all to_parse)
-  | "FunctionDecl" -> parse_k [] j
+  | "FunctionDecl" | "CXXMethodDecl" -> parse_k [] j
+  | "CXXRecordDecl" ->
+      let qualifier =
+        match with_opt_field "name" cast_string o with
+        | Ok (Some n) -> qualifier @ [ n ]
+        | Ok None | Error _ -> qualifier
+      in
+      let* inner = with_field_or "inner" cast_list [] o in
+      let methods =
+        inner |> List.filter (j_filter_kind (fun k -> k = "CXXMethodDecl"))
+      in
+      let* defs = cast_map (parse ~qualifier) (`List methods) in
+      Ok (List.concat defs)
   | "VarDecl" -> (
       match Decl.parse j with
       | Ok (Some d) -> Ok [ Declaration d ]

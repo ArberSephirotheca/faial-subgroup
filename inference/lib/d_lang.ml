@@ -1022,7 +1022,7 @@ module SignatureDB = struct
     (match e with
      | UnresolvedLookupExpr { name = n; _ } ->
          get_unresolved ~name:(Variable.name n) ~ty:"?" ~arg_count db
-     | Ident { name = n; kind = Function; ty; decl_id } -> (
+     | Ident { name = n; kind = Function | CXXMethod; ty; decl_id } -> (
          match by_decl decl_id with
          | Some k -> Some k
          | None ->

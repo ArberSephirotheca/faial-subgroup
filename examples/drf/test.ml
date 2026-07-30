@@ -1020,6 +1020,16 @@ let tests =
        discarded, and the sibling that defines [N::touch] resolves it. *)
     ("namespace-out-of-line.cu", [], 1);
     ("namespace-out-of-line.cu", [ "namespace-out-of-line-sibling.cu" ], 0);
+    (* A [__device__] static member function is qualified by its record the
+       way a free function is qualified by its namespace, so [W::put]
+       resolves and its body is inlined: every thread writes [A[0]]. The
+       write to [B] is what keeps the kernel from reporting no accesses at
+       all, which exits 1 too and would pass this test without inlining
+       anything. *)
+    ("racy-static-method.cu", [], 1);
+    (* The same call with a per-thread index, so the argument has to bind
+       through the qualified name for [A[i]] to stay disjoint. *)
+    ("drf-static-method.cu", [], 0);
   ]
 
 (* These are kernels that are being documented, but are
@@ -1046,6 +1056,10 @@ let unsupported : Fpath.t list =
      a one-index access on an array whose other accesses carry two, not
      the scaling. *)
     "racy-ptr-view-arity.cu";
+    (* [W::put] is registered, but the call [w.put(i)] parses to the same
+     node as an operator call and never reaches [infer_call], so the body
+     is not inlined and the write is lost. *)
+    "racy-instance-method.cu";
   ]
   |> List.map (fun x -> Fpath.(v "." / x))
 
