@@ -307,15 +307,18 @@ module Make (L : Logger) = struct
       |> Stmt.from_list
   end
 
-  let kept_members (ctx : Context.t) (ty : Ty.t) : (string * Ty.t) list =
+  let kept_members ?(storage = true) (ctx : Context.t) (ty : Ty.t) :
+      (string * Ty.t) list =
     match Context.lookup_record ty ctx with
     | None -> []
     | Some fields ->
         fields
         |> List.filter_map (fun (field, ty) ->
             let ty = Context.resolve ty ctx in
-            if Ty.is_array_or_pointer ty || Context.is_int ty ctx then
-              Some (field, ty)
+            let is_memory =
+              if storage then Ty.is_array_or_pointer ty else Ty.is_pointer ty
+            in
+            if is_memory || Context.is_int ty ctx then Some (field, ty)
             else None)
 
   let rec infer_load_expr (target : D_lang.Expr.t) (exp : D_lang.Expr.t) :
@@ -459,9 +462,6 @@ module Make (L : Logger) = struct
           Skip
     in
 
-    let kept_members (ty : Ty.t) : (string * Ty.t) list =
-      kept_members ctx ty
-    in
     let expand_arg (a : D_lang.Expr.t) : Infer_exp.t list =
       let ty = Context.resolve (D_lang.Expr.to_type a) ctx in
       let pointee =
@@ -471,8 +471,9 @@ module Make (L : Logger) = struct
       in
       let base, members =
         match pointee with
-        | Some p when kept_members p <> [] -> ([ infer_expr a ], kept_members p)
-        | _ -> ([], kept_members ty)
+        | Some p when kept_members ctx p <> [] ->
+            ([ infer_expr a ], kept_members ctx p)
+        | _ -> ([], kept_members ~storage:false ctx ty)
       in
       let rec base_var (a : D_lang.Expr.t) : Variable.t option =
         match a with
@@ -802,8 +803,8 @@ module Make (L : Logger) = struct
       if p.is_shared then Mem_hierarchy.SharedMemory
       else Mem_hierarchy.GlobalMemory
     in
-    let members (ty : Ty.t) : Kernel.Parameter.t list =
-      kept_members ctx ty
+    let members ?(storage = true) (ty : Ty.t) : Kernel.Parameter.t list =
+      kept_members ~storage ctx ty
       |> List.map (fun (field, ty) ->
           let v = Variable.update_name (fun n -> n ^ "." ^ field) x in
           if Ty.is_array_or_pointer ty then
@@ -826,7 +827,7 @@ module Make (L : Logger) = struct
         |> Option.value ~default:[]
       in
       Kernel.Parameter.array x (mk_array h ty) :: fields
-    else if members ty <> [] then members ty
+    else if members ~storage:false ty <> [] then members ~storage:false ty
     else
       match (if expand_vectors then vector_type_axes p.ty_var.ty else None) with
       (* A vector param [uintN v] exposes each lane [v.x], [v.y], ... as

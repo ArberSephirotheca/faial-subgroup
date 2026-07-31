@@ -1080,6 +1080,11 @@ let tests =
        [row] has to alias the member, so the byte-view machinery sees
        [v.ptr] where before the member had no name to alias to. *)
     ("racy-struct-ptr-view.cu", [], 1);
+    (* An inline array member of a by-value parameter is storage inside a
+       per-thread copy, so every thread writes its own [b.a[0]] and the
+       kernel is race-free. Only a pointer member of such a parameter names
+       memory the threads share. *)
+    ("drf-byvalue-array-field.cu", [], 0);
     (* A dimension pinned with [-p] rather than [--block-dim]. The pin is
        substituted first, which drops blockDim.x from the thread-globals,
        so the dimension defaults that follow must skip it instead of
