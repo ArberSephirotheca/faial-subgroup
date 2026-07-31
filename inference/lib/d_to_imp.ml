@@ -307,7 +307,7 @@ module Make (L : Logger) = struct
       |> Stmt.from_list
   end
 
-  let kept_members ?(storage = true) (ctx : Context.t) (ty : Ty.t) :
+  let members_of ~(is_memory : Ty.t -> bool) (ctx : Context.t) (ty : Ty.t) :
       (string * Ty.t) list =
     match Context.lookup_record ty ctx with
     | None -> []
@@ -315,11 +315,11 @@ module Make (L : Logger) = struct
         fields
         |> List.filter_map (fun (field, ty) ->
             let ty = Context.resolve ty ctx in
-            let is_memory =
-              if storage then Ty.is_array_or_pointer ty else Ty.is_pointer ty
-            in
-            if is_memory || Context.is_int ty ctx then Some (field, ty)
+            if is_memory ty || Context.is_int ty ctx then Some (field, ty)
             else None)
+
+  let members_of_value = members_of ~is_memory:Ty.is_pointer
+  let members_of_memory = members_of ~is_memory:Ty.is_array_or_pointer
 
   let rec infer_load_expr (target : D_lang.Expr.t) (exp : D_lang.Expr.t) :
       d_location_alias option =
@@ -470,10 +470,9 @@ module Make (L : Logger) = struct
         | _ -> None
       in
       let base, members =
-        match pointee with
-        | Some p when kept_members ctx p <> [] ->
-            ([ infer_expr a ], kept_members ctx p)
-        | _ -> ([], kept_members ~storage:false ctx ty)
+        match Option.map (members_of_memory ctx) pointee with
+        | Some (_ :: _ as members) -> ([ infer_expr a ], members)
+        | Some [] | None -> ([], members_of_value ctx ty)
       in
       let rec base_var (a : D_lang.Expr.t) : Variable.t option =
         match a with
@@ -803,8 +802,8 @@ module Make (L : Logger) = struct
       if p.is_shared then Mem_hierarchy.SharedMemory
       else Mem_hierarchy.GlobalMemory
     in
-    let members ?(storage = true) (ty : Ty.t) : Kernel.Parameter.t list =
-      kept_members ~storage ctx ty
+    let to_params (members : (string * Ty.t) list) : Kernel.Parameter.t list =
+      members
       |> List.map (fun (field, ty) ->
           let v = Variable.update_name (fun n -> n ^ "." ^ field) x in
           if Ty.is_array_or_pointer ty then
@@ -823,26 +822,29 @@ module Make (L : Logger) = struct
     else if Ty.is_array_or_pointer ty then
       let fields =
         pointee ty
-        |> Option.map (fun ty -> members (Context.resolve ty ctx))
+        |> Option.map (fun ty -> members_of_memory ctx (Context.resolve ty ctx))
         |> Option.value ~default:[]
       in
-      Kernel.Parameter.array x (mk_array h ty) :: fields
-    else if members ~storage:false ty <> [] then members ~storage:false ty
+      Kernel.Parameter.array x (mk_array h ty) :: to_params fields
     else
-      match (if expand_vectors then vector_type_axes p.ty_var.ty else None) with
-      (* A vector param [uintN v] exposes each lane [v.x], [v.y], ... as
-         a uniform scalar parameter, so component reads resolve to a
-         per-launch value rather than a thread-divergent free var. Only
-         top-level kernels expand: a device function's vector params are
-         bound through inlining, where lane-splitting would break the
-         call's argument arity. *)
-      | Some axes ->
-          List.map
-            (fun axis ->
-              let lane = Variable.update_name (fun n -> n ^ "." ^ axis) x in
-              Kernel.Parameter.scalar lane Ty.int)
-            axes
-      | None -> [ Kernel.Parameter.unsupported x ty ]
+      let members = members_of_value ctx ty in
+      if members <> [] then to_params members
+      else
+        match (if expand_vectors then vector_type_axes p.ty_var.ty else None)
+        with
+        (* A vector param [uintN v] exposes each lane [v.x], [v.y], ... as
+           a uniform scalar parameter, so component reads resolve to a
+           per-launch value rather than a thread-divergent free var. Only
+           top-level kernels expand: a device function's vector params are
+           bound through inlining, where lane-splitting would break the
+           call's argument arity. *)
+        | Some axes ->
+            List.map
+              (fun axis ->
+                let lane = Variable.update_name (fun n -> n ^ "." ^ axis) x in
+                Kernel.Parameter.scalar lane Ty.int)
+              axes
+        | None -> [ Kernel.Parameter.unsupported x ty ]
 
   let parse_shared (ctx : Context.t) (s : D_lang.Stmt.t) :
       (Variable.t * Memory.t) list =
