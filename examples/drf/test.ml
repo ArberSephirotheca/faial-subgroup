@@ -1080,6 +1080,14 @@ let tests =
        [row] has to alias the member, so the byte-view machinery sees
        [v.ptr] where before the member had no name to alias to. *)
     ("racy-struct-ptr-view.cu", [], 1);
+    (* A dimension pinned with [-p] rather than [--block-dim]. The pin is
+       substituted first, which drops blockDim.x from the thread-globals,
+       so the dimension defaults that follow must skip it instead of
+       assigning over it. Both values are checked so a pin that is
+       accepted but not applied is caught too. *)
+    ("racy-param-block-dim.cu", [], 1);
+    ("racy-param-block-dim.cu", [ "-p"; "blockDim.x=32" ], 0);
+    ("racy-param-block-dim.cu", [ "-p"; "blockDim.x=64" ], 1);
   ]
 
 (* These are kernels that are being documented, but are

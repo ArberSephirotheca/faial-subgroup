@@ -142,6 +142,8 @@ let prepare_kernel_with_kvs
       | None -> []
     in
     to_dim "blockDim" k.block_dim @ to_dim "gridDim" k.grid_dim
+    |> List.filter (fun (x, _) ->
+      Params.mem (Variable.from_name x) k.global_variables)
   in
   let k = Kernel.assign_globals dim_kvs k in
   let inferred_kvs =

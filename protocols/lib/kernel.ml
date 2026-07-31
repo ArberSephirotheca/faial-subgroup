@@ -64,18 +64,32 @@ let assign_globals (kvs : (string * int) list) (k : t) : t =
     let global_set = global_set k in
     let non_global_keys = Variable.Set.diff keys global_set in
     if not (Variable.Set.is_empty non_global_keys) then
-      let local_kvs =
-        List.filter
-          (fun (k, _) ->
-            Variable.Set.mem (Variable.from_name k) non_global_keys)
-          kvs
-        |> kvs_to_string
+      let is_local =
+        let local_set = local_set k in
+        fun (x : string) -> Variable.Set.mem (Variable.from_name x) local_set
       in
-      let global_set = Variable.set_to_string global_set in
+      let rejected (p : string -> bool) : (string * int) list =
+        List.filter
+          (fun (x, _) ->
+            Variable.Set.mem (Variable.from_name x) non_global_keys && p x)
+          kvs
+      in
+      let describe (label : string) (kvs : (string * int) list) : string list =
+        if Common.list_is_empty kvs then []
+        else [ label ^ ": " ^ kvs_to_string kvs ]
+      in
+      let reasons =
+        describe "thread-local, so not assignable as a thread-global"
+          (rejected is_local)
+        @ describe "not a parameter of the kernel"
+            (rejected (fun x -> not (is_local x)))
+      in
       raise
         (invalid_arg
-           ("The following keys are not thread-global parameters: locals="
-          ^ local_kvs ^ " globals={" ^ global_set ^ "}"))
+           ("Cannot assign thread-globals of kernel '" ^ k.name ^ "': "
+           ^ String.concat "; " reasons
+           ^ ". The kernel's thread-globals are {"
+           ^ Variable.set_to_string global_set ^ "}"))
     else ();
     let kvs = List.map (fun (x, n) -> (Variable.from_name x, Num n)) kvs in
     subst_vars kvs k
@@ -290,6 +304,8 @@ let hoist_decls : t -> t =
 let inline_dims (dims : (string * Dim3.t) list) (k : t) : t =
   let key_vals =
     List.concat_map (fun (name, d) -> Dim3.to_assoc ~prefix:(name ^ ".") d) dims
+    |> List.filter (fun (x, _) ->
+        Params.mem (Variable.from_name x) k.global_variables)
   in
   assign_globals key_vals k
 
