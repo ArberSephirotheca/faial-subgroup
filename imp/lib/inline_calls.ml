@@ -173,9 +173,10 @@ module Inline = struct
              inlined and the tail remains as opaque [Call] nodes. *)
           let s = inline vars s in
           match IdMap.find_opt (Call.unique_id c) funcs with
-          | Some (k : Scoped.Kernel.t) ->
+          | Some (k : Scoped.Kernel.t)
+            when List.length k.parameters = List.length c.args ->
               apply ~arrays vars c.result c.args k s
-          | None -> Call (c, s))
+          | Some _ | None -> Call (c, s))
       | Seq (p, q) -> Seq (inline vars p, inline vars q)
       | If (b, s1, s2) -> If (b, inline vars s1, inline vars s2)
       | For (r, s) -> For (r, inline (Variable.Set.add r.var vars) s)

@@ -10,15 +10,19 @@ type t = {
 let location (r : t) : Location.t = r.location
 
 let type_name (ty : Ty.t) : string option =
-  let strip (s : string) : string =
-    List.fold_left
-      (fun s prefix ->
-        if String.starts_with ~prefix s then
-          String.sub s (String.length prefix)
-            (String.length s - String.length prefix)
-        else s)
-      s
-      [ "struct "; "class "; "union " ]
+  let prefixes =
+    List.map (fun (spelling, _) -> spelling ^ " ") Qualifier.spellings
+    @ [ "struct "; "class "; "union " ]
+  in
+  let rec strip (s : string) : string =
+    match
+      List.find_opt (fun prefix -> String.starts_with ~prefix s) prefixes
+    with
+    | Some prefix ->
+        strip
+          (String.sub s (String.length prefix)
+             (String.length s - String.length prefix))
+    | None -> s
   in
   match ty.inner with
   | Ty.Struct { members = [] } -> Option.map strip ty.name

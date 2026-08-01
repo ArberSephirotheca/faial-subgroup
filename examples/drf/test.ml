@@ -1084,6 +1084,22 @@ let tests =
     (* The same call with a per-thread index, so the binding has to carry
        the array rather than merely produce an access. *)
     ("drf-struct-arg.cu", [], 0);
+    (* The same call through a [const] parameter. A record is registered
+       under its tag, so the qualifier has to come off the written type
+       before the lookup, or the parameter stays opaque and the member the
+       caller passes binds to nothing. *)
+    ("drf-const-struct-arg.cu", [], 0);
+    (* Two members make that failure shift the arguments rather than merely
+       drop one: the callee's [i] takes [w.q] and the racy write is lost,
+       while the write to [B] keeps the kernel from reporting no accesses,
+       so the loss reads as a race-free verdict. *)
+    ("racy-const-struct-arg.cu", [], 1);
+    (* The same qualifier on a kernel's own parameter, with a launch site
+       supplying it. The wrapper expands the argument from the host
+       variable's unqualified type, so a kernel parameter that does not
+       expand shifts [p] onto a scalar and the write disappears. *)
+    ("drf-launch-const-struct-arg.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
     (* A pointer member reached through a cast and an offset: the local
        [row] has to alias the member, so the byte-view machinery sees
        [v.ptr] where before the member had no name to alias to. *)
