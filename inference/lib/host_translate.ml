@@ -171,7 +171,7 @@ let unpack_dim3 (e : C_lang.Expr.t) :
     C_lang.Expr.t option * C_lang.Expr.t option * C_lang.Expr.t option =
   let one : C_lang.Expr.t = IntegerLiteral 1 in
   let is_int_arg (a : C_lang.Expr.t) : bool =
-    Ty.is_int (C_lang.Expr.to_type a)
+    Ty.is_int (Ty.strip_reference (C_lang.Expr.to_type a))
   in
   match e with
   | CXXConstructExpr { args = [ x; y; z ]; _ }

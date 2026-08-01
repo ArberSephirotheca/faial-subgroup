@@ -499,6 +499,23 @@ let tests =
      synthesis hits parse_exp and the whole file exits 2. *)
     ("drf-launch-binding-arg.cu",
      [ "--all-dims"; "--assume-launch" ], 0);
+    (* A pointer argument held by the host wrapper as a mutable reference.
+     The reference is the wrapper's, not the kernel's: the launch passes
+     the referent's value and the pseudo-kernel only reads the variable,
+     so its parameter has to be the pointer. Left as a reference it is
+     unsupported, no array registers, and the access is dropped. *)
+    ("drf-launch-ptr-ref.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
+    (* The same loss beside an array that does register, so the kernel is
+     not empty and the missing array reads as race-free. *)
+    ("racy-launch-ptr-ref.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
+    (* The same reference in a launch dimension. A reference is not an
+     integer, and the dim3 decomposition is all-or-nothing, so blockDim.y
+     and blockDim.z lose their pins along with blockDim.x and threads
+     sharing threadIdx.x collide. *)
+    ("drf-launch-dim-ref.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
     (* Grid-arithmetic relation flowing transitively to a kernel
      arg: launch picks [gridDim.x = imageW / 128]. The launch-arg
      resolver passes the BinaryOp structure through verbatim

@@ -138,6 +138,9 @@ let strip_const (x : t) : t =
     { x with name = None; qualifiers = Qualifier.Set.remove Const x.qualifiers }
   else x
 
+let strip_reference (x : t) : t =
+  match x.inner with Reference p -> p | _ -> x
+
 (* An array strips every dimension at once, a pointer strips one level:
    [int[8][8]] has element type [int] and [int **] has element type
    [int *]. Pointers are stripped because a read of [float *A] needs

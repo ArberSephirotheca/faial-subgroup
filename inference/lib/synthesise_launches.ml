@@ -64,7 +64,7 @@ let synth_name (lp : C_lang.LaunchParam.t) : string =
 let param_of_free_var (d : Decl_expr.t) : C_lang.Param.t option =
   if Ty.is_struct d.ty then None
   else
-    let ty_var = Ty_variable.make ~ty:d.ty ~name:d.name in
+    let ty_var = Ty_variable.make ~ty:(Ty.strip_reference d.ty) ~name:d.name in
     Some (C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false)
 
 (** Lifts a path_condition into an assert. *)
