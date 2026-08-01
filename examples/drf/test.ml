@@ -499,6 +499,24 @@ let tests =
      synthesis hits parse_exp and the whole file exits 2. *)
     ("drf-launch-binding-arg.cu",
      [ "--all-dims"; "--assume-launch" ], 0);
+    (* Two launches of one kernel on one source line. A pseudo-kernel is
+     named after its callee and its line, so without a discriminator the
+     second overwrites the first and only the single-thread launch, which
+     cannot race, is checked. *)
+    ("racy-launch-same-line.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
+    (* The same collision reached from two instantiations of the enclosing
+     template rather than from two written launches. Both records sit at
+     one line and one column, and what tells them apart is the host
+     function's declaration. *)
+    ("racy-launch-instances.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
+    (* A launch behind a condition that folds to false performs on no run,
+     so it mints no pseudo-kernel and demotes nothing. The kernel is left
+     where one with no launch site would be, an entry point with free
+     dimensions, rather than becoming a wrapper whose body prunes away. *)
+    ("drf-launch-dead-branch.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
     (* A pointer argument held by the host wrapper as a mutable reference.
      The reference is the wrapper's, not the kernel's: the launch passes
      the referent's value and the pseudo-kernel only reads the variable,

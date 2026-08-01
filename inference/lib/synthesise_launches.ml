@@ -149,6 +149,102 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     attribute = C_lang.KernelAttr.Default;
   }
 
+let rec fold_int (e : Expr.t) : int option =
+  match e with
+  | Expr.IntegerLiteral n -> Some n
+  | Expr.Convert { arg; _ } -> fold_int arg
+  | _ -> None
+
+let rec fold_bool (e : Expr.t) : bool option =
+  match e with
+  | Expr.CXXBoolLiteralExpr b -> Some b
+  | Expr.Convert { arg; _ } -> fold_bool arg
+  | Expr.UnaryOperator { opcode = "!"; child; _ } ->
+      fold_bool child |> Option.map not
+  | Expr.BinaryOperator { opcode = "&&"; lhs; rhs; _ } -> (
+      match (fold_bool lhs, fold_bool rhs) with
+      | Some false, _ | _, Some false -> Some false
+      | Some true, Some true -> Some true
+      | _ -> None)
+  | Expr.BinaryOperator { opcode = "||"; lhs; rhs; _ } -> (
+      match (fold_bool lhs, fold_bool rhs) with
+      | Some true, _ | _, Some true -> Some true
+      | Some false, Some false -> Some false
+      | _ -> None)
+  | Expr.BinaryOperator { opcode; lhs; rhs; _ } -> (
+      match (fold_int lhs, fold_int rhs) with
+      | Some l, Some r -> (
+          match opcode with
+          | "==" -> Some (l = r)
+          | "!=" -> Some (l <> r)
+          | "<" -> Some (l < r)
+          | "<=" -> Some (l <= r)
+          | ">" -> Some (l > r)
+          | ">=" -> Some (l >= r)
+          | _ -> None)
+      | _, _ -> None)
+  | _ -> None
+
+(** A path condition that folds to false describes a launch that no run
+    performs, so it gets no pseudo-kernel: one is a kernel reported to have
+    no accesses, which reads as a kernel that touches nothing. An
+    instantiation of an enclosing template is where a constant condition
+    comes from. *)
+let is_dead_launch (lp : C_lang.LaunchParam.t) : bool =
+  match lp.path_condition with
+  | None -> false
+  | Some e -> (
+      Host_translate.empty
+      |> State.run (Host_translate.rewrite_expr e)
+      |> snd
+      |> fold_bool
+      |> function
+      | Some false -> true
+      | Some true | None -> false)
+
+(** The name a pseudo-kernel gets is its callee and its source line, which
+    two records share whenever one line is reached twice: from two
+    instantiations of an enclosing template, or from two launches written
+    side by side. Records that synthesise the same body and call the same
+    declaration are one launch and merge; the rest keep their own identity
+    and are numbered, since a shared name would make the last one written
+    overwrite the others in the kernel map. *)
+let synth_kernels (p : Program.t) : Kernel.t list =
+  let key ((lp, k) : C_lang.LaunchParam.t * Kernel.t) : string =
+    (Kernel.to_s k |> Indent.to_string)
+    ^ "|"
+    ^ Option.value ~default:"" lp.kernel.decl_id
+  in
+  let dedup (seen, acc) (x : C_lang.LaunchParam.t * Kernel.t) =
+    let k = key x in
+    if Common.StringSet.mem k seen then (seen, acc)
+    else (Common.StringSet.add k seen, snd x :: acc)
+  in
+  let number (seen, acc) (k : Kernel.t) =
+    let name = Imp.Function_id.name k.id in
+    let n = Common.StringMap.find_opt name seen |> Option.value ~default:0 in
+    let k =
+      if n = 0 then k
+      else
+        let id =
+          Imp.Function_id.make
+            ~name:(Printf.sprintf "%s#%d" name (n + 1))
+            ~ty:(Imp.Function_id.ty k.id) ()
+        in
+        { k with id }
+    in
+    (Common.StringMap.add name (n + 1) seen, k :: acc)
+  in
+  p
+  |> List.filter_map (function
+      | Def.LaunchParam lp when not (is_dead_launch lp) ->
+          Some (lp, synth_kernel lp)
+      | _ -> None)
+  |> List.fold_left dedup (Common.StringSet.empty, [])
+  |> snd |> List.rev
+  |> List.fold_left number (Common.StringMap.empty, [])
+  |> snd |> List.rev
+
 (** {1 Demote launched kernels} *)
 
 (** Resolves every launch target the same way the synthesised call
@@ -162,7 +258,7 @@ let launched_ids (p : Program.t) : Imp.Function_id.Set.t =
   List.fold_left
     (fun acc def ->
       match def with
-      | Def.LaunchParam lp -> (
+      | Def.LaunchParam lp when not (is_dead_launch lp) -> (
           let func : Expr.t =
             Ident { lp.kernel with kind = Decl_expr.Kind.Function }
           in
@@ -187,18 +283,12 @@ let rewrite_program (p : Program.t) : Program.t =
   (* Synth kernels are emitted before demoted originals so the
      call-inliner sees callees before callers. *)
   let launched = launched_ids p in
-  let push_synth def = State.update (fun synth -> def :: synth) in
-  let m =
-    State.list_fold_left
-      (fun rest def ->
-        match def with
-        | Def.LaunchParam lp ->
-            let* () = push_synth (Def.Kernel (synth_kernel lp)) in
-            return rest
-        | Def.Kernel k ->
-            return (Def.Kernel (demote_if_launched launched k) :: rest)
-        | other -> return (other :: rest))
-      [] p
+  let synth = synth_kernels p |> List.map (fun k -> Def.Kernel k) in
+  let rest =
+    p
+    |> List.filter_map (function
+        | Def.LaunchParam _ -> None
+        | Def.Kernel k -> Some (Def.Kernel (demote_if_launched launched k))
+        | other -> Some other)
   in
-  let synth, rest_rev = State.run m [] in
-  List.rev rest_rev @ List.rev synth
+  rest @ synth
