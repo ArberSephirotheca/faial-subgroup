@@ -29,7 +29,7 @@ let rec parse_expr (j : json) : c_expr j_result =
       Ok (RecoveryExpr (J_type.parse ty))
   | "ImplicitValueInitExpr" | "CXXNullPtrLiteralExpr"
   | "StringLiteral" | "PredefinedExpr" | "SizeOfPackExpr"
-  | "RecoveryExpr" | "CXXThisExpr" ->
+  | "RecoveryExpr" | "CXXThisExpr" | "UnresolvedMemberExpr" ->
       (* Unknown value *)
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.parse ty))

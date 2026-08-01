@@ -425,6 +425,14 @@ let tests =
      reaches the analyser as a [DependentScopeRef] rather than
      collapsing to RecoveryExpr. *)
     ("racy-template-dep-scope.cu", [], 1);
+    (* An uninstantiated out-of-line member template of a class template.
+     Its dependent body calls a sibling member unqualified, which arrives
+     as an [UnresolvedMemberExpr] with no member name and no base. The
+     collapse to an unknown value keeps the failure inside that one
+     declaration, so the launched kernel in the same file is still
+     analysed and its race reported. *)
+    ("racy-uninstantiated-member-template.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
     (* Launch metadata: one [<<<grid, block>>>] launch with host-side
      dim3 locals and a templated kernel argument. The LaunchParam node
      emitted alongside the AST must parse without disturbing the
