@@ -114,7 +114,11 @@ module Code = struct
          rather than at the pointer's declaration. *)
       let array = { addr.array with location = a.array.location } in
       let body = Access { a with array; index = List.rev index } in
-      List.fold_left (fun s r -> For (r, s)) body ranges
+      let body = List.fold_left (fun s r -> For (r, s)) body ranges in
+      (* A choice reaches one of its arms, so the access is emitted once per
+         arm under the condition that selects it. The guard nests outside any
+         loop a span introduced, since the span is inside the arm. *)
+      match addr.guard with Some g -> If (g, body, Skip) | None -> body
     in
     let rewrite (a : Access.t) : t =
       let a =

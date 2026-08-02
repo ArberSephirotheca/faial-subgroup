@@ -290,6 +290,33 @@ let tests =
      second invents a read. *)
     ("racy-deref-address-of.cu", [], 1);
     ("drf-address-of-deref.cu", [], 0);
+    (* A pointer loaded out of a table of pointers names a row of that
+     table, which is the same reading [table[cat][0]] already gets when it
+     is written out in full. Every thread writes cell 0 of whichever row
+     [cat] picks; indexing the row per thread separates them. *)
+    ("racy-ptr-row-local.cu", [], 1);
+    ("drf-ptr-row-local.cu", [], 0);
+    (* Distinct entries of the table address distinct rows, so two threads
+     writing cell 0 of different rows do not collide. Its twin holds the
+     row fixed, which is what shows the verdict above is a decision and
+     not a dropped access. *)
+    ("drf-ptr-row-distinct.cu", [], 0);
+    ("racy-ptr-row-same.cu", [], 1);
+    (* A conditional in pointer position reaches one of its arms, so the
+     access is emitted once per arm under the condition that selects it.
+     Both arms race on cell 0; indexing per thread clears both. *)
+    ("racy-ptr-select-local.cu", [], 1);
+    ("drf-ptr-select-local.cu", [], 0);
+    (* The same conditional subscripted where it stands rather than bound
+     to a local, which the front end binds to a temporary and so reaches
+     the same arm. *)
+    ("racy-ptr-select-subscript.cu", [], 1);
+    (* Only the arm that selects [A] collides with the write to [A], so a
+     guard dropped in either direction changes the answer: without it the
+     kernel reports a race it cannot have, and with only one arm emitted
+     it reports none at all. *)
+    ("racy-ptr-select-cross.cu", [], 1);
+    ("drf-ptr-select-cross.cu", [], 0);
     (* An array argument's offset is a byte count, and the step that
      converts it back has to be the same one that converted it. The racy
      shape is the guard: with the two apart, the call-side write lands a
@@ -1187,6 +1214,14 @@ let unsupported : Fpath.t list =
      a one-index access on an array whose other accesses carry two, not
      the scaling. *)
     "racy-ptr-view-arity.cu";
+    (* A pointer that is a row of a table, or a choice between two arrays,
+     passed as an argument. Neither has a spelling as a name plus an
+     offset, which is the only thing an argument can carry today, so the
+     callee's parameter binds to a name that is in no array map and its
+     accesses are dropped. Both resolve at their use site; it is the
+     crossing into a call that is missing. *)
+    "racy-ptr-row-arg.cu";
+    "racy-ptr-select-arg.cu";
     (* [W::put] is registered, but the call [w.put(i)] parses to the same
      node as an operator call and never reaches [infer_call], so the body
      is not inlined and the write is lost. *)

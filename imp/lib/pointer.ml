@@ -129,54 +129,92 @@ end
 
 
 module Address = struct
-  type t = { array : Variable.t; index : Index.t list }
+  type t = {
+    array : Variable.t;
+    index : Index.t list;
+    guard : Exp.bexp option;
+  }
 end
 
-type t = Base of { array : Variable.t } | Shift of { base : t; offset : Offset.t }
+(* A [Row] fixes the leading index of the memory it names, which is how a
+   pointer read out of a table of pointers says which row it is. It is not a
+   [Shift]: a shift moves within one row and carries the units of that move,
+   where a row selects among rows and has no units of its own. *)
+type t =
+  | Base of { array : Variable.t }
+  | Row of { base : t; index : nexp }
+  | Shift of { base : t; offset : Offset.t }
+  | Select of { cond : Exp.bexp; if_true : t; if_false : t }
 
 let from_array (array : Variable.t) : t = Base { array }
+let row ~(index : nexp) (base : t) : t = Row { base; index }
 
 let shift ~(offset : Offset.t) (base : t) : t =
   if Offset.is_zero offset then base else Shift { base; offset }
 
-let rec array : t -> Variable.t = function
-  | Base { array } -> array
-  | Shift { base; _ } -> array base
+let select ~(cond : Exp.bexp) ~(if_true : t) ~(if_false : t) : t =
+  Select { cond; if_true; if_false }
 
-let arrays (p : t) : Variable.Set.t = Variable.Set.singleton (array p)
+let rec arrays : t -> Variable.Set.t = function
+  | Base { array } -> Variable.Set.singleton array
+  | Row { base; _ } | Shift { base; _ } -> arrays base
+  | Select { if_true; if_false; _ } ->
+      Variable.Set.union (arrays if_true) (arrays if_false)
 
 let rec keeps_payload : t -> bool = function
   | Base _ -> true
+  | Row { base; _ } -> keeps_payload base
   | Shift { base; offset } -> Offset.keeps_payload offset && keeps_payload base
+  | Select { if_true; if_false; _ } ->
+      keeps_payload if_true && keeps_payload if_false
 
 let to_array : t -> Variable.t option = function
   | Base { array } -> Some array
-  | Shift _ -> None
+  | Row _ | Shift _ | Select _ -> None
 
 let addresses ~(index : nexp list) (p : t) : Address.t list =
-  let rec walk (p : t) (index : Index.t list) : Address.t list =
-    match p with
-    | Base { array } -> [ { Address.array; index } ]
-    | Shift { base; offset } -> walk base (Offset.apply offset index)
+  let guarded (cond : Exp.bexp) : Exp.bexp option -> Exp.bexp option = function
+    | Some guard -> Some (b_and guard cond)
+    | None -> Some cond
   in
-  walk p (List.map Index.exact index)
+  let rec walk (p : t) (index : Index.t list) (guard : Exp.bexp option) :
+      Address.t list =
+    match p with
+    | Base { array } -> [ { Address.array; index; guard } ]
+    | Row { base; index = i } -> walk base (Index.exact i :: index) guard
+    | Shift { base; offset } -> walk base (Offset.apply offset index) guard
+    | Select { cond; if_true; if_false } ->
+        walk if_true index (guarded cond guard)
+        @ walk if_false index (guarded (b_not cond) guard)
+  in
+  walk p (List.map Index.exact index) None
 
 (* The root name plus the shift amounts, dropping the steps. A call argument
    is written in the caller's units and rescaled where the callee's parameter
-   type settles them, so the steps do not travel with it. *)
-let to_nexp (p : t) : nexp =
-  let rec amount : t -> nexp = function
-    | Base _ -> Num 0
-    | Shift { base; offset } -> n_plus (Offset.amount offset) (amount base)
+   type settles them, so the steps do not travel with it. A row or a choice
+   has no such spelling, which is exactly when an argument has to carry the
+   pointer itself. *)
+let to_nexp (p : t) : nexp option =
+  let rec walk : t -> nexp option = function
+    | Base { array } -> Some (Var array)
+    | Shift { base; offset } ->
+        walk base |> Option.map (n_plus (Offset.amount offset))
+    | Row _ | Select _ -> None
   in
-  n_plus (Var (array p)) (amount p)
+  walk p
 
 let rec to_string : t -> string = function
   | Base { array } -> Variable.name array
+  | Row { base; index } -> to_string base ^ "[" ^ n_to_string index ^ "]"
   | Shift { base; offset } -> to_string base ^ " + " ^ Offset.to_string offset
+  | Select { cond; if_true; if_false } ->
+      "(" ^ b_to_string cond ^ " ? " ^ to_string if_true ^ " : "
+      ^ to_string if_false ^ ")"
 
 let rec step_comment : t -> string = function
   | Base _ -> ""
+  | Row { base; _ } -> step_comment base
+  | Select { if_true; _ } -> step_comment if_true
   | Shift { base; offset } -> (
       match offset with
       | Offset.Bytes { step; _ } when Step.is_scaled step -> Step.comment step

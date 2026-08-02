@@ -25,11 +25,40 @@ type d_access = {
   index : D_lang.Expr.t list;
 }
 
-type d_location_alias = {
-  source : D_lang.Expr.t;
-  target : D_lang.Expr.t;
-  offset : D_lang.Expr.t;
-}
+(* What a subscript of the given arity leaves behind: one type level per
+   index, an array level and a pointer level alike. This is the only witness
+   that answers the question a row needs asked, which is whether the subscript
+   reached an element or stopped short of one and left a pointer. Neither of
+   the obvious alternatives works: [Ty.strip_array] collapses [float *[4]] and
+   [float *] to the same [float], and the unpeeled type is a pointer for the
+   ordinary read [float x = A[i]] and an array for the row [float *r = t[i]],
+   so testing it answers backwards. *)
+let rec peel_subscript (n : int) (ty : Ty.t) : Ty.t option =
+  if n <= 0 then Some ty
+  else
+    match ty.inner with
+    | Ty.Pointer p -> peel_subscript (n - 1) p
+    | Ty.Array a -> peel_subscript (n - 1) a.base
+    | _ -> None
+
+(* A pointer as the C source spells it: a name with a displacement, or a
+   choice between two of them. The choice is a tree rather than a field
+   because each arm names memory of its own, and each settles the units of
+   its displacement against that memory. *)
+type d_pointer =
+  | Leaf of { source : D_lang.Expr.t; offset : D_lang.Expr.t }
+  | Choice of { cond : D_lang.Expr.t; if_true : d_pointer; if_false : d_pointer }
+
+let rec map_offset (f : D_lang.Expr.t -> D_lang.Expr.t) : d_pointer -> d_pointer
+    = function
+  | Leaf { source; offset } -> Leaf { source; offset = f offset }
+  | Choice { cond; if_true; if_false } ->
+      Choice
+        {
+          cond;
+          if_true = map_offset f if_true;
+          if_false = map_offset f if_false;
+        }
 
 module TypeAlias = struct
   type t = Ty.t StringMap.t
@@ -321,31 +350,40 @@ module Make (L : Logger) = struct
   let members_of_value = members_of ~is_memory:Ty.is_pointer
   let members_of_memory = members_of ~is_memory:Ty.is_array_or_pointer
 
-  let rec infer_load_expr (target : D_lang.Expr.t) (exp : D_lang.Expr.t) :
-      d_location_alias option =
+  let rec infer_load_expr (exp : D_lang.Expr.t) : d_pointer option =
     let ( let* ) = Option.bind in
     match exp with
     | Ident { ty; _ }
       when Ty.is_pointer ty
            || Ty.is_array_or_pointer ty ->
-        Some { target; source = exp; offset = IntegerLiteral 0 }
+        Some (Leaf { source = exp; offset = IntegerLiteral 0 })
     | MemberExpr { base = Ident _; ty; _ } when Ty.is_array_or_pointer ty ->
-        Some { target; source = exp; offset = IntegerLiteral 0 }
+        Some (Leaf { source = exp; offset = IntegerLiteral 0 })
+    (* Both arms have to name memory: a conditional that picks between a
+       pointer and something else is not a pointer this can resolve, and
+       declining it leaves the whole declaration to the fallback. *)
+    | ConditionalOperator { cond; then_expr; else_expr; _ } ->
+        let* if_true = infer_load_expr then_expr in
+        let* if_false = infer_load_expr else_expr in
+        Some (Choice { cond; if_true; if_false })
     | CXXOperatorCallExpr
         { func = UnresolvedLookupExpr { name = n; _ }; args = [ lhs; rhs ]; ty }
     | CXXOperatorCallExpr
         { func = Ident { name = n; _ }; args = [ lhs; rhs ]; ty }
       when Variable.name n = "operator+" ->
-        let* l = infer_load_expr target lhs in
-        let offset : D_lang.Expr.t =
-          BinaryOperator { opcode = "+"; lhs = l.offset; rhs; ty }
-        in
-        Some { l with offset }
+        let* l = infer_load_expr lhs in
+        Some
+          (map_offset
+             (fun offset : D_lang.Expr.t ->
+               BinaryOperator { opcode = "+"; lhs = offset; rhs; ty })
+             l)
     | CXXOperatorCallExpr _ -> None
     | BinaryOperator ({ lhs = l; _ } as b) ->
-        let* l = infer_load_expr target l in
-        let offset : D_lang.Expr.t = BinaryOperator { b with lhs = l.offset } in
-        Some { l with offset }
+        let* l = infer_load_expr l in
+        Some
+          (map_offset
+             (fun offset : D_lang.Expr.t -> BinaryOperator { b with lhs = offset })
+             l)
     | _ -> None
 
   (* Rewrite the additive spine of a pointer expression so that every term
@@ -412,24 +450,43 @@ module Make (L : Logger) = struct
 
     let infer_type (ty : Ty.t) : Ty.t = Context.resolve ty ctx in
 
-    let infer_location_alias (s : d_location_alias) : Imp.Infer_stmt.t =
-      let source = parse_var s.source in
-      let target = parse_var s.target in
-      let step (e : D_lang.Expr.t) : int option =
-        e |> D_lang.Expr.to_type |> infer_type |> Ty.pointee_size
+    let step_of (e : D_lang.Expr.t) : int option =
+      e |> D_lang.Expr.to_type |> infer_type |> Ty.pointee_size
+    in
+
+    (* The view is the step of the pointer being declared, so it is settled
+       once for the whole declaration; the element step and the byte
+       conversion belong to each arm, since each arm names memory of its
+       own. *)
+    let infer_pointer (target : D_lang.Expr.t) (p : d_pointer) :
+        Imp.Infer_pointer.t =
+      let view = step_of target in
+      let rec walk : d_pointer -> Imp.Infer_pointer.t = function
+        | Leaf { source; offset } ->
+            (* The steps and the offset's unit are one decision: bytes when
+               both sides have a step and the spine converts, source units
+               otherwise. *)
+            let scaled =
+              let ( let* ) = Option.bind in
+              let* view = view in
+              let* elem = step_of source in
+              let* offset = to_byte_offset infer_type offset in
+              Some (Some (Imp.Pointer.Step.make ~view ~elem), offset)
+            in
+            let step, offset = Option.value scaled ~default:(None, offset) in
+            Imp.Infer_pointer.from_array (parse_var source)
+            |> Imp.Infer_pointer.shift ~offset:(infer_expr offset) ~step
+        | Choice { cond; if_true; if_false } ->
+            Imp.Infer_pointer.select ~cond:(infer_expr cond)
+              ~if_true:(walk if_true) ~if_false:(walk if_false)
       in
-      (* The steps and the offset's unit are one decision: bytes when both
-         sides have a step and the spine converts, source units otherwise. *)
-      let scaled =
-        let ( let* ) = Option.bind in
-        let* view = step s.target in
-        let* elem = step s.source in
-        let* offset = to_byte_offset infer_type s.offset in
-        Some (Some (Imp.Pointer.Step.make ~view ~elem), offset)
-      in
-      let step, offset = Option.value scaled ~default:(None, s.offset) in
+      walk p
+    in
+
+    let infer_location_alias (target : D_lang.Expr.t) (p : d_pointer) :
+        Imp.Infer_stmt.t =
       Infer_stmt.LocationAlias
-        { target; source; offset = infer_expr offset; step }
+        { target = parse_var target; pointer = infer_pointer target p }
     in
 
     let infer_decl (d : D_lang.Decl.t) : Infer_stmt.t =
@@ -572,7 +629,34 @@ module Make (L : Logger) = struct
           let index = List.map infer_expr r.source.index in
           let ty = r.ty |> resolve |> Ty.strip_array in
           let guard = Option.map infer_expr r.guard in
-          Infer_stmt.Read { target = Some (ty, r.target); array; index; guard }
+          let rd =
+            Infer_stmt.Read
+              { target = Some (ty, r.target); array; index; guard }
+          in
+          (* A subscript that stops short of an element leaves a pointer, and
+             the target names that memory from here on. The subscript becomes
+             the pointer rather than an access of its own, which is what
+             writing it out in full already does: [t[i][j]] is one
+             two-dimensional access on [t], with no separate load of the
+             pointer in [t[i]]. Recording the load as well would put a
+             one-index access on an array whose other accesses carry two, and
+             the race check compares those as though they addressed the same
+             cell. *)
+          let leaves_memory =
+            peel_subscript (List.length r.source.index)
+              (resolve r.source.ty)
+            |> Option.map Ty.is_array_or_pointer
+            |> Option.value ~default:false
+          in
+          if leaves_memory then
+            let pointer =
+              List.fold_left
+                (fun p index -> Imp.Infer_pointer.row ~index p)
+                (Imp.Infer_pointer.from_array array)
+                index
+            in
+            Infer_stmt.LocationAlias { target = r.target; pointer }
+          else rd
       | AtomicAccessStmt r ->
           let array =
             r.source.name |> Variable.set_location r.source.location
@@ -636,8 +720,8 @@ module Make (L : Logger) = struct
                 let lhs : D_lang.Expr.t =
                   Ident (Decl_expr.from_name ~ty:d_ty d.var)
                 in
-                let* a = infer_load_expr lhs rhs in
-                Some (infer_location_alias a)
+                let* a = infer_load_expr rhs in
+                Some (infer_location_alias lhs a)
             (* Otherwise, nothing found *)
             | _ -> None
           in
@@ -652,8 +736,8 @@ module Make (L : Logger) = struct
       | SExpr
           (BinaryOperator { opcode = "="; lhs = Ident { ty; _ } as lhs; rhs; _ })
         when Ty.is_pointer ty ->
-          infer_load_expr lhs rhs
-          |> Option.map infer_location_alias
+          infer_load_expr rhs
+          |> Option.map (infer_location_alias lhs)
           |> Option.value ~default:Infer_stmt.Skip
       | SExpr
           (BinaryOperator

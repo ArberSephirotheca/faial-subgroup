@@ -92,7 +92,7 @@ let address_tests =
     check_addresses "a bare array keeps its index"
       (Pointer.from_array a)
       [ Var (var "i") ]
-      [ { array = a; index = [ exact (Var (var "i")) ] } ];
+      [ { array = a; index = [ exact (Var (var "i")) ]; guard = None } ];
     check_addresses "a shift lands on the head index only"
       (Pointer.from_array a
       |> Pointer.shift ~offset:(Pointer.Offset.elements (Num 3)))
@@ -101,12 +101,56 @@ let address_tests =
         {
           array = a;
           index = [ exact (plus (Num 3) (Var (var "i"))); exact (Var (var "j")) ];
+          guard = None;
         };
       ];
     check_addresses "a zero shift is the array itself"
       (Pointer.from_array a |> Pointer.shift ~offset:Pointer.Offset.zero)
       [ Var (var "i") ]
-      [ { array = a; index = [ exact (Var (var "i")) ] } ];
+      [ { array = a; index = [ exact (Var (var "i")) ]; guard = None } ];
+    check_addresses "a row prepends its index"
+      (Pointer.from_array a |> Pointer.row ~index:(Var (var "cat")))
+      [ Var (var "i") ]
+      [
+        {
+          array = a;
+          index = [ exact (Var (var "cat")); exact (Var (var "i")) ];
+          guard = None;
+        };
+      ];
+    check_addresses "a shift over a row lands inside the row"
+      (Pointer.from_array a
+      |> Pointer.row ~index:(Var (var "cat"))
+      |> Pointer.shift ~offset:(Pointer.Offset.elements (Num 3)))
+      [ Var (var "i") ]
+      [
+        {
+          array = a;
+          index =
+            [ exact (Var (var "cat")); exact (plus (Num 3) (Var (var "i"))) ];
+          guard = None;
+        };
+      ];
+    ( "a choice reaches both arms under complementary guards",
+      `Quick,
+      fun () ->
+        let b = var "B" in
+        let cond = NRel (N_rel.Eq, Var (var "c"), Num 0) in
+        let got =
+          Pointer.addresses ~index:[ Num 0 ]
+            (Pointer.select ~cond ~if_true:(Pointer.from_array a)
+               ~if_false:(Pointer.from_array b))
+        in
+        Alcotest.check addresses_testable "arms"
+          [
+            { array = a; index = [ exact (Num 0) ]; guard = Some cond };
+            {
+              array = b;
+              index = [ exact (Num 0) ];
+              guard = Some (b_not cond);
+            };
+          ]
+          got );
   ]
 
 (* A shift whose units match the memory it lands on leaves the payload of a

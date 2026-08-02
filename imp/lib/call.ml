@@ -17,7 +17,9 @@ let arrays (c : t) : Variable.t list = List.filter_map Array_use.base c.args
    stands for. The steps do not travel: the argument counts the caller's
    units and the inline site rescales it against the callee's parameter. *)
 let resolve ~(target : Variable.t) (pointer : Pointer.t) (c : t) : t =
-  map (S.n_subst (target, Pointer.to_nexp pointer)) c
+  match Pointer.to_nexp pointer with
+  | Some e -> map (S.n_subst (target, e)) c
+  | None -> c
 
 let to_string (c : t) : string =
   let args = c.args |> List.map Exp.n_to_string |> String.concat ", " in
