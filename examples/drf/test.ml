@@ -317,6 +317,13 @@ let tests =
      it reports none at all. *)
     ("racy-ptr-select-cross.cu", [], 1);
     ("drf-ptr-select-cross.cu", [], 0);
+    (* A row crossing into a call. The subscript is bound to a name on
+     the way in and the binding outlives inlining, so the callee's
+     parameter resolves onto it and the write lands on the row. Every
+     thread writes cell 0 of the row [cat] picks; indexing the row per
+     thread separates them. *)
+    ("racy-ptr-row-arg.cu", [], 1);
+    ("drf-ptr-row-arg.cu", [], 0);
     (* A pointer reads its offset where it was taken, not where it is
      used, so an assignment to a variable the offset mentions cannot
      reach back and move the access. The pair is the two directions of
@@ -1279,13 +1286,12 @@ let unsupported : Fpath.t list =
      a one-index access on an array whose other accesses carry two, not
      the scaling. *)
     "racy-ptr-view-arity.cu";
-    (* A pointer that is a row of a table, or a choice between two arrays,
-     passed as an argument. Neither has a spelling as a name plus an
-     offset, which is the only thing an argument can carry today, so the
-     callee's parameter binds to a name that is in no array map and its
-     accesses are dropped. Both resolve at their use site; it is the
-     crossing into a call that is missing. *)
-    "racy-ptr-row-arg.cu";
+    (* A choice between two arrays passed as an argument. It has no
+     spelling as a name plus an offset, which is the only thing an
+     argument carries, and unlike a row it is never bound to a name of
+     its own on the way in, so nothing survives for the pointer pass to
+     discharge. It resolves at a use site; it is the crossing into a
+     call that is missing. *)
     "racy-ptr-select-arg.cu";
     (* [W::put] is registered, but the call [w.put(i)] parses to the same
      node as an operator call and never reaches [infer_call], so the body
