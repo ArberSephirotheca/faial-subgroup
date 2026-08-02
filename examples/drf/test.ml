@@ -324,6 +324,17 @@ let tests =
      thread separates them. *)
     ("racy-ptr-row-arg.cu", [], 1);
     ("drf-ptr-row-arg.cu", [], 0);
+    (* An atomic's address is a base plus whatever is added to it, in any
+     association and either order. [p + a + b] parses as [(p + a) + b], so
+     the base is not on the left of a single plus; reading it off the left
+     regardless takes [i] as the array in [i + p]. Recognition failing
+     leaves a call to a body-less [atomicAdd], which discards the kernel,
+     so the race-free one answers 1 for that reason instead of 0. The
+     plain write is what pins the index: put the atomic on cell 0 and the
+     first turns racy, leave it on 1 and the third turns clear. *)
+    ("drf-atomic-addr-spine.cu", [], 0);
+    ("racy-atomic-addr-spine.cu", [], 1);
+    ("racy-atomic-addr-commuted.cu", [], 1);
     (* A pointer reads its offset where it was taken, not where it is
      used, so an assignment to a variable the offset mentions cannot
      reach back and move the access. The pair is the two directions of

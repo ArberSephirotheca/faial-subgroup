@@ -1177,6 +1177,35 @@ let to_subscript : C_lang.Expr.t -> C_lang.Expr.c_array_subscript option =
       cell x (IntegerLiteral 0)
   | _ -> None
 
+(* An atomic's address is a base plus whatever is added to it, in any
+   association and either order: [p + i + j] parses as [(p + i) + j] and
+   [i + p] addresses the same cell as [p + i]. Walk the additive spine on
+   whichever side carries the memory, which is what tells the base from
+   the offsets, and sum the rest into one index. Reading the base off the
+   left instead would take [i] as the array in [i + p]. *)
+let atomic_address (e : Expr.t) : (Decl_expr.t * Expr.t option) option =
+  let is_memory (e : Expr.t) : bool =
+    Ty.is_array_or_pointer (Expr.to_type e)
+  in
+  let add (e : Expr.t) : Expr.t option -> Expr.t option = function
+    | None -> Some e
+    | Some acc ->
+        Some
+          (Expr.BinaryOperator
+             { opcode = "+"; lhs = e; rhs = acc; ty = Expr.to_type e })
+  in
+  let rec walk (e : Expr.t) (offset : Expr.t option) :
+      (Decl_expr.t * Expr.t option) option =
+    match e with
+    | Ident x -> Some (x, offset)
+    | BinaryOperator { lhs; rhs; opcode = "+"; _ } ->
+        if is_memory lhs then walk lhs (add rhs offset)
+        else if is_memory rhs then walk rhs (add lhs offset)
+        else None
+    | _ -> None
+  in
+  walk e None
+
 let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   let open Expr in
   match to_subscript c with
@@ -1217,16 +1246,13 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
         | op, _ -> op
       in
       let atomic = { atomic with operation } in
-      match e with
-      | Ident x ->
+      match atomic_address e with
+      | Some (x, offset) ->
+          let index = Option.value offset ~default:(IntegerLiteral 0) in
           rewrite_atomic atomic
-            (make_subscript ~name:x.name ~index:[ IntegerLiteral 0 ]
+            (make_subscript ~name:x.name ~index:[ index ]
                ~location:(Variable.location f.name) ~ty)
-      | BinaryOperator { lhs = Ident x; rhs = e; opcode = "+"; _ } ->
-          rewrite_atomic atomic
-            (make_subscript ~name:x.name ~index:[ e ]
-               ~location:(Variable.location f.name) ~ty)
-      | _ -> return (CallExpr { func = Ident f; args = e :: args; ty }))
+      | None -> return (CallExpr { func = Ident f; args = e :: args; ty }))
   (* When a write happens *)
   | BinaryOperator { lhs; rhs = src; opcode = "="; ty } -> (
       match to_subscript lhs with
