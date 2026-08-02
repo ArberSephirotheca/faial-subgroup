@@ -317,6 +317,59 @@ let tests =
      it reports none at all. *)
     ("racy-ptr-select-cross.cu", [], 1);
     ("drf-ptr-select-cross.cu", [], 0);
+    (* A [__constant__] global is memory, so its read reaches the protocol
+     and the kernel is checked rather than reported empty. Without the
+     array the kernel has nothing in it, so this answers 1 with the
+     zero-accesses message where a race-free kernel answers 0. *)
+    ("drf-constant-mem.cu", [], 0);
+    (* Constant memory holds the table, global memory holds the row it
+     points at, and only the table has to register for the write through
+     the row to be attributed. The write to [A] is what makes the status
+     tell the two apart: without it the table's absence empties the
+     kernel and the zero-accesses message exits 1, which is the answer
+     the racy one expects for its own reason. *)
+    ("racy-constant-mem-row.cu", [], 1);
+    ("drf-constant-mem-row.cu", [], 0);
+    (* Constant memory is one object per grid, like global memory, so the
+     grid-level view has to keep it. The write to [A] is per global
+     thread and clears on its own; the race is the row, and it is the
+     only thing the array filter can take away. *)
+    ("racy-constant-mem-row-grid.cu", [ "--grid-level"; "--gridDim=2" ], 1);
+    (* The same kernel read at both levels. Threads of one block hold
+     distinct [threadIdx.x] and separate, while two blocks repeat it and
+     land on the same cell of the same row, which is one object for the
+     whole grid. Its twin spreads the row by global thread and stays
+     clear at both. *)
+    ("racy-constant-mem-grid-only.cu", [], 0);
+    ("racy-constant-mem-grid-only.cu", [ "--grid-level"; "--gridDim=2" ], 1);
+    ("drf-constant-mem-grid.cu", [ "--grid-level"; "--gridDim=2" ], 0);
+    (* Per-block and grid-wide memory in one kernel, each level finding a
+     different race. The shared cell is the block-level race and each
+     block has its own, so the grid level drops it; the row is clear
+     inside a block and races across them, and it is reached through
+     constant memory, which the grid level has to keep. Drop the table
+     with it and the grid level has nothing left to report. *)
+    ("racy-shared-with-constant-mem.cu", [], 1);
+    ("racy-shared-with-constant-mem.cu", [ "--grid-level"; "--gridDim=2" ], 1);
+    (* The same kernel without the table, which is the other half of the
+     rule: nothing grid-wide is left once the shared cell goes, so the
+     grid level clears. Keep shared memory visible there and this is the
+     one that reports a race between threads that write cells of two
+     different blocks. The second block is what makes it say so, and is
+     why [racy-shared-scalar.cu] under a bare [--grid-level] cannot: with
+     one block there is no pair of blocks to compare. *)
+    ("racy-shared-block-only.cu", [], 1);
+    ("racy-shared-block-only.cu", [ "--grid-level"; "--gridDim=2" ], 0);
+    (* A pointer member of a constant struct is memory of its own, and
+     what it points at is not constant. The write to [A] keeps the status
+     honest: with the member unregistered the kernel is empty and exits 1
+     for the wrong reason. *)
+    ("racy-constant-mem-struct.cu", [], 1);
+    (* A constant scalar is a value rather than storage, since no thread
+     can write it, so it keeps the fold that a device scalar loses to the
+     array map. Registered as storage the index goes symbolic, and a
+     zero [n] would put every thread on cell 0. *)
+    ("drf-constant-mem-scalar.cu", [], 0);
     (* An array argument's offset is a byte count, and the step that
      converts it back has to be the same one that converted it. The racy
      shape is the guard: with the two apart, the call-side write lands a

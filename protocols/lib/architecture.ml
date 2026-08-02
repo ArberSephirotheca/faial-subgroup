@@ -88,3 +88,9 @@ end
 let to_defaults : t -> Defaults.t = function
   | Grid -> Defaults.grid
   | Block -> Defaults.block
+
+let is_visible : t -> Mem_hierarchy.t -> bool = function
+  | Block -> (
+      function SharedMemory | GlobalMemory | ConstantMemory -> true)
+  | Grid -> (
+      function GlobalMemory | ConstantMemory -> true | SharedMemory -> false)

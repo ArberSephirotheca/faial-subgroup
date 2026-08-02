@@ -126,10 +126,14 @@ let apply_arch_binders (d : Architecture.Defaults.t) (k : t) : t =
 
 let apply_arch (a : Architecture.t) (k : t) : t =
   let d = Architecture.to_defaults a in
-  let arrays = Variable.Map.filter (fun _ a -> Memory.is_global a) k.arrays in
+  let arrays =
+    Variable.Map.filter
+      (fun _ m -> Architecture.is_visible a (Memory.hierarchy m))
+      k.arrays
+  in
   {
     k with
-    arrays = (match a with Grid -> arrays | Block -> k.arrays);
+    arrays;
     code = Code.apply_arch (Variable.MapSetUtil.map_to_set arrays) a k.code;
     pre = b_and (Architecture.Defaults.to_bexp d) k.pre;
   }

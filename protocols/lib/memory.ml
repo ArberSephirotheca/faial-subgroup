@@ -6,6 +6,7 @@ type t = {
 
 let is_global (x : t) : bool = Mem_hierarchy.is_global x.hierarchy
 let is_shared (x : t) : bool = Mem_hierarchy.is_shared x.hierarchy
+let is_constant (x : t) : bool = Mem_hierarchy.is_constant x.hierarchy
 let hierarchy (x : t) : Mem_hierarchy.t = x.hierarchy
 
 let make (h : Mem_hierarchy.t) : t =

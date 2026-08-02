@@ -1089,6 +1089,14 @@ module Make (L : Logger) = struct
                 Context.add_array v.var
                   (Memory.from_type GlobalMemory ty) ctx
                 |> add_members GlobalMemory
+              else if
+                is_mut
+                && List.mem C_lang.c_attr_constant v.attrs
+                && not (Context.is_int ty ctx)
+              then
+                Context.add_array v.var
+                  (Memory.from_type ConstantMemory ty) ctx
+                |> add_members ConstantMemory
               else if Context.is_int ty ctx then
                 (* Fold a global's initializer into a constant only
                    when it is immutable: a C-level [const], or a
