@@ -29,10 +29,22 @@ let rec parse_expr (j : json) : c_expr j_result =
       Ok (RecoveryExpr (J_type.parse ty))
   | "ImplicitValueInitExpr" | "CXXNullPtrLiteralExpr"
   | "StringLiteral" | "PredefinedExpr" | "SizeOfPackExpr"
-  | "RecoveryExpr" | "CXXThisExpr" | "UnresolvedMemberExpr" ->
+  | "RecoveryExpr" | "UnresolvedMemberExpr" ->
       (* Unknown value *)
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.parse ty))
+  | "CXXThisExpr" ->
+      (* The object a non-static method reads its members through, which
+         [C_kernel.parse] gives that method as a leading parameter. The
+         node's type is a pointer to the record and the parameter holds
+         the record itself, so that both sides expand into the same
+         members. *)
+      let* ty = get_field "type" o |> Result.map J_type.parse in
+      let ty = match ty.inner with Ty.Pointer p -> p | _ -> ty in
+      Ok
+        (Ident
+           { name = this_var; ty; kind = Decl_expr.Kind.ParmVar;
+             decl_id = None })
   | "DependentScopeDeclRefExpr" ->
       (* Qualified dependent reference like [Traits<T>::value]. The
          JSON now carries [name] and [nestedNameSpecifier] (older

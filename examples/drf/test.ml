@@ -1085,6 +1085,17 @@ let tests =
     (* The same call with a per-thread index, so the argument has to bind
        through the qualified name for [A[i]] to stay disjoint. *)
     ("drf-static-method.cu", [], 0);
+    (* An instance call, where the object is the leading argument and the
+       callee's [this] is a parameter it expands into members like any
+       record. Every thread writes its own element, so the binding has to
+       carry the array rather than merely produce an access. *)
+    ("drf-callable-by-value.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
+    (* The same callable writing one element from every thread, beside a
+       direct write that keeps the kernel from reporting no accesses, so a
+       dropped call reads as race-free. *)
+    ("racy-callable-by-value.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
     (* A pointer member of a struct parameter is memory of its own, so
        [v.p] is an array and every thread writing [v.p[0]] races. The write
        to [B] is what keeps the kernel from reporting no accesses at all,

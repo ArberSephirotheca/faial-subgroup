@@ -553,6 +553,13 @@ module Make (L : Logger) = struct
         when Variable.Set.mem n asserts ->
           Infer_stmt.Assert (infer_expr b)
       | SExpr (CallExpr { func; args; _ }) -> infer_call func args
+      (* [f(i)] on an object already arrives with the object leading the
+         argument list, which is the shape the callee's own parameter list
+         takes once its [this] is a parameter. Only a statement is routed
+         here: an operator call in expression position is a value, and the
+         reference one of those returns is bound as a value rather than as
+         the location it names. *)
+      | SExpr (CXXOperatorCallExpr { func; args; _ }) -> infer_call func args
       | WriteAccessStmt w ->
           let array =
             w.target.name |> Variable.set_location w.target.location

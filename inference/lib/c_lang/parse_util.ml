@@ -25,6 +25,10 @@ let parse_variable (j : json) : Variable.t j_result =
    | None -> Ok (Variable.from_name name))
   |> Rjson.add_reason "parse_variable" j
 
+(* The object a non-static method reads its members through. C++ reserves
+   the spelling, so no declaration in the source can collide with it. *)
+let this_var : Variable.t = Variable.from_name "this"
+
 (* Clang's identifier for a declaration node, emitted under
    [cu-to-json --print-id]. The same identifier appears on a
    [DeclRefExpr]'s [referencedDecl], which is the only thing tying a

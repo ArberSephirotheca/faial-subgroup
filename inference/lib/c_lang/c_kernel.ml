@@ -118,6 +118,36 @@ let wrap_error (msg : string) (j : Yojson.Basic.t) :
   | Ok e -> Ok e
   | Error e -> Rjson.because msg j e
 
+(* A static method cannot name [this] and an instance method that touches a
+   member does, implicitly when the source omits it, so the presence of the
+   node decides which kind this is. cu-to-json emits no storage class, and
+   an instance method that never reads its object needs no parameter for
+   it either. *)
+let rec mentions_this (j : Yojson.Basic.t) : bool =
+  match j with
+  | `Assoc o ->
+      (match List.assoc_opt "kind" o with
+       | Some (`String "CXXThisExpr") -> true
+       | _ ->
+           List.assoc_opt "inner" o
+           |> Option.map mentions_this
+           |> Option.value ~default:false)
+  | `List l -> List.exists mentions_this l
+  | _ -> false
+
+(* The record a method reads its members through is the innermost scope it
+   is qualified by. Given as a by-value parameter so that it expands into
+   one parameter per member, which is the shape the object at the call site
+   expands into. *)
+let this_param (qualifier : string list) : Param.t option =
+  match List.rev qualifier with
+  | record :: _ ->
+      let ty_var =
+        Ty_variable.make ~ty:(J_type.of_string record) ~name:this_var
+      in
+      Some (Param.make ~ty_var ~is_used:true ~is_shared:false)
+  | [] -> None
+
 let parse ?(qualifier = []) (type_params : Ty_param.t list)
     (j : Yojson.Basic.t) : t j_result =
   let open Rjson in
@@ -153,6 +183,11 @@ let parse ?(qualifier = []) (type_params : Ty_param.t list)
    let* body : Stmt.t = Stmt.parse_list (`List body) in
    let* name : string = with_field "name" cast_string o in
    let ps = List.map Param.parse ps |> List.concat_map Result.to_list in
+   let ps =
+     if mentions_this j then
+       match this_param qualifier with Some p -> p :: ps | None -> ps
+     else ps
+   in
    let* template_args =
      with_field_or "templateArgs" (cast_map Parsers.parse_c_template_argument)
        [] o
