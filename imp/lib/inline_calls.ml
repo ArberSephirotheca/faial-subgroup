@@ -182,6 +182,9 @@ module Inline = struct
       | If (b, s1, s2) -> If (b, inline vars s1, inline vars s2)
       | For (r, s) -> For (r, inline (Variable.Set.add r.var vars) s)
       | Decl (d, s) -> Decl (d, inline (Variable.Set.add d.var vars) s)
+      | PointerBind p ->
+          PointerBind
+            { p with body = inline (Variable.Set.add p.var vars) p.body }
       | Assign a -> Assign { a with body = inline vars a.body }
       | (Sync _ | Assert _ | Access _ | Skip) as s -> s
     in

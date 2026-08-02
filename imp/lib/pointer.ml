@@ -60,6 +60,10 @@ module Offset = struct
     | Elements { amount } -> amount = Num 0
     | Bytes { amount; step } -> amount = Num 0 && not (Step.is_scaled step)
 
+  let map (f : nexp -> nexp) : t -> t = function
+    | Elements { amount } -> Elements { amount = f amount }
+    | Bytes { amount; step } -> Bytes { amount = f amount; step }
+
   (* An access is a byte address and a byte extent, truncated by the step of
      the array it lands on:
 
@@ -171,6 +175,49 @@ let rec keeps_payload : t -> bool = function
 let to_array : t -> Variable.t option = function
   | Base { array } -> Some array
   | Row _ | Shift _ | Select _ -> None
+
+let rec map ~(n : nexp -> nexp) ~(b : Exp.bexp -> Exp.bexp) : t -> t = function
+  | Base _ as p -> p
+  | Row { base; index } -> Row { base = map ~n ~b base; index = n index }
+  | Shift { base; offset } ->
+      Shift { base = map ~n ~b base; offset = Offset.map n offset }
+  | Select { cond; if_true; if_false } ->
+      Select
+        {
+          cond = b cond;
+          if_true = map ~n ~b if_true;
+          if_false = map ~n ~b if_false;
+        }
+
+(* The variables the pointer's own expressions read. These are what a
+   binder below it must not capture, and they exclude the names of the
+   arrays it reaches, which are memory rather than values. *)
+let rec free_names (p : t) (acc : Variable.Set.t) : Variable.Set.t =
+  match p with
+  | Base _ -> acc
+  | Row { base; index } -> free_names base (Exp.n_free_names index acc)
+  | Shift { base; offset } ->
+      free_names base (Exp.n_free_names (Offset.amount offset) acc)
+  | Select { cond; if_true; if_false } ->
+      Exp.b_free_names cond acc |> free_names if_true |> free_names if_false
+
+(* Compose one pointer onto another by grafting: wherever [p] bottoms out
+   at [target], continue into [source]. This is what a pointer taken from
+   another pointer means, and it is how the binding of the inner one is
+   discharged against the outer. *)
+let rec subst_base ~(target : Variable.t) ~(source : t) (p : t) : t =
+  match p with
+  | Base { array } -> if Variable.equal array target then source else p
+  | Row { base; index } -> Row { base = subst_base ~target ~source base; index }
+  | Shift { base; offset } ->
+      Shift { base = subst_base ~target ~source base; offset }
+  | Select { cond; if_true; if_false } ->
+      Select
+        {
+          cond;
+          if_true = subst_base ~target ~source if_true;
+          if_false = subst_base ~target ~source if_false;
+        }
 
 let addresses ~(index : nexp list) (p : t) : Address.t list =
   let guarded (cond : Exp.bexp) : Exp.bexp option -> Exp.bexp option = function

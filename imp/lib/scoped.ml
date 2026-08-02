@@ -14,6 +14,7 @@ module Code = struct
     | For of (Range.t * t)
     | Assign of { var : Variable.t; ty : Ty.t; data : Exp.nexp; body : t }
     | Decl of (Decl.t * t)
+    | PointerBind of { var : Variable.t; pointer : Pointer.t; body : t }
     | Seq of t * t
 
   let add_inside ~(child : t) : t -> t =
@@ -25,6 +26,7 @@ module Code = struct
       | Call (c, s) -> Call (c, add s)
       | Assign a -> Assign { a with body = add a.body }
       | Decl (d, s) -> Decl (d, add s)
+      | PointerBind p -> PointerBind { p with body = add p.body }
       | Seq (s1, s2) -> Seq (s1, add s2)
     in
     add
@@ -42,7 +44,9 @@ module Code = struct
           let cs = Function_id.Set.add (Call.unique_id c) cs in
           calls cs s
       | If (_, s1, s2) | Seq (s1, s2) -> calls (calls cs s1) s2
-      | For (_, s) | Decl (_, s) | Assign { body = s; _ } -> calls cs s
+      | For (_, s) | Decl (_, s) | Assign { body = s; _ }
+      | PointerBind { body = s; _ } ->
+          calls cs s
     in
     calls Function_id.Set.empty
 
@@ -64,6 +68,14 @@ module Code = struct
           [
             Line ("decl " ^ Decl.to_string d ^ " in {");
             Block (to_s p);
+            Line "}";
+          ]
+      | PointerBind p ->
+          [
+            Line
+              ("alias " ^ Variable.name p.var ^ " = "
+              ^ Pointer.to_string p.pointer ^ " in {");
+            Block (to_s p.body);
             Line "}";
           ]
       | If (b, s1, s2) ->
@@ -132,12 +144,26 @@ module Code = struct
       | [] -> Skip
       | i :: l -> List.fold_left (fun s i -> Seq (s, i)) i l
     in
+    (* A binder for [target] ends the pointer's reach, so the substitution
+       stops there. A pointer taken from this one is discharged by grafting
+       into its base: that expression is read in the enclosing scope, so it
+       is rewritten even when the binder it belongs to shadows [target]. *)
+    let graft (p : Pointer.t) : Pointer.t =
+      Pointer.subst_base ~target ~source:pointer p
+    in
     let rec resolve : t -> t = function
       | Access a as i -> if Variable.equal a.array target then rewrite a else i
-      | Decl (d, l) -> Decl (d, resolve l)
-      | Assign a -> Assign { a with body = resolve a.body }
+      | Decl (d, l) as i -> if Variable.equal d.var target then i else Decl (d, resolve l)
+      | Assign a as i ->
+          if Variable.equal a.var target then i
+          else Assign { a with body = resolve a.body }
+      | For (r, s) as i ->
+          if Variable.equal r.var target then i else For (r, resolve s)
+      | PointerBind p ->
+          let pointer = graft p.pointer in
+          if Variable.equal p.var target then PointerBind { p with pointer }
+          else PointerBind { p with pointer; body = resolve p.body }
       | If (b, s1, s2) -> If (b, resolve s1, resolve s2)
-      | For (r, s) -> For (r, resolve s)
       | Seq (p, q) -> Seq (resolve p, resolve q)
       | Call (c, s) -> Call (Call.resolve ~target pointer c, resolve s)
       | (Assert _ | Sync _ | Skip) as i -> i
@@ -146,6 +172,23 @@ module Code = struct
       match Pointer.to_array pointer with
       | Some x when Variable.equal x target -> s
       | _ -> resolve s
+
+  (* Discharge every pointer binding, which is the erasure that leaves a
+     protocol naming only arrays. Inside out: a pointer taken from another
+     is resolved first, so by the time the outer binding runs the inner one
+     already speaks in the outer's terms. [resolve] substitutes an open
+     expression into a scope it was not written in, so this must run on a
+     term whose binders are distinct. *)
+  let rec resolve_pointers : t -> t = function
+    | PointerBind { var; pointer; body } ->
+        resolve ~target:var pointer (resolve_pointers body)
+    | Decl (d, p) -> Decl (d, resolve_pointers p)
+    | Assign a -> Assign { a with body = resolve_pointers a.body }
+    | If (b, p, q) -> If (b, resolve_pointers p, resolve_pointers q)
+    | For (r, p) -> For (r, resolve_pointers p)
+    | Seq (p, q) -> Seq (resolve_pointers p, resolve_pointers q)
+    | Call (c, p) -> Call (c, resolve_pointers p)
+    | (Access _ | Assert _ | Sync _ | Skip) as i -> i
 
   module SubstMake (S : Subst.SUBST) = struct
     module M = Subst.Make (S)
@@ -170,6 +213,17 @@ module Code = struct
                 M.add st a.var (function
                   | Some st' -> subst st' a.body
                   | None -> a.body);
+            }
+      | PointerBind p ->
+          PointerBind
+            {
+              p with
+              pointer =
+                Pointer.map ~n:(M.n_subst st) ~b:(M.b_subst st) p.pointer;
+              body =
+                M.add st p.var (function
+                  | Some st' -> subst st' p.body
+                  | None -> p.body);
             }
       | If (b, p1, p2) -> If (M.b_subst st b, subst st p1, subst st p2)
       | For (r, p) ->
@@ -207,7 +261,9 @@ module Code = struct
         Call.arrays c |> Variable.Set.of_list |> Variable.Set.union acc
         |> fun acc -> written_arrays acc p
     | If (_, p, q) | Seq (p, q) -> written_arrays (written_arrays acc p) q
-    | For (_, p) | Decl (_, p) | Assign { body = p; _ } -> written_arrays acc p
+    | For (_, p) | Decl (_, p) | Assign { body = p; _ }
+    | PointerBind { body = p; _ } ->
+        written_arrays acc p
     | Access _ | Assert _ | Sync _ | Skip -> acc
 
   (* Counts the stores to each array sequenced before a program point.
@@ -280,6 +336,9 @@ module Code = struct
       | Assign a ->
           let body, v = rewrite looped v a.body in
           (Assign { a with body }, v)
+      | PointerBind p ->
+          let body, v = rewrite looped v p.body in
+          (PointerBind { p with body }, v)
       | Call (c, p) ->
           let v = Call.arrays c |> List.fold_left (Fun.flip Version.bump) v in
           let p, v = rewrite looped v p in
@@ -309,6 +368,7 @@ module Code = struct
       | For (r, p) -> For (r, filter p)
       | Decl (d, p) -> Decl (d, filter p)
       | Assign a -> Assign { a with body = filter a.body }
+      | PointerBind p -> PointerBind { p with body = filter p.body }
       | Seq (p1, p2) -> Seq (filter p1, filter p2)
       | (Assert _ | Skip | Sync _) as i -> i
     in
@@ -340,6 +400,10 @@ module Code = struct
       | Assign { var; data; body; _ } ->
           let acc = Variable.Set.add var acc in
           go (n data acc) body
+      | PointerBind { var; pointer; body } ->
+          let acc = Variable.Set.add var acc in
+          let acc = Variable.Set.union (Pointer.arrays pointer) acc in
+          go (Pointer.free_names pointer acc) body
       | If (cond, p, q) -> go (go (b cond acc) p) q
       | Seq (p, q) -> go (go acc p) q
       | For (r, p) ->
@@ -400,14 +464,26 @@ module Code = struct
           let q, bound, taken = go env bound taken q in
           (Seq (p, q), bound, taken)
       | Assign a ->
+          (* [a.var] binds over the body exactly as a [Decl] does, so it
+             is freshened on the same path. Without that this pass leaves
+             the convention it is named for false for assignments, and a
+             substitution into the body captures. *)
           let data = ns env a.data in
-          (* [a.var] binds over the body but is never renamed by this
-             pass; drop any inherited rename of that name so the body's
-             references resolve to this binder. *)
-          let body, bound, taken =
-            go (Variable.Map.remove a.var env) bound taken a.body
-          in
-          (Assign { a with data; body }, bound, taken)
+          let x, env, bound, taken = enter env bound taken a.var in
+          let body, bound, taken = go env bound taken a.body in
+          (Assign { a with var = x; data; body }, bound, taken)
+      (* The pointer's expressions are read here, so they take the
+         renaming in force at this point. The bound name itself is not
+         renamed: a pointer is used as an [Access]'s array, and expression
+         substitution reaches only an access's indices, so a fresh name
+         here would part the binder from its uses. What a rebind of the
+         same name needs instead is [resolve] stopping at it, which is the
+         shadowing clause, and elimination running inside out. *)
+      | PointerBind p ->
+          let pointer = Pointer.map ~n:(ns env) ~b:(bs env) p.pointer in
+          let bound = Variable.Set.add p.var bound in
+          let body, bound, taken = go env bound taken p.body in
+          (PointerBind { p with pointer; body }, bound, taken)
       | Decl (d, p) ->
           let d = Decl.map (ns env) d in
           let x, env, bound, taken = enter env bound taken d.var in
@@ -473,6 +549,9 @@ module Code = struct
           | None ->
               let assigns, p = fix_assigns defined p in
               (assigns, Call (c, p)))
+      | PointerBind p ->
+          let assigns, body = fix_assigns defined p.body in
+          (assigns, PointerBind { p with body })
       | Decl (d, p) ->
           let defined = Params.add d.var d.ty defined in
           let assigns, p = fix_assigns defined p in
@@ -542,7 +621,7 @@ module Code = struct
       | Seq (Seq (s1, s2), s3) -> imp_to_scoped (Seq (s1, Seq (s2, s3)))
       | Seq (LocationAlias e, s) ->
           let* s = imp_to_scoped s in
-          return (resolve ~target:e.target e.pointer s)
+          return (PointerBind { var = e.target; pointer = e.pointer; body = s })
       | Seq (Decl d, p) ->
           let* s = imp_to_scoped p in
           return (Decl (d, s))

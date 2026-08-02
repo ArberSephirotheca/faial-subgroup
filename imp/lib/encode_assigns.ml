@@ -183,6 +183,7 @@ let from_scoped ?(infer_cond_bound = default_infer_cond_bound)
     | Assign { var = x; data = n; ty; body = p } -> inline_or_havoc x ty n p
     | Decl ({ var; init = None; ty }, p) ->
         Decl { var; ty; body = inline known st sizes p }
+    | PointerBind { body = p; _ } -> inline known st sizes p
     | For (r, p) ->
         let r = r_subst st r in
         let x, known, st = add_var r.var in

@@ -10,6 +10,12 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
   let array_set = Scoped.Kernel.arrays k in
   let p =
     k.code
+    (* Pointer resolution substitutes an open expression into an already
+       built scope, so the binders have to be distinct before it runs, and
+       it has to run before [filter_locs] deletes the accesses whose array
+       is still a pointer's name. *)
+    |> Scoped.Code.vars_distinct ~vars:(ParameterList.to_set k.parameters)
+    |> Scoped.Code.resolve_pointers
     |> Scoped.Code.filter_locs array_set
        (* Remove unknown arrays *)
     |> Scoped.Code.bind_uniform_reads

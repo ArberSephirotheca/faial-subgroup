@@ -317,6 +317,18 @@ let tests =
      it reports none at all. *)
     ("racy-ptr-select-cross.cu", [], 1);
     ("drf-ptr-select-cross.cu", [], 0);
+    (* A pointer reads its offset where it was taken, not where it is
+     used, so an assignment to a variable the offset mentions cannot
+     reach back and move the access. The pair is the two directions of
+     getting that wrong: the first loses a race by reading the later
+     value, the second invents one. *)
+    ("racy-alias-capture.cu", [], 1);
+    ("drf-alias-capture.cu", [], 0);
+    (* Rebinding the same pointer name is the other side: the second
+     binding owns the accesses that follow it, and the first owns those
+     before. Resolve the later access against the earlier pointer and
+     both threads land on cell 0. *)
+    ("drf-realias-offset.cu", [], 0);
     (* A [__constant__] global is memory, so its read reaches the protocol
      and the kernel is checked rather than reported empty. Without the
      array the kernel has nothing in it, so this answers 1 with the
