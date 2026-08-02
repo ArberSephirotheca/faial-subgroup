@@ -13,9 +13,11 @@ let map (f : Exp.nexp -> Exp.nexp) (a : t) : t = { a with args = List.map f a.ar
 (* Returns the arrays in arguments *)
 let arrays (c : t) : Variable.t list = List.filter_map Array_use.base c.args
 
-let loc_subst (alias : Alias.t) (c : t) : t =
-  let e = Exp.n_plus (Exp.Var alias.source) alias.offset in
-  map (S.n_subst (alias.target, e)) c
+(* An argument that names the pointer is rewritten to name the memory it
+   stands for. The steps do not travel: the argument counts the caller's
+   units and the inline site rescales it against the callee's parameter. *)
+let resolve ~(target : Variable.t) (pointer : Pointer.t) (c : t) : t =
+  map (S.n_subst (target, Pointer.to_nexp pointer)) c
 
 let to_string (c : t) : string =
   let args = c.args |> List.map Exp.n_to_string |> String.concat ", " in

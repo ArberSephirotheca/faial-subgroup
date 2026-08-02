@@ -84,68 +84,64 @@ module Code = struct
     in
     fun p -> to_s p |> Indent.to_string
 
-  let loc_subst (alias : Alias.t) : t -> t =
-    (* The head index is the one the alias's offset applies to, so the
-       truncation rule applies to it whatever the arity. A span never meets a
-       multi-element index: its target would have to be a pointer to an array
-       or an array of arrays, and neither has a step. *)
-    let rewrite (view : int) (elem : int) (a : Access.t) : t =
-      (* The payload records the literal stored, and two writes of the same
-         literal are taken not to conflict. Once the index changes units the
-         two land on one cell, and storing 1 as a byte does not store the
-         bits that storing 1 as an [int] does, so the payload stops holding.
-         Only a change of units drops it. *)
+  (* Replace every access through [target] by the memory the pointer names.
+     An index that came out as a range of cells, which is what a pointer view
+     wider than the element it lands on produces, is bound by a loop over the
+     cells it spans. *)
+  let resolve ~(target : Variable.t) (pointer : Pointer.t) : t -> t =
+    let materialise (a : Access.t) (addr : Pointer.Address.t) : t =
+      let taken =
+        List.fold_left
+          (fun acc (i : Pointer.Index.t) ->
+            acc
+            |> Exp.n_free_names (Pointer.Index.first i)
+            |> Exp.n_free_names (Pointer.Index.last i))
+          Variable.Set.empty addr.index
+      in
+      let ranges, index, _ =
+        List.fold_left
+          (fun (ranges, index, taken) (i : Pointer.Index.t) ->
+            match i with
+            | Pointer.Index.Exact { value } -> (ranges, value :: index, taken)
+            | Pointer.Index.Span { first; last } ->
+                let e = Variable.fresh taken (Variable.from_name "@view") in
+                ( Range.make ~lower_bound:first e last :: ranges,
+                  Exp.Var e :: index,
+                  Variable.Set.add e taken ))
+          ([], [], taken) addr.index
+      in
+      (* Keep the access's own location, so a diagnostic points at the use
+         rather than at the pointer's declaration. *)
+      let array = { addr.array with location = a.array.location } in
+      let body = Access { a with array; index = List.rev index } in
+      List.fold_left (fun s r -> For (r, s)) body ranges
+    in
+    let rewrite (a : Access.t) : t =
       let a =
         match a.mode with
-        | Access.Mode.Write (Some _) when view <> elem ->
+        | Access.Mode.Write (Some _) when not (Pointer.keeps_payload pointer)
+          ->
             { a with mode = Access.Mode.Write None }
         | _ -> a
       in
-      match a.index with
-      | n :: l -> (
-          match Alias.elements ~off:alias.offset ~view ~elem n with
-          | Alias.Single n -> Access { a with index = n :: l }
-          | Alias.Span { first; last } ->
-              let e =
-                Variable.Set.empty
-                |> Exp.n_free_names first |> Exp.n_free_names last
-                |> fun xs -> Variable.fresh xs (Variable.from_name "@view")
-              in
-              For
-                ( Range.make ~lower_bound:first e last,
-                  Access { a with index = Exp.Var e :: l } ))
-      | [] -> failwith "Impossible to have 0 elements."
+      match Pointer.addresses ~index:a.index pointer |> List.map (materialise a) with
+      | [] -> Skip
+      | i :: l -> List.fold_left (fun s i -> Seq (s, i)) i l
     in
-    let rec loc_subst : t -> t = function
-      | Access a as i ->
-          if Variable.equal a.array alias.target then
-            (* Update the name of the resolved array,
-            but keep the original location *)
-            let new_x = { alias.source with location = a.array.location } in
-            let a = { a with array = new_x } in
-            match (alias.view, alias.elem) with
-            | Some view, Some elem -> rewrite view elem a
-            | _ ->
-                if alias.offset = Num 0 then
-                  (* No offset, so same index *)
-                  Access a
-                else (
-                  match a.index with
-                  | n :: l ->
-                      (* use the inlined variable but with the location of the alias,
-                    so that the error message appears in the right place. *)
-                      Access { a with index = Exp.n_plus alias.offset n :: l }
-                  | [] -> failwith "Impossible to have 0 elements.")
-          else i
-      | Decl (d, l) -> Decl (d, loc_subst l)
-      | Assign a -> Assign { a with body = loc_subst a.body }
-      | If (b, s1, s2) -> If (b, loc_subst s1, loc_subst s2)
-      | For (r, s) -> For (r, loc_subst s)
-      | Seq (p, q) -> Seq (loc_subst p, loc_subst q)
-      | Call (c, s) -> Call (Call.loc_subst alias c, loc_subst s)
+    let rec resolve : t -> t = function
+      | Access a as i -> if Variable.equal a.array target then rewrite a else i
+      | Decl (d, l) -> Decl (d, resolve l)
+      | Assign a -> Assign { a with body = resolve a.body }
+      | If (b, s1, s2) -> If (b, resolve s1, resolve s2)
+      | For (r, s) -> For (r, resolve s)
+      | Seq (p, q) -> Seq (resolve p, resolve q)
+      | Call (c, s) -> Call (Call.resolve ~target pointer c, resolve s)
       | (Assert _ | Sync _ | Skip) as i -> i
     in
-    fun s -> if Alias.is_trivial alias then s else loc_subst s
+    fun s ->
+      match Pointer.to_array pointer with
+      | Some x when Variable.equal x target -> s
+      | _ -> resolve s
 
   module SubstMake (S : Subst.SUBST) = struct
     module M = Subst.Make (S)
@@ -542,7 +538,7 @@ module Code = struct
       | Seq (Seq (s1, s2), s3) -> imp_to_scoped (Seq (s1, Seq (s2, s3)))
       | Seq (LocationAlias e, s) ->
           let* s = imp_to_scoped s in
-          return (loc_subst e s)
+          return (resolve ~target:e.target e.pointer s)
       | Seq (Decl d, p) ->
           let* s = imp_to_scoped p in
           return (Decl (d, s))

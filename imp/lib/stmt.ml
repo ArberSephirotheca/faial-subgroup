@@ -12,7 +12,7 @@ type t =
   | Read of Read.t
   | Atomic of Atomic_write.t
   | Write of Write.t
-  | LocationAlias of Alias.t
+  | LocationAlias of { target : Variable.t; pointer : Pointer.t }
   | Decl of Decl.t
   | Assign of { var : Variable.t; data : Exp.nexp; ty : Ty.t }
   | If of (Exp.bexp * t * t)
@@ -165,7 +165,14 @@ let to_s : t -> Indent.t list =
     | Skip -> [ Line "skip;" ]
     | Assign a ->
         [ Line (Variable.name a.var ^ " = " ^ Exp.n_to_string a.data ^ ";") ]
-    | LocationAlias l -> [ Line ("alias " ^ Alias.to_string l) ]
+    | LocationAlias l ->
+        [
+          Line
+            ("alias " ^ Variable.name l.target ^ " = "
+            ^ Pointer.to_string l.pointer
+            ^ ";"
+            ^ Pointer.step_comment l.pointer);
+        ]
     | Decl d -> [ Line ("decl " ^ Decl.to_string d ^ ";") ]
     | If (b, s1, Skip) ->
         [

@@ -41,8 +41,7 @@ type t =
       source : Variable.t;
       target : Variable.t;
       offset : Infer_exp.t;
-      view : int option;
-      elem : int option;
+      step : Pointer.Step.t option;
     }
   | Decl of { var : Variable.t; ty : Ty.t; init : Infer_exp.t option }
   | Assign of { var : Variable.t; data : Infer_exp.t; ty : Ty.t }
@@ -111,10 +110,16 @@ let rec to_stmt : t -> Stmt.t =
         (let* index = State.list_map to_nexp index in
          let* guard = State.option_map to_bexp guard in
          return (Stmt.Write { array; index; payload; guard }))
-  | LocationAlias { source; target; offset; view; elem } ->
+  | LocationAlias { source; target; offset; step } ->
       Infer_exp.unknowns
         (let* offset = to_nexp offset in
-         return (Stmt.LocationAlias { target; source; offset; view; elem }))
+         let offset =
+           match step with
+           | Some step -> Pointer.Offset.bytes ~amount:offset ~step
+           | None -> Pointer.Offset.elements offset
+         in
+         let pointer = Pointer.from_array source |> Pointer.shift ~offset in
+         return (Stmt.LocationAlias { target; pointer }))
   | Decl { var; ty; init } ->
       Infer_exp.unknowns
         (let* init = State.option_map Infer_exp.to_nexp init in
@@ -221,11 +226,11 @@ module Convert_assigns = struct
         Some
           (keep a
              (SyncOp { mode; array; index = List.map (subst a.env) index; loc }))
-    | LocationAlias { source; target; offset; view; elem } ->
+    | LocationAlias { source; target; offset; step } ->
         Some
           (keep a
              (LocationAlias
-                { source; target; offset = subst a.env offset; view; elem }))
+                { source; target; offset = subst a.env offset; step }))
     | Read { target; array; index; guard } ->
         let index = List.map (subst a.env) index in
         let guard = Option.map (subst a.env) guard in
@@ -349,7 +354,11 @@ let to_s: t -> Indent.t list =
     | Skip -> [Line "skip;"]
     | Assign a -> [Line (Variable.name a.var ^ " = " ^ Exp.n_to_string a.data ^ ";")]
     | LocationAlias l ->
-      [Line ("alias " ^ Alias.to_string l)]
+      let step =
+        l.step |> Option.map Pointer.Step.comment |> Option.value ~default:""
+      in
+      [Line ("alias " ^ Variable.name l.target ^ " = " ^ Variable.name l.source
+             ^ " + " ^ Infer_exp.to_string l.offset ^ ";" ^ step)]
     | Decl [] -> []
     | Decl l ->
       let entries = String.concat ", " (List.map Decl.to_string l) in

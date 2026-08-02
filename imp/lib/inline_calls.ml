@@ -141,14 +141,15 @@ module Inline = struct
                  |> Option.map Protocols.Memory.step
                  |> Option.join
                in
-               Scoped.Code.loc_subst
-                 {
-                   target = x;
-                   source = u.array;
-                   offset = u.offset;
-                   view;
-                   elem;
-                 }
+               let offset =
+                 match (view, elem) with
+                 | Some view, Some elem ->
+                     Pointer.Offset.bytes ~amount:u.offset
+                       ~step:(Pointer.Step.make ~view ~elem)
+                 | _ -> Pointer.Offset.elements u.offset
+               in
+               Scoped.Code.resolve ~target:x
+                 (Pointer.from_array u.array |> Pointer.shift ~offset)
                  s)
          (Common.zip k.parameters args)
     (* then add inside the child, meaning that the free-variables of the

@@ -4,6 +4,7 @@
    test_encode_assigns
    test_kernel_inline
    test_classify_arg
+   test_pointer
    test_for
    test_atomic_seed_read
    test_idiom_rewrite

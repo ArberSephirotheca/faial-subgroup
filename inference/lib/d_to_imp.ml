@@ -425,13 +425,11 @@ module Make (L : Logger) = struct
         let* view = step s.target in
         let* elem = step s.source in
         let* offset = to_byte_offset infer_type s.offset in
-        Some (Some view, Some elem, offset)
+        Some (Some (Imp.Pointer.Step.make ~view ~elem), offset)
       in
-      let view, elem, offset =
-        Option.value scaled ~default:(None, None, s.offset)
-      in
+      let step, offset = Option.value scaled ~default:(None, s.offset) in
       Infer_stmt.LocationAlias
-        { target; source; offset = infer_expr offset; view; elem }
+        { target; source; offset = infer_expr offset; step }
     in
 
     let infer_decl (d : D_lang.Decl.t) : Infer_stmt.t =
