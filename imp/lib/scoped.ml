@@ -215,15 +215,16 @@ module Code = struct
     walk arrays s
 
   let unnamed_access (locs : Variable.Set.t) (s : t) :
-      (string * Path.Denotation.t) option =
+      (Stage0.Location.t * Path.Denotation.t) option =
     let rooted (p : Path.t) : bool =
       Variable.Set.exists (fun x -> Option.is_some (Path.under ~root:x p)) locs
     in
-    let rec walk : t -> (string * Path.Denotation.t) option = function
+    let rec walk : t -> (Stage0.Location.t * Path.Denotation.t) option =
+      function
       | Access a ->
           if Variable.Set.mem (Mem_access.array a) locs || not (rooted a.path)
           then None
-          else Some (Path.to_string a.path, Path.denotation a.path)
+          else Some (Mem_access.location a, Path.denotation a.path)
       | Seq (p, q) | If (_, p, q) -> (
           match walk p with Some _ as r -> r | None -> walk q)
       | For (_, p) | Decl (_, p) | Call (_, p) -> walk p

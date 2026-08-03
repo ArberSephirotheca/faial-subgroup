@@ -136,10 +136,9 @@ let rejections (ks : Scoped.Kernel.t list) :
           (r.kernel, ("recursive", path))
       | Rejected_kernel.Reason.UndefinedKernel { path } ->
           (r.kernel, ("undefined", path))
-      | Rejected_kernel.Reason.ManyRegions { region } ->
-          (r.kernel, ("many-regions", [ region ]))
-      | Rejected_kernel.Reason.UnnamedRegion { region } ->
-          (r.kernel, ("unnamed-region", [ region ])))
+      | Rejected_kernel.Reason.RuntimePointerField _
+      | Rejected_kernel.Reason.PointerFieldToRecord _ ->
+          (r.kernel, (Rejected_kernel.Reason.label r.reason, [])))
 
 let test_fixpoint (name : string) (ks : Scoped.Kernel.t list)
     (expected_survivors : string list)

@@ -3,6 +3,8 @@ module Variable = Protocols.Variable
 module Params = Protocols.Params
 module Exp = Protocols.Exp
 open Exp
+open Protocols.Path.Denotation
+open Rejected_kernel.Reason
 
 let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
     (k : Scoped.Kernel.t) : (Protocols.Kernel.t, Rejected_kernel.t) Result.t =
@@ -23,10 +25,8 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
   let arrays = Scoped.Code.deref_arrays arrays resolved in
   let array_set = Protocols.Variable.MapSetUtil.map_to_set arrays in
   match Scoped.Code.unnamed_access array_set resolved with
-  | Some (region, Protocols.Path.Denotation.Many_regions) ->
-      reject (Rejected_kernel.Reason.ManyRegions { region })
-  | Some (region, Protocols.Path.Denotation.One_region) ->
-      reject (Rejected_kernel.Reason.UnnamedRegion { region })
+  | Some (location, Many_regions) -> reject (RuntimePointerField { location })
+  | Some (location, One_region) -> reject (PointerFieldToRecord { location })
   | None ->
   let p =
     resolved
