@@ -1259,6 +1259,15 @@ let tests =
     (* The same expansion with every thread copying its own element, so
        the leaf accesses stay disjoint. *)
     ("drf-struct-copy.cu", [], 0);
+    (* The copy expands into a loop over the cells, so the width of the
+       record stops mattering. Listing them needed a bound, and past it the
+       copy kept naming the enclosing object, which is a different array
+       from the member and could not meet the member write. *)
+    ("racy-struct-copy-wide.cu", [], 1);
+    (* An extent the type does not state becomes an uninterpreted function
+       of the object, so the loop still has a bound and the solver chooses
+       one where the copy reaches cell zero. *)
+    ("racy-struct-copy-flex.cu", [], 1);
     (* A record is declared under a bare name and used under a qualified
        one, so keying the declaration on the bare name left a namespaced
        record matching nothing and derived no member arrays. *)
@@ -1276,6 +1285,14 @@ let tests =
     ("racy-record-shadowed.cu", [], 1);
     (* The same pair with a per-thread element. *)
     ("drf-record-shadowed.cu", [], 0);
+    (* A base subobject is laid out ahead of a record's own members and its
+       fields are reached without an intermediate name, so they belong to
+       the derived record's field list. Collecting only a record's own
+       declarations left it unregistered and the copy unexpanded. *)
+    ("racy-record-inherited.cu", [], 1);
+    (* The same with a member the derived record declares itself, so both
+       halves of the field list are exercised. *)
+    ("drf-record-inherited.cu", [], 0);
     (* A member class defined out of line belongs to a scope it is not
        written in, so the enclosing declarations cannot supply it and the
        record's own answer is what matches the type. *)

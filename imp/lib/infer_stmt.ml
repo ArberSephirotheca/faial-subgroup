@@ -40,6 +40,7 @@ type t =
       payload : int option;
       guard : Infer_exp.t option;
     }
+  | Foreach of { var : Variable.t; last : Infer_exp.t; body : t }
   | LocationAlias of { target : Variable.t; pointer : Infer_pointer.t }
   | Decl of { var : Variable.t; ty : Ty.t; init : Infer_exp.t option }
   | Assign of { var : Variable.t; data : Infer_exp.t; ty : Ty.t }
@@ -112,6 +113,10 @@ let rec to_stmt : t -> Stmt.t =
          let* index = State.list_map to_nexp index in
          let* guard = State.option_map to_bexp guard in
          return (Stmt.Write { array; selector; index; payload; guard }))
+  | Foreach { var; last; body } ->
+      Infer_exp.unknowns
+        (let* last = to_nexp last in
+         return (Stmt.For (Range.make var last, to_stmt body)))
   | LocationAlias { target; pointer } ->
       Infer_exp.unknowns
         (let* pointer = Infer_pointer.to_pointer pointer in
@@ -252,7 +257,9 @@ module Convert_assigns = struct
         let args = List.map (subst a.env) args in
         let a = bind_target a (Option.map (fun (x, ty) -> (ty, x)) result) in
         Some (keep a (Call { result; id; args }))
-    | If _ | While _ | DoWhile _ | For _ | Break | Continue | Return _ -> None
+    | If _ | While _ | DoWhile _ | For _ | Foreach _ | Break | Continue
+    | Return _ ->
+        None
 
   let convert (cond : IE.t) (p : t) (q : t) : t =
     match (fold empty p, fold empty q) with
@@ -303,6 +310,7 @@ module Convert_assigns = struct
     | DoWhile (c, s) -> DoWhile (c, rewrite s)
     | For { init; cond; inc; body } ->
         For { init = rewrite init; cond; inc = rewrite inc; body = rewrite body }
+    | Foreach f -> Foreach { f with body = rewrite f.body }
     | Skip | Sync _ | SyncOp _ | Assert _ | Read _ | Atomic _ | Write _
     | LocationAlias _ | Decl _ | Assign _ | Call _ | Break | Continue | Return _
       ->

@@ -261,7 +261,7 @@ module Make (L : Logger) = struct
       assigns : (Variable.t * nexp) list;
       typedefs : TypeAlias.t;
       enums : Enum.t Variable.Map.t;
-      records : (string * Ty.t) list Variable.Map.t;
+      records : Record.t Variable.Map.t;
     }
 
     let to_string (ctx : t) : string =
@@ -321,16 +321,26 @@ module Make (L : Logger) = struct
         records =
           Variable.Map.add
             (Variable.from_name (Record.qualified_name r))
-            r.fields b.records;
+            r b.records;
       }
 
     let lookup_record (ty : Ty.t) (b : t) : (string * Ty.t) list option =
+      let rec fields (r : Record.t) : (string * Ty.t) list =
+        List.concat_map
+          (fun base ->
+            match Variable.Map.find_opt (Variable.from_name base) b.records with
+            | Some r -> fields r
+            | None -> [])
+          r.bases
+        @ r.fields
+      in
       match ty.inner with
       | Ty.Struct { members = _ :: _ as members } -> Some members
       | _ ->
           Record.type_name ty
           |> Option.map Variable.from_name
           |> Fun.flip Option.bind (fun x -> Variable.Map.find_opt x b.records)
+          |> Option.map fields
 
     let add_enum (e : Enum.t) (b : t) : t =
       let assigns =
@@ -471,8 +481,6 @@ module Make (L : Logger) = struct
      [bind_uniform_reads] fills with the value that access loaded. A leaf
      whose extents are not all known, or whose cell count is beyond the
      cap, leaves the access naming the enclosing object. *)
-  let expand_limit : int = 64
-
   let expand_access (ctx : Context.t) ~(read : bool) ~(array : Variable.t)
       ~(index : Infer_exp.t list) ~(guard : Infer_exp.t option) (ty : Ty.t) :
       Infer_stmt.t option =
@@ -480,57 +488,57 @@ module Make (L : Logger) = struct
       let members (ty : Ty.t) : (string * Ty.t) list option =
         Context.lookup_record (Context.resolve ty ctx) ctx
     end) in
-    let cells (dims : int option list) : Infer_exp.t list list option =
-      List.fold_left
-        (fun acc dim ->
-          match (acc, dim) with
-          | Some rows, Some n when n >= 0 ->
-              Some
-                (List.concat_map
-                   (fun row ->
-                     List.init n (fun i -> row @ [ Infer_exp.num i ]))
-                   rows)
-          | _, _ -> None)
-        (Some [ [] ]) dims
+    let access (name : Variable.t) (extra : Infer_exp.t list) : Infer_stmt.t =
+      if read then
+        Infer_stmt.Read
+          { target = None; array = name; selector = []; index = index @ extra;
+            guard }
+      else
+        Infer_stmt.Write
+          { array = name; selector = []; index = index @ extra; payload = None;
+            guard }
     in
-    let leaves =
-      T.of_declaration ~root:array ty
-      |> fun (t : Imp.Type_tree.t) -> t.leaves
+    (* An extent the type does not state is one value per object, so it is an
+       uninterpreted function of the indices that reach the object: two
+       threads asking about the same one get the same bound, and the solver
+       is free to choose it. *)
+    let last (name : Variable.t) (dim : int option) : Infer_exp.t =
+      match dim with
+      | Some n -> Infer_exp.num (n - 1)
+      | None ->
+          Infer_exp.NExp
+            (Infer_exp.n_bin
+               (N_binary.Minus Signedness.Signed)
+               (Infer_exp.NExp
+                  (Infer_exp.NCall ("@extent_" ^ Variable.name name, index)))
+               (Infer_exp.num 1))
     in
-    let expanded =
-      List.fold_left
-        (fun acc (l : Imp.Type_tree.Leaf.t) ->
-          match (acc, cells l.dims) with
-          | Some rows, Some cs ->
-              Some (rows @ List.map (fun c -> (Imp.Type_tree.Leaf.name l, c)) cs)
-          | _, _ -> None)
-        (Some []) leaves
+    let leaf (l : Imp.Type_tree.Leaf.t) : Infer_stmt.t =
+      let name = Imp.Type_tree.Leaf.name l in
+      let vars =
+        List.mapi
+          (fun i _ -> Variable.from_name ("@cell" ^ string_of_int i))
+          l.dims
+      in
+      let body =
+        access name
+          (List.map (fun v -> Infer_exp.NExp (Infer_exp.Var v)) vars)
+      in
+      List.fold_right2
+        (fun v dim (s : Infer_stmt.t) ->
+          Infer_stmt.Foreach { var = v; last = last name dim; body = s })
+        vars l.dims body
     in
-    match expanded with
-    | Some cs when cs <> [] && List.length cs <= expand_limit ->
-        Some
-          (cs
-           |> List.map (fun (name, extra) ->
-               if read then
-                 Infer_stmt.Read
-                   {
-                     target = None;
-                     array = name;
-                     selector = [];
-                     index = index @ extra;
-                     guard;
-                   }
-               else
-                 Infer_stmt.Write
-                   {
-                     array = name;
-                     selector = [];
-                     index = index @ extra;
-                     payload = None;
-                     guard;
-                   })
-           |> Infer_stmt.from_list)
-    | Some _ | None -> None
+    match T.of_declaration ~root:array ty with
+    | { leaves = []; _ } -> None
+    | { leaves; _ } ->
+        (* A zero extent has no cells, and its loop would run from nought to
+           minus one. *)
+        if List.exists (fun (l : Imp.Type_tree.Leaf.t) ->
+             List.exists (function Some n -> n <= 0 | None -> false) l.dims)
+           leaves
+        then None
+        else Some (leaves |> List.map leaf |> Infer_stmt.from_list)
 
   let infer_stmt (ctx : Context.t) : D_lang.Stmt.t -> Imp.Infer_stmt.t =
     let resolve ty = Context.resolve ty ctx in

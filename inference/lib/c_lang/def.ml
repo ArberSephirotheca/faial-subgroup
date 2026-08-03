@@ -248,6 +248,18 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
       in
       let* defs = cast_map (parse ~qualifier:inner_qualifier) (`List members) in
       let defs = List.concat defs in
+      let bases =
+        with_field_or "bases" cast_list [] o
+        |> Result.value ~default:[]
+        |> List.filter_map (fun j ->
+            let base =
+              let* o = cast_object j in
+              with_field "type" cast_string o
+            in
+            base |> Result.to_option
+            |> Fun.flip Option.bind (fun s ->
+                Record.type_name (Ty.opaque s)))
+      in
       match name with
       | Ok (Some name) ->
           let fields =
@@ -266,8 +278,9 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
             with_field "range" parse_location o
             |> Result.value ~default:Location.empty
           in
-          if fields = [] then Ok defs
-          else Ok (Record { Record.name; qualifier; fields; location } :: defs)
+          if fields = [] && bases = [] then Ok defs
+          else
+            Ok (Record { Record.name; qualifier; bases; fields; location } :: defs)
       | Ok None | Error _ -> Ok defs)
   | "VarDecl" -> (
       match Decl.parse j with

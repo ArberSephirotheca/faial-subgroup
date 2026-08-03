@@ -67,6 +67,7 @@ let rec access_summary : t -> (string * string) list = function
   | While (_, p) | DoWhile (_, p) -> access_summary p
   | For { init; inc; body; _ } ->
       access_summary init @ access_summary inc @ access_summary body
+  | Foreach { body; _ } -> access_summary body
 
 let pairs : (string * string) list Alcotest.testable =
   Alcotest.list (Alcotest.pair Alcotest.string Alcotest.string)

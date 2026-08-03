@@ -90,6 +90,7 @@ let rec collect_aliases (acc : VarSet.t VarMap.t) (s : t) :
   | While (_, p) | DoWhile (_, p) -> collect_aliases acc p
   | For { init; inc; body; cond = _ } ->
       collect_aliases (collect_aliases (collect_aliases acc init) inc) body
+  | Foreach { body; _ } -> collect_aliases acc body
 
 (* [alias[W]] is the set of variables W has ever copied from. Starting
    from the atomic's [expected_vars] (variables that feed the CAS, e.g.
@@ -185,6 +186,7 @@ let seed_index ~(alias : VarSet.t VarMap.t) (s : t) :
     | While (_, p) | DoWhile (_, p) -> walk acc p
     | For { init; inc; body; cond = _ } ->
         walk (walk (walk acc init) inc) body
+    | Foreach { body; _ } -> walk acc body
   in
   walk SM.empty s
 
@@ -212,6 +214,7 @@ let rec rewrite_with
   | DoWhile (c, p) -> DoWhile (c, rew p)
   | For { init; cond; inc; body } ->
       For { init = rew init; cond; inc = rew inc; body = rew body }
+  | Foreach f -> Foreach { f with body = rew f.body }
 
 (** Top-level entry. Idempotent: a second call has no effect because
     re-tagged reads are now [Atomic], not [Read], so the index step

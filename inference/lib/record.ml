@@ -4,6 +4,7 @@ open Stage0
 type t = {
   name : string;
   qualifier : string list;
+  bases : string list;
   fields : (string * Ty.t) list;
   location : Location.t;
 }
