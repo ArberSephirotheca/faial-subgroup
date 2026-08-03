@@ -1295,6 +1295,14 @@ let tests =
     ("racy-record-shadowed.cu", [], 1);
     (* The same pair with a per-thread element. *)
     ("drf-record-shadowed.cu", [], 0);
+    (* A record declared with the typedef idiom registers under its own tag
+       while every use says the alias, so a typedef of a record is kept when
+       it renames one. The self-named form is how CUDA declares its vector
+       types and bridges nothing. *)
+    ("racy-record-typedef.cu", [], 1);
+    (* The same alias with a per-thread element, which reports nothing at
+       all when the alias does not resolve. *)
+    ("drf-record-typedef.cu", [], 0);
     (* A base subobject is laid out ahead of a record's own members and its
        fields are reached without an intermediate name, so they belong to
        the derived record's field list. Collecting only a record's own

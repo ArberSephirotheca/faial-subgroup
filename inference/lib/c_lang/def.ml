@@ -307,7 +307,13 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
         with_field "range" parse_location o
         |> Result.value ~default:Location.empty
       in
-      if Ty.is_struct ty || Ty.is_array_or_pointer ty || Ty.is_function ty then
+      (* A typedef of a record is kept only when it renames one, which is
+         what lets a use of the alias find the record's fields. The
+         self-named form, [typedef struct X { ... } X], renames nothing and
+         is how CUDA declares its vector types, whose lanes are handled
+         apart from records. *)
+      let self_named = Ty.is_struct ty && Record.type_name ty = Some name in
+      if self_named || Ty.is_array_or_pointer ty || Ty.is_function ty then
         Ok []
       else Ok [ Typedef { name; ty; location } ])
   | "ClassTemplateDecl" | "ClassTemplateSpecializationDecl" ->
