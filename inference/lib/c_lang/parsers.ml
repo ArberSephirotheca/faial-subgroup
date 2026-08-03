@@ -33,6 +33,9 @@ let rec parse_expr (j : json) : c_expr j_result =
       (* Unknown value *)
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.parse ty))
+  (* [T()] where [T] is arithmetic, a pointer or an enum. Clang reserves
+     this node for those, and value-initialising any of them gives zero. *)
+  | "CXXScalarValueInitExpr" -> Ok (IntegerLiteral 0)
   | "CXXThisExpr" ->
       (* The object a non-static method reads its members through, which
          [C_kernel.parse] gives that method as a leading parameter. The

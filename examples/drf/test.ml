@@ -314,6 +314,12 @@ let tests =
     ("racy-address-of-array.cu", [], 1);
     ("drf-address-of-array.cu", [], 0);
     ("racy-address-of-array-read.cu", [], 1);
+    (* [T()] on a scalar is zero. Its twin holds thread 0's store one
+     cell away from every other thread's, so reading the value as an
+     unknown rather than as zero reports a race, and not knowing the
+     node at all is an error rather than either answer. *)
+    ("racy-scalar-value-init.cu", [], 1);
+    ("drf-scalar-value-init.cu", [], 0);
     (* A pointer loaded out of a table of pointers names a row of that
      table, which is the same reading [table[cat][0]] already gets when it
      is written out in full. Every thread writes cell 0 of whichever row
