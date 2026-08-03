@@ -889,6 +889,7 @@ module Def = struct
     | Declaration of Decl.t
     | Typedef of Typedef.t
     | Record of Record.t
+    | UsingNamespace of string
     | Enum of Imp.Enum.t
     (* Launch metadata is propagated through the C->D lowering as-is:
        the expression slots stay in [C_lang.Expr.t] form because no
@@ -910,6 +911,7 @@ module Def = struct
     | Prototype k -> Kernel.signature_to_s k
     | Typedef d -> Typedef.to_s d
     | Record r -> Record.to_s r
+    | UsingNamespace n -> [ Line ("using namespace " ^ n ^ ";") ]
     | Enum e -> Imp.Enum.to_s e
     | LaunchParam lp -> C_lang.LaunchParam.to_s lp
 end
@@ -1048,7 +1050,8 @@ module SignatureDB = struct
                 ~params:k.params
             then add_if_absent k kernels
             else kernels
-        | Declaration _ | Typedef _ | Record _ | Enum _ | LaunchParam _ ->
+        | Declaration _ | Typedef _ | Record _ | Enum _ | LaunchParam _
+        | UsingNamespace _ ->
             kernels)
       empty p
 end
@@ -1968,6 +1971,7 @@ let rewrite_def (d : C_lang.Def.t) : Def.t =
       Declaration d
   | Typedef d -> Typedef d
   | Record r -> Record r
+  | UsingNamespace n -> UsingNamespace n
   | Enum e -> Enum e
   | LaunchParam lp -> LaunchParam lp
 

@@ -1295,6 +1295,16 @@ let tests =
     ("racy-record-shadowed.cu", [], 1);
     (* The same pair with a per-thread element. *)
     ("drf-record-shadowed.cu", [], 0);
+    (* A type is spelled as it is written where it is used, so a record
+       named from inside its own namespace loses the qualifier its
+       declaration carries and the two spellings did not compare equal. *)
+    ("racy-record-in-namespace.cu", [], 1);
+    (* The same spelling reached through a using-directive, which makes the
+       name visible unqualified from outside the namespace. *)
+    ("racy-record-using-namespace.cu", [], 1);
+    (* The same shape with a per-thread element, which reports nothing at
+       all when the unqualified name does not resolve. *)
+    ("drf-record-in-namespace.cu", [], 0);
     (* A record declared with the typedef idiom registers under its own tag
        while every use says the alias, so a typedef of a record is kept when
        it renames one. The self-named form is how CUDA declares its vector

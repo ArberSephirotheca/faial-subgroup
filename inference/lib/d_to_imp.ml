@@ -262,6 +262,8 @@ module Make (L : Logger) = struct
       typedefs : TypeAlias.t;
       enums : Enum.t Variable.Map.t;
       records : Record.t Variable.Map.t;
+      scope : string list;
+      usings : string list;
     }
 
     let to_string (ctx : t) : string =
@@ -283,6 +285,8 @@ module Make (L : Logger) = struct
         typedefs = TypeAlias.empty;
         enums = Variable.Map.empty;
         records = Variable.Map.empty;
+        scope = [];
+        usings = [];
       }
 
     let resolve (ty : Ty.t) (b : t) : Ty.t =
@@ -324,6 +328,21 @@ module Make (L : Logger) = struct
             r b.records;
       }
 
+    let set_scope (scope : string list) (b : t) : t = { b with scope }
+
+    let add_using (n : string) (b : t) : t = { b with usings = n :: b.usings }
+
+    (* Unqualified lookup: a name written inside [rw] may mean [rw::Cut] or
+       [Cut], so the enclosing scopes are tried innermost first. *)
+    let candidates (b : t) (name : string) : string list =
+      let rec prefixes : string list -> string list list = function
+        | [] -> [ [] ]
+        | l -> l :: prefixes (List.filteri (fun i _ -> i < List.length l - 1) l)
+      in
+      (prefixes b.scope |> List.map (fun p -> p @ [ name ]))
+      @ List.map (fun n -> [ n; name ]) b.usings
+      |> List.map (String.concat "::")
+
     let lookup_record (ty : Ty.t) (b : t) : (string * Ty.t) list option =
       let rec fields (r : Record.t) : (string * Ty.t) list =
         List.concat_map
@@ -338,8 +357,10 @@ module Make (L : Logger) = struct
       | Ty.Struct { members = _ :: _ as members } -> Some members
       | _ ->
           Record.type_name ty
-          |> Option.map Variable.from_name
-          |> Fun.flip Option.bind (fun x -> Variable.Map.find_opt x b.records)
+          |> Fun.flip Option.bind (fun n ->
+              candidates b n
+              |> List.find_map (fun n ->
+                  Variable.Map.find_opt (Variable.from_name n) b.records))
           |> Option.map fields
 
     let add_enum (e : Enum.t) (b : t) : t =
@@ -1202,6 +1223,7 @@ module Make (L : Logger) = struct
   let parse_kernel ?(report = fun (_ : unit -> string) -> ())
       (ctx : Context.t) (k : D_lang.Kernel.t) :
       Context.t * Imp.Kernel.t =
+    let ctx = Context.set_scope (Imp.Function_id.qualifier k.id) ctx in
     let code, return =
       infer_stmt ctx k.code
       |> Imp.Atomic_seed_read.rewrite
@@ -1336,6 +1358,7 @@ module Make (L : Logger) = struct
       | Prototype _ :: l -> parse_p ctx l
       | Typedef d :: l -> parse_p (Context.add_typedef d ctx) l
       | Record r :: l -> parse_p (Context.add_record r ctx) l
+      | UsingNamespace n :: l -> parse_p (Context.add_using n ctx) l
       | Enum e :: l -> parse_p (Context.add_enum e ctx) l
       | LaunchParam _ :: l ->
           (* Launch metadata flows through the pipeline as data only;

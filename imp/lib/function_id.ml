@@ -5,6 +5,8 @@ type t = {
   ty : string;
 }
 
+let qualifier (x : t) : string list = x.qualifier
+
 let make ?(qualifier = []) ?(template_args = []) ~(name : string)
     ~(ty : string) () : t =
   { qualifier; name; template_args; ty }

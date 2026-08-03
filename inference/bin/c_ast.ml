@@ -72,6 +72,7 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
         function
         | Kernel k -> Hashtbl.add k2_ht (Imp.Function_id.to_string k.id) k
         | Prototype _ | Declaration _ | Typedef _ | Record _ | Enum _
+        | UsingNamespace _
         | LaunchParam _ ->
             ());
   k3
@@ -116,7 +117,8 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
               else decls
             in
             (decls, js)
-        | Prototype _ | Typedef _ | Record _ | Enum _ | LaunchParam _ ->
+        | Prototype _ | Typedef _ | Record _ | Enum _ | LaunchParam _
+        | UsingNamespace _ ->
             (decls, js))
       ([], []) k1
     |> snd
@@ -215,6 +217,7 @@ let main (fnames : string list) (silent : bool) (json : bool) (verbose : bool)
     | Record r -> (not only_global) && keep_loc (Record.location r)
     | Enum e -> (not only_global) && keep_loc (Imp.Enum.location e)
     | LaunchParam lp -> (not only_global) && keep_loc lp.loc
+    | UsingNamespace _ -> not only_global
   in
   let k1_filtered = C_lang.Program.filter c_lang_keep k1 in
   let k2_filtered = D_lang.Program.filter d_lang_keep k2 in

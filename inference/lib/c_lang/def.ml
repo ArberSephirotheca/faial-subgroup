@@ -16,18 +16,21 @@ type t =
   | Declaration of Decl.t
   | Typedef of Typedef.t
   | Record of Record.t
+  | UsingNamespace of string
   | Enum of Imp.Enum.t
   | LaunchParam of LaunchParam.t
 
 let remove_comma : t -> t = function
   | Kernel k -> Kernel (C_kernel.rewrite_comma k)
   | Declaration d -> Declaration (Decl.map_expr Expr.remove_comma d)
-  | (Prototype _ | Typedef _ | Record _ | Enum _ | LaunchParam _) as d -> d
+  | (Prototype _ | Typedef _ | Record _ | Enum _ | LaunchParam _
+    | UsingNamespace _) as d ->
+      d
 
 let rewrite_barriers : t -> t = function
   | Kernel k -> Kernel (C_kernel.rewrite_barriers k)
   | ( Prototype _ | Declaration _ | Typedef _ | Record _ | Enum _
-    | LaunchParam _ ) as d ->
+    | LaunchParam _ | UsingNamespace _ ) as d ->
       d
 
 let to_s (d : t) : Indent.t list =
@@ -36,6 +39,7 @@ let to_s (d : t) : Indent.t list =
   | Kernel k | Prototype k -> C_kernel.to_s k
   | Typedef d -> Typedef.to_s d
   | Record r -> Record.to_s r
+  | UsingNamespace n -> [ Line ("using namespace " ^ n ^ ";") ]
   | Enum e -> Imp.Enum.to_s e
   | LaunchParam lp -> LaunchParam.to_s lp
 
@@ -44,6 +48,7 @@ let location : t -> Location.t = function
   | Kernel k | Prototype k -> C_kernel.location k
   | Typedef d -> Typedef.location d
   | Record r -> Record.location r
+  | UsingNamespace _ -> Location.empty
   | Enum e -> Imp.Enum.location e
   | LaunchParam lp -> LaunchParam.location lp
 
@@ -326,6 +331,13 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
       in
       let* defs = cast_map (parse ~qualifier) (`List records) in
       Ok (List.concat defs)
+  | "UsingDirectiveDecl" -> (
+      let ns =
+        let* o = get_field "nominatedNamespace" o |> Result.map Fun.id in
+        let* o = cast_object o in
+        with_field "name" cast_string o
+      in
+      match ns with Ok n -> Ok [ UsingNamespace n ] | Error _ -> Ok [])
   | "EnumDecl" ->
       let* e = parse_enum j in
       Ok [ Enum e ]

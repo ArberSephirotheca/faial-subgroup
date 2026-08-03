@@ -160,6 +160,7 @@ let rewrite_shared_arrays (p : t) : t =
     | Def.Typedef d :: p -> Def.Typedef d :: rw_p vars p
     | Def.Record r :: p -> Def.Record r :: rw_p vars p
     | Def.Enum e :: p -> Def.Enum e :: rw_p vars p
+    | Def.UsingNamespace n :: p -> Def.UsingNamespace n :: rw_p vars p
     | Def.LaunchParam lp :: p -> Def.LaunchParam lp :: rw_p vars p
     | [] -> []
   in
