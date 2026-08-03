@@ -1219,7 +1219,33 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   | CallExpr { func = Ident f; args = (e : C_lang.Expr.t) :: args; ty }
     when Atomic.is_valid f.name -> (
       let atomic = Atomic.from_name f.name |> Option.get in
-      let* e : Expr.t = rewrite_exp e in
+      let addressed : C_lang.Expr.t option =
+        match e with
+        | UnaryOperator { opcode = "&"; child; _ } -> Some child
+        | _ -> None
+      in
+      let* addr =
+        match addressed with
+        | Some c when Option.is_some (to_subscript c) ->
+            let* a = rewrite_subscript (Option.get (to_subscript c)) in
+            return (Either.Left { a with ty })
+        | Some (MemberExpr { base; name = field; _ }) -> (
+            let* path = rewrite_member_path base field in
+            match path with
+            (* Only a member of something indexed is memory, the same rule
+               an assignment to a member follows. *)
+            | Some (name, (_ :: _ as index)) ->
+                return
+                  (Either.Left
+                     (make_subscript ~name ~index ~ty
+                        ~location:(Variable.location name) ()))
+            | Some _ | None ->
+                let* e = rewrite_exp e in
+                return (Either.Right e))
+        | Some _ | None ->
+            let* e = rewrite_exp e in
+            return (Either.Right e)
+      in
       (* Rewrite the remaining arguments to extract any reads they
          may hide, but most are discarded — the access-protocol
          layer only needs to know that an atomic happened on the
@@ -1249,13 +1275,16 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
         | op, _ -> op
       in
       let atomic = { atomic with operation } in
-      match atomic_address e with
-      | Some (x, offset) ->
-          let index = Option.value offset ~default:(IntegerLiteral 0) in
-          rewrite_atomic atomic
-            (make_subscript ~name:x.name ~index:[ index ]
-               ~location:(Variable.location f.name) ~ty ())
-      | None -> return (CallExpr { func = Ident f; args = e :: args; ty }))
+      match addr with
+      | Either.Left a -> rewrite_atomic atomic a
+      | Either.Right e -> (
+          match atomic_address e with
+          | Some (x, offset) ->
+              let index = Option.value offset ~default:(IntegerLiteral 0) in
+              rewrite_atomic atomic
+                (make_subscript ~name:x.name ~index:[ index ]
+                   ~location:(Variable.location f.name) ~ty ())
+          | None -> return (CallExpr { func = Ident f; args = e :: args; ty })))
   (* When a write happens *)
   | BinaryOperator { lhs; rhs = src; opcode = "="; ty } -> (
       match to_subscript lhs with

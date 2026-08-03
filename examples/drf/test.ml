@@ -1234,6 +1234,16 @@ let tests =
     ("racy-vector-lane.cu", [], 1);
     (* Two lanes are two arrays and never meet. *)
     ("drf-vector-lane.cu", [], 0);
+    (* An atomic's address is a location, so it is recognised the way a
+       write target is. Recovered as a base plus one offset, a member path
+       with a subscript had nothing to recover, and the call was left as a
+       call to atomicCAS, whose body faial cannot see. *)
+    ("racy-atomic-element-field.cu", [], 1);
+    (* The same with every thread on its own element; a discarded kernel
+       exits non-zero, so this is the half that catches the regression. *)
+    ("drf-atomic-element-field.cu", [], 0);
+    (* The same with two subscripts around the member selection. *)
+    ("racy-atomic-array-of-structs.cu", [], 1);
     (* A scalar member of an array element is a cell of its own array,
        indexed by the element. Before a member selection could be a store
        target the assignment left a read of the element in its place. *)
