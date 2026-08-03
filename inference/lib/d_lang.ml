@@ -1633,6 +1633,9 @@ and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
     match c.lhs with
     | ArraySubscriptExpr a -> rewrite_subscript a indices loc
     | Ident { name; ty; _ } -> plain ~name ~ty
+    | UnaryOperator { opcode = "*"; child = Ident { name; ty; _ }; ty = pointee }
+      when Ty.is_array pointee ->
+        plain ~name ~ty
     | MemberExpr { base; name = field; ty } -> (
         let* path = rewrite_member_path base field in
         match path with

@@ -419,6 +419,9 @@ module Make (L : Logger) = struct
         Some (Leaf { source = exp; offset = IntegerLiteral 0 })
     | MemberExpr { base = Ident _; ty; _ } when Ty.is_array_or_pointer ty ->
         Some (Leaf { source = exp; offset = IntegerLiteral 0 })
+    | UnaryOperator { opcode = "&"; child; _ }
+      when Ty.is_array (D_lang.Expr.to_type child) ->
+        infer_load_expr child
     (* Both arms have to name memory: a conditional that picks between a
        pointer and something else is not a pointer this can resolve, and
        declining it leaves the whole declaration to the fallback. *)

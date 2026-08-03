@@ -306,6 +306,14 @@ let tests =
      second invents a read. *)
     ("racy-deref-address-of.cu", [], 1);
     ("drf-address-of-deref.cu", [], 0);
+    (* The address of a whole array is that array at offset zero, and the
+     dereference that undoes it keeps the array rather than reading a
+     cell of the pointer, so the subscripts that follow are the array's
+     own. Both halves are needed: without the first the pointer is a
+     local, without the second the subscripts land on a scalar. *)
+    ("racy-address-of-array.cu", [], 1);
+    ("drf-address-of-array.cu", [], 0);
+    ("racy-address-of-array-read.cu", [], 1);
     (* A pointer loaded out of a table of pointers names a row of that
      table, which is the same reading [table[cat][0]] already gets when it
      is written out in full. Every thread writes cell 0 of whichever row
