@@ -771,7 +771,7 @@ let usage_constrained_kernel
          wrong for this optimisation step. The same policy makes the
          [gate_timeout_ms] cap safe: a slow axis query that exceeds
          the budget returns UNKNOWN, drops the pin, and the kernel
-         is analysed without that extra prune. *)
+         is analyzed without that extra prune. *)
       match
         Reachability.preconditions_check ~timeout:gate_timeout_ms probe'
       with
@@ -1352,7 +1352,7 @@ let main =
     end else
     let app, usage_pins =
       (* Compute use-derived dim pins only for kernels [App.only_kernel]
-         would analyse. Each [usage_constrained_kernel] call issues 6
+         would analyze. Each [usage_constrained_kernel] call issues 6
          Z3 SAT queries (one per dim axis); on heavily-templated
          launch sites (e.g. 11 wrappers from a [switch] over
          [log2_elements]) paying for the unfiltered list dwarfs the

@@ -270,7 +270,7 @@ let parse ~extra_files ~filename ~timeout ~show_proofs ~show_proto
      clause, the [--list-kernels] output, and the genie verdict JSON all
      address each kernel by a distinct identifier. Discarded kernels are
      enumerated and selected by name too, so they are uniquified against
-     the analysable names: the analysable kernel keeps the shared name
+     the analyzable names: the analyzable kernel keeps the shared name
      and the discarded one takes the suffix. *)
   let kernels = parsed.kernels |> Protocols.Kernel.uniquify_names in
   let rejected =
@@ -457,8 +457,8 @@ let translate (arch : Architecture.t) (a : t) (k : Kernel.t) :
 
 (* A discarded kernel is a name [--kernel] answers to, so an empty
    selection is only an error when the name matches no kernel at all,
-   analysable or discarded. Naming a discarded kernel selects no
-   analysable kernel and leaves [only_rejected] to report it. *)
+   analyzable or discarded. Naming a discarded kernel selects no
+   analyzable kernel and leaves [only_rejected] to report it. *)
 let only_kernel (a : t) (ks : Protocols.Kernel.t list) : Protocols.Kernel.t list
     =
   match a.only_kernel with
@@ -479,7 +479,7 @@ let only_rejected (a : t) : Imp.Rejected_kernel.t list =
       |> List.filter (fun (r : Imp.Rejected_kernel.t) -> r.kernel = name)
   | None -> a.rejected
 
-(* The kernels the translation unit names, analysable and discarded
+(* The kernels the translation unit names, analyzable and discarded
    alike, as [--list-kernels] enumerates them. *)
 module Listing = struct
   type entry =

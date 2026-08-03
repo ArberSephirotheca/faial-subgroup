@@ -2,7 +2,7 @@
 // OCaml's 63-bit native int. 0xFFFFFFFFFFFFFFFFULL parses through the
 // "0u"-prefixed Int64 path (unsigned reinterpretation as signed -1);
 // 0xFF42E54B94E2DA0DULL is a real-world sentinel observed in
-// HeCBench's logic-rewrite-cuda. Both must reach the analyser as
+// HeCBench's logic-rewrite-cuda. Both must reach the analyzer as
 // concrete integers, not as the Int.max_int fallback.
 #define EMPTY ((unsigned long long)0xFFFFFFFFFFFFFFFFULL)
 #define MAGIC ((unsigned long long)0xFF42E54B94E2DA0DULL)

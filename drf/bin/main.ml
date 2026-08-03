@@ -79,7 +79,7 @@ let main =
       & info [] ~docv:"FILENAME"
           ~doc:
             "The path $(docv) of the GPU program. May be repeated: every \
-             CUDA source given is parsed together and analysed as a single \
+             CUDA source given is parsed together and analyzed as a single \
              program, so a kernel in one file resolves its calls against \
              definitions in another. Only the first file is read for the \
              legacy two-line launch-shape header.")
@@ -338,7 +338,7 @@ let main =
           ~doc:
             "How to treat a call whose callee is declared but never \
              defined, so that its accesses are invisible. \
-             $(b,skip-all): ignore every such call, which analyses the \
+             $(b,skip-all): ignore every such call, which analyzes the \
              kernel as though it were never written. \
              $(b,skip-without-arrays): ignore only a callee that cannot \
              write through a parameter, and discard a kernel that reaches \

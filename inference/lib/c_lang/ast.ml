@@ -176,7 +176,7 @@ let rec c_expr_to_type : c_expr -> Ty.t = function
   | RecoveryExpr ty -> ty
   | StmtExpr e -> e.ty
   | LambdaExpr _ ->
-      (* Closure type — opaque from the analyser's POV before lifting. *)
+      (* Closure type — opaque from the analyzer's POV before lifting. *)
       J_type.unknown
   | PackExpansion e -> c_expr_to_type e
   | DependentScopeRef d -> d.ty

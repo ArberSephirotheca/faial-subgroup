@@ -1,6 +1,6 @@
 // One templated kernel launched from two host functions with disjoint
 // concrete dims (small: 128 threads/block, large: 1024). With
-// --assume-launch, two pseudo-kernels are synthesised and analysed
+// --assume-launch, two pseudo-kernels are synthesised and analyzed
 // independently; each binding pins the surrounding gridDim/blockDim
 // to its launch's dims. Both must be DRF.
 template <typename T>

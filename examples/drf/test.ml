@@ -224,7 +224,7 @@ let tests =
      FunctionTemplateDecl that wraps a generic lambda's operator(), and
      Lift_lambdas rewrites the operator() call site (a CXXOperatorCallExpr
      whose first argument is the closure) to the synthetic kernel so the
-     body's accesses are analysed. Here the body writes [d[v]] with v the
+     body's accesses are analyzed. Here the body writes [d[v]] with v the
      per-thread argument, so each thread writes a distinct cell: DRF. *)
     ("drf-generic-lambda.cu", [], 0);
     (* A block-scope namespace alias ([namespace a = b;] inside a kernel
@@ -238,7 +238,7 @@ let tests =
     ("drf-using-decl.cu", [], 0);
     (* Same lambda shape but the body writes [d[0]] from every thread, so
      the invocation collides: racy. Pinning that the lambda body is
-     actually analysed, not dropped (a dropped body would false-negative
+     actually analyzed, not dropped (a dropped body would false-negative
      as DRF). *)
     ("racy-generic-lambda.cu", [], 1);
     (* The same generic lambda called at [int] and at [unsigned]. One
@@ -548,7 +548,7 @@ let tests =
     (* Templated kernel writing [Traits<T>::value] to a single shared
      index from every thread. With no explicit launch, the primary
      template body is parsed and the qualified dependent reference
-     reaches the analyser as a [DependentScopeRef] rather than
+     reaches the analyzer as a [DependentScopeRef] rather than
      collapsing to RecoveryExpr. *)
     ("racy-template-dep-scope.cu", [], 1);
     (* An uninstantiated out-of-line member template of a class template.
@@ -556,7 +556,7 @@ let tests =
      as an [UnresolvedMemberExpr] with no member name and no base. The
      collapse to an unknown value keeps the failure inside that one
      declaration, so the launched kernel in the same file is still
-     analysed and its race reported. *)
+     analyzed and its race reported. *)
     ("racy-uninstantiated-member-template.cu",
      [ "--all-dims"; "--assume-launch" ], 1);
     (* Launch metadata: one [<<<grid, block>>>] launch with host-side
@@ -571,7 +571,7 @@ let tests =
     ("drf-launch-rescue.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
     (* Two distinct launches of the same templated kernel must each
-     produce their own pseudo-kernel and analyse independently with
+     produce their own pseudo-kernel and analyze independently with
      the launch's concrete dims. *)
     ("drf-launch-multi.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
@@ -591,7 +591,7 @@ let tests =
     (* A scalar kernel arg supplied by a non-Ident launch-site
      expression (here [params[0]]). The launch-arg resolver folds
      the array-subscript into a fresh uniform pseudo-parameter so
-     the formal stays block-uniform; analyses DRF. Without the
+     the formal stays block-uniform; analyzes DRF. Without the
      resolver, this would false-positive racy because the launch
      arg surfaces as a per-thread @AccessState. *)
     ("drf-launch-complex-arg.cu",
@@ -673,7 +673,7 @@ let tests =
     ("drf-launch-grid-arith.cu",
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
     (* Host-side guard ([if (n >= 256)]) enclosing the launch
-     reaches the analyser via c-to-json's [path_condition] slot;
+     reaches the analyzer via c-to-json's [path_condition] slot;
      the synth kernel lifts it into [assert(n >= 256)] alongside
      the dim asserts. The kernel races without the bound (a
      stride pattern: two threads in different blocks collide
@@ -683,7 +683,7 @@ let tests =
      [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
     (* Host-side const-binding ([const int inum = N * 1024]) used
      nested in the grid axis ([dim3(inum / 256)]) reaches the
-     analyser via c-to-json's [const_bindings] slot. The synth
+     analyzer via c-to-json's [const_bindings] slot. The synth
      kernel lifts each binding into a local [const int <name> =
      <init>;] decl, which [d_to_imp] lowers to a definitional
      binding in Imp. Combined with [assert(gridDim.x == inum /
@@ -794,7 +794,7 @@ let tests =
     ("drf-loop-aligned-1.cu", [], 0);
     (* End-to-end smoke test for IntegerLiteral parsing of uint64
      sentinels that exceed OCaml's 63-bit int — they must reach the
-     analyser as concrete two's-complement values, not the
+     analyzer as concrete two's-complement values, not the
      [Int.max_int] fallback. *)
     ("drf-uint64-sentinel.cu", [], 0);
     (* A 64-bit parameter's bound is a hypothesis about an argument, and
@@ -1096,8 +1096,8 @@ let tests =
        that are simply easy to clear. *)
     ("drf-read-plus-atomic.cu", [], 0);
     (* A kernel whose calls reach a cycle in the call graph is discarded
-       rather than analysed: the inliner cannot substitute a recursive
-       callee, and analysing what is left would answer for a program with
+       rather than analyzed: the inliner cannot substitute a recursive
+       callee, and analyzing what is left would answer for a program with
        the callee's accesses missing. Like zero-accesses, a discarded
        kernel exits 1. *)
     ("discarded-recursion-direct.cu", [], 1);
@@ -1119,11 +1119,11 @@ let tests =
        while the race lived in the accesses [touch] contributed. *)
     ("undefined-call.cu", [], 1);
     (* The policy that restores the old behaviour: the call is ignored and
-       the kernel is analysed as though it were never written. *)
+       the kernel is analyzed as though it were never written. *)
     ("undefined-call.cu", [ "--opaque-calls=skip-all" ], 0);
     (* The body [touch] lacks is not absent from the project, only from
        this file. Handing over the sibling that defines it resolves the
-       call and the kernel is analysed: the file that is discarded on its
+       call and the kernel is analyzed: the file that is discarded on its
        own clears as data-race free, since its own write and the one
        [touch] contributes are both to [A[threadIdx.x]], and a thread does
        not race with itself. *)
@@ -1147,13 +1147,13 @@ let tests =
        the discard, where naming it used to fail as though the kernel
        were absent from the file. *)
     ("undefined-call.cu", [ "--kernel"; "k" ], 1);
-    (* One kernel is discarded and the other is analysable. Selecting the
+    (* One kernel is discarded and the other is analyzable. Selecting the
        discarded one reports the discard; selecting the survivor reports
        only the survivor, where the discard of the kernel that was not
        selected used to be reported alongside it. *)
     ("discarded-with-survivor.cu", [], 1);
     ("discarded-with-survivor.cu", [ "--kernel"; "declined" ], 1);
-    ("discarded-with-survivor.cu", [ "--kernel"; "analysed" ], 0);
+    ("discarded-with-survivor.cu", [ "--kernel"; "analyzed" ], 0);
     (* Rejection follows reachability: [k] calls [helper], and [helper] is
        the one that calls the undefined function. *)
     ("undefined-call-indirect.cu", [], 1);
@@ -1170,7 +1170,7 @@ let tests =
     ("registry-call.cu", [ "--opaque-calls=skip-none" ], 0);
     (* A definition followed by a re-declaration of the same function. The
        database entry must stay the definition, so the call inlines and
-       the kernel is analysed rather than discarded. *)
+       the kernel is analyzed rather than discarded. *)
     ("redeclared-callee.cu", [], 0);
     (* Two instantiations of one template share a name and a function
        type, and a call site names neither of them: its [DeclRefExpr]
@@ -1186,7 +1186,7 @@ let tests =
     ("template-instance-racy.cu", [], 1);
     (* [f<0>] calls a function with no visible body and [f<1>] does not,
        so which instantiation [k] reaches decides whether it is
-       analysable at all. *)
+       analyzable at all. *)
     ("template-instance-undefined.cu", [], 1);
     (* Two namespaces declaring the same signature is the same collapse
        without templates: clang reports the name unqualified, so the
@@ -1335,7 +1335,7 @@ let tests =
        region and do meet. *)
     ("racy-pointer-field-cell.cu", [], 1);
     (* Which cell holds the address is decided by a value, so no name
-       denotes one region and the kernel is discarded rather than analysed
+       denotes one region and the kernel is discarded rather than analyzed
        under a merged name. *)
     ("declined-dynamic-pointer-cell.cu", [], 1);
     (* A record behind a pointer has no regions of its own, so the writes
@@ -1558,14 +1558,14 @@ let run_tests () =
         |> Subprocess.run_split)
   in
   print_string "LIST:  faial-drf --list-kernels discarded-with-survivor.cu";
-  if listing.stdout = "analysed\ndeclined\n" then
+  if listing.stdout = "analyzed\ndeclined\n" then
     Printf.printf " ✔ %.2fs\n" elapsed
   else (
     print_endline " ✘";
     print_endline "------------------------ OUTPUT ------------------------";
     print_endline listing.stdout;
     print_endline listing.stderr;
-    print_endline "ERROR: Expected the analysable and the discarded kernel.";
+    print_endline "ERROR: Expected the analyzable and the discarded kernel.";
     exit 1);
   let missed = missed_files (v ".") in
   if not (Fpath.Set.is_empty missed) then (

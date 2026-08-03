@@ -307,7 +307,7 @@ let rec inline_all (s : t) : t =
 (* Every kernel whose calls did not all resolve is discarded, not just the
    recursive ones. Keeping one would leave a [Call] node in its body, and
    [Encode_assigns] drops such a node without trace, so the kernel would be
-   analysed as a strict subset of what was written. *)
+   analyzed as a strict subset of what was written. *)
 let inline_calls (l : Scoped.Kernel.t list) :
     Scoped.Kernel.t list * Rejected_kernel.t list =
   let s = l |> from_list |> inline_all in

@@ -892,7 +892,7 @@ module Def = struct
     | Enum of Imp.Enum.t
     (* Launch metadata is propagated through the C->D lowering as-is:
        the expression slots stay in [C_lang.Expr.t] form because no
-       D_lang consumer rewrites or analyses them yet. If a downstream
+       D_lang consumer rewrites or analyzes them yet. If a downstream
        stage starts driving assumptions (e.g. on grid/block shape), a
        parallel [D_lang.LaunchParam.t] with rewritten expressions can
        be introduced and rewrite_def updated to convert. *)

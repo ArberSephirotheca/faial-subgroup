@@ -4,6 +4,6 @@ __global__ void declined(int *A) {
   touch(A, threadIdx.x);
 }
 
-__global__ void analysed(int *A) {
+__global__ void analyzed(int *A) {
   A[threadIdx.x] = 0;
 }

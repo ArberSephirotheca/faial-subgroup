@@ -90,7 +90,7 @@ let subst = ReplacePair.subst
    local rather than inlined, capping the exponential term growth that chained
    self-referential assignments (conditional [x = c ? f x : x] or multiplicative
    [s = s * s * v]) otherwise produce. Real index expressions are far smaller;
-   only such chains, which are non-affine and not analysable anyway, reach it. *)
+   only such chains, which are non-affine and not analyzable anyway, reach it. *)
 let default_infer_cond_bound = 512
 
 (* Inlined size of [n], computed from the pre-substitution expression and the

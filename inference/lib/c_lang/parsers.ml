@@ -885,7 +885,7 @@ and parse_stmt (j : json) : c_stmt j_result =
          carries the bound (e.g. [int (&)[3]]), which lets us emit a
          bounded [for (int __faial_idx = 0; __faial_idx < N; ++)]
          with [LoopVarT loop_var = arr_expr[__faial_idx]] in the
-         body — the analyser then sees a real bound and a concrete
+         body — the analyzer then sees a real bound and a concrete
          binding for [loop_var]. When the bound can't be extracted
          (containers, iterator-based ranges) we fall back to a
          [while(1)] wrapper around the original LoopVar declaration,

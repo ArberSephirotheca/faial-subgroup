@@ -5,7 +5,7 @@ open Protocols
    silently skipped. *)
 type t =
   (* Skip every such call, which is what faial did before the policy
-     existed: the callee's effects vanish and the kernel is analysed as
+     existed: the callee's effects vanish and the kernel is analyzed as
      though the call were never written. *)
   | Skip_all
   (* Skip only a callee that cannot write through any parameter. *)
@@ -27,7 +27,7 @@ let parse (x : string) : t option =
 let enum : (string * t) list = List.map (fun p -> (to_string p, p)) all
 
 (* Whether a body-less declaration denotes effects faial cannot see, so
-   that a kernel reaching it must be discarded rather than analysed.
+   that a kernel reaching it must be discarded rather than analyzed.
 
    A function the [Functions] registry models is never opaque, whatever
    the policy. Its applications lower to an [NCall] carrying the

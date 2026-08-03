@@ -287,7 +287,7 @@ end
    (so [inline_globals] can substitute concrete values), substitute
    integer parameters (-p key=val) into globals, fold dimensions,
    ensure every free name has a binder, and run constant folding so the
-   analyser sees a simplified IR. *)
+   analyzer sees a simplified IR. *)
 let preprocess ~(block_dim : Dim3.t option) ~(grid_dim : Dim3.t option)
     ~(assumes : Exp.bexp list) ~(assume_dims : bool)
     (params : (string * int) list) (k : Kernel.t) : Kernel.t =

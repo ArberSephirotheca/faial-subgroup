@@ -12,7 +12,7 @@ open Stage0
                              cardinality).
 
    Tests are tuples [(filename, args, expected_exit)] driving [faial-sync].
-   Exit 0 means the property holds; exit 1 means the analyser flagged a
+   Exit 0 means the property holds; exit 1 means the analyzer flagged a
    counter-model. A small parallel list at the bottom drives [faial-sync-sym]
    on the cases where its symbolic-execution view diverges from the
    syntax-directed VC. *)
@@ -69,7 +69,7 @@ let sync_tests : (string * string list * int) list =
     ("tid-conditional.cu", [ "--check=barrier-div" ], 1);
     ("tid-conditional.cu", [ "--check=missing-participants" ], 1);
     (* tid-conditional under --all-dims: blockDim.x is symbolic, so the
-       analyser can no longer prove every thread reaches the barrier and
+       analyzer can no longer prove every thread reaches the barrier and
        missing-participants flags. With --assume "blockDim.x <= 17"
        injected as a kernel pre-condition, every in-block tid_x satisfies
        the guard and the property holds. Exercises the --assume CLI flag
@@ -154,7 +154,7 @@ let sym_tests : (string * string list * int) list =
   ]
 
 (* These are kernels in this directory that are intentionally not
-   exercised by [sync_tests] — typically because the analyser hits a
+   exercised by [sync_tests] — typically because the analyzer hits a
    limitation. *)
 let unsupported : Fpath.t list =
   [

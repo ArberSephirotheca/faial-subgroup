@@ -1,5 +1,5 @@
 // Same shape as drf-cas-winner.cu but without the [atomicCAS]: the
-// plain read of [keys[loc]] gives the analyser no winner contract,
+// plain read of [keys[loc]] gives the analyzer no winner contract,
 // so two threads with colliding [loc] (via the indirect [hashes]
 // lookup) can both pass the [if (old == -1)] gate and the write to
 // [values[loc]] is racy. Negative companion to
