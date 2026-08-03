@@ -812,6 +812,7 @@ module Functions = struct
       grid_dim = None;
       block_dim = None;
       return;
+      unsupported = None;
     }
 end
 

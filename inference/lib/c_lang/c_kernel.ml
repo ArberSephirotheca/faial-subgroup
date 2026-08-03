@@ -161,9 +161,9 @@ let parse ?(qualifier = []) (type_params : Ty_param.t list)
       the field existed, and from a function at translation-unit
       scope. *)
    let qualifier =
-     match with_opt_field "qualifier" (cast_map cast_string) o with
-     | Ok (Some qs) -> qs
-     | Ok None | Error _ -> qualifier
+     match J_type.qualifier o with
+     | Some qs -> qs
+     | None -> qualifier
    in
    let* inner = with_field "inner" cast_list o in
    let attrs, inner =

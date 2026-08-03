@@ -4,6 +4,7 @@ open Stage0
 type t = {
   name : string;
   qualifier : string list;
+  template_args : string list;
   bases : string list;
   fields : (string * Ty.t) list;
   location : Location.t;
@@ -12,7 +13,8 @@ type t = {
 let location (r : t) : Location.t = r.location
 
 let qualified_name (r : t) : string =
-  String.concat "::" (r.qualifier @ [ r.name ])
+  J_type.specialization ~name:r.name ~qualifier:r.qualifier
+    ~args:r.template_args
 
 let type_name (ty : Ty.t) : string option =
   let prefixes =
@@ -33,6 +35,21 @@ let type_name (ty : Ty.t) : string option =
   | Ty.Struct { members = [] } -> Option.map strip ty.name
   | Ty.Opaque s -> Some (strip s)
   | _ -> None
+
+let pattern_name (s : string) : string option =
+  let n = String.length s in
+  if n = 0 || s.[n - 1] <> '>' then None
+  else
+    let rec opening (i : int) (depth : int) : string option =
+      if i < 0 then None
+      else
+        match s.[i] with
+        | '>' -> opening (i - 1) (depth + 1)
+        | '<' when depth = 1 -> Some (String.sub s 0 i)
+        | '<' -> opening (i - 1) (depth - 1)
+        | _ -> opening (i - 1) depth
+    in
+    opening (n - 1) 0
 
 let to_ty (r : t) : Ty.t =
   Ty.make ~name:(qualified_name r) (Ty.Struct { members = r.fields })

@@ -38,6 +38,12 @@ let parse_decl_id (o : j_object) : string option =
   with_opt_field "id" cast_string o
   |> Result.value ~default:None
 
+let parse_qualifier (o : j_object) : string list =
+  let open Rjson in
+  with_opt_field "qualifier" (cast_map cast_string) o
+  |> Result.value ~default:None
+  |> Option.value ~default:[]
+
 (* The type that identifies a function. [canonicalType] resolves typedefs
    and drops the top-level parameter qualifiers a redeclaration may add or
    omit, so a prototype and the definition it declares reach one string

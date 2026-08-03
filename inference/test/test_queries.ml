@@ -6,7 +6,7 @@ module VarSet = Variable.Set
 
 let parm_var_decl ?(ty = J_type.int) (name : string) : Expr.t =
   Ident { name = Variable.from_name name; ty; kind = ParmVar;
-          decl_id = None }
+          decl_id = None; qualifier = [] }
 
 let var_set : VarSet.t Alcotest.testable =
   let pp fmt x =

@@ -120,6 +120,7 @@ type t = {
   code : Stmt.t;
   (* A kernel may return a value *)
   return : Exp.nexp option;
+  unsupported : Rejected_kernel.Reason.t option;
   (* Visibility *)
   visibility : Visibility.t;
   (* Number of blocks *)

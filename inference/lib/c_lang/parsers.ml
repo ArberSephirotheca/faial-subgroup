@@ -44,7 +44,7 @@ let rec parse_expr (j : json) : c_expr j_result =
       Ok
         (Ident
            { name = this_var; ty; kind = Decl_expr.Kind.ParmVar;
-             decl_id = None })
+             decl_id = None; qualifier = [] })
   | "DependentScopeDeclRefExpr" ->
       (* Qualified dependent reference like [Traits<T>::value]. The
          JSON now carries [name] and [nestedNameSpecifier] (older
@@ -74,7 +74,7 @@ let rec parse_expr (j : json) : c_expr j_result =
             name = Variable.from_name builtin_name;
             ty = J_type.parse ty;
             kind = Decl_expr.Kind.Function;
-            decl_id = None;
+            decl_id = None; qualifier = [];
           }
       in
       Ok (CallExpr { func; args; ty = J_type.parse ty })
@@ -171,13 +171,15 @@ let rec parse_expr (j : json) : c_expr j_result =
                 | Some i64 when fits_int i64 -> Some (Int64.to_int i64)
                 | _ -> None))
       in
+      let negative = String.length s > 0 && String.get s 0 = '-' in
       let i =
         match parsed with
         | Some i -> i
         | None ->
-            prerr_endline ("Could not parse long: " ^ s);
-            if String.length s > 0 && String.get s 0 = '-' then Int.min_int
-            else Int.max_int
+            if Option.is_none (Int64.of_string_opt s)
+               && Option.is_none (Int64.of_string_opt ("0u" ^ s))
+            then prerr_endline ("Could not parse long: " ^ s);
+            if negative then Int.min_int else Int.max_int
       in
       Ok (IntegerLiteral i)
   | "MemberExpr" ->
@@ -189,7 +191,7 @@ let rec parse_expr (j : json) : c_expr j_result =
       let* name = parse_variable j in
       let* ty = get_field "type" o in
       Ok (Ident { name; ty = J_type.parse ty; kind = EnumConstant;
-                  decl_id = None })
+                  decl_id = None; qualifier = [] })
   | "VarDecl" | "VarTemplateSpecializationDecl" | "BindingDecl" ->
       (* [VarTemplateSpecializationDecl] is a C++14 variable-template
          instantiation (e.g. [HASHTABLE_EMPTY_VALUE<uint64, uint32>]); it
@@ -199,14 +201,14 @@ let rec parse_expr (j : json) : c_expr j_result =
          [name]/[type] shape. *)
       let* name = parse_variable j in
       let* ty = get_field "type" o in
-      Ok (Ident { name; ty = J_type.parse ty; kind = Var; decl_id = None })
+      Ok (Ident { name; ty = J_type.parse ty; kind = Var; decl_id = None; qualifier = [] })
   | "FunctionDecl" ->
       let* v = parse_variable j in
       let* ty = get_signature_type o in
       Ok
         (Ident
            { name = v; ty = J_type.parse ty; kind = Function;
-             decl_id = parse_decl_id o })
+             decl_id = parse_decl_id o; qualifier = parse_qualifier o })
   | "CXXMethodDecl" | "CXXConstructorDecl" | "CXXDestructorDecl"
   | "CXXConversionDecl" ->
       let* name = parse_variable j in
@@ -214,7 +216,7 @@ let rec parse_expr (j : json) : c_expr j_result =
       Ok
         (Ident
            { name; ty = J_type.parse ty; kind = CXXMethod;
-             decl_id = parse_decl_id o })
+             decl_id = parse_decl_id o; qualifier = parse_qualifier o })
   | "ConditionalOperator" ->
       let* c, t, e =
         with_field "inner" (cast_list_3 parse_expr parse_expr parse_expr) o
@@ -247,13 +249,13 @@ let rec parse_expr (j : json) : c_expr j_result =
       let* name = parse_variable j in
       let* ty = get_field "type" o in
       Ok (Ident { name; ty = J_type.parse ty; kind = ParmVar;
-                  decl_id = None })
+                  decl_id = None; qualifier = [] })
   | "NonTypeTemplateParmDecl" ->
       let* name = parse_variable j in
       let* ty = get_field "type" o in
       Ok
         (Ident { name; ty = J_type.parse ty; kind = NonTypeTemplateParm;
-                 decl_id = None })
+                 decl_id = None; qualifier = [] })
   | "UnresolvedLookupExpr" ->
       let* v = parse_variable j in
       let* tys = get_field "lookups" o >>= cast_list in
@@ -774,7 +776,7 @@ and parse_stmt (j : json) : c_stmt j_result =
                         name = Variable.from_name "static_assert";
                         ty = J_type.void;
                         kind = Decl_expr.Kind.Function;
-                        decl_id = None;
+                        decl_id = None; qualifier = [];
                       }
                     in
                     let func = Ident static_assert in

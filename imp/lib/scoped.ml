@@ -769,6 +769,7 @@ module Kernel = struct
     visibility : Visibility.t;
     grid_dim : Dim3.t option;
     block_dim : Dim3.t option;
+    unsupported : Rejected_kernel.Reason.t option;
   }
 
   let local_set (k : t) : Variable.Set.t = ParameterList.to_set k.parameters
@@ -807,6 +808,7 @@ module Kernel = struct
       visibility = k.visibility;
       grid_dim = k.grid_dim;
       block_dim = k.block_dim;
+      unsupported = k.unsupported;
     }
 
   let is_global (k : t) : bool = k.visibility = Visibility.Global

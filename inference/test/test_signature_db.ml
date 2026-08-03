@@ -123,7 +123,7 @@ let call_site (decl_id : string) : Expr.t =
       name = Variable.from_name "f";
       ty = Ty.of_c_string f_ty;
       kind = Decl_expr.Kind.Function;
-      decl_id = Some decl_id;
+      decl_id = Some decl_id; qualifier = [];
     }
 
 let resolves (label : string) (p : Program.t) (decl_id : string)

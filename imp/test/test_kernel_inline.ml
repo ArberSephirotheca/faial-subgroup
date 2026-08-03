@@ -22,6 +22,7 @@ let kernel ?(ty = "") ?(return = None) (name : string)
     visibility = Visibility.Global;
     grid_dim = None;
     block_dim = None;
+    unsupported = None;
   }
 
 (* Alcotest testable types *)
@@ -137,7 +138,8 @@ let rejections (ks : Scoped.Kernel.t list) :
       | Rejected_kernel.Reason.UndefinedKernel { path } ->
           (r.kernel, ("undefined", path))
       | Rejected_kernel.Reason.RuntimePointerField _
-      | Rejected_kernel.Reason.PointerFieldToRecord _ ->
+      | Rejected_kernel.Reason.PointerFieldToRecord _
+      | Rejected_kernel.Reason.WriteThroughCall _ ->
           (r.kernel, (Rejected_kernel.Reason.label r.reason, [])))
 
 let test_fixpoint (name : string) (ks : Scoped.Kernel.t list)

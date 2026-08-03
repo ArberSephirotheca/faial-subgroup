@@ -1432,6 +1432,32 @@ let tests =
     ("racy-param-block-dim.cu", [], 1);
     ("racy-param-block-dim.cu", [ "-p"; "blockDim.x=32" ], 0);
     ("racy-param-block-dim.cu", [ "-p"; "blockDim.x=64" ], 1);
+    (* An overloaded subscript consumed as a value. A call in statement
+       position is already inlined, so what was missing is the lift that
+       binds a call in expression position to a name, which is what a plain
+       call has had all along. *)
+    ("racy-operator-subscript.cu", [], 1);
+    (* The same accessor indexed per thread, so a lift that dropped the
+       subscript would report a race here. *)
+    ("drf-operator-subscript.cu", [], 0);
+    (* A method named by a member selection rather than by a declaration
+       reference, which is how clang emits a call on an object. The method
+       is recovered from the class the receiver belongs to. *)
+    ("racy-member-call.cu", [], 1);
+    (* The same lookup for a method that never reads its object, so faial
+       synthesises no [this] parameter and the receiver is not an argument.
+       The two arities have to be told apart or the call resolves to
+       nothing. *)
+    ("racy-instance-method.cu", [], 1);
+    (* The accessor as a class template. A use spells the type with its
+       arguments and the declaration registers under the bare name, so the
+       two have to be keyed the same way or the parameter resolves to no
+       record at all. *)
+    ("racy-template-accessor.cu", [], 1);
+    (* Assigning through what a call returns, which needs the location a
+       function returns rather than its value. Declining says so; before,
+       the assignment vanished and the kernel answered on its reads alone. *)
+    ("declined-write-through-call.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are
@@ -1459,10 +1485,6 @@ let unsupported : Fpath.t list =
      discharge. It resolves at a use site; it is the crossing into a
      call that is missing. *)
     "racy-ptr-select-arg.cu";
-    (* [W::put] is registered, but the call [w.put(i)] parses to the same
-     node as an operator call and never reaches [infer_call], so the body
-     is not inlined and the write is lost. *)
-    "racy-instance-method.cu";
   ]
   |> List.map (fun x -> Fpath.(v "." / x))
 

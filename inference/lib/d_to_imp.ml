@@ -358,7 +358,8 @@ module Make (L : Logger) = struct
       | _ ->
           Record.type_name ty
           |> Fun.flip Option.bind (fun n ->
-              candidates b n
+              n :: Option.to_list (Record.pattern_name n)
+              |> List.concat_map (candidates b)
               |> List.find_map (fun n ->
                   Variable.Map.find_opt (Variable.from_name n) b.records))
           |> Option.map fields
@@ -716,15 +717,25 @@ module Make (L : Logger) = struct
             else a
           in
           match Context.lookup_sig func arg_count ctx with
-          | Some s when List.length s.params = arg_count ->
-              let open Imp.Infer_stmt in
-              Call
-                {
-                  result;
-                  id = s.id;
-                  args = List.concat_map (fun a -> expand_arg (byte_arg a)) args;
-                }
-          | Some _ | None -> Skip)
+          | Some s ->
+              let args =
+                match func with
+                | MemberExpr { base; _ }
+                  when List.length s.params = arg_count + 1 ->
+                    base :: args
+                | _ -> args
+              in
+              if List.length s.params = List.length args then
+                let open Imp.Infer_stmt in
+                Call
+                  {
+                    result;
+                    id = s.id;
+                    args =
+                      List.concat_map (fun a -> expand_arg (byte_arg a)) args;
+                  }
+              else Skip
+          | None -> Skip)
     in
 
     let rec infer : D_lang.Stmt.t -> Imp.Infer_stmt.t = function
@@ -1274,6 +1285,10 @@ module Make (L : Logger) = struct
         block_dim = None;
         grid_dim = None;
         return;
+        unsupported =
+          D_lang.Stmt.assigned_call k.code
+          |> Option.map (fun location ->
+                 Imp.Rejected_kernel.Reason.WriteThroughCall { location });
       } )
 
   let parse_program ?(policy = Opaque_call_policy.default)

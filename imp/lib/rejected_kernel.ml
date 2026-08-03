@@ -6,6 +6,7 @@ module Reason = struct
     | UndefinedKernel of { path : string list }
     | RuntimePointerField of { location : Location.t }
     | PointerFieldToRecord of { location : Location.t }
+    | WriteThroughCall of { location : Location.t }
 
   let to_string : t -> string = function
     | RecursiveCall _ -> "recursive calls are unsupported"
@@ -15,6 +16,7 @@ module Reason = struct
         "unsupported field access"
     | PointerFieldToRecord _ ->
         "unsupported field access"
+    | WriteThroughCall _ -> "unsupported assignment target"
 
   let hint : t -> string option = function
     | RecursiveCall { path } ->
@@ -34,20 +36,28 @@ module Reason = struct
           "The fields of a struct reached through a pointer field are not \
            tracked. A pointer field that points to a scalar, such as int *, is \
            supported."
+    | WriteThroughCall _ ->
+        Some
+          "Assigning to what a function returns needs the location it returns, \
+           and a function is analyzed for the value it returns. Assign through \
+           the pointer or the array itself."
 
   let label : t -> string = function
     | RecursiveCall _ -> "recursive-call"
     | UndefinedKernel _ -> "undefined-kernel"
     | RuntimePointerField _ -> "runtime-pointer-field"
     | PointerFieldToRecord _ -> "pointer-field-to-struct"
+    | WriteThroughCall _ -> "write-through-call"
 
   let path : t -> string list = function
     | RecursiveCall { path } | UndefinedKernel { path } -> path
-    | RuntimePointerField _ | PointerFieldToRecord _ -> []
+    | RuntimePointerField _ | PointerFieldToRecord _ | WriteThroughCall _ -> []
 
   let location : t -> Location.t option = function
     | RecursiveCall _ | UndefinedKernel _ -> None
-    | RuntimePointerField { location } | PointerFieldToRecord { location } ->
+    | RuntimePointerField { location }
+    | PointerFieldToRecord { location }
+    | WriteThroughCall { location } ->
         Some location
 end
 

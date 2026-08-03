@@ -284,6 +284,26 @@ module Expr = struct
     | Ident d when Variable.equal (Decl_expr.name d) var -> replacement
     | e -> e)
 
+  let children : t -> t list = function
+    | SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _ | CXXBoolLiteralExpr _
+    | FloatingLiteral _ | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _ ->
+        []
+    | Convert { arg; _ } | CXXNewExpr { arg; _ } | CXXDeleteExpr { arg; _ } ->
+        [ arg ]
+    | BinaryOperator { lhs; rhs; _ } -> [ lhs; rhs ]
+    | CallExpr { func; args; _ } | CXXOperatorCallExpr { func; args; _ } ->
+        func :: args
+    | ConditionalOperator { cond; then_expr; else_expr; _ } ->
+        [ cond; then_expr; else_expr ]
+    | CXXConstructExpr { args; _ } -> args
+    | MemberExpr { base; _ } -> [ base ]
+    | UnaryOperator { child; _ } -> [ child ]
+
+  let rec find_map (f : t -> 'a option) (e : t) : 'a option =
+    match f e with
+    | Some a -> Some a
+    | None -> children e |> List.find_map (find_map f)
+
   module OT = struct
     type nonrec t = t
 
@@ -576,6 +596,51 @@ module Stmt = struct
            (Variable.from_name "assert"))
     in
     SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = J_type.int })
+
+  let rec assigned_call : t -> Location.t option =
+    let target (e : Expr.t) : Location.t option =
+      let rec spelled : Expr.t -> Location.t option = function
+        | Ident v -> Some (Variable.location (Decl_expr.name v))
+        | MemberExpr { base; _ } -> spelled base
+        | _ -> None
+      in
+      Expr.find_map
+        (function
+          | Expr.BinaryOperator
+              { opcode = "="; lhs = CallExpr { func; _ }; _ }
+          | Expr.BinaryOperator
+              { opcode = "="; lhs = CXXOperatorCallExpr { func; _ }; _ } ->
+              Some (Option.value (spelled func) ~default:Location.empty)
+          | _ -> None)
+        e
+    in
+    let ( ||| ) (a : Location.t option) (b : unit -> Location.t option) =
+      match a with Some _ -> a | None -> b ()
+    in
+    function
+    | Skip | BreakStmt | GotoStmt | ContinueStmt -> None
+    | Seq (s1, s2) -> assigned_call s1 ||| fun () -> assigned_call s2
+    | SExpr e | CaseStmt { case = e; body = Skip } -> target e
+    | ReturnStmt e -> Option.bind e target
+    | AsmStmt _ | BarrierOp _ -> None
+    | WriteAccessStmt w -> target w.source
+    | ReadAccessStmt _ | AtomicAccessStmt _ -> None
+    | DeclStmt l ->
+        l
+        |> List.find_map (fun (d : Decl.t) ->
+               match d.init with Some (IExpr e) -> target e | _ -> None)
+    | IfStmt { cond; then_stmt; else_stmt } ->
+        target cond
+        ||| fun () ->
+        assigned_call then_stmt ||| fun () -> assigned_call else_stmt
+    | WhileStmt { cond; body } | DoStmt { cond; body }
+    | SwitchStmt { cond; body } ->
+        target cond ||| fun () -> assigned_call body
+    | DefaultStmt s | CaseStmt { body = s; _ } | LambdaDecl { body = s; _ } ->
+        assigned_call s
+    | ForStmt f ->
+        (match f.cond with Some e -> target e | None -> None)
+        ||| fun () -> assigned_call f.inc ||| fun () -> assigned_call f.body
 
   let rec to_s : t -> Indent.t list = function
     | Skip -> [ Line "skip;" ]
@@ -1019,9 +1084,29 @@ module SignatureDB = struct
         (fun (k : Kernel.t) -> Function_id.ty k.Kernel.id = ty)
         candidates
 
+  let get_method ~(record : string) ~(name : string) ~(arg_count : int)
+      (db : t) : Kernel.t option =
+    let of_class (k : Kernel.t) : bool =
+      match List.rev (Function_id.qualifier k.Kernel.id) with
+      | cls :: _ -> String.equal cls record
+      | [] -> false
+    in
+    let of_arity (n : int) : Kernel.t option =
+      match
+        named name db
+        |> List.filter (fun (k : Kernel.t) ->
+               List.length k.params = n && of_class k)
+      with
+      | [ k ] -> Some k
+      | _ -> None
+    in
+    match of_arity (arg_count + 1) with
+    | Some k -> Some k
+    | None -> of_arity arg_count
+
   let lookup (e : Expr.t) (arg_count : int) (db : t) : Signature.t option =
+    let ( let* ) = Option.bind in
     let by_decl (d : string option) : Kernel.t option =
-      let ( let* ) = Option.bind in
       let* d = d in
       let* id = StringMap.find_opt d db.by_decl in
       get_id id db
@@ -1029,12 +1114,26 @@ module SignatureDB = struct
     (match e with
      | UnresolvedLookupExpr { name = n; _ } ->
          get_unresolved ~name:(Variable.name n) ~ty:"?" ~arg_count db
-     | Ident { name = n; kind = Function | CXXMethod; ty; decl_id } -> (
+     | Ident { name = n; kind = Function | CXXMethod; ty; decl_id; qualifier }
+       -> (
          match by_decl decl_id with
          | Some k -> Some k
-         | None ->
-             get_unresolved ~name:(Variable.name n) ~ty:(Ty.to_string ty)
-               ~arg_count db)
+         | None -> (
+             match
+               get_unresolved ~name:(Variable.name n) ~ty:(Ty.to_string ty)
+                 ~arg_count db
+             with
+             | Some k -> Some k
+             | None ->
+                 let* record =
+                   List.nth_opt (List.rev qualifier) 0
+                   |> Fun.flip Option.bind (fun c ->
+                          Record.type_name (Ty.opaque c))
+                 in
+                 get_method ~record ~name:(Variable.name n) ~arg_count db))
+     | MemberExpr { base; name; _ } ->
+         let* record = Record.type_name (Expr.to_type base) in
+         get_method ~record ~name ~arg_count db
      | _ -> None)
     |> Option.map Signature.from_kernel
 
@@ -1320,6 +1419,17 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
                         { lhs = Ident d; opcode = "="; rhs = src; ty }))
               in
               return (Ident d)
+          | ( CallExpr { func; args; ty = target }
+            | CXXOperatorCallExpr { func; args; ty = target } ) as call ->
+              let* func = rewrite_exp func in
+              let* args = State.list_map rewrite_exp args in
+              let* rhs = rewrite_exp src in
+              let lhs =
+                match call with
+                | CallExpr _ -> CallExpr { func; args; ty = target }
+                | _ -> CXXOperatorCallExpr { func; args; ty = target }
+              in
+              return (BinaryOperator { lhs; rhs; opcode = "="; ty })
           | lhs ->
               let* lhs = rewrite_exp lhs in
               let* rhs = rewrite_exp src in
@@ -1394,10 +1504,25 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   | CXXDeleteExpr { arg; ty } ->
       let* arg = rewrite_exp arg in
       return (CXXDeleteExpr { arg; ty })
-  | CXXOperatorCallExpr { func; args; ty } ->
+  | CXXOperatorCallExpr
+      {
+        func =
+          (UnresolvedLookupExpr { name = n; _ } | Ident { name = n; _ }) as func;
+        args = [ _; _ ] as args;
+        ty;
+      }
+    when Variable.name n = "operator+" ->
       let* func = rewrite_exp func in
       let* args = State.list_map rewrite_exp args in
       return (CXXOperatorCallExpr { func; args; ty })
+  | CXXOperatorCallExpr { func; args; ty } when Ty.is_void ty ->
+      let* func = rewrite_exp func in
+      let* args = State.list_map rewrite_exp args in
+      return (CXXOperatorCallExpr { func; args; ty })
+  | CXXOperatorCallExpr { func; args; ty } ->
+      let* func = rewrite_exp func in
+      let* args = State.list_map rewrite_exp args in
+      rewrite_call { func; args; ty }
   | CallExpr { func; args; ty } when Ty.is_void ty ->
       let* func = rewrite_exp func in
       let* args = State.list_map rewrite_exp args in

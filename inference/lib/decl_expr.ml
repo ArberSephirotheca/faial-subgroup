@@ -31,15 +31,16 @@ type t = {
   ty : Ty.t;
   kind : Kind.t;
   decl_id : string option;
+  qualifier : string list;
 }
 
 let from_name ?(ty = J_type.int) ?(kind = Kind.Var) (name : Variable.t) : t =
-  { name; ty; kind; decl_id = None }
+  { name; ty; kind; decl_id = None; qualifier = [] }
 
 let equal (e1 : t) (e2 : t) : bool = Variable.equal e1.name e2.name
 
 let from_ty_var ?(kind = Kind.Var) (ty_var : Ty_variable.t) : t =
-  { name = ty_var.name; ty = ty_var.ty; kind; decl_id = None }
+  { name = ty_var.name; ty = ty_var.ty; kind; decl_id = None; qualifier = [] }
 
 let name (e : t) : Variable.t = e.name
 let ty (e : t) : Ty.t = e.ty

@@ -228,12 +228,13 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
              "Error parsing FunctionTemplateDecl: no FunctionDecl found" j
        | _ -> parse_all to_parse)
   | "FunctionDecl" | "CXXMethodDecl" -> parse_k [] j
-  | "CXXRecordDecl" -> (
+  | "CXXRecordDecl" | "ClassTemplateSpecializationDecl"
+  | "ClassTemplatePartialSpecializationDecl" -> (
       let name = with_opt_field "name" cast_string o in
       let qualifier =
-        match with_opt_field "qualifier" (cast_map cast_string) o with
-        | Ok (Some q) -> q
-        | Ok None | Error _ -> qualifier
+        match J_type.qualifier o with
+        | Some q -> q
+        | None -> qualifier
       in
       let inner_qualifier =
         match name with
@@ -259,11 +260,11 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
         |> List.filter_map (fun j ->
             let base =
               let* o = cast_object j in
-              with_field "type" cast_string o
+              let* ty = get_field "type" o in
+              Ok (J_type.parse ty)
             in
             base |> Result.to_option
-            |> Fun.flip Option.bind (fun s ->
-                Record.type_name (Ty.opaque s)))
+            |> Fun.flip Option.bind Record.type_name)
       in
       match name with
       | Ok (Some name) ->
@@ -285,7 +286,11 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
           in
           if fields = [] && bases = [] then Ok defs
           else
-            Ok (Record { Record.name; qualifier; bases; fields; location } :: defs)
+            Ok
+              (Record
+                 { Record.name; qualifier; template_args = J_type.template_args o;
+                   bases; fields; location }
+              :: defs)
       | Ok None | Error _ -> Ok defs)
   | "VarDecl" -> (
       match Decl.parse j with
@@ -321,13 +326,14 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
       if self_named || Ty.is_array_or_pointer ty || Ty.is_function ty then
         Ok []
       else Ok [ Typedef { name; ty; location } ])
-  | "ClassTemplateDecl" | "ClassTemplateSpecializationDecl" ->
+  | "ClassTemplateDecl" ->
       let* inner = with_field_or "inner" cast_list [] o in
       let records =
         inner
         |> List.filter
              (j_filter_kind (fun k ->
-                  k = "CXXRecordDecl" || k = "ClassTemplateSpecializationDecl"))
+                  k = "CXXRecordDecl" || k = "ClassTemplateSpecializationDecl"
+                  || k = "ClassTemplatePartialSpecializationDecl"))
       in
       let* defs = cast_map (parse ~qualifier) (`List records) in
       Ok (List.concat defs)

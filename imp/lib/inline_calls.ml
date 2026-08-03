@@ -279,6 +279,27 @@ let path_to_undefined (s : t) (start : Function_id.t) :
   in
   walk [] start
 
+(* A kernel that inlines an unsupported one takes on its construct, so the
+   reason travels the call edges the way an undefined callee's does. *)
+let path_to_unsupported (s : t) (start : Function_id.t) :
+    Rejected_kernel.Reason.t option =
+  let rec walk (seen : Function_id.t list) (node : Function_id.t) :
+      Rejected_kernel.Reason.t option =
+    match IdMap.find_opt node s.kernels with
+    | None -> None
+    | Some k -> (
+        match k.Scoped.Kernel.unsupported with
+        | Some r -> Some r
+        | None ->
+            if List.exists (Function_id.equal node) seen then None
+            else
+              IdMap.find_opt node s.targets
+              |> Option.value ~default:IdSet.empty
+              |> IdSet.elements
+              |> List.find_map (walk (node :: seen)))
+  in
+  walk [] start
+
 let from_list (ks : Scoped.Kernel.t list) : t =
   {
     targets =
@@ -310,7 +331,8 @@ let rec inline_all (s : t) : t =
    analyzed as a strict subset of what was written. *)
 let inline_calls (l : Scoped.Kernel.t list) :
     Scoped.Kernel.t list * Rejected_kernel.t list =
-  let s = l |> from_list |> inline_all in
+  let calls = from_list l in
+  let s = inline_all calls in
   let discarded = unresolved s in
   let reason (id : Function_id.t) : Rejected_kernel.Reason.t =
     let names = List.map Function_id.label in
@@ -321,14 +343,28 @@ let inline_calls (l : Scoped.Kernel.t list) :
         | Some path -> UndefinedKernel { path = names path }
         | None -> UndefinedKernel { path = [ Function_id.label id ] })
   in
+  let unsupported =
+    kernel_list s
+    |> List.filter_map (fun k ->
+        let id = Scoped.Kernel.unique_id k in
+        if IdSet.mem id discarded then None
+        else path_to_unsupported calls id |> Option.map (fun r -> (id, r)))
+  in
+  let dropped =
+    IdSet.union discarded (unsupported |> List.map fst |> IdSet.of_list)
+  in
   let kernels =
     kernel_list s
     |> List.filter (fun k ->
-        not (IdSet.mem (Scoped.Kernel.unique_id k) discarded))
+        not (IdSet.mem (Scoped.Kernel.unique_id k) dropped))
   in
   let rejected =
-    discarded |> IdSet.elements
-    |> List.map (fun id ->
-         Rejected_kernel.make ~kernel:(Function_id.label id) ~reason:(reason id))
+    (discarded |> IdSet.elements
+     |> List.map (fun id ->
+          Rejected_kernel.make ~kernel:(Function_id.label id)
+            ~reason:(reason id)))
+    @ (unsupported
+       |> List.map (fun (id, reason) ->
+            Rejected_kernel.make ~kernel:(Function_id.label id) ~reason))
   in
   (kernels, rejected)
