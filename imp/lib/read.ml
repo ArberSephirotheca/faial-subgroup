@@ -3,6 +3,7 @@ open Protocols
 type t = {
   target : (Ty.t * Variable.t) option;
   array : Variable.t;
+  selector : Exp.nexp list;
   index : Exp.nexp list;
   guard : Exp.bexp option;
 }

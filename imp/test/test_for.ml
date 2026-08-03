@@ -30,9 +30,9 @@ let body_decrement_input : For.t * Stmt.t =
   let body =
     Stmt.from_list
       [
-        Stmt.Write { array = var "A"; index = [ Var k ]; payload = None; guard = None };
+        Stmt.Write { selector = []; array = var "A"; index = [ Var k ]; payload = None; guard = None };
         Stmt.assign Ty.int k (n_minus (Var k) (Num 1));
-        Stmt.Write { array = var "A"; index = [ Var k ]; payload = None; guard = None };
+        Stmt.Write { selector = []; array = var "A"; index = [ Var k ]; payload = None; guard = None };
         Stmt.assign Ty.int k (n_minus (Var k) (Num 1));
       ]
   in
@@ -55,9 +55,9 @@ let body_increment_input : For.t * Stmt.t =
   let body =
     Stmt.from_list
       [
-        Stmt.Write { array = var "A"; index = [ Var i ]; payload = None; guard = None };
+        Stmt.Write { selector = []; array = var "A"; index = [ Var i ]; payload = None; guard = None };
         Stmt.assign Ty.int i (n_plus (Var i) (Num 1));
-        Stmt.Write { array = var "A"; index = [ Var i ]; payload = None; guard = None };
+        Stmt.Write { selector = []; array = var "A"; index = [ Var i ]; payload = None; guard = None };
         Stmt.assign Ty.int i (n_plus (Var i) (Num 1));
       ]
   in
@@ -212,7 +212,7 @@ let test_mixed_inc_and_body_sums () =
   let body =
     Stmt.from_list
       [
-        Stmt.Write { array = var "A"; index = [ Var i ]; payload = None; guard = None };
+        Stmt.Write { selector = []; array = var "A"; index = [ Var i ]; payload = None; guard = None };
         Stmt.assign Ty.int i (n_plus (Var i) (Num 1));
       ]
   in
@@ -243,7 +243,8 @@ let truthiness_loop (cond : bexp) : Stmt.t =
   let inc = Stmt.assign Ty.int i (n_minus (Var i) (Num 1)) in
   let body =
     Stmt.Write
-      { array = var "S"; index = [ Var i ]; payload = None; guard = None }
+      { array = var "S"; selector = []; index = [ Var i ]; payload = None;
+        guard = None }
   in
   For.to_stmt { init; cond; inc } body
 
@@ -295,7 +296,8 @@ let test_subtraction_shape_preserved () =
   let inc = Stmt.assign Ty.int i (n_plus (Var i) (Num 1)) in
   let body =
     Stmt.Write
-      { array = var "S"; index = [ Var i ]; payload = None; guard = None }
+      { array = var "S"; selector = []; index = [ Var i ]; payload = None;
+        guard = None }
   in
   let out = For.to_stmt { init; cond; inc } body in
   match find_for out with
@@ -322,7 +324,8 @@ let test_other_variable_declined () =
   let inc = Stmt.assign Ty.int i (n_plus (Var i) (Num 1)) in
   let body =
     Stmt.Write
-      { array = var "S"; index = [ Var i ]; payload = None; guard = None }
+      { array = var "S"; selector = []; index = [ Var i ]; payload = None;
+        guard = None }
   in
   let out = For.to_stmt { init; cond; inc } body in
   match find_for out with
@@ -345,7 +348,8 @@ let test_condition_selects_its_own_variable () =
   in
   let body =
     Stmt.Write
-      { array = var "S"; index = [ Var i ]; payload = None; guard = None }
+      { array = var "S"; selector = []; index = [ Var i ]; payload = None;
+        guard = None }
   in
   let out = For.to_stmt { init; cond; inc } body in
   match find_for out with

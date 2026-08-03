@@ -316,8 +316,7 @@ let render ~(rejected : Imp.Rejected_kernel.t list)
       (fun acc (r : Imp.Rejected_kernel.t) ->
         T.print_string
           [ T.Bold; T.Foreground T.Yellow ]
-          ("Kernel '" ^ r.kernel
-           ^ "' was discarded; there is nothing to check. "
+          ("Kernel '" ^ r.kernel ^ "' is unsupported: "
            ^ Imp.Rejected_kernel.Reason.to_string r.reason ^ ".\n");
         (match r.reason with
          | Imp.Rejected_kernel.Reason.UndefinedKernel _ ->
@@ -325,6 +324,14 @@ let render ~(rejected : Imp.Rejected_kernel.t list)
                ("Pass --opaque-calls=skip-all to analyse it anyway, which \
                  ignores every such call, or --opaque-calls=skip-none to \
                  discard on any call with no visible body.\n")
+         | Imp.Rejected_kernel.Reason.ManyRegions _ ->
+             T.print_string [ T.Foreground T.Yellow ]
+               ("Every subscript reaching a stored pointer has to be a \
+                 literal for the region it points at to have a name.\n")
+         | Imp.Rejected_kernel.Reason.UnnamedRegion _ ->
+             T.print_string [ T.Foreground T.Yellow ]
+               ("A pointer stored in a record reaches memory that is not \
+                 derived from any type faial can see.\n")
          | Imp.Rejected_kernel.Reason.RecursiveCall _ -> ());
         acc + 1)
       total rejected

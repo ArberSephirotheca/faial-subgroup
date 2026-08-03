@@ -2,6 +2,7 @@ open Protocols
 
 type t = {
   array : Variable.t;
+  selector : Exp.nexp list;
   index : Exp.nexp list;
   payload : int option;
   guard : Exp.bexp option;

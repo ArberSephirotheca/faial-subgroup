@@ -279,11 +279,27 @@ let tests =
      is with the last of them and modelling one element would lose it. *)
     ("racy-ptr-view-wide.cu", [], 1);
     ("racy-ptr-view-float4.cu", [], 1);
-    (* A flat view of a two-dimensional array is not indexing in rows, so
-     a multi-dimensional array has no step and the view is left alone.
-     Truncating by the row would put these two distinct ints in one cell
-     and invent a collision. *)
+    (* A flat view of a two-dimensional array counts cells, not rows, so
+     the flat index is split back across the axes: [p[5]] and [p[6]] are
+     [A[1, 1]] and [A[1, 2]], distinct. Truncating by the row instead
+     would put both in row 1 and invent a collision. *)
     ("drf-ptr-view-flat-2d.cu", [], 0);
+    (* The same split on a view narrower than the cell: byte 3 retypes to
+     flat element 0 and splits to [A[0, 0]], which is where the direct
+     subscript writes. Left flat it was a one-index access on an array
+     whose other accesses carry two, and the mixed arity hid the
+     collision. *)
+    ("racy-ptr-view-arity.cu", [], 1);
+    (* A view rooted part-way in, which is what a row taken out of a table
+     is. One axis is fixed by the subscript on the way in, so what the
+     split consumes is the suffix of dimensions below it and the subscript
+     stays in front. *)
+    ("racy-ptr-view-row-suffix.cu", [], 1);
+    (* The same row view on two distinct cells of it. *)
+    ("drf-ptr-view-row-suffix.cu", [], 0);
+    (* A flat index that does not fold, so the split stands as a division
+     and an unsigned modulus rather than as literals. *)
+    ("racy-ptr-view-flat-symbolic.cu", [], 1);
     (* A dereference of an address-of names the cell the address was
      taken from, and the address-of of a dereference is an address rather
      than a read. Left standing, the first pair drops a store and the
@@ -1243,6 +1259,36 @@ let tests =
     (* The same expansion with every thread copying its own element, so
        the leaf accesses stay disjoint. *)
     ("drf-struct-copy.cu", [], 0);
+    (* A record is declared under a bare name and used under a qualified
+       one, so keying the declaration on the bare name left a namespaced
+       record matching nothing and derived no member arrays. *)
+    ("racy-record-namespace.cu", [], 1);
+    (* The same record with a per-thread element. *)
+    ("drf-record-namespace.cu", [], 0);
+    (* A record nested in another is a child of the enclosing declaration,
+       and descending only into methods dropped it. *)
+    ("racy-record-nested.cu", [], 1);
+    (* The same nested record with a per-thread element. *)
+    ("drf-record-nested.cu", [], 0);
+    (* Two records of the same bare name in different scopes: keying on the
+       bare name let the later one overwrite the earlier and substitute its
+       member list. *)
+    ("racy-record-shadowed.cu", [], 1);
+    (* The same pair with a per-thread element. *)
+    ("drf-record-shadowed.cu", [], 0);
+    (* A member class defined out of line belongs to a scope it is not
+       written in, so the enclosing declarations cannot supply it and the
+       record's own answer is what matches the type. *)
+    ("racy-record-out-of-line.cu", [], 1);
+    (* The same class with a per-thread element, which reports nothing at
+       all when the scope is not recovered. *)
+    ("drf-record-out-of-line.cu", [], 0);
+    (* Each specialisation of a class template is a scope of its own, so a
+       record declared inside one does not collapse onto the same bare name
+       as its sibling. *)
+    ("drf-record-template-scope.cu", [], 0);
+    (* The same pair with threads sharing an element inside one of them. *)
+    ("racy-record-template-scope.cu", [], 1);
     (* A pointer member of a struct parameter is memory of its own, so
        [v.p] is an array and every thread writing [v.p[0]] races. The write
        to [B] is what keeps the kernel from reporting no accesses at all,
@@ -1254,6 +1300,37 @@ let tests =
     (* [s->p] reaches the subscript as the same shape as [v.p], so a
        pointer-to-struct parameter expands the same way. *)
     ("racy-arrow-field.cu", [], 1);
+    (* The storage holding a pointer member's address is memory of the
+       object it sits in, so two threads assigning the same slot race.
+       Before it had a name of its own the assignment became a read of the
+       enclosing element and the store was lost. *)
+    ("racy-pointer-field-store.cu", [], 1);
+    (* The same store with every thread taking its own slot. *)
+    ("drf-pointer-field-store.cu", [], 0);
+    (* The storage and what it points at occupy different bytes, so
+       writing the address cannot collide with writing through it. *)
+    ("drf-pointer-field-split.cu", [], 0);
+    (* Two cells of an array of objects hold two addresses, so each names
+       a region of its own. Merged under one name they met and the kernel
+       reported a race that cannot happen. *)
+    ("drf-pointer-field-cells.cu", [], 0);
+    (* A zero cell is elided, so the arrow and an explicit zero reach one
+       region and do meet. *)
+    ("racy-pointer-field-cell.cu", [], 1);
+    (* Which cell holds the address is decided by a value, so no name
+       denotes one region and the kernel is discarded rather than analysed
+       under a merged name. *)
+    ("declined-dynamic-pointer-cell.cu", [], 1);
+    (* A record behind a pointer has no regions of its own, so the writes
+       through it name nothing. Discarded rather than deleted, since a
+       verdict reached after deleting an access is about another program. *)
+    ("declined-pointer-to-record.cu", [], 1);
+    (* Copying a record copies the address a pointer member holds, so the
+       copy touches that member's storage and meets a thread assigning it.
+       It does not touch what the pointer points at. *)
+    ("racy-struct-copy-pointer.cu", [], 1);
+    (* The same pair with every thread on its own element. *)
+    ("drf-struct-copy-pointer.cu", [], 0);
     (* With [f.x] a free variable the prover gave each thread its own, and
        the kernel reported a race that cannot happen; expanded, [f.x] is
        uniform and the indices are disjoint. *)
@@ -1330,10 +1407,6 @@ let unsupported : Fpath.t list =
      declaration: the parser deletes the cast and no trace of the width
      survives. *)
     "racy-ptr-view-subscript.cu";
-    (* A byte view of a two-dimensional array. The residual is the arity,
-     a one-index access on an array whose other accesses carry two, not
-     the scaling. *)
-    "racy-ptr-view-arity.cu";
     (* A choice between two arrays passed as an argument. It has no
      spelling as a name plus an offset, which is the only thing an
      argument carries, and unlike a row it is never bound to a name of
@@ -1389,7 +1462,7 @@ let missed_files (dir : Fpath.t) : Fpath.Set.t =
   let unsupported = Fpath.Set.of_list unsupported in
   Fpath.Set.diff (Fpath.Set.diff all_cu_files used_files) unsupported
 
-let () =
+let run_tests () =
   let open Fpath in
   let jobs = Parallel.test_jobs () in
   print_endline "Checking examples for DRF:";
@@ -1488,3 +1561,44 @@ let () =
       (" ✘ ERROR: The following files are not being checked: " ^ missed);
     exit (-1))
   else ()
+
+(* ---- Protocol snapshot ----- *)
+
+let strip_ansi (s : string) : string =
+  let n = String.length s in
+  let rec go (i : int) (acc : char list) : char list =
+    if i >= n then acc
+    else if s.[i] = '\027' && i + 1 < n && s.[i + 1] = '[' then
+      let rec skip (j : int) : int =
+        if j >= n then j else if s.[j] = 'm' then j + 1 else skip (j + 1)
+      in
+      go (skip (i + 2)) acc
+    else go (i + 1) (s.[i] :: acc)
+  in
+  go 0 [] |> List.rev |> List.to_seq |> String.of_seq
+
+let snapshot () =
+  let jobs = Parallel.test_jobs () in
+  Unix.chdir (Fpath.to_string test_dir);
+  tests
+  |> Parallel.map ~jobs (fun (filename, args, _) ->
+         faial_drf ~args:("--show-map" :: args) (Fpath.v filename)
+         |> Subprocess.run_split)
+  |> List.combine tests
+  |> List.iter (fun ((filename, args, _), (given : Subprocess.Completed2.t)) ->
+      print_endline
+        ("### faial-drf "
+        ^ String.concat " " ("--show-map" :: args @ [ filename ]));
+      print_endline
+        ("### exit " ^ string_of_int (Subprocess.exit_code given.status));
+      print_string (strip_ansi given.stdout);
+      let err = strip_ansi given.stderr in
+      if String.trim err <> "" then (
+        print_endline "### stderr";
+        print_string err);
+      print_newline ())
+
+let () =
+  match Array.to_list Sys.argv with
+  | _ :: "--snapshot" :: _ -> snapshot ()
+  | _ -> run_tests ()

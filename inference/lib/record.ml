@@ -3,11 +3,15 @@ open Stage0
 
 type t = {
   name : string;
+  qualifier : string list;
   fields : (string * Ty.t) list;
   location : Location.t;
 }
 
 let location (r : t) : Location.t = r.location
+
+let qualified_name (r : t) : string =
+  String.concat "::" (r.qualifier @ [ r.name ])
 
 let type_name (ty : Ty.t) : string option =
   let prefixes =
@@ -30,7 +34,7 @@ let type_name (ty : Ty.t) : string option =
   | _ -> None
 
 let to_ty (r : t) : Ty.t =
-  Ty.make ~name:r.name (Ty.Struct { members = r.fields })
+  Ty.make ~name:(qualified_name r) (Ty.Struct { members = r.fields })
 
 let to_string (r : t) : string =
   let fields =
@@ -38,6 +42,6 @@ let to_string (r : t) : string =
     |> List.map (fun (n, ty) -> Ty.to_string ty ^ " " ^ n)
     |> String.concat "; "
   in
-  "struct " ^ r.name ^ " { " ^ fields ^ " }"
+  "struct " ^ qualified_name r ^ " { " ^ fields ^ " }"
 
 let to_s (r : t) : Indent.t list = [ Line (to_string r ^ ";") ]

@@ -20,6 +20,7 @@ type t =
   | Read of {
       target : (Ty.t * Variable.t) option;
       array : Variable.t;
+      selector : Infer_exp.t list;
       index : Infer_exp.t list;
       guard : Infer_exp.t option;
     }
@@ -28,11 +29,13 @@ type t =
       ty : Ty.t;
       atomic : Infer_exp.t Atomic.t;
       array : Variable.t;
+      selector : Infer_exp.t list;
       index : Infer_exp.t list;
       guard : Infer_exp.t option;
     }
   | Write of {
       array : Variable.t;
+      selector : Infer_exp.t list;
       index : Infer_exp.t list;
       payload : int option;
       guard : Infer_exp.t option;
@@ -89,22 +92,26 @@ let rec to_stmt : t -> Stmt.t =
          let id = List.fold_left Exp.n_plus (Exp.Var array) index in
          return (Stmt.Sync { mode; id; participants = None; loc }))
   | Assert e -> ret_assert e Global
-  | Read { array; target; index; guard } ->
+  | Read { array; target; selector; index; guard } ->
       Infer_exp.unknowns
-        (let* index = State.list_map to_nexp index in
+        (let* selector = State.list_map to_nexp selector in
+         let* index = State.list_map to_nexp index in
          let* guard = State.option_map to_bexp guard in
-         return (Stmt.Read { target; array; index; guard }))
-  | Atomic { target; ty; atomic; array; index; guard } ->
+         return (Stmt.Read { target; array; selector; index; guard }))
+  | Atomic { target; ty; atomic; array; selector; index; guard } ->
       Infer_exp.unknowns
-        (let* index = State.list_map to_nexp index in
+        (let* selector = State.list_map to_nexp selector in
+         let* index = State.list_map to_nexp index in
          let* atomic = Atomic.map_state to_nexp atomic in
          let* guard = State.option_map to_bexp guard in
-         return (Stmt.Atomic { target; atomic; array; index; ty; guard }))
-  | Write { array; index; payload; guard } ->
+         return
+           (Stmt.Atomic { target; atomic; array; selector; index; ty; guard }))
+  | Write { array; selector; index; payload; guard } ->
       Infer_exp.unknowns
-        (let* index = State.list_map to_nexp index in
+        (let* selector = State.list_map to_nexp selector in
+         let* index = State.list_map to_nexp index in
          let* guard = State.option_map to_bexp guard in
-         return (Stmt.Write { array; index; payload; guard }))
+         return (Stmt.Write { array; selector; index; payload; guard }))
   | LocationAlias { target; pointer } ->
       Infer_exp.unknowns
         (let* pointer = Infer_pointer.to_pointer pointer in
@@ -220,22 +227,27 @@ module Convert_assigns = struct
           (keep a
              (LocationAlias
                 { target; pointer = Infer_pointer.map (subst a.env) pointer }))
-    | Read { target; array; index; guard } ->
+    | Read { target; array; selector; index; guard } ->
+        let selector = List.map (subst a.env) selector in
         let index = List.map (subst a.env) index in
         let guard = Option.map (subst a.env) guard in
-        Some (keep (bind_target a target) (Read { target; array; index; guard }))
-    | Write { array; index; payload; guard } ->
+        Some
+          (keep (bind_target a target)
+             (Read { target; array; selector; index; guard }))
+    | Write { array; selector; index; payload; guard } ->
+        let selector = List.map (subst a.env) selector in
         let index = List.map (subst a.env) index in
         let guard = Option.map (subst a.env) guard in
-        Some (keep a (Write { array; index; payload; guard }))
-    | Atomic { target; ty; atomic; array; index; guard } ->
+        Some (keep a (Write { array; selector; index; payload; guard }))
+    | Atomic { target; ty; atomic; array; selector; index; guard } ->
+        let selector = List.map (subst a.env) selector in
         let index = List.map (subst a.env) index in
         let guard = Option.map (subst a.env) guard in
         let atomic = Atomic.map (subst a.env) atomic in
         Some
           (keep
              (bind_target a (Some (ty, target)))
-             (Atomic { target; ty; atomic; array; index; guard }))
+             (Atomic { target; ty; atomic; array; selector; index; guard }))
     | Call { result; id; args } ->
         let args = List.map (subst a.env) args in
         let a = bind_target a (Option.map (fun (x, ty) -> (ty, x)) result) in

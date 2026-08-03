@@ -226,15 +226,27 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
   | "CXXRecordDecl" -> (
       let name = with_opt_field "name" cast_string o in
       let qualifier =
+        match with_opt_field "qualifier" (cast_map cast_string) o with
+        | Ok (Some q) -> q
+        | Ok None | Error _ -> qualifier
+      in
+      let inner_qualifier =
         match name with
         | Ok (Some n) -> qualifier @ [ n ]
         | Ok None | Error _ -> qualifier
       in
       let* inner = with_field_or "inner" cast_list [] o in
-      let methods =
-        inner |> List.filter (j_filter_kind (fun k -> k = "CXXMethodDecl"))
+      (* A nested record is already here as a child; it is dropped on our
+         side rather than omitted upstream. Recursing also reaches the
+         injected class name, an implicit node carrying the record's own
+         name and no fields, which the [fields = []] guard below skips. *)
+      let members =
+        inner
+        |> List.filter
+             (j_filter_kind (fun k ->
+                  k = "CXXMethodDecl" || k = "CXXRecordDecl"))
       in
-      let* defs = cast_map (parse ~qualifier) (`List methods) in
+      let* defs = cast_map (parse ~qualifier:inner_qualifier) (`List members) in
       let defs = List.concat defs in
       match name with
       | Ok (Some name) ->
@@ -255,7 +267,7 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
             |> Result.value ~default:Location.empty
           in
           if fields = [] then Ok defs
-          else Ok (Record { Record.name; fields; location } :: defs)
+          else Ok (Record { Record.name; qualifier; fields; location } :: defs)
       | Ok None | Error _ -> Ok defs)
   | "VarDecl" -> (
       match Decl.parse j with
@@ -285,6 +297,16 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
       if Ty.is_struct ty || Ty.is_array_or_pointer ty || Ty.is_function ty then
         Ok []
       else Ok [ Typedef { name; ty; location } ])
+  | "ClassTemplateDecl" | "ClassTemplateSpecializationDecl" ->
+      let* inner = with_field_or "inner" cast_list [] o in
+      let records =
+        inner
+        |> List.filter
+             (j_filter_kind (fun k ->
+                  k = "CXXRecordDecl" || k = "ClassTemplateSpecializationDecl"))
+      in
+      let* defs = cast_map (parse ~qualifier) (`List records) in
+      Ok (List.concat defs)
   | "EnumDecl" ->
       let* e = parse_enum j in
       Ok [ Enum e ]

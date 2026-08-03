@@ -30,7 +30,7 @@ let main (fname : string) : unit =
   List.iter
     (fun r -> print_endline (Imp.Rejected_kernel.to_string r))
     rejected;
-  let proto = List.map Imp.Compiler.compile inlined in
+  let proto = List.filter_map (fun k -> Imp.Compiler.compile k |> Result.to_option) inlined in
   section "Protocols";
   List.iter Protocols.Kernel.print proto;
   ()

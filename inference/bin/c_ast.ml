@@ -223,7 +223,7 @@ let main (fnames : string list) (silent : bool) (json : bool) (verbose : bool)
   in
   let scoped = List.map Imp.Scoped.Kernel.from_imp k3 in
   let inlined, rejected = Imp.Inline_calls.inline_calls scoped in
-  let proto = List.map Imp.Compiler.compile inlined in
+  let proto = List.filter_map (fun k -> Imp.Compiler.compile k |> Result.to_option) inlined in
   let scoped_filter =
     List.filter (fun k -> keep_id (Imp.Scoped.Kernel.unique_id k))
   in

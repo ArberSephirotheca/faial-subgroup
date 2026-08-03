@@ -31,10 +31,10 @@ let from_type (h : Mem_hierarchy.t) (ty : Ty.t) : t =
 let data_ty (x : t) : Ty.t = x.data_type |> String.concat " " |> Ty.of_c_string
 
 (* [data_ty] was already stripped by [Ty.get_array_type], so this reads
-   [Ty.width] rather than [Ty.pointee_size]. More than one dimension has no
-   step, matching [Ty.pointee_size] on the type this record came from. *)
-let step (x : t) : int option =
-  if List.length x.size > 1 then None else x |> data_ty |> Ty.width
+   [Ty.width] rather than [Ty.pointee_size], and answers for a
+   multi-dimensional array too: its cells are its scalars, and a flat byte
+   address retyped into them is split back across the axes afterwards. *)
+let step (x : t) : int option = x |> data_ty |> Ty.width
 
 let make_map (h : Mem_hierarchy.t) (vs : Variable.t list) : t Variable.Map.t =
   vs |> List.map (fun x -> (x, make h)) |> Variable.Map.of_list

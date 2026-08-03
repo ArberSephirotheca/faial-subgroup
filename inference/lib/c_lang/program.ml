@@ -13,7 +13,7 @@ let rewrite_shared_arrays (p : t) : t =
   let records =
     p
     |> List.filter_map (function
-        | Def.Record r -> Some (Variable.from_name r.Record.name)
+        | Def.Record r -> Some (Variable.from_name (Record.qualified_name r))
         | _ -> None)
     |> Variable.Set.of_list
   in

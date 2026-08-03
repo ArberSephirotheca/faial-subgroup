@@ -100,7 +100,8 @@ module Code = struct
      An index that came out as a range of cells, which is what a pointer view
      wider than the element it lands on produces, is bound by a loop over the
      cells it spans. *)
-  let resolve ~(target : Variable.t) (pointer : Pointer.t) : t -> t =
+  let resolve ~(arrays : Memory.t Variable.Map.t) ~(target : Variable.t)
+      (pointer : Pointer.t) : t -> t =
     let materialise (a : Mem_access.t) (addr : Pointer.Address.t) : t =
       let taken =
         List.fold_left
@@ -126,7 +127,16 @@ module Code = struct
          rather than at the pointer's declaration. *)
       let root = { addr.array with location = (Path.base a.path).location } in
       let path = Path.graft ~prefix:(Path.root root) a.path in
-      let body = Access { a with path; index = List.rev index } in
+      let index = List.rev index in
+      let index =
+        let dims =
+          Variable.Map.find_opt (Path.to_variable path) arrays
+          |> Option.map (fun (m : Memory.t) -> m.size)
+          |> Option.value ~default:[]
+        in
+        Pointer.split_index ~dims index |> Option.value ~default:index
+      in
+      let body = Access { a with path; index } in
       let body = List.fold_left (fun s r -> For (r, s)) body ranges in
       (* A choice reaches one of its arms, so the access is emitted once per
          arm under the condition that selects it. The guard nests outside any
@@ -177,22 +187,71 @@ module Code = struct
       | Some x when Variable.equal x target -> s
       | _ -> resolve s
 
+  let deref_arrays (arrays : Memory.t Variable.Map.t) (s : t) :
+      Memory.t Variable.Map.t =
+    let add (a : Mem_access.t) (m : Memory.t Variable.Map.t) =
+      let p = a.path in
+      match Path.denotation p with
+      | Path.Denotation.One_region when Path.selector p <> [] ->
+          let name = Path.to_variable p in
+          if Variable.Map.mem name m then m
+          else
+            Variable.Map.find_opt
+              (Path.to_variable (Path.without_selector p))
+              arrays
+            |> Option.fold ~none:m ~some:(fun mem ->
+                Variable.Map.add name mem m)
+      | Path.Denotation.One_region | Path.Denotation.Many_regions -> m
+    in
+    let rec walk (m : Memory.t Variable.Map.t) : t -> Memory.t Variable.Map.t =
+      function
+      | Access a -> add a m
+      | Seq (p, q) | If (_, p, q) -> walk (walk m p) q
+      | For (_, p) | Decl (_, p) | Call (_, p) -> walk m p
+      | Assign a -> walk m a.body
+      | PointerBind p -> walk m p.body
+      | Assert _ | Sync _ | Skip -> m
+    in
+    walk arrays s
+
+  let unnamed_access (locs : Variable.Set.t) (s : t) :
+      (string * Path.Denotation.t) option =
+    let rooted (p : Path.t) : bool =
+      Variable.Set.exists (fun x -> Option.is_some (Path.under ~root:x p)) locs
+    in
+    let rec walk : t -> (string * Path.Denotation.t) option = function
+      | Access a ->
+          if Variable.Set.mem (Mem_access.array a) locs || not (rooted a.path)
+          then None
+          else Some (Path.to_string a.path, Path.denotation a.path)
+      | Seq (p, q) | If (_, p, q) -> (
+          match walk p with Some _ as r -> r | None -> walk q)
+      | For (_, p) | Decl (_, p) | Call (_, p) -> walk p
+      | Assign a -> walk a.body
+      | PointerBind p -> walk p.body
+      | Assert _ | Sync _ | Skip -> None
+    in
+    walk s
+
   (* Discharge every pointer binding, which is the erasure that leaves a
      protocol naming only arrays. Inside out: a pointer taken from another
      is resolved first, so by the time the outer binding runs the inner one
      already speaks in the outer's terms. [resolve] substitutes an open
      expression into a scope it was not written in, so this must run on a
      term whose binders are distinct. *)
-  let rec resolve_pointers : t -> t = function
-    | PointerBind { var; pointer; body } ->
-        resolve ~target:var pointer (resolve_pointers body)
-    | Decl (d, p) -> Decl (d, resolve_pointers p)
-    | Assign a -> Assign { a with body = resolve_pointers a.body }
-    | If (b, p, q) -> If (b, resolve_pointers p, resolve_pointers q)
-    | For (r, p) -> For (r, resolve_pointers p)
-    | Seq (p, q) -> Seq (resolve_pointers p, resolve_pointers q)
-    | Call (c, p) -> Call (c, resolve_pointers p)
-    | (Access _ | Assert _ | Sync _ | Skip) as i -> i
+  let resolve_pointers ~(arrays : Memory.t Variable.Map.t) : t -> t =
+    let rec walk : t -> t = function
+      | PointerBind { var; pointer; body } ->
+          resolve ~arrays ~target:var pointer (walk body)
+      | Decl (d, p) -> Decl (d, walk p)
+      | Assign a -> Assign { a with body = walk a.body }
+      | If (b, p, q) -> If (b, walk p, walk q)
+      | For (r, p) -> For (r, walk p)
+      | Seq (p, q) -> Seq (walk p, walk q)
+      | Call (c, p) -> Call (c, walk p)
+      | (Access _ | Assert _ | Sync _ | Skip) as i -> i
+    in
+    walk
 
   module SubstMake (S : Subst.SUBST) = struct
     module M = Subst.Make (S)
@@ -633,7 +692,7 @@ module Code = struct
           return (Assign { var; data; ty; body })
       | Seq (Read e, s) ->
           let* s = imp_to_scoped s in
-          let rd = Access (Mem_access.read e.array e.index) in
+          let rd = Access (Mem_access.read ~selector:e.selector e.array e.index) in
           let rd = match e.guard with Some g -> If (g, rd, Skip) | None -> rd in
           return
             (match e.target with
@@ -643,8 +702,8 @@ module Code = struct
           let* s = imp_to_scoped s in
           let a =
             Access
-              (Mem_access.from_array ~array:e.array ~index:e.index
-                 ~mode:(Atomic e.atomic))
+              (Mem_access.from_array ~selector:e.selector ~array:e.array
+                 ~index:e.index ~mode:(Atomic e.atomic) ())
           in
           let a = match e.guard with Some g -> If (g, a, Skip) | None -> a in
           let s = Seq (Assert (atomic_result_marker e), s) in
@@ -659,7 +718,7 @@ module Code = struct
       | Sync s -> return (Sync s)
       | Write e ->
           let a =
-            Access (Mem_access.write e.array e.index e.payload)
+            Access (Mem_access.write ~selector:e.selector e.array e.index e.payload)
           in
           return (match e.guard with Some g -> If (g, a, Skip) | None -> a)
       | Assert b -> return (Assert b)

@@ -205,6 +205,11 @@ let pointee_size (x : t) : int option =
   in
   match elem with Some e when not (is_array e) -> width e | _ -> None
 
+let cell_width (x : t) : int option =
+  match x.inner with
+  | Array _ | Pointer _ -> width (strip_array x)
+  | _ -> None
+
 let to_scalar (x : t) : Scalar.t option =
   match x.inner with Scalar s -> Some s | _ -> None
 

@@ -140,6 +140,40 @@ module Address = struct
   }
 end
 
+let split_index ~(dims : int option list) (index : nexp list) : nexp list option
+    =
+  let arity = List.length index in
+  let rank = List.length dims in
+  if arity = 0 || rank <= arity then None
+  else
+    let suffix = List.filteri (fun i _ -> i >= arity - 1) dims in
+    match suffix with
+    (* The head of the suffix is the axis the flat index is already known to
+       sit inside, so its extent is never read; every extent below it is. *)
+    | _ :: below when below <> [] && List.for_all Option.is_some below ->
+        let below = List.filter_map Fun.id below in
+        let prefix, flat =
+          let rec split_last : nexp list -> nexp list * nexp = function
+            | [ x ] -> ([], x)
+            | x :: l ->
+                let prefix, last = split_last l in
+                (x :: prefix, last)
+            | [] -> ([], Num 0)
+          in
+          split_last index
+        in
+        let scale (below : int list) (e : nexp) : nexp =
+          match List.fold_left ( * ) 1 below with
+          | 1 -> e
+          | d -> n_div e (Num d)
+        in
+        let rec axes : int list -> nexp list = function
+          | [] -> []
+          | n :: rest -> n_umod (scale rest flat) (Num n) :: axes rest
+        in
+        Some ((prefix @ [ scale below flat ]) @ axes below)
+    | _ -> None
+
 (* A [Row] fixes the leading index of the memory it names, which is how a
    pointer read out of a table of pointers says which row it is. It is not a
    [Shift]: a shift moves within one row and carries the units of that move,

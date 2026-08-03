@@ -148,7 +148,7 @@ module Inline = struct
                        ~step:(Pointer.Step.make ~view ~elem)
                  | _ -> Pointer.Offset.elements u.offset
                in
-               Scoped.Code.resolve ~target:x
+               Scoped.Code.resolve ~arrays ~target:x
                  (Pointer.from_array u.array |> Pointer.shift ~offset)
                  s)
          (Common.zip k.parameters args)

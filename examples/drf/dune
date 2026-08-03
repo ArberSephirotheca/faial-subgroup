@@ -8,3 +8,18 @@
     fpath
   )
 )
+
+(rule
+  (deps (glob_files *.cu)
+    ../../drf/bin/main.exe
+    test.exe
+  )
+  (action
+    (with-stdout-to protocol.snapshot.new (run ./test.exe --snapshot))
+  )
+)
+
+(rule
+  (alias snapshot)
+  (action (diff protocol.snapshot protocol.snapshot.new))
+)

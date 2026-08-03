@@ -16,6 +16,7 @@ let read_int ~target ~array : t =
     {
       target = Some (Ty.int, var target);
       array = var array;
+      selector = [];
       index = [ Infer_exp.NExp (Num 0) ];
       guard = None;
     }
@@ -27,6 +28,7 @@ let atomic_with ~target ~array ~atomic () : t =
       ty = Ty.int;
       atomic;
       array = var array;
+      selector = [];
       index = [ Infer_exp.NExp (Num 0) ];
       guard = None;
     }

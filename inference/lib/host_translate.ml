@@ -48,7 +48,8 @@ let rec subst_in_stmt (var : Variable.t) (e_new : D_lang.Expr.t)
     (stmt : D_lang.Stmt.t) : D_lang.Stmt.t =
   let subst = D_lang.Expr.subst var e_new in
   let subst_subscript (s : D_lang.d_subscript) : D_lang.d_subscript =
-    { s with index = List.map subst s.index }
+    { s with selector = List.map subst s.selector;
+             index = List.map subst s.index }
   in
   let subst_decl : D_lang.Decl.t -> D_lang.Decl.t = D_lang.Decl.map subst in
   match stmt with

@@ -12,10 +12,17 @@ let ( @ ) = Common.append_tr
 
 open Exp
 
+let value_member ~(field : string) ~(ty : Ty.t) (x : Variable.t) : Variable.t =
+  let select (n : string) : string =
+    let n = n ^ "." ^ field in
+    if Ty.is_pointer ty then "*" ^ n else n
+  in
+  Variable.update_name select x
+
 let parse_var : D_lang.Expr.t -> Variable.t = function
   | Ident v -> v.name
-  | MemberExpr { base = Ident v; name = field; _ } ->
-      Variable.update_name (fun n -> n ^ "." ^ field) v.name
+  | MemberExpr { base = Ident v; name = field; ty } ->
+      value_member ~field ~ty v.name
   | e ->
       failwith ("parse_var: unexpected expression: " ^ D_lang.Expr.to_string e)
 
@@ -312,7 +319,9 @@ module Make (L : Logger) = struct
       {
         b with
         records =
-          Variable.Map.add (Variable.from_name r.name) r.fields b.records;
+          Variable.Map.add
+            (Variable.from_name (Record.qualified_name r))
+            r.fields b.records;
       }
 
     let lookup_record (ty : Ty.t) (b : t) : (string * Ty.t) list option =
@@ -349,6 +358,7 @@ module Make (L : Logger) = struct
 
   let members_of_value = members_of ~is_memory:Ty.is_pointer
   let members_of_memory = members_of ~is_memory:Ty.is_array_or_pointer
+
 
   let rec infer_load_expr (exp : D_lang.Expr.t) : d_pointer option =
     let ( let* ) = Option.bind in
@@ -485,9 +495,7 @@ module Make (L : Logger) = struct
     in
     let leaves =
       T.of_declaration ~root:array ty
-      |> (fun (t : Imp.Type_tree.t) -> t.leaves)
-      |> List.filter (fun (l : Imp.Type_tree.Leaf.t) ->
-          match l.ty.inner with Ty.Pointer _ -> false | _ -> true)
+      |> fun (t : Imp.Type_tree.t) -> t.leaves
     in
     let expanded =
       List.fold_left
@@ -505,10 +513,22 @@ module Make (L : Logger) = struct
            |> List.map (fun (name, extra) ->
                if read then
                  Infer_stmt.Read
-                   { target = None; array = name; index = index @ extra; guard }
+                   {
+                     target = None;
+                     array = name;
+                     selector = [];
+                     index = index @ extra;
+                     guard;
+                   }
                else
                  Infer_stmt.Write
-                   { array = name; index = index @ extra; payload = None; guard })
+                   {
+                     array = name;
+                     selector = [];
+                     index = index @ extra;
+                     payload = None;
+                     guard;
+                   })
            |> Infer_stmt.from_list)
     | Some _ | None -> None
 
@@ -517,8 +537,12 @@ module Make (L : Logger) = struct
 
     let infer_type (ty : Ty.t) : Ty.t = Context.resolve ty ctx in
 
-    let step_of (e : D_lang.Expr.t) : int option =
+    let view_step_of (e : D_lang.Expr.t) : int option =
       e |> D_lang.Expr.to_type |> infer_type |> Ty.pointee_size
+    in
+
+    let elem_step_of (e : D_lang.Expr.t) : int option =
+      e |> D_lang.Expr.to_type |> infer_type |> Ty.cell_width
     in
 
     (* The view is the step of the pointer being declared, so it is settled
@@ -527,7 +551,7 @@ module Make (L : Logger) = struct
        own. *)
     let infer_pointer (target : D_lang.Expr.t) (p : d_pointer) :
         Imp.Infer_pointer.t =
-      let view = step_of target in
+      let view = view_step_of target in
       let rec walk : d_pointer -> Imp.Infer_pointer.t = function
         | Leaf { source; offset } ->
             (* The steps and the offset's unit are one decision: bytes when
@@ -536,7 +560,7 @@ module Make (L : Logger) = struct
             let scaled =
               let ( let* ) = Option.bind in
               let* view = view in
-              let* elem = step_of source in
+              let* elem = elem_step_of source in
               let* offset = to_byte_offset infer_type offset in
               Some (Some (Imp.Pointer.Step.make ~view ~elem), offset)
             in
@@ -621,11 +645,14 @@ module Make (L : Logger) = struct
           | [] -> [ infer_expr a ]
           | members ->
               members
-              |> List.map (fun (field, _) ->
+              |> List.map (fun (field, ty) ->
                   match base_var a with
-                  | Some v ->
-                      named (Variable.update_name (fun n -> n ^ "." ^ field) v)
-                  | None -> Unknown (D_lang.Expr.to_string a ^ "." ^ field)))
+                  | Some v -> named (value_member ~field ~ty v)
+                  | None ->
+                      Unknown
+                        (Variable.name (value_member ~field ~ty
+                                          (Variable.from_name
+                                             (D_lang.Expr.to_string a))))))
     in
     let infer_call ?(result = None) (func : D_lang.Expr.t)
         (args : D_lang.Expr.t list) : Infer_stmt.t =
@@ -702,6 +729,7 @@ module Make (L : Logger) = struct
             w.target.name |> Variable.set_location w.target.location
           in
           let index = List.map infer_expr w.target.index in
+          let selector = List.map infer_expr w.target.selector in
           let guard = Option.map infer_expr w.guard in
           let element =
             peel_subscript (List.length w.target.index) (resolve w.target.ty)
@@ -710,22 +738,26 @@ module Make (L : Logger) = struct
                 aggregate ctx ty |> Option.map (fun _ -> ty))
           in
           (match element with
-           | None -> Infer_stmt.Write { array; index; payload = w.payload; guard }
+           | None ->
+               Infer_stmt.Write
+                 { array; selector; index; payload = w.payload; guard }
            | Some ty -> (
                match expand_access ctx ~read:false ~array ~index ~guard ty with
                | Some p -> p
                | None ->
-                   Infer_stmt.Write { array; index; payload = w.payload; guard }))
+                   Infer_stmt.Write
+                     { array; selector; index; payload = w.payload; guard }))
       | ReadAccessStmt r ->
           let array =
             r.source.name |> Variable.set_location r.source.location
           in
           let index = List.map infer_expr r.source.index in
+          let selector = List.map infer_expr r.source.selector in
           let ty = r.ty |> resolve |> Ty.strip_array in
           let guard = Option.map infer_expr r.guard in
           let rd =
             Infer_stmt.Read
-              { target = Some (ty, r.target); array; index; guard }
+              { target = Some (ty, r.target); array; selector; index; guard }
           in
           (* A subscript that stops short of an element leaves a pointer, and
              the target names that memory from here on. The subscript becomes
@@ -771,6 +803,7 @@ module Make (L : Logger) = struct
             r.source.name |> Variable.set_location r.source.location
           in
           let index = List.map infer_expr r.source.index in
+          let selector = List.map infer_expr r.source.selector in
           let ty = r.ty |> resolve |> Ty.strip_array in
           let atomic = Atomic.map infer_expr r.atomic in
           let guard = Option.map infer_expr r.guard in
@@ -779,6 +812,7 @@ module Make (L : Logger) = struct
               target = r.target;
               atomic;
               array;
+              selector;
               index;
               ty;
               guard;
@@ -1003,9 +1037,10 @@ module Make (L : Logger) = struct
     let to_params (members : (string * Ty.t) list) : Kernel.Parameter.t list =
       members
       |> List.map (fun (field, ty) ->
-          let v = Variable.update_name (fun n -> n ^ "." ^ field) x in
+          let v = value_member ~field ~ty x in
           if Ty.is_array_or_pointer ty then
-            Kernel.Parameter.array v (mk_array h ty)
+            Kernel.Parameter.array v
+              { (mk_array h ty) with size = [ None ] }
           else Kernel.Parameter.scalar v ty)
     in
     if Context.is_enum ty ctx then

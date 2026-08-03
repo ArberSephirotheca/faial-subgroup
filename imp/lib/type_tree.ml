@@ -45,19 +45,15 @@ let to_memory ~(hierarchy : Mem_hierarchy.t) (dims : int option list)
       |> List.filter (fun s -> String.length s > 0);
   }
 
-(* A pointer leaf is the storage holding the address, which nothing names
-   yet, and its pointee is the region every access through it reaches. So
-   the array a cut produces takes the member's own name. *)
 let to_arrays ~(hierarchy : Mem_hierarchy.t) (x : t) :
     (Variable.t * Memory.t) list =
   (x.leaves
-   |> List.filter_map (fun (l : Leaf.t) ->
-       match l.ty.inner with
-       | Ty.Pointer _ -> None
-       | _ -> Some (Leaf.name l, to_memory ~hierarchy l.dims l.ty)))
+   |> List.map (fun (l : Leaf.t) ->
+       (Leaf.name l, to_memory ~hierarchy l.dims l.ty)))
   @ (x.cuts
      |> List.map (fun (c : Root.t) ->
-         (Path.to_variable c.path, to_memory ~hierarchy [] c.ty)))
+         ( Path.to_variable (Path.deref c.path),
+           to_memory ~hierarchy [ None ] c.ty )))
 
 (* A vector's lanes occupy disjoint bytes and are selected by name, so
    until a vector is a leaf in its own right (native vector support) they

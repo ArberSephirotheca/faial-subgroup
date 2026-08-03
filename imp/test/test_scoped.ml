@@ -29,7 +29,7 @@ let scoped_conversion_tests =
       (let id = var "id" in
        let sq = var "s_Q" in
        let wr =
-         Imp.Stmt.(Write { array = sq; index = [ Var id ]; payload = None; guard = None })
+         Imp.Stmt.(Write { selector = []; array = sq; index = [ Var id ]; payload = None; guard = None })
        in
        let inc (x : Variable.t) =
          Imp.Stmt.decl_set x (n_plus (Num 32) (Var x))

@@ -5,6 +5,7 @@ type t = {
   ty : Ty.t;
   atomic : Exp.nexp Atomic.t;
   array : Variable.t;
+  selector : Exp.nexp list;
   index : Exp.nexp list;
   guard : Exp.bexp option;
 }
