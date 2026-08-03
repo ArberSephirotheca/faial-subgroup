@@ -746,6 +746,7 @@ module Code = struct
           imp_to_scoped (Seq (s, Skip))
     in
     fun (globals, s) ->
+      let s = Join_pointers.from_stmt s in
       let (_, globals), p = State.run (imp_to_scoped s) (1, globals) in
       (globals, p)
 end

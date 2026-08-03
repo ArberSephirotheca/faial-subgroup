@@ -239,19 +239,21 @@ let rec free_names (p : t) (acc : Variable.Set.t) : Variable.Set.t =
    at [target], continue into [source]. This is what a pointer taken from
    another pointer means, and it is how the binding of the inner one is
    discharged against the outer. *)
-let rec subst_base ~(target : Variable.t) ~(source : t) (p : t) : t =
+let rec subst_bases (f : Variable.t -> t option) (p : t) : t =
   match p with
-  | Base { array } -> if Variable.equal array target then source else p
-  | Row { base; index } -> Row { base = subst_base ~target ~source base; index }
-  | Shift { base; offset } ->
-      Shift { base = subst_base ~target ~source base; offset }
+  | Base { array } -> f array |> Option.value ~default:p
+  | Row { base; index } -> Row { base = subst_bases f base; index }
+  | Shift { base; offset } -> Shift { base = subst_bases f base; offset }
   | Select { cond; if_true; if_false } ->
       Select
         {
           cond;
-          if_true = subst_base ~target ~source if_true;
-          if_false = subst_base ~target ~source if_false;
+          if_true = subst_bases f if_true;
+          if_false = subst_bases f if_false;
         }
+
+let subst_base ~(target : Variable.t) ~(source : t) : t -> t =
+  subst_bases (fun x -> if Variable.equal x target then Some source else None)
 
 let addresses ~(index : nexp list) (p : t) : Address.t list =
   let guarded (cond : Exp.bexp) : Exp.bexp option -> Exp.bexp option = function

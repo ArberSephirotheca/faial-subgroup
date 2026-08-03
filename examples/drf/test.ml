@@ -333,6 +333,21 @@ let tests =
      it reports none at all. *)
     ("racy-ptr-select-cross.cu", [], 1);
     ("drf-ptr-select-cross.cu", [], 0);
+    (* The same choice arrived at by two assignments rather than by one
+     expression. A pointer bound in an arm has to survive the join, or
+     the use after it names a local and the access is deleted. *)
+    ("racy-ptr-select-branch.cu", [], 1);
+    ("drf-ptr-select-branch.cu", [], 0);
+    (* Which arm goes with which condition. Thread 1 writes [B] only when
+     [c] holds, so it meets thread 0 exactly when the join sends [p] to
+     [B] on the same condition. Swapping the arms flips both verdicts. *)
+    ("drf-ptr-select-branch-cross.cu", [], 0);
+    ("racy-ptr-select-branch-cross.cu", [], 1);
+    (* One arm reassigns a pointer already bound before the branch, so
+     the arm that leaves it alone contributes the binding it came in
+     with. Read as [A] throughout, both kernels answer race-free. *)
+    ("racy-ptr-select-rebind.cu", [], 1);
+    ("drf-ptr-select-rebind.cu", [], 0);
     (* A row crossing into a call. The subscript is bound to a name on
      the way in and the binding outlives inlining, so the callee's
      parameter resolves onto it and the write lands on the row. Every
