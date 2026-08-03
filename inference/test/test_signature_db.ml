@@ -114,7 +114,7 @@ let instance ~(arg : string) ~(decl_id : string) : Def.t =
 
 let in_namespace ~(ns : string) ~(decl_id : string) : Def.t =
   Def.Kernel
-    (kernel ~qualifier:[ ns ] ~decl_id ~name:"f" ~ty:f_ty
+    (kernel ~qualifier:[ Ty.segment ns ] ~decl_id ~name:"f" ~ty:f_ty
        ~params:[ param "int *" "A" ] ~body:true ())
 
 let call_site (decl_id : string) : Expr.t =
@@ -170,9 +170,9 @@ let identity_tests =
       (id ~template_args:[ "1" ] ~name:"f" ~ty:f_ty ());
     distinct "two namespaces are two entries" namespaces 2;
     resolves "a call reaches the namespace it names" namespaces "na"
-      (id ~qualifier:[ "a" ] ~name:"f" ~ty:f_ty ());
+      (id ~qualifier:[ Ty.segment "a" ] ~name:"f" ~ty:f_ty ());
     resolves "and not the other namespace" namespaces "nb"
-      (id ~qualifier:[ "b" ] ~name:"f" ~ty:f_ty ());
+      (id ~qualifier:[ Ty.segment "b" ] ~name:"f" ~ty:f_ty ());
   ]
 
 let () =

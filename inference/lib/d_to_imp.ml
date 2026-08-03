@@ -253,6 +253,12 @@ module Make (L : Logger) = struct
 
   (* -------------------------------------------------------------- *)
 
+  module PathMap = Map.Make (struct
+    type t = Ty.segment list
+
+    let compare = Stdlib.compare
+  end)
+
   module Context = struct
     type t = {
       sigs : D_lang.SignatureDB.t;
@@ -261,8 +267,13 @@ module Make (L : Logger) = struct
       assigns : (Variable.t * nexp) list;
       typedefs : TypeAlias.t;
       enums : Enum.t Variable.Map.t;
-      records : Record.t Variable.Map.t;
-      scope : string list;
+      records : Record.t PathMap.t;
+      (* A type that is not itself a class template specialisation, a
+         pointer to one for instance, arrives as a written spelling with no
+         path behind it. Such a use is matched against the spelling a
+         record's own path prints as. *)
+      spellings : Record.t StringMap.t;
+      scope : Ty.segment list;
       usings : string list;
     }
 
@@ -284,7 +295,8 @@ module Make (L : Logger) = struct
         assigns = [];
         typedefs = TypeAlias.empty;
         enums = Variable.Map.empty;
-        records = Variable.Map.empty;
+        records = PathMap.empty;
+        spellings = StringMap.empty;
         scope = [];
         usings = [];
       }
@@ -322,32 +334,32 @@ module Make (L : Logger) = struct
     let add_record (r : Record.t) (b : t) : t =
       {
         b with
-        records =
-          Variable.Map.add
-            (Variable.from_name (Record.qualified_name r))
-            r b.records;
+        records = PathMap.add (Record.path r) r b.records;
+        spellings = StringMap.add (Record.qualified_name r) r b.spellings;
       }
 
-    let set_scope (scope : string list) (b : t) : t = { b with scope }
+    let set_scope (scope : Ty.segment list) (b : t) : t = { b with scope }
 
     let add_using (n : string) (b : t) : t = { b with usings = n :: b.usings }
 
     (* Unqualified lookup: a name written inside [rw] may mean [rw::Cut] or
-       [Cut], so the enclosing scopes are tried innermost first. *)
-    let candidates (b : t) (name : string) : string list =
-      let rec prefixes : string list -> string list list = function
+       [Cut], so the enclosing scopes are tried innermost first. A path that
+       names a specialisation is also tried against the template it
+       instantiates, which is what a use inside the pattern reaches. *)
+    let candidates (b : t) (path : Ty.segment list) :
+        Ty.segment list list =
+      let rec prefixes : 'a list -> 'a list list = function
         | [] -> [ [] ]
         | l -> l :: prefixes (List.filteri (fun i _ -> i < List.length l - 1) l)
       in
-      (prefixes b.scope |> List.map (fun p -> p @ [ name ]))
-      @ List.map (fun n -> [ n; name ]) b.usings
-      |> List.map (String.concat "::")
+      (prefixes b.scope |> List.map (fun p -> p @ path))
+      @ List.map (fun n -> Ty.segment n :: path) b.usings
 
     let lookup_record (ty : Ty.t) (b : t) : (string * Ty.t) list option =
       let rec fields (r : Record.t) : (string * Ty.t) list =
         List.concat_map
           (fun base ->
-            match Variable.Map.find_opt (Variable.from_name base) b.records with
+            match PathMap.find_opt base b.records with
             | Some r -> fields r
             | None -> [])
           r.bases
@@ -356,12 +368,18 @@ module Make (L : Logger) = struct
       match ty.inner with
       | Ty.Struct { members = _ :: _ as members } -> Some members
       | _ ->
-          Record.type_name ty
-          |> Fun.flip Option.bind (fun n ->
-              n :: Option.to_list (Record.pattern_name n)
-              |> List.concat_map (candidates b)
-              |> List.find_map (fun n ->
-                  Variable.Map.find_opt (Variable.from_name n) b.records))
+          Record.type_path ty
+          |> Fun.flip Option.bind (fun path ->
+              match
+                path :: Option.to_list (Ty.pattern path)
+                |> List.concat_map (candidates b)
+                |> List.find_map (fun p -> PathMap.find_opt p b.records)
+              with
+              | Some r -> Some r
+              | None ->
+                  StringMap.find_opt
+                    (Ty.to_string (Ty.named path))
+                    b.spellings)
           |> Option.map fields
 
     let add_enum (e : Enum.t) (b : t) : t =

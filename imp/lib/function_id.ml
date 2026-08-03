@@ -1,11 +1,13 @@
+open Protocols
+
 type t = {
-  qualifier : string list;
+  qualifier : Ty.segment list;
   name : string;
   template_args : string list;
   ty : string;
 }
 
-let qualifier (x : t) : string list = x.qualifier
+let qualifier (x : t) : Ty.segment list = x.qualifier
 
 let make ?(qualifier = []) ?(template_args = []) ~(name : string)
     ~(ty : string) () : t =
@@ -26,7 +28,9 @@ let label (x : t) : string =
     if x.template_args = [] then ""
     else "<" ^ String.concat ", " x.template_args ^ ">"
   in
-  String.concat "" (List.map (fun q -> q ^ "::") x.qualifier) ^ x.name ^ args
+  String.concat ""
+    (List.map (fun q -> Ty.segment_to_string q ^ "::") x.qualifier)
+  ^ x.name ^ args
 
 let to_string (x : t) : string = label x ^ ":" ^ x.ty
 
@@ -35,7 +39,7 @@ let compare (x : t) (y : t) : int =
   | 0 -> (
       match String.compare x.ty y.ty with
       | 0 -> (
-          match List.compare String.compare x.qualifier y.qualifier with
+          match List.compare Stdlib.compare x.qualifier y.qualifier with
           | 0 -> List.compare String.compare x.template_args y.template_args
           | n -> n)
       | n -> n)

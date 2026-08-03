@@ -13,13 +13,12 @@ let rewrite_shared_arrays (p : t) : t =
   let records =
     p
     |> List.filter_map (function
-        | Def.Record r -> Some (Variable.from_name (Record.qualified_name r))
+        | Def.Record r -> Some (Record.path r)
         | _ -> None)
-    |> Variable.Set.of_list
   in
   let is_record (ty : Ty.t) : bool =
-    match Record.type_name ty with
-    | Some n -> Variable.Set.mem (Variable.from_name n) records
+    match Record.type_path ty with
+    | Some path -> List.mem path records
     | None -> false
   in
   let rw_exp (vars : Variable.Set.t) (e : Expr.t) : Expr.t =

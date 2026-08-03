@@ -185,7 +185,15 @@ let rec parse_expr (j : json) : c_expr j_result =
   | "MemberExpr" ->
       let* n = with_field "name" cast_string o in
       let* b = with_field "inner" (cast_list_1 parse_expr) o in
-      let* ty = get_field "type" o in
+      let method_type =
+        let* d = get_field "referencedDecl" o in
+        let* d = cast_object d in
+        let* k = get_kind d in
+        if k = "CXXMethodDecl" then get_signature_type d else Rjson.root_cause "" j
+      in
+      let* ty =
+        match method_type with Ok ty -> Ok ty | Error _ -> get_field "type" o
+      in
       Ok (MemberExpr { name = n; base = b; ty = J_type.parse ty })
   | "EnumConstantDecl" ->
       let* name = parse_variable j in

@@ -14,7 +14,7 @@ type t = {
   (* Enclosing namespaces, outermost first. Two functions of the same
      signature in different namespaces are different functions, and the
      name clang reports is unqualified. *)
-  qualifier : string list;
+  qualifier : Ty.segment list;
   (* Clang's identifier for this declaration, used to resolve a call
      site to the definition it names. *)
   decl_id : string option;
@@ -100,7 +100,8 @@ let to_s (k : t) : Indent.t list =
     else ""
   in
   let quals =
-    String.concat "" (List.map (fun q -> q ^ "::") k.qualifier)
+    String.concat ""
+      (List.map (fun q -> Ty.segment_to_string q ^ "::") k.qualifier)
   in
   let header =
     KernelAttr.to_string k.attribute
@@ -139,14 +140,12 @@ let rec mentions_this (j : Yojson.Basic.t) : bool =
    is qualified by. Given as a by-value parameter so that it expands into
    one parameter per member, which is the shape the object at the call site
    expands into. *)
-let this_param (qualifier : string list) : Param.t option =
-  match List.rev qualifier with
-  | record :: _ ->
-      let ty_var =
-        Ty_variable.make ~ty:(J_type.of_string record) ~name:this_var
-      in
-      Some (Param.make ~ty_var ~is_used:true ~is_shared:false)
+let this_param (qualifier : Ty.segment list) : Param.t option =
+  match qualifier with
   | [] -> None
+  | path ->
+      let ty_var = Ty_variable.make ~ty:(Ty.named path) ~name:this_var in
+      Some (Param.make ~ty_var ~is_used:true ~is_shared:false)
 
 let parse ?(qualifier = []) (type_params : Ty_param.t list)
     (j : Yojson.Basic.t) : t j_result =
@@ -161,7 +160,7 @@ let parse ?(qualifier = []) (type_params : Ty_param.t list)
       the field existed, and from a function at translation-unit
       scope. *)
    let qualifier =
-     match J_type.qualifier o with
+     match J_type.qualifier_opt o with
      | Some qs -> qs
      | None -> qualifier
    in

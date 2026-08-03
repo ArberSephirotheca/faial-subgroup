@@ -1,5 +1,22 @@
 type t = { name : string option; qualifiers : Qualifier.Set.t; inner : inner }
 
+(* The name of a class type, as the path of scopes that spell it: [Acc] is
+   one segment, [rw::Cut] two, and [Tpl<int>::In] two of which only the
+   first is applied. A template argument keeps the kind clang gave it, so
+   two specialisations that differ only in which declaration they name stay
+   distinct. *)
+and segment = { base : string; args : arg list }
+
+and arg =
+  | Type of t
+  | Integral of string
+  | Template of string
+  | Declaration of string
+  | Expression of string
+  | NullPtr
+  | Pack of arg list
+  | Unmodelled of string
+
 and inner =
   | Scalar of Scalar.t
   | Vector of { size : Vector_size.t; scalar : Scalar.t }
@@ -20,6 +37,7 @@ and inner =
   | Function
   | Void
   | Opaque of string
+  | Named of segment list
 
 let make ?name ?(qualifiers = Qualifier.Set.empty) (inner : inner) : t =
   { name; qualifiers; inner }
@@ -63,6 +81,21 @@ let rec inner_to_string : inner -> string = function
   | Function -> "(*)"
   | Void -> "void"
   | Opaque s -> s
+  | Named path -> path |> List.map segment_to_string |> String.concat "::"
+
+and segment_to_string (s : segment) : string =
+  match s.args with
+  | [] -> s.base
+  | args ->
+      s.base ^ "<" ^ (args |> List.map arg_to_string |> String.concat ", ")
+      ^ ">"
+
+and arg_to_string : arg -> string = function
+  | Type t -> to_string t
+  | Integral v -> v
+  | Template n | Declaration n | Expression n | Unmodelled n -> n
+  | NullPtr -> "nullptr"
+  | Pack l -> l |> List.map arg_to_string |> String.concat ", "
 
 and to_string (x : t) : string =
   match x.name with
@@ -100,6 +133,21 @@ let is_unknown (x : t) : bool = x.inner = Opaque "?"
 
 let to_opaque (x : t) : string option =
   match x.inner with Opaque s -> Some s | _ -> None
+
+let segment (base : string) : segment = { base; args = [] }
+let named (path : segment list) : t = make (Named path)
+
+let to_named (x : t) : segment list option =
+  match x.inner with Named path -> Some path | _ -> None
+
+(* The template a specialisation instantiates, which is the same path with
+   the arguments dropped from the segment that carries them. A path with no
+   arguments anywhere instantiates nothing. *)
+let pattern (path : segment list) : segment list option =
+  match List.rev path with
+  | ({ args = _ :: _; _ } as last) :: rest ->
+      Some (List.rev ({ last with args = [] } :: rest))
+  | _ -> None
 
 (* Clang writes a leading [const] on the element of an array and on the
    pointee of a pointer, so the written spelling that [Ty.is_const]

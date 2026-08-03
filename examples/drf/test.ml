@@ -1458,6 +1458,14 @@ let tests =
        function returns rather than its value. Declining says so; before,
        the assignment vanished and the kernel answered on its reads alone. *)
     ("declined-write-through-call.cu", [], 1);
+    (* Two specialisations separated only by a declaration argument, whose
+       identity is one level below the argument. The verdict is the same
+       either way; what the snapshot holds is which array each write
+       names. *)
+    ("racy-template-decl-arg.cu", [], 1);
+    (* A const and a non-const accessor of the same name and arity, which a
+       call separates by the signature the method reference names. *)
+    ("racy-const-overload.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are

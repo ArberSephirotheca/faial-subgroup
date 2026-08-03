@@ -1084,21 +1084,24 @@ module SignatureDB = struct
         (fun (k : Kernel.t) -> Function_id.ty k.Kernel.id = ty)
         candidates
 
-  let get_method ~(record : string) ~(name : string) ~(arg_count : int)
-      (db : t) : Kernel.t option =
+  let get_method ~(record : Ty.segment list) ~(name : string) ~(ty : string)
+      ~(arg_count : int) (db : t) : Kernel.t option =
     let of_class (k : Kernel.t) : bool =
-      match List.rev (Function_id.qualifier k.Kernel.id) with
-      | cls :: _ -> String.equal cls record
-      | [] -> false
+      Function_id.qualifier k.Kernel.id = record
     in
     let of_arity (n : int) : Kernel.t option =
-      match
+      let candidates =
         named name db
         |> List.filter (fun (k : Kernel.t) ->
                List.length k.params = n && of_class k)
+      in
+      match
+        List.filter
+          (fun (k : Kernel.t) -> Function_id.ty k.Kernel.id = ty)
+          candidates
       with
       | [ k ] -> Some k
-      | _ -> None
+      | _ -> ( match candidates with [ k ] -> Some k | _ -> None)
     in
     match of_arity (arg_count + 1) with
     | Some k -> Some k
@@ -1125,15 +1128,17 @@ module SignatureDB = struct
              with
              | Some k -> Some k
              | None ->
-                 let* record =
-                   List.nth_opt (List.rev qualifier) 0
-                   |> Fun.flip Option.bind (fun c ->
-                          Record.type_name (Ty.opaque c))
+                 let record =
+                   List.concat_map
+                     (fun c ->
+                       Record.type_path (Ty.opaque c) |> Option.value ~default:[])
+                     qualifier
                  in
-                 get_method ~record ~name:(Variable.name n) ~arg_count db))
-     | MemberExpr { base; name; _ } ->
-         let* record = Record.type_name (Expr.to_type base) in
-         get_method ~record ~name ~arg_count db
+                 get_method ~record ~name:(Variable.name n)
+                   ~ty:(Ty.to_string ty) ~arg_count db))
+     | MemberExpr { base; name; ty } ->
+         let* record = Record.type_path (Expr.to_type base) in
+         get_method ~record ~name ~ty:(Ty.to_string ty) ~arg_count db
      | _ -> None)
     |> Option.map Signature.from_kernel
 

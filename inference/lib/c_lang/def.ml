@@ -232,14 +232,17 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
   | "ClassTemplatePartialSpecializationDecl" -> (
       let name = with_opt_field "name" cast_string o in
       let qualifier =
-        match J_type.qualifier o with
+        match J_type.qualifier_opt o with
         | Some q -> q
         | None -> qualifier
       in
-      let inner_qualifier =
+      let self : Ty.segment option =
         match name with
-        | Ok (Some n) -> qualifier @ [ n ]
-        | Ok None | Error _ -> qualifier
+        | Ok (Some base) -> Some { Ty.base; args = J_type.template_args o }
+        | Ok None | Error _ -> None
+      in
+      let inner_qualifier =
+        match self with Some s -> qualifier @ [ s ] | None -> qualifier
       in
       let* inner = with_field_or "inner" cast_list [] o in
       (* A nested record is already here as a child; it is dropped on our
@@ -264,10 +267,10 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
               Ok (J_type.parse ty)
             in
             base |> Result.to_option
-            |> Fun.flip Option.bind Record.type_name)
+            |> Fun.flip Option.bind Record.type_path)
       in
-      match name with
-      | Ok (Some name) ->
+      match self with
+      | Some name ->
           let fields =
             inner
             |> List.filter (j_filter_kind (fun k -> k = "FieldDecl"))
@@ -287,11 +290,9 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
           if fields = [] && bases = [] then Ok defs
           else
             Ok
-              (Record
-                 { Record.name; qualifier; template_args = J_type.template_args o;
-                   bases; fields; location }
+              (Record { Record.name; qualifier; bases; fields; location }
               :: defs)
-      | Ok None | Error _ -> Ok defs)
+      | None -> Ok defs)
   | "VarDecl" -> (
       match Decl.parse j with
       | Ok (Some d) -> Ok [ Declaration d ]
@@ -303,7 +304,7 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
   | "NamespaceDecl" ->
       let qualifier =
         match with_opt_field "name" cast_string o with
-        | Ok (Some n) -> qualifier @ [ n ]
+        | Ok (Some n) -> qualifier @ [ Ty.segment n ]
         (* An anonymous namespace has no name to qualify with; its
            members are unreachable from any other namespace anyway. *)
         | Ok None | Error _ -> qualifier
@@ -322,7 +323,9 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
          self-named form, [typedef struct X { ... } X], renames nothing and
          is how CUDA declares its vector types, whose lanes are handled
          apart from records. *)
-      let self_named = Ty.is_struct ty && Record.type_name ty = Some name in
+      let self_named =
+        Ty.is_struct ty && Record.type_path ty = Some [ Ty.segment name ]
+      in
       if self_named || Ty.is_array_or_pointer ty || Ty.is_function ty then
         Ok []
       else Ok [ Typedef { name; ty; location } ])
