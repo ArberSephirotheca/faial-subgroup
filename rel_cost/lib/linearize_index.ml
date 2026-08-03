@@ -66,10 +66,9 @@ module Make (L : Logger.Logger) = struct
       array_size Variable.Map.t =
     mem
     |> Variable.Map.filter_map (fun _ v ->
-        let open Memory in
         match Ty.sizeof (Memory.data_ty v) with
-        | Some n -> Some { byte_count = n; dim = v.size }
-        | None -> Some { byte_count = bytes_per_word; dim = v.size })
+        | Some n -> Some { byte_count = n; dim = Memory.known_size v }
+        | None -> Some { byte_count = bytes_per_word; dim = Memory.known_size v })
 
   (* Flatten n-dimensional array and apply word size *)
   let linearize (cfg : Config.t) (mem : Memory.t Variable.Map.t) :

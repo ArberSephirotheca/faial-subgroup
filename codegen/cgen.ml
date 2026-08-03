@@ -266,9 +266,9 @@ let arr_to_shared (vm : Memory.t VarMap.t) : Indent.t list =
   VarMap.bindings vm
   |> List.map (fun (k, v) ->
       Indent.Line
-        ((if v.Memory.size = [] then "extern " else "")
+        ((if Memory.known_size v = [] then "extern " else "")
         ^ "__shared__ " ^ arr_type v ^ " " ^ Variable.name k
-        ^ idx_to_s string_of_int v.Memory.size
+        ^ idx_to_s string_of_int (Memory.known_size v)
         ^ ";"))
 
 let local_var_to_l (vs : VarSet.t) (g : Generator.t) : Indent.t list =

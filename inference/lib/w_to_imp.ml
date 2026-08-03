@@ -23,7 +23,7 @@ module Arrays = struct
       Memory.t option =
     let ( let* ) = Option.bind in
     let* size, data_type = tr_type ty in
-    Some { Memory.hierarchy; size; data_type }
+    Some { Memory.hierarchy; size = List.map Option.some size; data_type }
 
   let tr_decl (d : W_lang.Declaration.t) : (Variable.t * Memory.t) option =
     let ( let* ) = Option.bind in

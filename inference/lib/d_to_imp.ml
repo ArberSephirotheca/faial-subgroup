@@ -445,6 +445,73 @@ module Make (L : Logger) = struct
   (* Lane axes of a CUDA vector type ([uint2], [const uint3], ...). *)
   let vector_type_axes (ty : Ty.t) : string list option = Ty.vector_lanes ty
 
+  (* Only a record is expanded. A vector's lanes are named by the descent,
+     so a lane of an element resolves, but a whole-vector store is left
+     alone: the widening view that vectorised code writes, a [float4 *]
+     over a [float] array, is rescaled into the array it lands on, and
+     expanding it would name lanes of the view rather than cells of the
+     array. *)
+  let aggregate (ctx : Context.t) (ty : Ty.t) : (string * Ty.t) list option =
+    Context.lookup_record ty ctx
+
+  (* Touching a whole record touches every scalar under it, so the access
+     is expanded into one per cell of every leaf. The cells are enumerated
+     rather than bound by a variable: a bound index would need a
+     declaration, and an unset declaration following an access is the shape
+     [bind_uniform_reads] fills with the value that access loaded. A leaf
+     whose extents are not all known, or whose cell count is beyond the
+     cap, leaves the access naming the enclosing object. *)
+  let expand_limit : int = 64
+
+  let expand_access (ctx : Context.t) ~(read : bool) ~(array : Variable.t)
+      ~(index : Infer_exp.t list) ~(guard : Infer_exp.t option) (ty : Ty.t) :
+      Infer_stmt.t option =
+    let module T = Imp.Type_tree.Make (struct
+      let members (ty : Ty.t) : (string * Ty.t) list option =
+        Context.lookup_record (Context.resolve ty ctx) ctx
+    end) in
+    let cells (dims : int option list) : Infer_exp.t list list option =
+      List.fold_left
+        (fun acc dim ->
+          match (acc, dim) with
+          | Some rows, Some n when n >= 0 ->
+              Some
+                (List.concat_map
+                   (fun row ->
+                     List.init n (fun i -> row @ [ Infer_exp.num i ]))
+                   rows)
+          | _, _ -> None)
+        (Some [ [] ]) dims
+    in
+    let leaves =
+      T.of_declaration ~root:array ty
+      |> (fun (t : Imp.Type_tree.t) -> t.leaves)
+      |> List.filter (fun (l : Imp.Type_tree.Leaf.t) ->
+          match l.ty.inner with Ty.Pointer _ -> false | _ -> true)
+    in
+    let expanded =
+      List.fold_left
+        (fun acc (l : Imp.Type_tree.Leaf.t) ->
+          match (acc, cells l.dims) with
+          | Some rows, Some cs ->
+              Some (rows @ List.map (fun c -> (Imp.Type_tree.Leaf.name l, c)) cs)
+          | _, _ -> None)
+        (Some []) leaves
+    in
+    match expanded with
+    | Some cs when cs <> [] && List.length cs <= expand_limit ->
+        Some
+          (cs
+           |> List.map (fun (name, extra) ->
+               if read then
+                 Infer_stmt.Read
+                   { target = None; array = name; index = index @ extra; guard }
+               else
+                 Infer_stmt.Write
+                   { array = name; index = index @ extra; payload = None; guard })
+           |> Infer_stmt.from_list)
+    | Some _ | None -> None
+
   let infer_stmt (ctx : Context.t) : D_lang.Stmt.t -> Imp.Infer_stmt.t =
     let resolve ty = Context.resolve ty ctx in
 
@@ -524,26 +591,41 @@ module Make (L : Logger) = struct
         | Ty.Pointer p | Ty.Array { base = p; _ } -> Some (Context.resolve p ctx)
         | _ -> None
       in
-      let base, members =
-        match Option.map (members_of_memory ctx) pointee with
-        | Some (_ :: _ as members) -> ([ infer_expr a ], members)
-        | Some [] | None -> ([], members_of_value ctx ty)
-      in
       let rec base_var (a : D_lang.Expr.t) : Variable.t option =
         match a with
         | Ident v -> Some v.name
         | CXXConstructExpr { args = [ a ]; _ } -> base_var a
         | _ -> None
       in
-      let member (field : string) : Infer_exp.t =
-        match base_var a with
-        | Some v ->
-            NExp (Var (Variable.update_name (fun n -> n ^ "." ^ field) v))
-        | None -> Unknown (D_lang.Expr.to_string a ^ "." ^ field)
+      (* The argument list is built by the same descent as the parameter
+         list, so the two cannot drift out of step and slide the positional
+         binding along. *)
+      let module T = Imp.Type_tree.Make (struct
+        let members (ty : Ty.t) : (string * Ty.t) list option =
+          Context.lookup_record (Context.resolve ty ctx) ctx
+      end) in
+      let leaves (root : Variable.t) : Variable.t list =
+        T.of_parameter ~root ty
+        |> Imp.Type_tree.to_arrays ~hierarchy:Mem_hierarchy.GlobalMemory
+        |> List.filter_map (fun (v, _) ->
+            if Variable.equal v root then None else Some v)
       in
-      match members with
-      | [] -> [ infer_expr a ]
-      | _ -> base @ List.map (fun (field, _) -> member field) members
+      let named (v : Variable.t) : Infer_exp.t = NExp (Var v) in
+      match (Option.is_some pointee, base_var a) with
+      | true, Some v -> (
+          match leaves v with
+          | [] -> [ infer_expr a ]
+          | l -> infer_expr a :: List.map named l)
+      | _, _ -> (
+          match members_of_value ctx ty with
+          | [] -> [ infer_expr a ]
+          | members ->
+              members
+              |> List.map (fun (field, _) ->
+                  match base_var a with
+                  | Some v ->
+                      named (Variable.update_name (fun n -> n ^ "." ^ field) v)
+                  | None -> Unknown (D_lang.Expr.to_string a ^ "." ^ field)))
     in
     let infer_call ?(result = None) (func : D_lang.Expr.t)
         (args : D_lang.Expr.t list) : Infer_stmt.t =
@@ -621,7 +703,19 @@ module Make (L : Logger) = struct
           in
           let index = List.map infer_expr w.target.index in
           let guard = Option.map infer_expr w.guard in
-          Infer_stmt.Write { array; index; payload = w.payload; guard }
+          let element =
+            peel_subscript (List.length w.target.index) (resolve w.target.ty)
+            |> Option.map resolve
+            |> Fun.flip Option.bind (fun ty ->
+                aggregate ctx ty |> Option.map (fun _ -> ty))
+          in
+          (match element with
+           | None -> Infer_stmt.Write { array; index; payload = w.payload; guard }
+           | Some ty -> (
+               match expand_access ctx ~read:false ~array ~index ~guard ty with
+               | Some p -> p
+               | None ->
+                   Infer_stmt.Write { array; index; payload = w.payload; guard }))
       | ReadAccessStmt r ->
           let array =
             r.source.name |> Variable.set_location r.source.location
@@ -648,6 +742,12 @@ module Make (L : Logger) = struct
             |> Option.map Ty.is_array_or_pointer
             |> Option.value ~default:false
           in
+          let element =
+            peel_subscript (List.length r.source.index) (resolve r.source.ty)
+            |> Option.map resolve
+            |> Fun.flip Option.bind (fun ty ->
+                aggregate ctx ty |> Option.map (fun _ -> ty))
+          in
           if leaves_memory then
             let pointer =
               List.fold_left
@@ -656,7 +756,16 @@ module Make (L : Logger) = struct
                 index
             in
             Infer_stmt.LocationAlias { target = r.target; pointer }
-          else rd
+          else (
+            match element with
+            | None -> rd
+            | Some ety -> (
+                (* The loaded record has no single value, so the target is
+                   left unconstrained and each cell is read on its own. *)
+                match expand_access ctx ~read:true ~array ~index ~guard ety with
+                | Some p ->
+                    Infer_stmt.seq (Infer_stmt.decl_unset ~ty r.target) p
+                | None -> rd))
       | AtomicAccessStmt r ->
           let array =
             r.source.name |> Variable.set_location r.source.location
@@ -872,7 +981,7 @@ module Make (L : Logger) = struct
     let mk_array (h : Mem_hierarchy.t) (ty : Ty.t) : Memory.t =
       {
         hierarchy = h;
-        size = Ty.get_array_length ty;
+        size = Ty.get_array_dims ty;
         data_type = Ty.get_array_type ty;
       }
     in
@@ -899,22 +1008,21 @@ module Make (L : Logger) = struct
             Kernel.Parameter.array v (mk_array h ty)
           else Kernel.Parameter.scalar v ty)
     in
-    let pointee (ty : Ty.t) : Ty.t option =
-      match ty.inner with
-      | Ty.Pointer p -> Some p
-      | Ty.Array a -> Some a.base
-      | _ -> None
-    in
     if Context.is_enum ty ctx then
       [ Kernel.Parameter.enum x (Context.get_enum ty ctx) ]
     else if Context.is_int ty ctx then [ Kernel.Parameter.scalar x ty ]
     else if Ty.is_array_or_pointer ty then
-      let fields =
-        pointee ty
-        |> Option.map (fun ty -> members_of_memory ctx (Context.resolve ty ctx))
-        |> Option.value ~default:[]
+      let leaves =
+        let module T = Imp.Type_tree.Make (struct
+          let members (ty : Ty.t) : (string * Ty.t) list option =
+            Context.lookup_record (Context.resolve ty ctx) ctx
+        end) in
+        T.of_parameter ~root:x ty
+        |> Imp.Type_tree.to_arrays ~hierarchy:h
+        |> List.filter (fun (v, _) -> not (Variable.equal v x))
+        |> List.map (fun (v, m) -> Kernel.Parameter.array v m)
       in
-      Kernel.Parameter.array x (mk_array h ty) :: to_params fields
+      Kernel.Parameter.array x (mk_array h ty) :: leaves
     else
       let members = members_of_value ctx ty in
       if members <> [] then to_params members
@@ -947,17 +1055,16 @@ module Make (L : Logger) = struct
       C_lang.BarrierOp.is_barrier_c_type resolved
       || C_lang.BarrierOp.is_barrier_base_type d.ty
     in
+    let module T = Imp.Type_tree.Make (struct
+      let members (ty : Ty.t) : (string * Ty.t) list option =
+        Context.lookup_record (Context.resolve ty ctx) ctx
+    end) in
     let members (d : Decl.t) : (Variable.t * array_t) list =
       match Context.lookup_record (Context.resolve d.ty ctx) ctx with
       | None -> []
-      | Some fields ->
-          fields
-          |> List.filter_map (fun (field, ty) ->
-              let ty = Context.resolve ty ctx in
-              if Ty.is_array_or_pointer ty then
-                let v = Variable.update_name (fun n -> n ^ "." ^ field) d.var in
-                Some (v, Memory.from_type SharedMemory ty)
-              else None)
+      | Some _ ->
+          T.of_declaration ~root:d.var (Context.resolve d.ty ctx)
+          |> Imp.Type_tree.to_arrays ~hierarchy:SharedMemory
     in
     let rec find_shared (arrays : (Variable.t * array_t) list) (s : Stmt.t) :
         (Variable.t * array_t) list =
@@ -992,7 +1099,65 @@ module Make (L : Logger) = struct
     in
     find_shared [] s
 
-  let parse_kernel (ctx : Context.t) (k : D_lang.Kernel.t) :
+  (* The array map this model would derive from the parameter types, set
+     beside the one the front end accumulates from declarations, so the two
+     can be compared before anything depends on the derived one. *)
+  let type_tree_report (ctx : Context.t) (k : D_lang.Kernel.t)
+      (parameters : Imp.Kernel.Parameter.t list) : string =
+    let module T = Imp.Type_tree.Make (struct
+      let members (ty : Ty.t) : (string * Ty.t) list option =
+        Context.lookup_record ty ctx
+    end) in
+    let tree =
+      k.params
+      |> List.map (fun (p : Param.t) ->
+          T.of_parameter ~root:p.ty_var.name
+            (Context.resolve p.ty_var.ty ctx))
+      |> Imp.Type_tree.concat
+    in
+    let declared =
+      Variable.Map.bindings ctx.arrays
+      |> List.filter (fun (x, _) ->
+          not (String.contains (Variable.name x) '.'))
+      |> List.map (fun (x, m) ->
+          T.of_declaration ~dims:m.Memory.size
+            ~root:x (Memory.data_ty m))
+      |> Imp.Type_tree.concat
+    in
+    let tree = Imp.Type_tree.union tree declared in
+    let derived =
+      tree.leaves
+      |> List.map (fun (l : Imp.Type_tree.Leaf.t) ->
+          (Variable.name (Imp.Type_tree.Leaf.name l),
+           Imp.Type_tree.Leaf.to_string l))
+    in
+    let accumulated =
+      (parameters
+       |> List.filter_map Imp.Kernel.Parameter.to_array
+       |> List.map (fun (x, m) -> (Variable.name x, Memory.to_string m)))
+      @ (Variable.Map.bindings ctx.arrays
+         |> List.map (fun (x, m) -> (Variable.name x, Memory.to_string m)))
+    in
+    let names l = l |> List.map fst |> Common.StringSet.of_list in
+    let d = names derived and a = names accumulated in
+    let line (tag : string) (n : string) (l : (string * string) list) : string =
+      "  " ^ tag ^ " " ^ n ^ " :: " ^ List.assoc n l
+    in
+    let both = Common.StringSet.inter d a |> Common.StringSet.elements in
+    let only_derived = Common.StringSet.diff d a |> Common.StringSet.elements in
+    let only_accumulated = Common.StringSet.diff a d |> Common.StringSet.elements in
+    String.concat "\n"
+      (("### type-tree " ^ Imp.Function_id.label k.id)
+       :: List.map (fun n -> line "=" n derived) both
+       @ List.map (fun n -> line "+" n derived) only_derived
+       @ List.map (fun n -> line "-" n accumulated) only_accumulated
+       @ List.map
+           (fun (c : Imp.Type_tree.Root.t) ->
+             "  ~ " ^ Imp.Type_tree.Root.to_string c)
+           tree.cuts)
+
+  let parse_kernel ?(report = fun (_ : unit -> string) -> ())
+      (ctx : Context.t) (k : D_lang.Kernel.t) :
       Context.t * Imp.Kernel.t =
     let code, return =
       infer_stmt ctx k.code
@@ -1012,6 +1177,7 @@ module Make (L : Logger) = struct
     let parameters =
       List.concat_map (parse_param ~expand_vectors ctx) k.params
     in
+    report (fun () -> type_tree_report ctx k parameters);
     (* type parameters become global variables because c-t-j doesn't represent
      type instantiations.
     *)
@@ -1046,6 +1212,7 @@ module Make (L : Logger) = struct
       } )
 
   let parse_program ?(policy = Opaque_call_policy.default)
+      ?(report = fun (_ : unit -> string) -> ())
       (p : D_lang.Program.t) : Imp.Kernel.t list =
     (* Hoist C++ lambdas into synthetic [D_lang.Kernel.t] entries with
        [Auxiliary] visibility before parsing. The synthetic kernels
@@ -1065,21 +1232,18 @@ module Make (L : Logger) = struct
               let is_mut = not (Ty.is_const ty) in
               let add_members (h : Mem_hierarchy.t) (ctx : Context.t) :
                   Context.t =
+                let module T = Imp.Type_tree.Make (struct
+                  let members (ty : Ty.t) : (string * Ty.t) list option =
+                    Context.lookup_record (Context.resolve ty ctx) ctx
+                end) in
                 match Context.lookup_record ty ctx with
                 | None -> ctx
-                | Some fields ->
-                    List.fold_left
-                      (fun ctx (field, ty) ->
-                        let ty = Context.resolve ty ctx in
-                        if Ty.is_array_or_pointer ty then
-                          let x =
-                            Variable.update_name
-                              (fun n -> n ^ "." ^ field)
-                              v.var
-                          in
-                          Context.add_array x (Memory.from_type h ty) ctx
-                        else ctx)
-                      ctx fields
+                | Some _ ->
+                    T.of_declaration ~root:v.var ty
+                    |> Imp.Type_tree.to_arrays ~hierarchy:h
+                    |> List.fold_left
+                        (fun ctx (x, m) -> Context.add_array x m ctx)
+                        ctx
               in
               if is_mut && List.mem C_lang.c_attr_shared v.attrs then
                 Context.add_array v.var
@@ -1123,7 +1287,7 @@ module Make (L : Logger) = struct
           in
           parse_p b l
       | Kernel k :: l ->
-          let ctx, k = parse_kernel ctx k in
+          let ctx, k = parse_kernel ~report ctx k in
           let ks = parse_p ctx l in
           k :: ks
       | Prototype _ :: l -> parse_p ctx l

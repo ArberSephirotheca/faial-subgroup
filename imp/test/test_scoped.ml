@@ -39,7 +39,7 @@ let scoped_conversion_tests =
        let sq = var "s_Q" in
        Code.Decl
          ( Decl.set id (n_plus (Num 32) (Var id)),
-           Access (Access.write sq [ Var id ] None) ));
+           Access (Mem_access.write sq [ Var id ] None) ));
     (* Simple variable declaration *)
     test_scoped_conversion "simple variable declaration"
       (Stmt.decl_unset (var "x"))

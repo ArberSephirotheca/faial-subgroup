@@ -151,14 +151,14 @@ let rec strip_array (x : t) : t =
   | Pointer p -> if is_array p then strip_array p else p
   | _ -> x
 
+let rec get_array_dims (x : t) : int option list =
+  match x.inner with
+  | Array a -> a.size :: get_array_dims a.base
+  | Pointer p -> get_array_dims p
+  | _ -> []
+
 let get_array_length (x : t) : int list =
-  let rec dims (x : t) : int option list =
-    match x.inner with
-    | Array a -> a.size :: dims a.base
-    | Pointer p -> dims p
-    | _ -> []
-  in
-  let l = dims x in
+  let l = get_array_dims x in
   if List.exists Option.is_none l then [] else List.filter_map Fun.id l
 
 let get_array_type (x : t) : string list =

@@ -8,7 +8,7 @@ module Code = struct
     | Skip
     | Sync of Sync.t
     | Assert of Assert.t
-    | Access of Access.t
+    | Access of Mem_access.t
     | Call of (Call.t * t)
     | If of (Exp.bexp * t * t)
     | For of (Range.t * t)
@@ -55,7 +55,7 @@ module Code = struct
       | Skip -> [ Line "skip;" ]
       | Sync s -> [ Line (Sync.to_string s ^ ";") ]
       | Assert b -> [ Line (Assert.to_string b ^ ";") ]
-      | Access e -> [ Line (Access.to_string e) ]
+      | Access e -> [ Line (Mem_access.to_string e) ]
       | Call (c, s) ->
           [ Line (Call.to_string c ^ " {"); Block (to_s s); Line "}" ]
       | Assign a ->
@@ -101,7 +101,7 @@ module Code = struct
      wider than the element it lands on produces, is bound by a loop over the
      cells it spans. *)
   let resolve ~(target : Variable.t) (pointer : Pointer.t) : t -> t =
-    let materialise (a : Access.t) (addr : Pointer.Address.t) : t =
+    let materialise (a : Mem_access.t) (addr : Pointer.Address.t) : t =
       let taken =
         List.fold_left
           (fun acc (i : Pointer.Index.t) ->
@@ -124,15 +124,16 @@ module Code = struct
       in
       (* Keep the access's own location, so a diagnostic points at the use
          rather than at the pointer's declaration. *)
-      let array = { addr.array with location = a.array.location } in
-      let body = Access { a with array; index = List.rev index } in
+      let root = { addr.array with location = (Path.base a.path).location } in
+      let path = Path.graft ~prefix:(Path.root root) a.path in
+      let body = Access { a with path; index = List.rev index } in
       let body = List.fold_left (fun s r -> For (r, s)) body ranges in
       (* A choice reaches one of its arms, so the access is emitted once per
          arm under the condition that selects it. The guard nests outside any
          loop a span introduced, since the span is inside the arm. *)
       match addr.guard with Some g -> If (g, body, Skip) | None -> body
     in
-    let rewrite (a : Access.t) : t =
+    let rewrite (a : Mem_access.t) : t =
       let a =
         match a.mode with
         | Access.Mode.Write (Some _) when not (Pointer.keeps_payload pointer)
@@ -152,7 +153,10 @@ module Code = struct
       Pointer.subst_base ~target ~source:pointer p
     in
     let rec resolve : t -> t = function
-      | Access a as i -> if Variable.equal a.array target then rewrite a else i
+      | Access a as i -> (
+          match Path.under ~root:target a.path with
+          | Some path -> rewrite { a with path }
+          | None -> i)
       | Decl (d, l) as i -> if Variable.equal d.var target then i else Decl (d, resolve l)
       | Assign a as i ->
           if Variable.equal a.var target then i
@@ -198,7 +202,7 @@ module Code = struct
       | None -> None
 
     let rec subst (st : S.t) : t -> t = function
-      | Access a -> Access (M.a_subst st a)
+      | Access a -> Access (Mem_access.map (M.n_subst st) a)
       | Assert b -> Assert (Assert.map (M.b_subst st) b)
       | Decl (d, p) ->
           let d = Decl.map (M.n_subst st) d in
@@ -255,8 +259,8 @@ module Code = struct
   let subst = ReplacePair.subst
 
   let rec written_arrays (acc : Variable.Set.t) : t -> Variable.Set.t = function
-    | Access { array; mode = Write _ | Atomic _; _ } ->
-        Variable.Set.add array acc
+    | Access ({ mode = Write _ | Atomic _; _ } as a) ->
+        Variable.Set.add (Mem_access.array a) acc
     | Call (c, p) ->
         Call.arrays c |> Variable.Set.of_list |> Variable.Set.union acc
         |> fun acc -> written_arrays acc p
@@ -306,17 +310,17 @@ module Code = struct
     let rec rewrite (looped : Variable.Set.t) (v : Version.t) :
         t -> t * Version.t = function
       | Seq
-          ( (Access { array; index; mode = Read; _ } as acc),
+          ( (Access ({ index; mode = Read; _ } as a) as acc),
             Decl ((({ init = None; _ } : Decl.t) as d), rest) )
-        when not (Variable.Set.mem array looped) ->
-          let call = read_call v d.ty array index in
+        when not (Variable.Set.mem (Mem_access.array a) looped) ->
+          let call = read_call v d.ty (Mem_access.array a) index in
           let rest, v = rewrite looped v rest in
           (Seq (acc, Decl ({ d with init = Some call }, rest)), v)
       | Seq
-          ( If (b, (Access { array; index; mode = Read; _ } as acc), Skip),
+          ( If (b, (Access ({ index; mode = Read; _ } as a) as acc), Skip),
             Decl ((({ init = None; _ } : Decl.t) as d), rest) )
-        when not (Variable.Set.mem array looped) ->
-          let call = read_call v d.ty array index in
+        when not (Variable.Set.mem (Mem_access.array a) looped) ->
+          let call = read_call v d.ty (Mem_access.array a) index in
           let rest, v = rewrite looped v rest in
           (Seq (If (b, acc, Skip), Decl ({ d with init = Some call }, rest)), v)
       | Seq (p, q) ->
@@ -343,8 +347,8 @@ module Code = struct
           let v = Call.arrays c |> List.fold_left (Fun.flip Version.bump) v in
           let p, v = rewrite looped v p in
           (Call (c, p), v)
-      | Access { array; mode = Write _ | Atomic _; _ } as p ->
-          (p, Version.bump array v)
+      | Access ({ mode = Write _ | Atomic _; _ } as a) as p ->
+          (p, Version.bump (Mem_access.array a) v)
       | (Access _ | Assert _ | Sync _ | Skip) as p -> (p, v)
     in
     fun p -> rewrite Variable.Set.empty Version.empty p |> fst
@@ -352,8 +356,8 @@ module Code = struct
   (* Only keep accesses that mention an array in the set *)
   let filter_locs (locs : Variable.Set.t) : t -> t =
     let rec filter : t -> t = function
-      | Access { array = x; _ } as i ->
-          if Variable.Set.mem x locs then i else Skip
+      | Access a as i ->
+          if Variable.Set.mem (Mem_access.array a) locs then i else Skip
       | Call (c, s) ->
           let arrays = Call.arrays c |> Variable.Set.of_list in
           let s = filter s in
@@ -391,7 +395,7 @@ module Code = struct
           (match s.participants with Some e -> n e acc | None -> acc)
       | Assert a -> b a.cond acc
       | Access a ->
-          let acc = Variable.Set.add a.array acc in
+          let acc = Variable.Set.add (Mem_access.array a) acc in
           List.fold_left (fun acc e -> n e acc) acc a.index
       | Decl (d, p) ->
           let acc = Variable.Set.add d.var acc in
@@ -426,7 +430,6 @@ module Code = struct
     let empty (env : Subst.Vars.t) : bool = Variable.Map.is_empty env in
     let ns env e = if empty env then e else R.n_subst env e in
     let bs env b = if empty env then b else R.b_subst env b in
-    let as_ env a = if empty env then a else R.a_subst env a in
     let rs env r = if empty env then r else R.r_subst env r in
     let enter (env : Subst.Vars.t) (bound : Variable.Set.t)
         (taken : Variable.Set.t) (x : Variable.t) :
@@ -443,7 +446,7 @@ module Code = struct
         (taken : Variable.Set.t) :
         t -> t * Variable.Set.t * Variable.Set.t = function
       | Skip -> (Skip, bound, taken)
-      | Access a -> (Access (as_ env a), bound, taken)
+      | Access a -> (Access (Mem_access.map (ns env) a), bound, taken)
       | Assert b -> (Assert (Assert.map (bs env) b), bound, taken)
       | Sync s ->
           ( Sync
@@ -630,7 +633,7 @@ module Code = struct
           return (Assign { var; data; ty; body })
       | Seq (Read e, s) ->
           let* s = imp_to_scoped s in
-          let rd = Access (Access.read e.array e.index) in
+          let rd = Access (Mem_access.read e.array e.index) in
           let rd = match e.guard with Some g -> If (g, rd, Skip) | None -> rd in
           return
             (match e.target with
@@ -640,7 +643,7 @@ module Code = struct
           let* s = imp_to_scoped s in
           let a =
             Access
-              (Access.make ~array:e.array ~index:e.index
+              (Mem_access.from_array ~array:e.array ~index:e.index
                  ~mode:(Atomic e.atomic))
           in
           let a = match e.guard with Some g -> If (g, a, Skip) | None -> a in
@@ -656,7 +659,7 @@ module Code = struct
       | Sync s -> return (Sync s)
       | Write e ->
           let a =
-            Access (Access.write e.array e.index e.payload)
+            Access (Mem_access.write e.array e.index e.payload)
           in
           return (match e.guard with Some g -> If (g, a, Skip) | None -> a)
       | Assert b -> return (Assert b)

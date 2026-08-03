@@ -39,7 +39,8 @@ let is_stdlib (loc : Location.t) : bool =
     | None -> false
     | Some d -> Fpath.is_prefix d (Fpath.v f)
 
-let analyze (verbose : bool) (assume_launch : bool) (j : Yojson.Basic.t) :
+let analyze (verbose : bool) (type_tree : bool) (assume_launch : bool)
+    (j : Yojson.Basic.t) :
     C_lang.Program.t * D_lang.Program.t * Imp.Kernel.t list =
   match C_lang.Program.parse j with
   | Ok k1 ->
@@ -47,9 +48,12 @@ let analyze (verbose : bool) (assume_launch : bool) (j : Yojson.Basic.t) :
         if assume_launch then Synthesise_launches.rewrite_program else Fun.id
       in
       let k2 = k1 |> D_lang.rewrite_program |> synth in
+      let report (f : unit -> string) : unit =
+        if type_tree then print_endline (f ())
+      in
       let k3 =
-        if verbose then D_to_imp.Default.parse_program k2
-        else D_to_imp.Silent.parse_program k2
+        if verbose then D_to_imp.Default.parse_program ~report k2
+        else D_to_imp.Silent.parse_program ~report k2
       in
       (k1, k2, k3)
   | Error e ->
@@ -120,13 +124,14 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
   print_endline (Yojson.Basic.pretty_to_string (`List l))
 
 let main (fnames : string list) (silent : bool) (json : bool) (verbose : bool)
-    (only_global : bool) (show_stdlib : bool) (assume_launch : bool)
-    (includes : string list) (macros : string list) : unit =
+    (type_tree : bool) (only_global : bool) (show_stdlib : bool)
+    (assume_launch : bool) (includes : string list) (macros : string list) :
+    unit =
   let j =
     Cu_to_json.cu_to_json ~ignore_fail:true ~launch_params:true ~includes
       ~macros fnames
   in
-  let k1, k2, k3 = analyze verbose assume_launch j in
+  let k1, k2, k3 = analyze verbose type_tree assume_launch j in
   let keep_loc (loc : Location.t) : bool = show_stdlib || not (is_stdlib loc) in
   (* Conservative drop list for the D_lang and Imp stages, which carry
      no [location] on their [Kernel.t]: every C_lang kernel that the
@@ -271,6 +276,14 @@ let verbose =
   let doc = "Print warnings emitted by the inference pipeline" in
   Arg.(value & flag & info [ "verbose"; "v" ] ~doc)
 
+let type_tree =
+  let doc =
+    "For each kernel, print the array map derived from the parameter types \
+     beside the one the front end accumulates: [=] in both, [+] derived \
+     only, [-] accumulated only, [~] a pointee the descent cuts at."
+  in
+  Arg.(value & flag & info [ "type-tree" ] ~doc)
+
 let only_global =
   let doc =
     "Only print __global__ kernels and the functions they call. Under \
@@ -319,7 +332,8 @@ let macros =
 
 let main_t =
   Term.(
-    const main $ get_fnames $ silent $ json $ verbose $ only_global
+    const main $ get_fnames $ silent $ json $ verbose $ type_tree
+    $ only_global
     $ show_stdlib $ assume_launch $ includes $ macros)
 
 let info =

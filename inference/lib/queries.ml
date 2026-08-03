@@ -783,7 +783,11 @@ module Kernel = struct
             [
               ("name", `String (Variable.name k));
               ("hierarchy", `String (a.hierarchy |> Mem_hierarchy.to_string));
-              ("size", `List (List.map (fun x -> `Int x) a.size));
+              ( "size",
+                `List
+                  (List.map
+                     (function Some x -> `Int x | None -> `Null)
+                     a.Memory.size) );
               ("data_type", `List (List.map (fun x -> `String x) a.data_type));
             ])
     in

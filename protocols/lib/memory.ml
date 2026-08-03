@@ -1,8 +1,17 @@
 type t = {
   hierarchy : Mem_hierarchy.t;
-  size : int list; (* Empty means unknown *)
+  (* One entry per dimension, outermost first. [None] is an extent the
+     source does not give, which C allows only on the outermost one and
+     which a pointer level always supplies. *)
+  size : int option list;
   data_type : string list; (* Empty means unknown *)
 }
+
+(* The extents as every consumer written before per-dimension extents
+   reads them: all of them, or none when any is missing. *)
+let known_size (x : t) : int list =
+  if List.exists Option.is_none x.size then []
+  else List.filter_map Fun.id x.size
 
 let is_global (x : t) : bool = Mem_hierarchy.is_global x.hierarchy
 let is_shared (x : t) : bool = Mem_hierarchy.is_shared x.hierarchy
@@ -15,7 +24,7 @@ let make (h : Mem_hierarchy.t) : t =
 let from_type (h : Mem_hierarchy.t) (ty : Ty.t) : t =
   {
     hierarchy = h;
-    size = Ty.get_array_length ty;
+    size = Ty.get_array_dims ty;
     data_type = Ty.get_array_type ty;
   }
 
@@ -33,7 +42,11 @@ let make_map (h : Mem_hierarchy.t) (vs : Variable.t list) : t Variable.Map.t =
 let to_string (a : t) : string =
   let ty = a.data_type |> String.concat " " in
   let ty = if ty = "" then "" else ty ^ "  " in
-  let size = List.map string_of_int a.size |> String.concat ", " in
+  let size =
+    a.size
+    |> List.map (function Some n -> string_of_int n | None -> "?")
+    |> String.concat ", "
+  in
   let h = a.hierarchy |> Mem_hierarchy.to_string in
   h ^ " " ^ ty ^ "[" ^ size ^ "]"
 

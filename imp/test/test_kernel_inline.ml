@@ -74,7 +74,7 @@ let inline_expansion_tests =
        let y_var = var "y" in
        let array_access =
          Access
-           (Access.write a_array
+           (Mem_access.write a_array
               [ Binary (Plus Signedness.Signed, Var x_var, Var y_var) ] None)
        in
        let call_stmt =
@@ -105,7 +105,7 @@ let inline_expansion_tests =
                        (Binary (Plus Signedness.Signed, Var x1_var, Var y1_var))
                        (decl_set g_var (Var z_var)
                           (Access
-                             (Access.write a_array
+                             (Mem_access.write a_array
                                 [
                                   Binary
                                     (Plus Signedness.Signed, Var x_var, Var y_var);

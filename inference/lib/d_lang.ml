@@ -375,7 +375,7 @@ module Decl = struct
       Some
         {
           hierarchy = SharedMemory;
-          size = Ty.get_array_length d.ty;
+          size = Ty.get_array_dims d.ty;
           data_type = Ty.get_array_type d.ty;
         }
     else None
@@ -1258,6 +1258,15 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       match to_subscript lhs with
       | Some a -> rewrite_write a src
       | None -> (
+          let* member =
+            match lhs with
+            | MemberExpr { base; name = field; ty } ->
+                rewrite_member_write base field ty src
+            | _ -> return None
+          in
+          match member with
+          | Some w -> w
+          | None -> (
           match lhs with
           (* Nested scalar assignment [x = e] used as an expression value
              (e.g. [(idx /= k) % m] after [c_lang] desugars to
@@ -1279,7 +1288,7 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
           | lhs ->
               let* lhs = rewrite_exp lhs in
               let* rhs = rewrite_exp src in
-              return (BinaryOperator { lhs; rhs; opcode = "="; ty })))
+              return (BinaryOperator { lhs; rhs; opcode = "="; ty }))))
   | CXXOperatorCallExpr
       { func = Ident { name = v; _ } as func; args = [ lhs; src ]; ty }
     when Variable.name v = "operator=" -> (
@@ -1411,6 +1420,33 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
          downstream stage starts caring. *)
       return (RecoveryExpr d.ty))
 
+(* The name of a location is its selections and the index is its
+   subscripts, so a member on a subscript chain contributes a name segment
+   and leaves the chain's indices in front of its own. A member reached
+   through a pointer carries the subscript the arrow leaves implicit:
+   [p->f] is [p[0].f]. *)
+and rewrite_member_path (base : C_lang.Expr.t) (field : string) :
+    (Variable.t * Expr.t list) option state =
+  let select (name : Variable.t) : Variable.t =
+    Variable.update_name (fun n -> n ^ "." ^ field) name
+  in
+  let implied : Expr.t list =
+    if Ty.is_array_or_pointer (C_lang.Expr.to_type base) then
+      [ Expr.IntegerLiteral 0 ]
+    else []
+  in
+  match base with
+  | Ident b -> return (Some (select b.name, implied))
+  | MemberExpr { base = inner; name = outer; _ } -> (
+      let* path = rewrite_member_path inner outer in
+      match path with
+      | Some (name, prefix) -> return (Some (select name, prefix @ implied))
+      | None -> return None)
+  | ArraySubscriptExpr a ->
+      let* s = rewrite_subscript a in
+      return (Some (select s.name, s.index))
+  | _ -> return None
+
 and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
   let rec rewrite_subscript (c : C_lang.Expr.c_array_subscript)
       (indices : Expr.t list) (loc : Location.t option) : d_subscript state =
@@ -1426,9 +1462,22 @@ and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
     | ArraySubscriptExpr a -> rewrite_subscript a indices loc
     | Ident { name; ty; _ } ->
         return { name; index = indices; ty; location = Option.get loc }
-    | MemberExpr { base = Ident b; name = field; ty } ->
-        let name = Variable.update_name (fun n -> n ^ "." ^ field) b.name in
-        return { name; index = indices; ty; location = Option.get loc }
+    | MemberExpr { base; name = field; ty } -> (
+        let* path = rewrite_member_path base field in
+        match path with
+        | Some (name, prefix) ->
+            (* A pointer member is an indirection: the subscripts that follow
+               index the region it points at, not the object it sits in, so
+               the object's own index is not part of the address. *)
+            let index =
+              if Ty.is_pointer ty then indices else prefix @ indices
+            in
+            return { name; index; ty; location = Option.get loc }
+        | None ->
+            let ty = C_lang.Expr.to_type c.lhs in
+            let* e = rewrite_exp c.lhs in
+            let* x = AccessState.add_expr e ty in
+            return { name = x; index = indices; ty; location = Option.get loc })
     | e ->
         let ty = C_lang.Expr.to_type e in
         let* e = rewrite_exp e in
@@ -1439,8 +1488,28 @@ and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
 
 and rewrite_write (a : C_lang.Expr.c_array_subscript) (src : C_lang.Expr.t) :
     Expr.t state =
-  let* src' = rewrite_exp src in
   let* a = rewrite_subscript a in
+  rewrite_write_target a src
+
+(* A store whose target is a member selection rather than a subscript: the
+   name comes from the selections and the index from the subscripts that
+   preceded them, so [C[i].key = v] stores to [C.key] at [i]. *)
+and rewrite_member_write (base : C_lang.Expr.t) (field : string) (ty : Ty.t)
+    (src : C_lang.Expr.t) : Expr.t state option state =
+  let* path = rewrite_member_path base field in
+  match path with
+  (* Only a member of something indexed is memory. A member of a plain
+     object is a value, and assigning it is an assignment, which is what
+     [c.b = dim3(256)] on a launch configuration relies on. *)
+  | Some (name, (_ :: _ as index)) when not (Ty.is_pointer ty) ->
+      let target =
+        make_subscript ~name ~index ~ty ~location:(Variable.location name)
+      in
+      return (Some (rewrite_write_target target src))
+  | Some _ | None -> return None
+
+and rewrite_write_target (a : d_subscript) (src : C_lang.Expr.t) : Expr.t state =
+  let* src' = rewrite_exp src in
   (* Reach the literal through a conversion, applying each one on the way
      back out and once more for the element type the store lands in: it is
      the converted value that reaches the cell, and [char *b; b[i] = 200]

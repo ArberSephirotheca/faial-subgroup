@@ -66,8 +66,9 @@ module Make (L : Logger.Logger) = struct
       |> Variable.Map.map (fun m ->
           let open Memory in
           let m = { m with data_type = [ "int" ] } in
-          if Memory.is_shared m && List.length m.size > 0 then
-            { m with size = [ List.fold_left ( * ) 1 m.size ] }
+          let known = Memory.known_size m in
+          if Memory.is_shared m && List.length known > 0 then
+            { m with size = [ Some (List.fold_left ( * ) 1 known) ] }
           else m)
     in
     {

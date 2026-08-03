@@ -173,7 +173,7 @@ let from_scoped ?(infer_cond_bound = default_infer_cond_bound)
             participants = Option.map (n_subst st) l.participants;
           }
     | Assert b -> Assert (Assert.map (b_subst st) b)
-    | Access e -> Access (a_subst st e)
+    | Access e -> Access (a_subst st (Mem_access.to_access e))
     | Skip -> Skip
     | Call (_, p) -> inline known st sizes p
     | If (b, p1, p2) ->

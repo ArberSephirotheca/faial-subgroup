@@ -27,7 +27,7 @@ let encode_assigns_tests =
        let sq = var "s_Q" in
        Code.Decl
          ( Decl.set id (n_plus (Num 32) (Var id)),
-           Access (Access.write sq [ Var id ] None) ))
+           Access (Mem_access.write sq [ Var id ] None) ))
       (let id = var "id" in
        let sq = var "s_Q" in
        Access (Access.write sq [ n_plus (Num 32) (Var id) ] None));

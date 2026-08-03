@@ -8,6 +8,7 @@
    test_for
    test_atomic_seed_read
    test_idiom_rewrite
+   test_type_tree
  )
  (libraries stage0 protocols inference alcotest)
 )

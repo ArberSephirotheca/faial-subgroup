@@ -1206,6 +1206,43 @@ let tests =
        dropped call reads as race-free. *)
     ("racy-callable-by-value.cu",
      [ "--all-dims"; "--assume-launch" ], 1);
+    (* A pointer bound to a struct: the binder names the object and the
+       access names the member, so resolution matches the access's root
+       rather than its whole name. Before it did, the access named a
+       variable in no array map and was deleted. *)
+    ("racy-alias-struct-field.cu", [], 1);
+    (* The same binding with a per-thread element. *)
+    ("drf-alias-struct-field.cu", [], 0);
+    (* A lane of a vector element is a cell of its own array, indexed by
+       the element, the same way a struct member is. *)
+    ("racy-vector-lane.cu", [], 1);
+    (* Two lanes are two arrays and never meet. *)
+    ("drf-vector-lane.cu", [], 0);
+    (* A scalar member of an array element is a cell of its own array,
+       indexed by the element. Before a member selection could be a store
+       target the assignment left a read of the element in its place. *)
+    ("racy-element-field.cu", [], 1);
+    (* Two members are two arrays, so [C[i].key] and [C[i].val] never
+       meet, and the per-thread element index keeps each apart. *)
+    ("drf-element-field.cu", [], 0);
+    (* An inline array member of an array element is one array whose
+       leading index is the element. Named as the enclosing element the
+       write became a read, and reads do not race with reads. *)
+    ("racy-array-of-structs.cu", [], 1);
+    (* The same shape with the element index per thread. *)
+    ("drf-array-of-structs.cu", [], 0);
+    (* [p->f] is [p[0].f], so the arrow contributes the element index it
+       leaves implicit. Without it the two writes carry different index
+       counts and cell zero is reported to collide with cell one. *)
+    ("drf-arrow-vs-subscript.cu", [], 0);
+    (* Storing a whole record touches every scalar under it, so the store
+       expands into one access per leaf and meets a member store on the
+       same cell. Named as the enclosing element it could not meet [s.f],
+       and two writes to the same bytes cleared. *)
+    ("racy-struct-copy.cu", [], 1);
+    (* The same expansion with every thread copying its own element, so
+       the leaf accesses stay disjoint. *)
+    ("drf-struct-copy.cu", [], 0);
     (* A pointer member of a struct parameter is memory of its own, so
        [v.p] is an array and every thread writing [v.p[0]] races. The write
        to [B] is what keeps the kernel from reporting no accesses at all,
