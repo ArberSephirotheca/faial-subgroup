@@ -85,9 +85,20 @@ let const_binding_decl (b : C_lang.ConstBinding.t) :
   let d = D_lang.Decl.from_expr ty_var rhs in
   State.return (Stmt.DeclStmt [ d ])
 
+let rec binds_closure (e : C_lang.Expr.t) : bool =
+  match e with
+  | LambdaExpr _ -> true
+  | Convert { arg; _ } -> binds_closure arg
+  | CXXConstructExpr { args = [ arg ]; _ } -> binds_closure arg
+  | _ -> false
+
+let bindable (lp : C_lang.LaunchParam.t) : C_lang.ConstBinding.t list =
+  lp.const_bindings
+  |> List.filter (fun (b : C_lang.ConstBinding.t) -> not (binds_closure b.init))
+
 let const_binding_decls (lp : C_lang.LaunchParam.t) :
     (Host_translate.t, Stmt.t) State.t =
-  let* decls = State.list_map const_binding_decl lp.const_bindings in
+  let* decls = State.list_map const_binding_decl (bindable lp) in
   State.return (Stmt.from_list decls)
 
 (** Names emitted as decls must be filtered out of the parameter list
@@ -95,7 +106,7 @@ let const_binding_decls (lp : C_lang.LaunchParam.t) :
     [rewrite_expr] (which always succeeds), so this is just the names
     of every binding. *)
 let bound_names_emitted (lp : C_lang.LaunchParam.t) : Variable.Set.t =
-  lp.const_bindings
+  bindable lp
   |> List.map (fun (b : C_lang.ConstBinding.t) -> b.name)
   |> Variable.Set.of_list
 

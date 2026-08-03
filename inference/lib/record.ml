@@ -29,11 +29,16 @@ let type_path (ty : Ty.t) : Ty.segment list option =
     | None -> s
   in
   let scopes (s : string) : Ty.segment list =
-    if String.contains s '<' then [ Ty.segment s ]
+    if String.contains s '<' || String.contains s '(' then [ Ty.segment s ]
     else
-      String.split_on_char ':' s
-      |> List.filter (fun s -> s <> "")
-      |> List.map Ty.segment
+      let n = String.length s in
+      let rec split (start : int) (i : int) : string list =
+        if i + 1 >= n then [ String.sub s start (n - start) ]
+        else if s.[i] = ':' && s.[i + 1] = ':' then
+          String.sub s start (i - start) :: split (i + 2) (i + 2)
+        else split start (i + 1)
+      in
+      split 0 0 |> List.filter (fun s -> s <> "") |> List.map Ty.segment
   in
   match ty.inner with
   | Ty.Named path -> Some path

@@ -202,6 +202,32 @@ module Visit = struct
       | Seq (s1, s2) -> f (Seq (s1, s2))
       | Skip -> f Skip)
 
+  let map_expr (f : Expr.t -> Expr.t) : c_stmt -> c_stmt =
+    let for_init : ForInit.t -> ForInit.t = function
+      | Decls l -> Decls (List.map (Decl.map_expr f) l)
+      | Expr e -> Expr (f e)
+    in
+    map (function
+      | ReturnStmt e -> ReturnStmt (Option.map f e)
+      | IfStmt c -> IfStmt { c with cond = f c.cond }
+      | DeclStmt l -> DeclStmt (List.map (Decl.map_expr f) l)
+      | WhileStmt w -> WhileStmt { w with cond = f w.cond }
+      | DoStmt w -> DoStmt { w with cond = f w.cond }
+      | SwitchStmt w -> SwitchStmt { w with cond = f w.cond }
+      | CaseStmt c -> CaseStmt { c with case = f c.case }
+      | ForStmt r ->
+          ForStmt
+            { r with
+              init = Option.map for_init r.init;
+              cond = Option.map f r.cond }
+      | SExpr e -> SExpr (f e)
+      | AsmStmt a -> AsmStmt (Asm.map_expr f a)
+      | BarrierOp b ->
+          BarrierOp { b with target = f b.target; args = List.map f b.args }
+      | (Skip | BreakStmt | GotoStmt | ContinueStmt | DefaultStmt _ | Seq _) as s
+        ->
+          s)
+
   let to_expr_seq : c_stmt -> Expr.t Seq.t =
     fold (function
       | Skip | Break | Goto | Return None | Continue -> Seq.empty

@@ -1401,7 +1401,15 @@ module Make (L : Logger) = struct
       | [] -> []
     in
     let sigs = D_lang.SignatureDB.from_program ~policy p in
-    parse_p (Context.from_signature_db sigs) p
+    let ctx =
+      List.fold_left
+        (fun ctx -> function
+          | D_lang.Def.Record r -> Context.add_record r ctx
+          | _ -> ctx)
+        (Context.from_signature_db sigs)
+        p
+    in
+    parse_p ctx p
 end
 
 module Default = Make (Logger.Colors)

@@ -1466,6 +1466,13 @@ let tests =
     (* A const and a non-const accessor of the same name and arity, which a
        call separates by the signature the method reference names. *)
     ("racy-const-overload.cu", [], 1);
+    (* A kernel whose only access is inside a callable it takes by value.
+       The lambda is written in host code, which is dropped whole, so the
+       closure and its body have to be carried out of it. *)
+    ("racy-host-lambda.cu", [ "--all-dims"; "--assume-launch" ], 1);
+    (* The same callable bound in the launching function itself, which the
+       wrapper used to bind by rewriting its initialiser. *)
+    ("racy-launch-site-lambda.cu", [ "--all-dims"; "--assume-launch" ], 1);
   ]
 
 (* These are kernels that are being documented, but are

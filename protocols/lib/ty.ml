@@ -429,6 +429,9 @@ and parse_leaf (s : string) : t =
               || String.starts_with ~prefix:"class " s
               || String.starts_with ~prefix:"union " s
             then make (Struct { members = [] })
+            else if
+              String.length s > 0 && String.get s 0 = '(' && s <> "(*)"
+            then make ~name:s (Struct { members = [] })
             else if String.contains s '(' then make Function
             else make (Opaque s))
 

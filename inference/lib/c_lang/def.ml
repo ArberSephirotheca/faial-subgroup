@@ -175,7 +175,113 @@ let parse_enum (j : Yojson.Basic.t) : Imp.Enum.t j_result =
   in
   Ok { var; constants }
 
-let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
+(* A lambda written in host code carries the only copy of its body, and its
+   closure is a record whose fields clang leaves unnamed: field [i] holds
+   capture [i], whose initialiser names the variable the body refers to. The
+   body reads those names as free variables, so [operator()] takes the
+   closure as [this] and each captured name becomes a member of it, which is
+   the shape a call through a by-value closure argument already binds. *)
+let rec closures (j : Yojson.Basic.t) : t list =
+  let open Rjson in
+  let lambda (o : j_object) : t list =
+    let inner = with_field_or "inner" cast_list [] o |> Result.value ~default:[] in
+    let record =
+      List.find_map
+        (fun j ->
+          match cast_object j with
+          | Ok o when get_kind o = Ok "CXXRecordDecl" -> Some o
+          | _ -> None)
+        inner
+    in
+    let captures =
+      match inner with
+      | _ :: rest when List.length rest > 1 ->
+          List.filteri (fun i _ -> i < List.length rest - 1) rest
+      | _ -> []
+    in
+    let capture_name (j : Yojson.Basic.t) : string option =
+      let rec walk (j : Yojson.Basic.t) : string option =
+        match cast_object j with
+        | Error _ -> None
+        | Ok o -> (
+            match get_kind o with
+            | Ok "DeclRefExpr" ->
+                with_field "referencedDecl"
+                  (fun d ->
+                    let* d = cast_object d in
+                    with_field "name" cast_string d)
+                  o
+                |> Result.to_option
+            | _ ->
+                with_field_or "inner" cast_list [] o
+                |> Result.value ~default:[] |> List.find_map walk)
+      in
+      walk j
+    in
+    match record with
+    | None -> []
+    | Some r ->
+        let members =
+          with_field_or "inner" cast_list [] r |> Result.value ~default:[]
+        in
+        let fields =
+          members
+          |> List.filter (j_filter_kind (fun k -> k = "FieldDecl"))
+          |> List.filter_map (fun j ->
+              match cast_object j with
+              | Ok o -> get_field "type" o |> Result.to_option
+              | Error _ -> None)
+        in
+        let names = List.map capture_name captures in
+        if fields = [] || List.length fields <> List.length names then []
+        else
+          let bound =
+            List.combine names fields
+            |> List.filter_map (fun (n, ty) ->
+                Option.map (fun n -> (n, J_type.parse ty)) n)
+          in
+          if List.length bound <> List.length fields then []
+          else
+            let name = with_opt_field "name" cast_string r in
+            let location =
+              with_field "range" parse_location r
+              |> Result.value ~default:Location.empty
+            in
+            let self =
+              match name with
+              | Ok (Some base) -> Some { Ty.base; args = [] }
+              | Ok None | Error _ -> None
+            in
+            let operators =
+              members
+              |> List.filter (fun j ->
+                  j_filter_kind (fun k -> k = "CXXMethodDecl") j && is_kernel j)
+              |> List.filter_map (fun j ->
+                  match (self, C_kernel.parse [] j) with
+                  | Some self, Ok k when C_kernel.has_body k ->
+                      Some (Kernel (C_kernel.bind_closure ~self ~captures:bound k))
+                  | _ -> None)
+            in
+            (match self with
+             | Some name ->
+                 Record
+                   { Record.name; qualifier = []; bases = []; fields = bound;
+                     location }
+                 :: operators
+             | None -> operators)
+  in
+  match cast_object j with
+  | Error _ -> (
+      match j with `List l -> List.concat_map closures l | _ -> [])
+  | Ok o -> (
+      match get_kind o with
+      | Ok "LambdaExpr" -> lambda o
+      | _ ->
+          with_field_or "inner" cast_list [] o
+          |> Result.value ~default:[]
+          |> List.concat_map closures)
+
+and parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
   let open Rjson in
   let* o = cast_object j in
   let* k = get_kind o in
@@ -186,7 +292,7 @@ let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
       if not (C_kernel.has_body k) then Ok [ Prototype k ]
       else if k.code = Skip then Ok []
       else Ok [ Kernel k ]
-    else Ok []
+    else Ok (closures j)
   in
   match k with
   | "FunctionTemplateDecl" ->

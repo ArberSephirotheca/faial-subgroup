@@ -325,11 +325,11 @@ module Visit = struct
     | BinaryOperator { opcode = o; lhs = e1; rhs = e2; ty } ->
         f (BinaryOperator { opcode = o; lhs = ret e1; rhs = ret e2; ty })
     | CallExpr { func = e; args = l; ty } ->
-        f (CallExpr { func = f e; args = List.map ret l; ty })
+        f (CallExpr { func = ret e; args = List.map ret l; ty })
     | ConditionalOperator { cond = e1; then_expr = e2; else_expr = e3; ty } ->
         f
           (ConditionalOperator
-             { cond = f e1; then_expr = ret e2; else_expr = ret e3; ty })
+             { cond = ret e1; then_expr = ret e2; else_expr = ret e3; ty })
     | CXXConstructExpr { args = l; ty } ->
         f (CXXConstructExpr { args = List.map ret l; ty })
     | CXXOperatorCallExpr { func = e; args = l; ty } ->

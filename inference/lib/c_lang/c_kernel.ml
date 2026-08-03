@@ -147,6 +147,34 @@ let this_param (qualifier : Ty.segment list) : Param.t option =
       let ty_var = Ty_variable.make ~ty:(Ty.named path) ~name:this_var in
       Some (Param.make ~ty_var ~is_used:true ~is_shared:false)
 
+let bind_closure ~(self : Ty.segment) ~(captures : (string * Ty.t) list)
+    (k : t) : t =
+  let closure = Ty.named [ self ] in
+  let bound = List.to_seq captures |> Hashtbl.of_seq in
+  let rewrite (e : Expr.t) : Expr.t =
+    Expr.Visit.map
+      (function
+        | Expr.Ident v as e -> (
+            match Hashtbl.find_opt bound (Variable.name (Decl_expr.name v)) with
+            | Some ty ->
+                Expr.MemberExpr
+                  { name = Variable.name (Decl_expr.name v);
+                    base = Expr.Ident (Decl_expr.from_name ~ty:closure this_var);
+                    ty }
+            | None -> e)
+        | e -> e)
+      e
+  in
+  let this =
+    Param.make
+      ~ty_var:(Ty_variable.make ~ty:closure ~name:this_var)
+      ~is_used:true ~is_shared:false
+  in
+  { k with
+    params = this :: k.params;
+    code = Stmt.Visit.map_expr rewrite k.code;
+    qualifier = [ self ] }
+
 let parse ?(qualifier = []) (type_params : Ty_param.t list)
     (j : Yojson.Basic.t) : t j_result =
   let open Rjson in
