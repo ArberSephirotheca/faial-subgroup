@@ -67,7 +67,11 @@ let conv_tactic =
 let main =
   let doc = "Verify if CUDA file is free from data races." in
   let info =
+    (* [tree] identifies the source that produced this binary; [commit] is
+       only HEAD at build time, which lags whenever a change is built and
+       tested before it is committed. See stage0/lib/gen_build_info.sh. *)
     Cmd.info "faial-drf" ~doc
+      ~version:(Build_info.commit ^ " (tree " ^ Build_info.tree ^ ")")
   in
   Cmd.v info
   @@

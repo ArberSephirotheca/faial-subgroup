@@ -361,6 +361,7 @@ module JUI = struct
         ("executable_name", `String Sys.executable_name);
         ("z3_version", `String Z3.Version.to_string);
         ("commit", `String Build_info.commit);
+        ("tree", `String Build_info.tree);
       ]
 
   let run (s : Solver.t) : unit = s |> to_json |> to_string |> print_endline
