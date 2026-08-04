@@ -1107,12 +1107,29 @@ module SignatureDB = struct
     | Some k -> Some k
     | None -> of_arity arg_count
 
-  let lookup (e : Expr.t) (arg_count : int) (db : t) : Signature.t option =
+  (* A method a class inherits is declared on one of its bases, so the
+     receiver's own path is only where the search starts. [bases] answers
+     for a path what it derives from, which is what the caller's record
+     database knows and this one does not. *)
+  let lookup ?(bases = fun (_ : Ty.segment list) -> []) (e : Expr.t)
+      (arg_count : int) (db : t) : Signature.t option =
     let ( let* ) = Option.bind in
     let by_decl (d : string option) : Kernel.t option =
       let* d = d in
       let* id = StringMap.find_opt d db.by_decl in
       get_id id db
+    in
+    let method_in ~(record : Ty.segment list) ~(name : string) ~(ty : string) :
+        Kernel.t option =
+      let rec walk (seen : Ty.segment list list) (record : Ty.segment list) :
+          Kernel.t option =
+        if List.mem record seen then None
+        else
+          match get_method ~record ~name ~ty ~arg_count db with
+          | Some k -> Some k
+          | None -> bases record |> List.find_map (walk (record :: seen))
+      in
+      walk [] record
     in
     (match e with
      | UnresolvedLookupExpr { name = n; _ } ->
@@ -1134,11 +1151,11 @@ module SignatureDB = struct
                        Record.type_path (Ty.opaque c) |> Option.value ~default:[])
                      qualifier
                  in
-                 get_method ~record ~name:(Variable.name n)
-                   ~ty:(Ty.to_string ty) ~arg_count db))
+                 method_in ~record ~name:(Variable.name n)
+                   ~ty:(Ty.to_string ty)))
      | MemberExpr { base; name; ty } ->
          let* record = Record.type_path (Expr.to_type base) in
-         get_method ~record ~name ~ty:(Ty.to_string ty) ~arg_count db
+         method_in ~record ~name ~ty:(Ty.to_string ty)
      | _ -> None)
     |> Option.map Signature.from_kernel
 

@@ -37,7 +37,7 @@ module Inline = struct
       (s : Scoped.Code.t) : Scoped.Code.t =
     let open Scoped.Code in
     let array_set = Variable.MapSetUtil.map_to_set arrays in
-    let s =
+    let bind_result (tail : Scoped.Code.t) : Scoped.Code.t =
       match (result, k.return) with
       | Some (var, ty), Some data ->
           (*
@@ -68,16 +68,32 @@ module Inline = struct
                      else None)
             | _ -> []
           in
-          (match fields with
-           | [] -> decl_set ~ty var data s
-           | _ ->
+          (* A callee handing back a pointer hands back a location, and a
+             value copy of it names nothing the caller can index. The
+             expression is in the callee's terms here, so the base is its
+             own parameter; the argument binding grafts the caller's
+             memory onto it afterwards, which a [Decl]'s initialiser
+             would not receive. *)
+          let pointer =
+            if Ty.is_array_or_pointer ty then
+              Array_use.from_nexp ~arrays:array_set data
+              |> Option.map (fun (u : Array_use.t) ->
+                     Pointer.from_array u.array
+                     |> Pointer.shift
+                          ~offset:(Pointer.Offset.elements u.offset))
+            else None
+          in
+          (match (pointer, fields) with
+           | Some pointer, _ -> PointerBind { var; pointer; body = tail }
+           | None, [] -> decl_set ~ty var data tail
+           | None, _ ->
                List.fold_left
-                 (fun s (m, suffix) ->
+                 (fun tail (m, suffix) ->
                    let dst = Variable.update_name (fun n -> n ^ suffix) var in
-                   decl_set dst (Protocols.Exp.Var m) s)
-                 s fields)
+                   decl_set dst (Protocols.Exp.Var m) tail)
+                 tail fields)
       (* TODO: | Some (var, ty), None -> *)
-      | _, _ -> s
+      | _, _ -> tail
     in
     (* Alpha-rename callee internal binders that clash with the
        caller's variable set BEFORE substituting parameters.
@@ -103,6 +119,11 @@ module Inline = struct
     in
     k.code
     |> Scoped.Code.vars_distinct ~vars
+    (* The result names what the callee returned, which is written in the
+       callee's own terms, so it has to sit where the parameter bindings
+       below can reach it. The caller's continuation goes in afterwards,
+       where those bindings cannot rewrite the names it brought with it. *)
+    |> Scoped.Code.add_inside ~child:(bind_result Skip)
     (* prepend the assignments of arguments to parameters *)
     |> List.fold_right
          (fun ((x, p_ty), a) s ->

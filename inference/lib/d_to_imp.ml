@@ -118,9 +118,8 @@ module Make (L : Logger) = struct
   let rec infer_expr (e : D_lang.Expr.t) : Infer_exp.t =
     match e with
     (* ---------------- CUDA SPECIFIC ----------- *)
-    | MemberExpr { base = Ident base; name = field; _ } ->
-        let v = base.name |> Variable.update_name (fun n -> n ^ "." ^ field) in
-        NExp (Var v)
+    | MemberExpr { base = Ident base; name = field; ty } ->
+        NExp (Var (value_member ~field ~ty base.name))
     (* ------------------ nexp ------------------------ *)
     | Ident d -> NExp (Var d.name)
     | SizeOfExpr ty ->
@@ -304,10 +303,6 @@ module Make (L : Logger) = struct
     let resolve (ty : Ty.t) (b : t) : Ty.t =
       TypeAlias.resolve ty b.typedefs
 
-    let lookup_sig (e : D_lang.Expr.t) (arg_count : int) (db : t) :
-        D_lang.SignatureDB.Signature.t option =
-      D_lang.SignatureDB.lookup e arg_count db.sigs
-
     let is_enum (ty : Ty.t) (ctx : t) : bool =
       let name = Ty.to_string ty |> Variable.from_name in
       Variable.Map.mem name ctx.enums
@@ -355,6 +350,26 @@ module Make (L : Logger) = struct
       (prefixes b.scope |> List.map (fun p -> p @ path))
       @ List.map (fun n -> Ty.segment n :: path) b.usings
 
+    let find_record (path : Ty.segment list) (b : t) : Record.t option =
+      match
+        path :: Option.to_list (Ty.pattern path)
+        |> List.concat_map (candidates b)
+        |> List.find_map (fun p -> PathMap.find_opt p b.records)
+      with
+      | Some r -> Some r
+      | None -> StringMap.find_opt (Ty.to_string (Ty.named path)) b.spellings
+
+    let record_bases (path : Ty.segment list) (b : t) : Ty.segment list list =
+      find_record path b
+      |> Option.map (fun (r : Record.t) -> r.bases)
+      |> Option.value ~default:[]
+
+    let lookup_sig (e : D_lang.Expr.t) (arg_count : int) (db : t) :
+        D_lang.SignatureDB.Signature.t option =
+      D_lang.SignatureDB.lookup
+        ~bases:(fun path -> record_bases path db)
+        e arg_count db.sigs
+
     let lookup_record (ty : Ty.t) (b : t) : (string * Ty.t) list option =
       let rec fields (r : Record.t) : (string * Ty.t) list =
         List.concat_map
@@ -369,17 +384,7 @@ module Make (L : Logger) = struct
       | Ty.Struct { members = _ :: _ as members } -> Some members
       | _ ->
           Record.type_path ty
-          |> Fun.flip Option.bind (fun path ->
-              match
-                path :: Option.to_list (Ty.pattern path)
-                |> List.concat_map (candidates b)
-                |> List.find_map (fun p -> PathMap.find_opt p b.records)
-              with
-              | Some r -> Some r
-              | None ->
-                  StringMap.find_opt
-                    (Ty.to_string (Ty.named path))
-                    b.spellings)
+          |> Fun.flip Option.bind (fun path -> find_record path b)
           |> Option.map fields
 
     let add_enum (e : Enum.t) (b : t) : t =

@@ -320,6 +320,24 @@ let tests =
      node at all is an error rather than either answer. *)
     ("racy-scalar-value-init.cu", [], 1);
     ("drf-scalar-value-init.cu", [], 0);
+    (* A method reached through the class that inherits it rather than
+     the one that declares it. The two race-free ones are what move: a
+     lost call leaves the kernel with no access at all, which warns
+     rather than clearing. *)
+    ("racy-inherited-method.cu", [], 1);
+    ("drf-inherited-method.cu", [], 0);
+    ("drf-inherited-method-deep.cu", [], 0);
+    (* A pointer a callee returns names memory the caller can index. The
+     quiet one is the sharpest: its store is lost while another keeps
+     the zero-accesses warning down, so the kernel answered race-free
+     rather than saying anything. *)
+    ("racy-call-result-quiet.cu", [], 1);
+    ("drf-call-result-pointer.cu", [], 0);
+    ("drf-call-result-member.cu", [], 0);
+    (* What comes back carries a displacement as well as an array, and
+     the pair moves in opposite directions when it is dropped. *)
+    ("drf-call-result-offset.cu", [], 0);
+    ("racy-call-result-offset.cu", [], 1);
     (* A pointer loaded out of a table of pointers names a row of that
      table, which is the same reading [table[cat][0]] already gets when it
      is written out in full. Every thread writes cell 0 of whichever row
