@@ -136,12 +136,12 @@ let to_s : t -> Indent.t list =
         [
           Line
             (Ty.to_string r.ty ^ " " ^ Variable.name r.target ^ " = atomic "
-           ^ Variable.name r.array
+           ^ Field_path.to_string r.path
             ^ Access.index_to_string r.index
             ^ ";");
         ]
     | Read r ->
-        let a = Variable.name r.array in
+        let a = Field_path.to_string r.path in
         let idx = Access.index_to_string r.index in
         let prefix =
           match r.target with
@@ -158,7 +158,7 @@ let to_s : t -> Indent.t list =
         in
         [
           Line
-            ("wr " ^ Variable.name w.array
+            ("wr " ^ Field_path.to_string w.path
             ^ Access.index_to_string w.index
             ^ payload ^ ";");
         ]

@@ -547,14 +547,9 @@ module Make (L : Logger) = struct
         Context.lookup_record (Context.resolve ty ctx) ctx
     end) in
     let access (name : Variable.t) (extra : Infer_exp.t list) : Infer_stmt.t =
-      if read then
-        Infer_stmt.Read
-          { target = None; array = name; selector = []; index = index @ extra;
-            guard }
-      else
-        Infer_stmt.Write
-          { array = name; selector = []; index = index @ extra; payload = None;
-            guard }
+      let path = Field_path.parse name in
+      if read then Infer_stmt.Read { target = None; path; index = index @ extra; guard }
+      else Infer_stmt.Write { path; index = index @ extra; payload = None; guard }
     in
     (* An extent the type does not state is one value per object, so it is an
        uninterpreted function of the indices that reach the object: two
@@ -801,39 +796,46 @@ module Make (L : Logger) = struct
          the location it names. *)
       | SExpr (CXXOperatorCallExpr { func; args; _ }) -> infer_call func args
       | WriteAccessStmt w ->
-          let array =
-            w.target.name |> Variable.set_location w.target.location
+          let path =
+            D_lang.subscript_path w.target
+            |> Field_path.map infer_expr
+            |> Field_path.set_location w.target.location
           in
-          let index = List.map infer_expr w.target.index in
-          let selector = List.map infer_expr w.target.selector in
+          let array =
+            D_lang.subscript_name w.target
+            |> Variable.set_location w.target.location
+          in
+          let index = List.map infer_expr (D_lang.subscript_index w.target) in
           let guard = Option.map infer_expr w.guard in
           let element =
-            peel_subscript (List.length w.target.index) (resolve w.target.ty)
+            peel_subscript (List.length index) (resolve w.target.ty)
             |> Option.map resolve
             |> Fun.flip Option.bind (fun ty ->
                 aggregate ctx ty |> Option.map (fun _ -> ty))
           in
           (match element with
            | None ->
-               Infer_stmt.Write
-                 { array; selector; index; payload = w.payload; guard }
+               Infer_stmt.Write { path; index; payload = w.payload; guard }
            | Some ty -> (
                match expand_access ctx ~read:false ~array ~index ~guard ty with
                | Some p -> p
                | None ->
-                   Infer_stmt.Write
-                     { array; selector; index; payload = w.payload; guard }))
+                   Infer_stmt.Write { path; index; payload = w.payload; guard }))
       | ReadAccessStmt r ->
-          let array =
-            r.source.name |> Variable.set_location r.source.location
+          let path =
+            D_lang.subscript_path r.source
+            |> Field_path.map infer_expr
+            |> Field_path.set_location r.source.location
           in
-          let index = List.map infer_expr r.source.index in
-          let selector = List.map infer_expr r.source.selector in
+          let array =
+            D_lang.subscript_name r.source
+            |> Variable.set_location r.source.location
+          in
+          let index = List.map infer_expr (D_lang.subscript_index r.source) in
           let ty = r.ty |> resolve |> Ty.strip_array in
           let guard = Option.map infer_expr r.guard in
           let rd =
-            Infer_stmt.Read
-              { target = Some (ty, r.target); array; selector; index; guard }
+            Infer_stmt.Read { target = Some (ty, r.target); path; index; guard }
           in
           (* A subscript that stops short of an element leaves a pointer, and
              the target names that memory from here on. The subscript becomes
@@ -845,13 +847,12 @@ module Make (L : Logger) = struct
              the race check compares those as though they addressed the same
              cell. *)
           let leaves_memory =
-            peel_subscript (List.length r.source.index)
-              (resolve r.source.ty)
+            peel_subscript (List.length index) (resolve r.source.ty)
             |> Option.map Ty.is_array_or_pointer
             |> Option.value ~default:false
           in
           let element =
-            peel_subscript (List.length r.source.index) (resolve r.source.ty)
+            peel_subscript (List.length index) (resolve r.source.ty)
             |> Option.map resolve
             |> Fun.flip Option.bind (fun ty ->
                 aggregate ctx ty |> Option.map (fun _ -> ty))
@@ -875,24 +876,17 @@ module Make (L : Logger) = struct
                     Infer_stmt.seq (Infer_stmt.decl_unset ~ty r.target) p
                 | None -> rd))
       | AtomicAccessStmt r ->
-          let array =
-            r.source.name |> Variable.set_location r.source.location
+          let path =
+            D_lang.subscript_path r.source
+            |> Field_path.map infer_expr
+            |> Field_path.set_location r.source.location
           in
-          let index = List.map infer_expr r.source.index in
-          let selector = List.map infer_expr r.source.selector in
+          let index = List.map infer_expr (D_lang.subscript_index r.source) in
           let ty = r.ty |> resolve |> Ty.strip_array in
           let atomic = Atomic.map infer_expr r.atomic in
           let guard = Option.map infer_expr r.guard in
           Infer_stmt.Atomic
-            {
-              target = r.target;
-              atomic;
-              array;
-              selector;
-              index;
-              ty;
-              guard;
-            }
+            { target = r.target; atomic; path; index; ty; guard }
       | IfStmt { cond; then_stmt; else_stmt } ->
           Imp.Infer_stmt.If (infer_expr cond, infer then_stmt, infer else_stmt)
       (* Support for location aliasing that declares a new variable *)
@@ -1073,7 +1067,8 @@ module Make (L : Logger) = struct
             | ArriveAndDrop -> Sync.Mode.ArriveAndDrop
           in
           let index = List.map infer_expr target.index in
-          Infer_stmt.SyncOp { mode; array = target.name; index; loc }
+          Infer_stmt.SyncOp
+            { mode; array = D_lang.subscript_name target; index; loc }
       | Seq (s1, s2) -> Seq (infer s1, infer s2)
       | LambdaDecl _ ->
           (* [Lift_lambdas.lift_program] runs at the start of

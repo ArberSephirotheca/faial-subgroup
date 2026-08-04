@@ -1461,6 +1461,16 @@ let tests =
        a region of its own. Merged under one name they met and the kernel
        reported a race that cannot happen. *)
     ("drf-pointer-field-cells.cu", [], 0);
+    (* The same two cells, spelled at different depths: one subscript
+       indexes the object and the other indexes an array member. A name
+       that folds every subscript onto the root cannot tell them apart,
+       and the kernel reported a race that needs the two cells to hold
+       one address. *)
+    ("drf-member-cell-pointer.cu", [], 0);
+    (* The twin where both spellings reach the same cell, since the arrow
+       contributes the zero the other writes out. Naming a cell by its
+       position still has to identify these two. *)
+    ("racy-member-cell-pointer.cu", [], 1);
     (* A zero cell is elided, so the arrow and an explicit zero reach one
        region and do meet. *)
     ("racy-pointer-field-cell.cu", [], 1);

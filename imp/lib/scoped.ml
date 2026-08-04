@@ -125,12 +125,14 @@ module Code = struct
       in
       (* Keep the access's own location, so a diagnostic points at the use
          rather than at the pointer's declaration. *)
-      let root = { addr.array with location = (Path.base a.path).location } in
-      let path = Path.graft ~prefix:(Path.root root) a.path in
+      let root =
+        { addr.array with location = (Field_path.base a.path).location }
+      in
+      let path = Field_path.graft ~prefix:(Field_path.parse root) a.path in
       let index = List.rev index in
       let index =
         let dims =
-          Variable.Map.find_opt (Path.to_variable path) arrays
+          Variable.Map.find_opt (Field_path.to_variable path) arrays
           |> Option.map (fun (m : Memory.t) -> m.size)
           |> Option.value ~default:[]
         in
@@ -164,7 +166,7 @@ module Code = struct
     in
     let rec resolve : t -> t = function
       | Access a as i -> (
-          match Path.under ~root:target a.path with
+          match Field_path.under ~root:target a.path with
           | Some path -> rewrite { a with path }
           | None -> i)
       | Decl (d, l) as i -> if Variable.equal d.var target then i else Decl (d, resolve l)
@@ -191,17 +193,18 @@ module Code = struct
       Memory.t Variable.Map.t =
     let add (a : Mem_access.t) (m : Memory.t Variable.Map.t) =
       let p = a.path in
-      match Path.denotation p with
-      | Path.Denotation.One_region when Path.selector p <> [] ->
-          let name = Path.to_variable p in
+      match Field_path.denotation p with
+      | Field_path.Denotation.One_region when Field_path.selector p <> [] ->
+          let name = Field_path.to_variable p in
           if Variable.Map.mem name m then m
           else
             Variable.Map.find_opt
-              (Path.to_variable (Path.without_selector p))
+              (Field_path.to_variable (Field_path.without_selector p))
               arrays
             |> Option.fold ~none:m ~some:(fun mem ->
                 Variable.Map.add name mem m)
-      | Path.Denotation.One_region | Path.Denotation.Many_regions -> m
+      | Field_path.Denotation.One_region | Field_path.Denotation.Many_regions ->
+          m
     in
     let rec walk (m : Memory.t Variable.Map.t) : t -> Memory.t Variable.Map.t =
       function
@@ -215,16 +218,18 @@ module Code = struct
     walk arrays s
 
   let unnamed_access (locs : Variable.Set.t) (s : t) :
-      (Stage0.Location.t * Path.Denotation.t) option =
-    let rooted (p : Path.t) : bool =
-      Variable.Set.exists (fun x -> Option.is_some (Path.under ~root:x p)) locs
+      (Stage0.Location.t * Field_path.Denotation.t) option =
+    let rooted (p : Exp.nexp Field_path.t) : bool =
+      Variable.Set.exists
+        (fun x -> Option.is_some (Field_path.under ~root:x p))
+        locs
     in
-    let rec walk : t -> (Stage0.Location.t * Path.Denotation.t) option =
+    let rec walk : t -> (Stage0.Location.t * Field_path.Denotation.t) option =
       function
       | Access a ->
           if Variable.Set.mem (Mem_access.array a) locs || not (rooted a.path)
           then None
-          else Some (Mem_access.location a, Path.denotation a.path)
+          else Some (Mem_access.location a, Field_path.denotation a.path)
       | Seq (p, q) | If (_, p, q) -> (
           match walk p with Some _ as r -> r | None -> walk q)
       | For (_, p) | Decl (_, p) | Call (_, p) -> walk p
@@ -657,7 +662,7 @@ module Code = struct
       Exp.AtomicResult
         {
           target = aw.target;
-          array = aw.array;
+          array = Atomic_write.array aw;
           index = aw.index;
           operation = aw.atomic.operation;
         }
@@ -693,7 +698,9 @@ module Code = struct
           return (Assign { var; data; ty; body })
       | Seq (Read e, s) ->
           let* s = imp_to_scoped s in
-          let rd = Access (Mem_access.read ~selector:e.selector e.array e.index) in
+          let rd =
+            Access (Mem_access.make ~path:e.path ~index:e.index ~mode:Read)
+          in
           let rd = match e.guard with Some g -> If (g, rd, Skip) | None -> rd in
           return
             (match e.target with
@@ -703,8 +710,8 @@ module Code = struct
           let* s = imp_to_scoped s in
           let a =
             Access
-              (Mem_access.from_array ~selector:e.selector ~array:e.array
-                 ~index:e.index ~mode:(Atomic e.atomic) ())
+              (Mem_access.make ~path:e.path ~index:e.index
+                 ~mode:(Atomic e.atomic))
           in
           let a = match e.guard with Some g -> If (g, a, Skip) | None -> a in
           let s = Seq (Assert (atomic_result_marker e), s) in
@@ -719,7 +726,9 @@ module Code = struct
       | Sync s -> return (Sync s)
       | Write e ->
           let a =
-            Access (Mem_access.write ~selector:e.selector e.array e.index e.payload)
+            Access
+              (Mem_access.make ~path:e.path ~index:e.index
+                 ~mode:(Write e.payload))
           in
           return (match e.guard with Some g -> If (g, a, Skip) | None -> a)
       | Assert b -> return (Assert b)

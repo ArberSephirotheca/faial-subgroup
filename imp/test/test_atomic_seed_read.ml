@@ -15,8 +15,7 @@ let read_int ~target ~array : t =
   Read
     {
       target = Some (Ty.int, var target);
-      array = var array;
-      selector = [];
+      path = Protocols.Field_path.parse (var array);
       index = [ Infer_exp.NExp (Num 0) ];
       guard = None;
     }
@@ -27,8 +26,7 @@ let atomic_with ~target ~array ~atomic () : t =
       target = var target;
       ty = Ty.int;
       atomic;
-      array = var array;
-      selector = [];
+      path = Protocols.Field_path.parse (var array);
       index = [ Infer_exp.NExp (Num 0) ];
       guard = None;
     }

@@ -1,15 +1,14 @@
-open Kernel
-module Variable = Protocols.Variable
-module Params = Protocols.Params
-module Exp = Protocols.Exp
+module K = Kernel
+open Protocols
+open K
 open Exp
-open Protocols.Path.Denotation
+open Field_path.Denotation
 open Rejected_kernel.Reason
 
 let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
-    (k : Scoped.Kernel.t) : (Protocols.Kernel.t, Rejected_kernel.t) Result.t =
+    (k : Scoped.Kernel.t) : (Kernel.t, Rejected_kernel.t) Result.t =
   let reject (reason : Rejected_kernel.Reason.t) :
-      (Protocols.Kernel.t, Rejected_kernel.t) Result.t =
+      (Kernel.t, Rejected_kernel.t) Result.t =
     Error (Rejected_kernel.make ~kernel:(Scoped.Kernel.name k) ~reason)
   in
   let arrays = Scoped.Kernel.array_map k in
@@ -23,7 +22,7 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
     |> Scoped.Code.resolve_pointers ~arrays
   in
   let arrays = Scoped.Code.deref_arrays arrays resolved in
-  let array_set = Protocols.Variable.MapSetUtil.map_to_set arrays in
+  let array_set = Variable.MapSetUtil.map_to_set arrays in
   match Scoped.Code.unnamed_access array_set resolved with
   | Some (location, Many_regions) -> reject (RuntimePointerField { location })
   | Some (location, One_region) -> reject (PointerFieldToRecord { location })
@@ -42,7 +41,7 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
   in
   let p, locals, pre =
     let rec inline_header :
-        Protocols.Code.t * Params.t * bexp -> Protocols.Code.t * Params.t * bexp
+        Code.t * Params.t * bexp -> Code.t * Params.t * bexp
         =
      fun (p, locals, pre) ->
       match p with
@@ -58,7 +57,7 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
     2. We break down for-loops and variable declarations
     *)
   Ok
-    (Protocols.Kernel.reset_variable_kind
+    (Kernel.reset_variable_kind
     {
       name = Scoped.Kernel.name k;
       pre;
@@ -72,7 +71,7 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
     })
 
 let compile_all ?(rules = Idiom_rewrite.all) ?infer_cond_bound
-    (l : Kernel.t list) : Protocols.Kernel.t list * Rejected_kernel.t list =
+    (l : K.t list) : Kernel.t list * Rejected_kernel.t list =
   let l, rejected =
     l |> List.map Scoped.Kernel.from_imp |> Inline_calls.inline_calls
   in

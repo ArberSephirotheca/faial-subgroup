@@ -148,7 +148,7 @@ let index_to_string (idx : D_lang.Expr.t list) : string =
 let test_bare_deref_write_index_zero () : unit =
   let expr = assign (deref (ident "p")) (IntegerLiteral 5) in
   let t = first_write_target expr in
-  Alcotest.(check string) "target array name" "p" (Variable.name t.name);
+  Alcotest.(check string) "target array name" "p" (Variable.name (D_lang.subscript_name t));
   match t.index with
   | [ IntegerLiteral 0 ] -> ()
   | other ->
@@ -160,7 +160,7 @@ let test_bare_deref_write_index_zero () : unit =
 let test_offset_deref_write_index_offset () : unit =
   let expr = assign (deref (plus (ident "p") (IntegerLiteral 3))) (IntegerLiteral 5) in
   let t = first_write_target expr in
-  Alcotest.(check string) "target array name" "p" (Variable.name t.name);
+  Alcotest.(check string) "target array name" "p" (Variable.name (D_lang.subscript_name t));
   match t.index with
   | [ IntegerLiteral 3 ] -> ()
   | other ->
@@ -208,7 +208,7 @@ let test_alias_then_bare_deref_write () : unit =
          SExpr (assign (deref (ident "p")) (IntegerLiteral 1)))
   in
   let t = first_write_target_stmt stmt in
-  Alcotest.(check string) "target array name" "p" (Variable.name t.name);
+  Alcotest.(check string) "target array name" "p" (Variable.name (D_lang.subscript_name t));
   match t.index with
   | [ IntegerLiteral 0 ] -> ()
   | other ->
@@ -242,7 +242,7 @@ let test_bumped_pointer_bare_deref_write () : unit =
     Seq (DeclStmt [ c_decl ], Seq (bump, deref_write))
   in
   let t = first_write_target_stmt stmt in
-  Alcotest.(check string) "target array name" "c" (Variable.name t.name);
+  Alcotest.(check string) "target array name" "c" (Variable.name (D_lang.subscript_name t));
   match t.index with
   | [ IntegerLiteral 0 ] -> ()
   | other ->
@@ -272,7 +272,7 @@ let first_read_source (e : C_lang.Expr.t) : D_lang.d_subscript =
 
 let test_bare_deref_read_index_zero () : unit =
   let s = first_read_source (deref (ident "p")) in
-  Alcotest.(check string) "source array name" "p" (Variable.name s.name);
+  Alcotest.(check string) "source array name" "p" (Variable.name (D_lang.subscript_name s));
   match s.index with
   | [ IntegerLiteral 0 ] -> ()
   | other ->
@@ -370,7 +370,7 @@ let read_guard (array : string) (e : C_lang.Expr.t) :
   let stmt, _ = D_lang.run0 (D_lang.rewrite_exp e) in
   let rec walk : D_lang.Stmt.t -> D_lang.Expr.t option option = function
     | ReadAccessStmt { source; guard; _ }
-      when Variable.name source.name = array ->
+      when Variable.name (D_lang.subscript_name source) = array ->
         Some guard
     | Seq (a, b) -> ( match walk a with Some _ as r -> r | None -> walk b)
     | _ -> None

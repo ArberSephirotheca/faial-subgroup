@@ -19,8 +19,7 @@ type t =
   | Assert of Infer_exp.t
   | Read of {
       target : (Ty.t * Variable.t) option;
-      array : Variable.t;
-      selector : Infer_exp.t list;
+      path : Infer_exp.t Field_path.t;
       index : Infer_exp.t list;
       guard : Infer_exp.t option;
     }
@@ -28,14 +27,12 @@ type t =
       target : Variable.t;
       ty : Ty.t;
       atomic : Infer_exp.t Atomic.t;
-      array : Variable.t;
-      selector : Infer_exp.t list;
+      path : Infer_exp.t Field_path.t;
       index : Infer_exp.t list;
       guard : Infer_exp.t option;
     }
   | Write of {
-      array : Variable.t;
-      selector : Infer_exp.t list;
+      path : Infer_exp.t Field_path.t;
       index : Infer_exp.t list;
       payload : int option;
       guard : Infer_exp.t option;
@@ -93,26 +90,25 @@ let rec to_stmt : t -> Stmt.t =
          let id = List.fold_left Exp.n_plus (Exp.Var array) index in
          return (Stmt.Sync { mode; id; participants = None; loc }))
   | Assert e -> ret_assert e Global
-  | Read { array; target; selector; index; guard } ->
+  | Read { path; target; index; guard } ->
       Infer_exp.unknowns
-        (let* selector = State.list_map to_nexp selector in
+        (let* path = Field_path.map_state to_nexp path in
          let* index = State.list_map to_nexp index in
          let* guard = State.option_map to_bexp guard in
-         return (Stmt.Read { target; array; selector; index; guard }))
-  | Atomic { target; ty; atomic; array; selector; index; guard } ->
+         return (Stmt.Read { target; path; index; guard }))
+  | Atomic { target; ty; atomic; path; index; guard } ->
       Infer_exp.unknowns
-        (let* selector = State.list_map to_nexp selector in
+        (let* path = Field_path.map_state to_nexp path in
          let* index = State.list_map to_nexp index in
          let* atomic = Atomic.map_state to_nexp atomic in
          let* guard = State.option_map to_bexp guard in
-         return
-           (Stmt.Atomic { target; atomic; array; selector; index; ty; guard }))
-  | Write { array; selector; index; payload; guard } ->
+         return (Stmt.Atomic { target; atomic; path; index; ty; guard }))
+  | Write { path; index; payload; guard } ->
       Infer_exp.unknowns
-        (let* selector = State.list_map to_nexp selector in
+        (let* path = Field_path.map_state to_nexp path in
          let* index = State.list_map to_nexp index in
          let* guard = State.option_map to_bexp guard in
-         return (Stmt.Write { array; selector; index; payload; guard }))
+         return (Stmt.Write { path; index; payload; guard }))
   | Foreach { var; last; body } ->
       Infer_exp.unknowns
         (let* last = to_nexp last in
@@ -232,27 +228,26 @@ module Convert_assigns = struct
           (keep a
              (LocationAlias
                 { target; pointer = Infer_pointer.map (subst a.env) pointer }))
-    | Read { target; array; selector; index; guard } ->
-        let selector = List.map (subst a.env) selector in
+    | Read { target; path; index; guard } ->
+        let path = Field_path.map (subst a.env) path in
         let index = List.map (subst a.env) index in
         let guard = Option.map (subst a.env) guard in
         Some
-          (keep (bind_target a target)
-             (Read { target; array; selector; index; guard }))
-    | Write { array; selector; index; payload; guard } ->
-        let selector = List.map (subst a.env) selector in
+          (keep (bind_target a target) (Read { target; path; index; guard }))
+    | Write { path; index; payload; guard } ->
+        let path = Field_path.map (subst a.env) path in
         let index = List.map (subst a.env) index in
         let guard = Option.map (subst a.env) guard in
-        Some (keep a (Write { array; selector; index; payload; guard }))
-    | Atomic { target; ty; atomic; array; selector; index; guard } ->
-        let selector = List.map (subst a.env) selector in
+        Some (keep a (Write { path; index; payload; guard }))
+    | Atomic { target; ty; atomic; path; index; guard } ->
+        let path = Field_path.map (subst a.env) path in
         let index = List.map (subst a.env) index in
         let guard = Option.map (subst a.env) guard in
         let atomic = Atomic.map (subst a.env) atomic in
         Some
           (keep
              (bind_target a (Some (ty, target)))
-             (Atomic { target; ty; atomic; array; selector; index; guard }))
+             (Atomic { target; ty; atomic; path; index; guard }))
     | Call { result; id; args } ->
         let args = List.map (subst a.env) args in
         let a = bind_target a (Option.map (fun (x, ty) -> (ty, x)) result) in
@@ -331,6 +326,11 @@ let infer (s : t) : Stmt.t * Exp.nexp option =
   in
   (Stmt.seq (to_stmt code) post, ret)
 
+let path_to_string (p : Infer_exp.t Field_path.t) : string =
+  Field_path.to_name
+    (fun (e : Infer_exp.t) -> Some ("[" ^ Infer_exp.to_string e ^ "]"))
+    p
+
 (*
 let to_s: t -> Indent.t list =
   let rec stmt_to_s : t -> Indent.t list =
@@ -338,9 +338,9 @@ let to_s: t -> Indent.t list =
     | Call c -> [Line (Call.to_string c)]
     | Sync _ -> [Line "sync;"]
     | Assert b -> [Line (Assert.to_string b ^ ";")]
-    | Atomic r -> [Line (Ty.to_string r.ty ^ " " ^ Variable.name r.target ^ " = atomic " ^ Variable.name r.array ^ Access.index_to_string r.index ^ ";")]
+    | Atomic r -> [Line (Ty.to_string r.ty ^ " " ^ Variable.name r.target ^ " = atomic " ^ path_to_string r.path ^ Access.index_to_string r.index ^ ";")]
     | Read r ->
-      let a = Variable.name r.array in
+      let a = path_to_string r.path in
       let idx = Access.index_to_string r.index in
       let prefix =
         match r.target with
@@ -359,7 +359,7 @@ let to_s: t -> Indent.t list =
         | None -> ""
         | Some x -> " = " ^ string_of_int x
       in
-      [Line ("wr " ^ Variable.name w.array ^ Access.index_to_string w.index ^ payload ^ ";")]
+      [Line ("wr " ^ path_to_string w.path ^ Access.index_to_string w.index ^ payload ^ ";")]
     | Skip -> [Line "skip;"]
     | Assign a -> [Line (Variable.name a.var ^ " = " ^ Exp.n_to_string a.data ^ ";")]
     | LocationAlias l ->

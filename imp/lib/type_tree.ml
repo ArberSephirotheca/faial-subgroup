@@ -5,9 +5,9 @@ module type Resolver = sig
 end
 
 module Leaf = struct
-  type t = { path : Path.t; dims : int option list; ty : Ty.t }
+  type t = { path : Exp.nexp Field_path.t; dims : int option list; ty : Ty.t }
 
-  let name (x : t) : Variable.t = Path.to_variable x.path
+  let name (x : t) : Variable.t = Field_path.to_variable x.path
   let arity (x : t) : int = List.length x.dims
 
   let to_string (x : t) : string =
@@ -16,14 +16,14 @@ module Leaf = struct
       |> List.map (function Some n -> string_of_int n | None -> "?")
       |> String.concat ", "
     in
-    Path.to_string x.path ^ " : " ^ Ty.to_string x.ty ^ " [" ^ dims ^ "]"
+    Field_path.to_string x.path ^ " : " ^ Ty.to_string x.ty ^ " [" ^ dims ^ "]"
 end
 
 module Root = struct
-  type t = { path : Path.t; ty : Ty.t }
+  type t = { path : Exp.nexp Field_path.t; ty : Ty.t }
 
   let to_string (x : t) : string =
-    "*" ^ Path.to_string x.path ^ " : " ^ Ty.to_string x.ty
+    "*" ^ Field_path.to_string x.path ^ " : " ^ Ty.to_string x.ty
 end
 
 type t = { leaves : Leaf.t list; cuts : Root.t list }
@@ -52,7 +52,7 @@ let to_arrays ~(hierarchy : Mem_hierarchy.t) (x : t) :
        (Leaf.name l, to_memory ~hierarchy l.dims l.ty)))
   @ (x.cuts
      |> List.map (fun (c : Root.t) ->
-         ( Path.to_variable (Path.deref c.path),
+         ( Field_path.to_variable (Field_path.deref c.path),
            to_memory ~hierarchy [ None ] c.ty )))
 
 (* A vector's lanes occupy disjoint bytes and are selected by name, so
@@ -70,7 +70,8 @@ module Make (R : Resolver) = struct
   let members (ty : Ty.t) : (string * Ty.t) list option =
     match R.members ty with Some m -> Some m | None -> lanes ty
 
-  let rec descend ~(memory : bool) (path : Path.t) (dims : int option list)
+  let rec descend ~(memory : bool) (path : Exp.nexp Field_path.t)
+      (dims : int option list)
       (ty : Ty.t) : t =
     match ty.inner with
     | Ty.Array { base; size } -> descend ~memory path (dims @ [ size ]) base
@@ -80,7 +81,7 @@ module Make (R : Resolver) = struct
         | Some members ->
             members
             |> List.map (fun (name, mty) ->
-                member ~memory (Path.select name path) dims mty)
+                member ~memory (Field_path.select name path) dims mty)
             |> concat
         | None ->
             if memory then { leaves = [ { Leaf.path; dims; ty } ]; cuts = [] }
@@ -89,7 +90,8 @@ module Make (R : Resolver) = struct
   (* A pointer member holds an address, so the region it names is not part
      of the object and the descent restarts there. Its own storage stays a
      leaf of the object it sits in. *)
-  and member ~(memory : bool) (path : Path.t) (dims : int option list)
+  and member ~(memory : bool) (path : Exp.nexp Field_path.t)
+      (dims : int option list)
       (ty : Ty.t) : t =
     match ty.inner with
     | Ty.Pointer pointee ->
@@ -102,12 +104,12 @@ module Make (R : Resolver) = struct
   (* A pointer parameter names the array it points at, so the outermost
      dimension is the one the pointer supplies and its extent is unknown. *)
   let of_parameter ~(root : Variable.t) (ty : Ty.t) : t =
-    let path = Path.root root in
+    let path = Field_path.root root in
     match ty.inner with
     | Ty.Pointer pointee -> descend ~memory:true path [ None ] pointee
     | Ty.Array _ -> descend ~memory:true path [] ty
     | _ -> descend ~memory:false path [] ty
 
   let of_declaration ?(dims = []) ~(root : Variable.t) (ty : Ty.t) : t =
-    descend ~memory:true (Path.root root) dims ty
+    descend ~memory:true (Field_path.root root) dims ty
 end

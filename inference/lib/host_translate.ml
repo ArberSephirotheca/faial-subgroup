@@ -35,10 +35,12 @@ let fresh_params (st : t) : C_lang.Param.t list =
 
 (** Build a [$read_<arr>(idx...)] call from a read. *)
 let read_to_call (r : D_lang.d_read) : D_lang.Expr.t =
-  let read_name = Variable.update_name (fun x -> "$read_" ^ x) r.source.name in
+  let read_name =
+    Variable.update_name (fun x -> "$read_" ^ x) (D_lang.subscript_name r.source)
+  in
   CallExpr {
     func = D_lang.Expr.ident read_name;
-    args = r.source.index;
+    args = D_lang.subscript_index r.source;
     ty = r.ty;
   }
 
@@ -48,7 +50,7 @@ let rec subst_in_stmt (var : Variable.t) (e_new : D_lang.Expr.t)
     (stmt : D_lang.Stmt.t) : D_lang.Stmt.t =
   let subst = D_lang.Expr.subst var e_new in
   let subst_subscript (s : D_lang.d_subscript) : D_lang.d_subscript =
-    { s with selector = List.map subst s.selector;
+    { s with path = Field_path.map subst s.path;
              index = List.map subst s.index }
   in
   let subst_decl : D_lang.Decl.t -> D_lang.Decl.t = D_lang.Decl.map subst in

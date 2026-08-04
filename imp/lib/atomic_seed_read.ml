@@ -144,9 +144,10 @@ and free_vars (acc : VarSet.t) : Infer_exp.t -> VarSet.t = function
 
 (* ----- 3. Address fingerprint -------------------------------------- *)
 
-let address_key (array : Variable.t) (index : Infer_exp.t list) : string =
+let address_key (path : Infer_exp.t Field_path.t) (index : Infer_exp.t list)
+    : string =
   let parts = List.map Infer_exp.to_string index in
-  Variable.name array ^ "[" ^ String.concat ";" parts ^ "]"
+  Infer_stmt.path_to_string path ^ "[" ^ String.concat ";" parts ^ "]"
 
 (* ----- 4. Seed-target index ---------------------------------------- *)
 
@@ -167,10 +168,10 @@ let seed_index ~(alias : VarSet.t VarMap.t) (s : t) :
     | LocationAlias _ | Call _ | Break | Continue | Return _ | Decl _
     | Assign _ ->
         acc
-    | Atomic { atomic; array; index; _ } ->
+    | Atomic { atomic; path; index; _ } ->
         (match atomic.operation with
          | CAS { expected = Some e; _ } ->
-             let key = address_key array index in
+             let key = address_key path index in
              let seeds =
                alias_closure ~alias (free_vars VarSet.empty e)
              in
@@ -201,11 +202,11 @@ let rec rewrite_with
   | LocationAlias _ | Call _ | Break | Continue | Return _ | Decl _
   | Assign _ ->
       s
-  | Read { target = Some (ty, t); array; selector; index; guard } as r -> (
-      let key = address_key array index in
+  | Read { target = Some (ty, t); path; index; guard } as r -> (
+      let key = address_key path index in
       match Common.StringMap.find_opt key seeds with
       | Some (seed_set, atomic) when VarSet.mem t seed_set ->
-          Atomic { target = t; ty; atomic; array; selector; index; guard }
+          Atomic { target = t; ty; atomic; path; index; guard }
       | _ -> r)
   | Read _ as r -> r (* read with no target — no seed to match *)
   | Seq (a, b) -> Seq (rew a, rew b)
