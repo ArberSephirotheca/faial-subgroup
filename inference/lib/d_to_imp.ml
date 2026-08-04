@@ -1327,11 +1327,9 @@ module Make (L : Logger) = struct
         Context.record_size (Context.resolve ty ctx) ctx
     end) in
     let members (d : Decl.t) : (Variable.t * array_t) list =
-      match Context.lookup_record (Context.resolve d.ty ctx) ctx with
-      | None -> []
-      | Some _ ->
-          T.of_declaration ~root:d.var (Context.resolve d.ty ctx)
-          |> Imp.Type_tree.to_arrays ~hierarchy:SharedMemory
+      T.of_declaration ~root:d.var (Context.resolve d.ty ctx)
+      |> Imp.Type_tree.to_arrays ~hierarchy:SharedMemory
+      |> List.filter (fun (v, _) -> not (Variable.equal v d.var))
     in
     let rec find_shared (arrays : (Variable.t * array_t) list) (s : Stmt.t) :
         (Variable.t * array_t) list =
@@ -1343,7 +1341,8 @@ module Make (L : Logger) = struct
               else
                 match Decl.get_shared d with
                 | None -> []
-                | Some a -> (d.var, a) :: members d)
+                | Some a -> (
+                    match members d with [] -> [ (d.var, a) ] | l -> l))
             l
           |> Common.append_tr arrays
       | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _ | GotoStmt
@@ -1442,6 +1441,15 @@ module Make (L : Logger) = struct
            | _ -> None)
       |> Variable.Set.of_list
     in
+    let shared = parse_shared ctx k.code in
+    let decomposed =
+      (shared |> List.map fst)
+      @ (Variable.Map.bindings ctx.arrays |> List.map fst)
+      |> List.filter_map (fun x ->
+             let p = Field_path.parse x in
+             if Field_path.is_root p then None else Some (Field_path.base p))
+      |> List.fold_left (Fun.flip Variable.Set.add) decomposed
+    in
     let code, return =
       infer_stmt ~decomposed ctx k.code
       |> Imp.Atomic_seed_read.rewrite
@@ -1449,9 +1457,7 @@ module Make (L : Logger) = struct
     in
     (* Add inferred shared arrays to global context *)
     let ctx =
-      List.fold_left
-        (fun ctx (x, m) -> Context.add_array x m ctx)
-        ctx (parse_shared ctx k.code)
+      List.fold_left (fun ctx (x, m) -> Context.add_array x m ctx) ctx shared
     in
     report (fun () -> type_tree_report ctx k parameters);
     (* type parameters become global variables because c-t-j doesn't represent
@@ -1513,8 +1519,7 @@ module Make (L : Logger) = struct
               (* make sure we resolve the type before we query it *)
               let ty = Context.resolve v.ty ctx in
               let is_mut = not (Ty.is_const ty) in
-              let add_members (h : Mem_hierarchy.t) (ctx : Context.t) :
-                  Context.t =
+              let declare (h : Mem_hierarchy.t) (ctx : Context.t) : Context.t =
                 let module T = Imp.Type_tree.Make (struct
                   let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
                     Context.lookup_fields (Context.resolve ty ctx) ctx
@@ -1526,31 +1531,25 @@ module Make (L : Logger) = struct
                   let size (ty : Ty.t) : int option =
                     Context.record_size (Context.resolve ty ctx) ctx
                 end) in
-                match Context.lookup_record ty ctx with
-                | None -> ctx
-                | Some _ ->
-                    T.of_declaration ~root:v.var ty
-                    |> Imp.Type_tree.to_arrays ~hierarchy:h
-                    |> List.fold_left
-                        (fun ctx (x, m) -> Context.add_array x m ctx)
-                        ctx
+                T.of_declaration ~root:v.var ty
+                |> Imp.Type_tree.to_arrays ~hierarchy:h
+                |> List.filter (fun (x, _) -> not (Variable.equal x v.var))
+                |> function
+                | [] -> Context.add_array v.var (Memory.from_type h ty) ctx
+                | leaves ->
+                    List.fold_left
+                      (fun ctx (x, m) -> Context.add_array x m ctx)
+                      ctx leaves
               in
               if is_mut && List.mem C_lang.c_attr_shared v.attrs then
-                Context.add_array v.var
-                  (Memory.from_type SharedMemory ty) ctx
-                |> add_members SharedMemory
+                declare SharedMemory ctx
               else if is_mut && List.mem C_lang.c_attr_device v.attrs then
-                Context.add_array v.var
-                  (Memory.from_type GlobalMemory ty) ctx
-                |> add_members GlobalMemory
+                declare GlobalMemory ctx
               else if
                 is_mut
                 && List.mem C_lang.c_attr_constant v.attrs
                 && not (Context.is_int ty ctx)
-              then
-                Context.add_array v.var
-                  (Memory.from_type ConstantMemory ty) ctx
-                |> add_members ConstantMemory
+              then declare ConstantMemory ctx
               else if Context.is_int ty ctx then
                 (* Fold a global's initializer into a constant only
                    when it is immutable: a C-level [const], or a
