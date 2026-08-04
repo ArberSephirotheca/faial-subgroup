@@ -346,6 +346,16 @@ let tests =
     ("racy-atomic-scalar-counter.cu", [], 1);
     ("drf-atomic-scalar-counter.cu", [], 0);
     ("drf-atomic-shared-scalar.cu", [], 0);
+    (* Every spelling of an atomic's target in one kernel. An address the
+     rewrite cannot read leaves the builtin standing as a call with no
+     body, so one spelling regressing declines the whole kernel and this
+     entry moves from 0 to 1. *)
+    ("drf-atomic-target-shapes.cu", [], 0);
+    (* A pointer member names the region it points at rather than the
+     field holding the address, which is where the atomic and the store
+     meet. Naming the field instead separates them. *)
+    ("racy-atomic-member-target.cu", [], 1);
+    ("drf-atomic-member-target.cu", [], 0);
     (* A pointer loaded out of a table of pointers names a row of that
      table, which is the same reading [table[cat][0]] already gets when it
      is written out in full. Every thread writes cell 0 of whichever row

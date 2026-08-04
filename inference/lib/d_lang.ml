@@ -1333,6 +1333,21 @@ let atomic_address (e : Expr.t) : (Decl_expr.t * Expr.t option) option =
   in
   walk e None
 
+(* The cell an atomic acts on, when its argument is written bare rather
+   than as an address: [atomicAdd(p, v)] acts on [p[0]]. Naming the memory
+   an lvalue reaches is what the subscript walk already does, including the
+   rule that a pointer member names the region it points at rather than the
+   field holding the address, so the cell is handed to it as a subscript
+   instead of being decided here. An argument that is not an lvalue, an
+   additive spine for instance, has no subscript form and is left to the
+   walk over the expression. *)
+let atomic_cell ~(ty : Ty.t) ~(location : Location.t) (e : C_lang.Expr.t) :
+    C_lang.Expr.c_array_subscript option =
+  match e with
+  | Ident _ | MemberExpr _ | ArraySubscriptExpr _ ->
+      Some { lhs = e; rhs = IntegerLiteral 0; ty; location }
+  | _ -> None
+
 let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   let open Expr in
   match to_subscript c with
@@ -1374,9 +1389,14 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
         | Some c ->
             let* c = rewrite_exp c in
             return (Either.Right c)
-        | None ->
-            let* e = rewrite_exp e in
-            return (Either.Right e)
+        | None -> (
+            match atomic_cell ~ty ~location:(Variable.location f.name) e with
+            | Some a ->
+                let* a = rewrite_subscript a in
+                return (Either.Left { a with ty })
+            | None ->
+                let* e = rewrite_exp e in
+                return (Either.Right e))
       in
       (* Rewrite the remaining arguments to extract any reads they
          may hide, but most are discarded — the access-protocol
