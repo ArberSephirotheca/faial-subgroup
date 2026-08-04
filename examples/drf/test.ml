@@ -1572,6 +1572,20 @@ let tests =
     (* The same expansion for a file-scope [__device__] struct. The write
        to [B] is what keeps the kernel from reporting no accesses at all. *)
     ("racy-device-struct-field.cu", [], 1);
+    (* A scalar in shared memory is written with a subscript of its own,
+       which reaches the object and takes no level off its type. Counting
+       it as one left the store naming an object whose lanes are the
+       memory, so the store went missing while the lane read resolved. *)
+    ("drf-shared-scalar-object.cu", [], 0);
+    (* The same pair without the barrier between them. *)
+    ("racy-shared-scalar-object.cu", [], 1);
+    (* An alias is what every use of a typedef spells, and a use may write
+       a qualifier in front of it. Looked up by its printed spelling,
+       [const LatLong] matched nothing the plain name registered and the
+       parameter stayed one region with no members. *)
+    ("drf-typedef-record-arg.cu", [ "--all-dims"; "--assume-launch" ], 0);
+    (* The same alias with every thread on one output cell. *)
+    ("racy-typedef-record-arg.cu", [ "--all-dims"; "--assume-launch" ], 1);
     (* A struct argument expands into its members at the call site the way
        the callee's parameter does, so the two lists still line up and
        [v.p] inside [put] binds to the caller's [v.p]. *)

@@ -3,6 +3,7 @@ open Protocols
 open Logger
 open Imp
 module StackTrace = Stack_trace
+module TypeAlias = Type_alias
 module KernelAttr = C_lang.KernelAttr
 module StringMap = Common.StringMap
 module Param = C_lang.Param
@@ -48,6 +49,11 @@ let rec peel_subscript (n : int) (ty : Ty.t) : Ty.t option =
     | Ty.Array a -> peel_subscript (n - 1) a.base
     | _ -> None
 
+let peel_element (n : int) (ty : Ty.t) : Ty.t option =
+  match peel_subscript n ty with
+  | Some ty -> Some ty
+  | None -> if n = 1 && not (Ty.is_array_or_pointer ty) then Some ty else None
+
 (* A pointer as the C source spells it: a name with a displacement, or a
    choice between two of them. The choice is a tree rather than a field
    because each arm names memory of its own, and each settles the units of
@@ -66,21 +72,6 @@ let rec map_offset (f : D_lang.Expr.t -> D_lang.Expr.t) : d_pointer -> d_pointer
           if_true = map_offset f if_true;
           if_false = map_offset f if_false;
         }
-
-module TypeAlias = struct
-  type t = Ty.t StringMap.t
-
-  let empty : t = StringMap.empty
-
-  (* Resolve a type according to the alias in the database *)
-  let resolve (ty : Ty.t) (db : t) : Ty.t =
-    StringMap.find_opt (Ty.to_string ty) db |> Option.value ~default:ty
-
-  (* Add a new type alias to the data-base *)
-  let add (x : Typedef.t) (db : t) : t =
-    (* Resolve the type so that there are no indirect alias *)
-    StringMap.add x.name (resolve x.ty db) db
-end
 
 module Make (L : Logger) = struct
   let parse_bin ?(sign = Signedness.Signed) (op : string)
@@ -992,7 +983,7 @@ module Make (L : Logger) = struct
           let index = List.map infer_expr (D_lang.subscript_index w.target) in
           let guard = Option.map infer_expr w.guard in
           let element =
-            peel_subscript
+            peel_element
               (List.length w.target.index)
               (resolve w.target.ty)
             |> Option.map resolve
@@ -1039,7 +1030,7 @@ module Make (L : Logger) = struct
             |> Option.value ~default:false
           in
           let element =
-            peel_subscript
+            peel_element
               (List.length r.source.index)
               (resolve r.source.ty)
             |> Option.map resolve

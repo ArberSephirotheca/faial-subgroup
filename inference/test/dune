@@ -6,6 +6,7 @@
     test_queries
     test_wgsl
     test_w_ty
+    test_type_alias
  )
  (libraries stage0 protocols inference alcotest)
 )

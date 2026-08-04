@@ -460,7 +460,7 @@ and parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
       in
       if self_named || Ty.is_array_or_pointer ty || Ty.is_function ty then
         Ok []
-      else Ok [ Typedef { name; ty; location } ])
+      else Ok [ Typedef { alias = Ty.parse name; ty; location } ])
   | "ClassTemplateDecl" ->
       let* inner = with_field_or "inner" cast_list [] o in
       let records =

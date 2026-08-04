@@ -110,6 +110,57 @@ let equal (x : t) (y : t) : bool =
   && Qualifier.Set.equal x.qualifiers y.qualifiers
   && x.inner = y.inner
 
+let rec unnamed (x : t) : t =
+  { name = None; qualifiers = x.qualifiers; inner = unnamed_inner x.inner }
+
+and unnamed_inner : inner -> inner = function
+  | Array a -> Array { a with base = unnamed a.base }
+  | Pointer p -> Pointer (unnamed p)
+  | Reference p -> Reference (unnamed p)
+  | Struct { members } ->
+      Struct { members = List.map (fun (n, t) -> (n, unnamed t)) members }
+  | Named path -> Named (List.map unnamed_segment path)
+  | (Scalar _ | Vector _ | Matrix _ | Atomic _ | Function | Void | Opaque _) as
+    i ->
+      i
+
+and unnamed_segment (s : segment) : segment =
+  { s with args = List.map unnamed_arg s.args }
+
+and unnamed_arg : arg -> arg = function
+  | Type t -> Type (unnamed t)
+  | Pack l -> Pack (List.map unnamed_arg l)
+  | ( Integral _ | Template _ | Declaration _ | Expression _ | NullPtr
+    | Unmodelled _ ) as a ->
+      a
+
+let compare (x : t) (y : t) : int =
+  Stdlib.compare (unnamed x) (unnamed y)
+
+let map_children (f : t -> t) (x : t) : t =
+  let inner =
+    match x.inner with
+    | Array a -> Array { a with base = f a.base }
+    | Pointer p -> Pointer (f p)
+    | Reference p -> Reference (f p)
+    | Struct { members } ->
+        Struct { members = List.map (fun (n, t) -> (n, f t)) members }
+    | ( Scalar _ | Vector _ | Matrix _ | Atomic _ | Function | Void | Opaque _
+      | Named _ ) as i ->
+        i
+  in
+  if inner = x.inner then x else { x with name = None; inner }
+
+module OT = struct
+  type t' = t
+  type t = t'
+
+  let compare = compare
+end
+
+module Map = Map.Make (OT)
+module Set = Set.Make (OT)
+
 (* ------------------------------- queries ------------------------------ *)
 
 let is_pointer (x : t) : bool =
@@ -185,6 +236,15 @@ let strip_const (x : t) : t =
   if Qualifier.Set.mem Const x.qualifiers then
     { x with name = None; qualifiers = Qualifier.Set.remove Const x.qualifiers }
   else x
+
+let add_const (x : t) : t =
+  if Qualifier.Set.mem Const x.qualifiers then x
+  else
+    {
+      x with
+      name = Option.map (fun n -> "const " ^ n) x.name;
+      qualifiers = Qualifier.Set.add Const x.qualifiers;
+    }
 
 let strip_reference (x : t) : t =
   match x.inner with Reference p -> p | _ -> x
