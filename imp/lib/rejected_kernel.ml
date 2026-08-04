@@ -5,7 +5,6 @@ module Reason = struct
     | RecursiveCall of { path : string list }
     | UndefinedKernel of { path : string list }
     | UnnamedRegion of { location : Location.t; region : string }
-    | CallArity of { callee : string; parameters : int; arguments : int }
     | WriteThroughCall of { location : Location.t }
 
   let to_string : t -> string = function
@@ -13,7 +12,6 @@ module Reason = struct
     | UndefinedKernel _ ->
         "called a function that cannot be analyzed (missing function body)"
     | UnnamedRegion _ -> "unsupported field access"
-    | CallArity _ -> "unsupported call"
     | WriteThroughCall _ -> "unsupported assignment target"
 
   let hint : t -> string option = function
@@ -30,15 +28,6 @@ module Reason = struct
          ^ " is reached from an array faial knows, and faial cannot say which \
             region it is. Analyzing the kernel without it would answer for a \
             program with that access missing.")
-    | CallArity { callee; parameters; arguments } ->
-        Some
-          (Printf.sprintf
-             "Binding %s's parameters to this call's arguments lines up %d \
-              against %d. A parameter that points at a struct stands for one \
-              array per member of that struct, and an argument is read the \
-              same way, so the two agree unless the argument's type is not \
-              the parameter's, which is what a cast at the call site does."
-             callee parameters arguments)
     | WriteThroughCall _ ->
         Some
           "Assigning to what a function returns needs the location it returns, \
@@ -49,15 +38,14 @@ module Reason = struct
     | RecursiveCall _ -> "recursive-call"
     | UndefinedKernel _ -> "undefined-kernel"
     | UnnamedRegion _ -> "unnamed-region"
-    | CallArity _ -> "call-arity"
     | WriteThroughCall _ -> "write-through-call"
 
   let path : t -> string list = function
     | RecursiveCall { path } | UndefinedKernel { path } -> path
-    | UnnamedRegion _ | WriteThroughCall _ | CallArity _ -> []
+    | UnnamedRegion _ | WriteThroughCall _ -> []
 
   let location : t -> Location.t option = function
-    | RecursiveCall _ | UndefinedKernel _ | CallArity _ -> None
+    | RecursiveCall _ | UndefinedKernel _ -> None
     | UnnamedRegion { location; _ } | WriteThroughCall { location } ->
         Some location
 end

@@ -138,7 +138,6 @@ let rejections (ks : Scoped.Kernel.t list) :
       | Rejected_kernel.Reason.UndefinedKernel { path } ->
           (r.kernel, ("undefined", path))
       | Rejected_kernel.Reason.UnnamedRegion _
-      | Rejected_kernel.Reason.CallArity _
       | Rejected_kernel.Reason.WriteThroughCall _ ->
           (r.kernel, (Rejected_kernel.Reason.label r.reason, [])))
 

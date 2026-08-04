@@ -618,6 +618,84 @@ module Make (L : Logger) = struct
         then None
         else Some (leaves |> List.map leaf |> Infer_stmt.from_list)
 
+  let parse_param ~(expand_vectors : bool) (ctx : Context.t) (p : Param.t) :
+      Kernel.Parameter.t list =
+    let mk_array (h : Mem_hierarchy.t) (ty : Ty.t) : Memory.t =
+      {
+        hierarchy = h;
+        size = Ty.get_array_dims ty;
+        data_type = Ty.get_array_type ty;
+        layout = None;
+      }
+    in
+    let ty = Context.resolve p.ty_var.ty ctx in
+    (* A const reference cannot be assigned through, so the parameter
+       binds the referent's value and is classified as the referent. A
+       mutable reference names storage the callee can write, which the
+       substrate has no term for, so it stays unsupported. *)
+    let ty =
+      Ty.deref_const ty
+      |> Option.map (fun ty -> Context.resolve ty ctx)
+      |> Option.value ~default:ty
+    in
+    let x = p.ty_var.name in
+    let h =
+      if p.is_shared then Mem_hierarchy.SharedMemory
+      else Mem_hierarchy.GlobalMemory
+    in
+    let to_params (members : (string * Ty.t) list) : Kernel.Parameter.t list =
+      members
+      |> List.map (fun (field, ty) ->
+          let v = value_member ~field ~ty x in
+          if Ty.is_array_or_pointer ty then
+            Kernel.Parameter.array v
+              { (mk_array h ty) with size = [ None ] }
+          else Kernel.Parameter.scalar v ty)
+    in
+    if Context.is_enum ty ctx then
+      [ Kernel.Parameter.enum x (Context.get_enum ty ctx) ]
+    else if Context.is_int ty ctx then [ Kernel.Parameter.scalar x ty ]
+    else if Ty.is_array_or_pointer ty then
+      let leaves =
+        let module T = Imp.Type_tree.Make (struct
+          let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
+            Context.lookup_fields (Context.resolve ty ctx) ctx
+            |> Option.map
+                 (List.map (fun (f : Record.Field.t) ->
+                      Imp.Type_tree.Field.make ?offset:f.offset ~name:f.name
+                        ~ty:f.ty ()))
+
+          let size (ty : Ty.t) : int option =
+            Context.record_size (Context.resolve ty ctx) ctx
+        end) in
+        T.of_parameter ~root:x ty
+        |> Imp.Type_tree.to_arrays ~hierarchy:h
+        |> List.filter (fun (v, _) -> not (Variable.equal v x))
+        |> List.map (fun (v, m) -> Kernel.Parameter.array v m)
+      in
+      match leaves with
+      | [] -> [ Kernel.Parameter.array x (mk_array h ty) ]
+      | leaves -> Kernel.Parameter.unsupported x ty :: leaves
+    else
+      let members = members_of_value ctx ty in
+      if members <> [] then to_params members
+      else
+        match (if expand_vectors then vector_type_axes p.ty_var.ty else None)
+        with
+        (* A vector param [uintN v] exposes each lane [v.x], [v.y], ... as
+           a uniform scalar parameter, so component reads resolve to a
+           per-launch value rather than a thread-divergent free var. Only
+           top-level kernels expand: a device function's vector params are
+           bound through inlining, where lane-splitting would break the
+           call's argument arity. *)
+        | Some axes ->
+            List.map
+              (fun axis ->
+                let lane = Variable.update_name (fun n -> n ^ "." ^ axis) x in
+                Kernel.Parameter.scalar lane Ty.int)
+              axes
+        | None -> [ Kernel.Parameter.unsupported x ty ]
+
   let infer_stmt (ctx : Context.t) : D_lang.Stmt.t -> Imp.Infer_stmt.t =
     let resolve ty = Context.resolve ty ctx in
 
@@ -694,7 +772,8 @@ module Make (L : Logger) = struct
           Skip
     in
 
-    let expand_arg ?(param : Ty.t option) (a : D_lang.Expr.t) : Infer_exp.t list =
+    let expand_arg ?(param : Ty.t option) ~(expand_vectors : bool)
+        (a : D_lang.Expr.t) : Infer_exp.t list =
       let ty = Context.resolve (D_lang.Expr.to_type a) ctx in
       let pointee =
         match ty.inner with
@@ -705,6 +784,9 @@ module Make (L : Logger) = struct
         match a with
         | Ident v -> Some v.name
         | CXXConstructExpr { args = [ a ]; _ } -> base_var a
+        | UnaryOperator { opcode = "&"; child; _ } -> base_var child
+        | MemberExpr { base; name = field; ty } ->
+            base_var base |> Option.map (value_member ~field ~ty)
         | _ -> None
       in
       (* The argument list is built by the same descent as the parameter
@@ -728,31 +810,42 @@ module Make (L : Logger) = struct
             if Variable.equal v root then None else Some v)
       in
       let named (v : Variable.t) : Infer_exp.t = NExp (Var v) in
-      let slots (v : Variable.t) : Variable.t list option =
-        match param with
-        | Some param
-          when List.length (leaves ~ty:param v) <> List.length (leaves v) ->
-            Some (leaves ~ty:param v |> List.map (fun _ -> v))
-        | _ -> None
+      let of_argument () : Infer_exp.t list =
+        match (Option.is_some pointee, base_var a) with
+        | true, Some v -> (
+            match leaves v with
+            | [] -> [ infer_expr a ]
+            | l -> infer_expr a :: List.map named l)
+        | _, _ -> (
+            match members_of_value ctx ty with
+            | [] -> [ infer_expr a ]
+            | members ->
+                members
+                |> List.map (fun (field, ty) ->
+                    match base_var a with
+                    | Some v -> named (value_member ~field ~ty v)
+                    | None ->
+                        Unknown
+                          (Variable.name (value_member ~field ~ty
+                                            (Variable.from_name
+                                               (D_lang.Expr.to_string a))))))
       in
-      match (Option.is_some pointee, base_var a) with
-      | true, Some v -> (
-          match Option.value (slots v) ~default:(leaves v) with
-          | [] -> [ infer_expr a ]
-          | l -> infer_expr a :: List.map named l)
-      | _, _ -> (
-          match members_of_value ctx ty with
-          | [] -> [ infer_expr a ]
-          | members ->
-              members
-              |> List.map (fun (field, ty) ->
-                  match base_var a with
-                  | Some v -> named (value_member ~field ~ty v)
-                  | None ->
-                      Unknown
-                        (Variable.name (value_member ~field ~ty
-                                          (Variable.from_name
-                                             (D_lang.Expr.to_string a))))))
+      let of_parameter (ty : Ty.t) : int =
+        let name =
+          Option.value (base_var a) ~default:(Variable.from_name "@arg")
+        in
+        parse_param ~expand_vectors ctx
+          (Param.make ~is_used:true ~is_shared:false
+             ~ty_var:(Ty_variable.make ~name ~ty))
+        |> List.length
+      in
+      match param with
+      | None -> of_argument ()
+      | Some param ->
+          let expected = of_parameter param in
+          let given = of_argument () in
+          if List.length given = expected then given
+          else List.init expected (fun _ -> infer_expr a)
     in
     let infer_call ?(result = None) (func : D_lang.Expr.t)
         (args : D_lang.Expr.t list) : Infer_stmt.t =
@@ -809,7 +902,9 @@ module Make (L : Logger) = struct
                     args =
                       List.concat
                         (List.map2
-                           (fun param a -> expand_arg ?param (byte_arg a))
+                           (fun param a ->
+                             expand_arg ?param
+                               ~expand_vectors:s.expand_vectors (byte_arg a))
                            types args);
                   }
               else Skip
@@ -1133,84 +1228,6 @@ module Make (L : Logger) = struct
     infer
 
   type param = (Variable.t * Ty.t, Variable.t * Memory.t) Either.t
-
-  let parse_param ~(expand_vectors : bool) (ctx : Context.t) (p : Param.t) :
-      Kernel.Parameter.t list =
-    let mk_array (h : Mem_hierarchy.t) (ty : Ty.t) : Memory.t =
-      {
-        hierarchy = h;
-        size = Ty.get_array_dims ty;
-        data_type = Ty.get_array_type ty;
-        layout = None;
-      }
-    in
-    let ty = Context.resolve p.ty_var.ty ctx in
-    (* A const reference cannot be assigned through, so the parameter
-       binds the referent's value and is classified as the referent. A
-       mutable reference names storage the callee can write, which the
-       substrate has no term for, so it stays unsupported. *)
-    let ty =
-      Ty.deref_const ty
-      |> Option.map (fun ty -> Context.resolve ty ctx)
-      |> Option.value ~default:ty
-    in
-    let x = p.ty_var.name in
-    let h =
-      if p.is_shared then Mem_hierarchy.SharedMemory
-      else Mem_hierarchy.GlobalMemory
-    in
-    let to_params (members : (string * Ty.t) list) : Kernel.Parameter.t list =
-      members
-      |> List.map (fun (field, ty) ->
-          let v = value_member ~field ~ty x in
-          if Ty.is_array_or_pointer ty then
-            Kernel.Parameter.array v
-              { (mk_array h ty) with size = [ None ] }
-          else Kernel.Parameter.scalar v ty)
-    in
-    if Context.is_enum ty ctx then
-      [ Kernel.Parameter.enum x (Context.get_enum ty ctx) ]
-    else if Context.is_int ty ctx then [ Kernel.Parameter.scalar x ty ]
-    else if Ty.is_array_or_pointer ty then
-      let leaves =
-        let module T = Imp.Type_tree.Make (struct
-          let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
-            Context.lookup_fields (Context.resolve ty ctx) ctx
-            |> Option.map
-                 (List.map (fun (f : Record.Field.t) ->
-                      Imp.Type_tree.Field.make ?offset:f.offset ~name:f.name
-                        ~ty:f.ty ()))
-
-          let size (ty : Ty.t) : int option =
-            Context.record_size (Context.resolve ty ctx) ctx
-        end) in
-        T.of_parameter ~root:x ty
-        |> Imp.Type_tree.to_arrays ~hierarchy:h
-        |> List.filter (fun (v, _) -> not (Variable.equal v x))
-        |> List.map (fun (v, m) -> Kernel.Parameter.array v m)
-      in
-      match leaves with
-      | [] -> [ Kernel.Parameter.array x (mk_array h ty) ]
-      | leaves -> Kernel.Parameter.unsupported x ty :: leaves
-    else
-      let members = members_of_value ctx ty in
-      if members <> [] then to_params members
-      else
-        match (if expand_vectors then vector_type_axes p.ty_var.ty else None)
-        with
-        (* A vector param [uintN v] exposes each lane [v.x], [v.y], ... as
-           a uniform scalar parameter, so component reads resolve to a
-           per-launch value rather than a thread-divergent free var. Only
-           top-level kernels expand: a device function's vector params are
-           bound through inlining, where lane-splitting would break the
-           call's argument arity. *)
-        | Some axes ->
-            List.map
-              (fun axis ->
-                let lane = Variable.update_name (fun n -> n ^ "." ^ axis) x in
-                Kernel.Parameter.scalar lane Ty.int)
-              axes
-        | None -> [ Kernel.Parameter.unsupported x ty ]
 
   let parse_shared (ctx : Context.t) (s : D_lang.Stmt.t) :
       (Variable.t * Memory.t) list =

@@ -1269,13 +1269,10 @@ let tests =
     (* The same view with the write landing in the buffer it reads, so the
        offset the member contributes decides whether the two meet. *)
     ("racy-reinterpret-view.cu", [], 1);
-    (* A call whose callee is known but whose arguments cannot be lined up
-       with its parameters, because the argument is not a name and has no
-       members to expand, is discarded for the same reason an unresolved
-       one is: the call node survives inlining and [Encode_assigns] drops
-       it without trace, so the callee used to vanish and the kernel
-       reported no accesses at all. *)
-    ("declined-call-arity.cu", [], 1);
+    (* The same view starting part way into the buffer. The offset is in
+       the caller's cells, not in the view's objects, and scaling it by
+       the object would move the read clear of the write. *)
+    ("racy-reinterpret-view-offset.cu", [], 1);
     (* A call whose argument is the parameter's own type binds member to
        member, which is the case the expansion above must not disturb. *)
     ("racy-call-arity.cu", [], 1);

@@ -1020,6 +1020,7 @@ module SignatureDB = struct
       id : Function_id.t;
       params : Variable.t list;
       types : Ty.t list;
+      expand_vectors : bool;
     }
 
     let to_string (s : t) : string =
@@ -1033,6 +1034,7 @@ module SignatureDB = struct
         params = List.map Param.name k.Kernel.params;
         types =
           List.map (fun (p : Param.t) -> (Param.ty_var p).ty) k.Kernel.params;
+        expand_vectors = KernelAttr.is_global k.Kernel.attribute;
       }
   end
 

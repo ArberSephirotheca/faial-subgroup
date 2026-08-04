@@ -195,11 +195,18 @@ module Inline = struct
                        ~step:(Pointer.Step.make ~view ~elem)
                  | _ -> Pointer.Offset.elements u.offset
                in
-               let pointer = Pointer.from_array u.array in
+               let base = Pointer.from_array u.array in
+               let in_cells =
+                 match elem with
+                 | Some w ->
+                     Pointer.Offset.bytes ~amount:u.offset
+                       ~step:(Pointer.Step.make ~view:w ~elem:w)
+                 | None -> Pointer.Offset.elements u.offset
+               in
                let pointer =
-                 match flatten pointer with
-                 | Some pointer -> Pointer.shift ~offset:(Pointer.Offset.elements u.offset) pointer
-                 | None -> Pointer.shift ~offset pointer
+                 match flatten (Pointer.shift ~offset:in_cells base) with
+                 | Some pointer -> pointer
+                 | None -> Pointer.shift ~offset base
                in
                Scoped.Code.resolve ~arrays ~target:x pointer s)
          (Common.zip k.parameters args)
@@ -228,7 +235,18 @@ module Inline = struct
           | Some (k : Scoped.Kernel.t)
             when List.length k.parameters = List.length c.args ->
               apply ~arrays vars c.result c.args k s
-          | Some _ | None -> Call (c, s))
+          | Some k ->
+              (* The two lists are built from one description of the
+                 callee's type, so a difference is a bug here rather than
+                 a program faial cannot analyze. *)
+              failwith
+                (Printf.sprintf
+                   "Inline_calls: %s takes %d parameters and the call passes \
+                    %d arguments."
+                   (Scoped.Kernel.name k)
+                   (List.length k.parameters)
+                   (List.length c.args))
+          | None -> Call (c, s))
       | Seq (p, q) -> Seq (inline vars p, inline vars q)
       | If (b, s1, s2) -> If (b, inline vars s1, inline vars s2)
       | For (r, s) -> For (r, inline (Variable.Set.add r.var vars) s)
@@ -376,15 +394,6 @@ let rec inline_all (s : t) : t =
     (* inline more *)
     inline_all (inline_kernels n s)
 
-let rec surviving_call : Scoped.Code.t -> Call.t option = function
-  | Call (c, _) -> Some c
-  | Seq (p, q) | If (_, p, q) -> (
-      match surviving_call p with Some _ as r -> r | None -> surviving_call q)
-  | For (_, p) | Decl (_, p) -> surviving_call p
-  | PointerBind p -> surviving_call p.body
-  | Assign a -> surviving_call a.body
-  | Access _ | Sync _ | Assert _ | Skip -> None
-
 (* Every kernel whose calls did not all resolve is discarded, not just the
    recursive ones. Keeping one would leave a [Call] node in its body, and
    [Encode_assigns] drops such a node without trace, so the kernel would be
@@ -410,30 +419,6 @@ let inline_calls (l : Scoped.Kernel.t list) :
         if IdSet.mem id discarded then None
         else path_to_unsupported calls id |> Option.map (fun r -> (id, r)))
   in
-  let mismatched =
-    kernel_list s
-    |> List.filter_map (fun k ->
-        let id = Scoped.Kernel.unique_id k in
-        if IdSet.mem id discarded || List.mem_assoc id unsupported then None
-        else
-          surviving_call k.code
-          |> Option.map (fun (c : Call.t) ->
-              let callee = Call.unique_id c in
-              let parameters =
-                IdMap.find_opt callee s.kernels
-                |> Option.map (fun (k : Scoped.Kernel.t) ->
-                       List.length k.parameters)
-                |> Option.value ~default:0
-              in
-              ( id,
-                Rejected_kernel.Reason.CallArity
-                  {
-                    callee = Function_id.label callee;
-                    parameters;
-                    arguments = List.length c.args;
-                  } )))
-  in
-  let unsupported = unsupported @ mismatched in
   let dropped =
     IdSet.union discarded (unsupported |> List.map fst |> IdSet.of_list)
   in
