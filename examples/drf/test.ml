@@ -361,6 +361,38 @@ let tests =
      is still open, and the name arrives as an unresolved lookup. *)
     ("racy-atomic-dependent-callee.cu", [], 1);
     ("drf-atomic-dependent-callee.cu", [], 0);
+    (* [std::forward] and [std::move] are static casts spelled as calls.
+     Only the pattern carries a body and a call binds to the
+     instantiation, so resolving one finds nothing. The race-free one is
+     what moves: a decline exits 1 the way a race does. *)
+    ("racy-std-forward.cu", [], 1);
+    ("drf-std-forward.cu", [], 0);
+    ("racy-std-move.cu", [], 1);
+    (* A method carrying template parameters of its own, which clang
+     wraps in a function template. The record walk kept plain methods
+     and nested records only, so such a method was absent from the
+     program rather than declined, and its accesses with it. *)
+    ("racy-member-template.cu", [], 1);
+    ("drf-member-template.cu", [], 0);
+    (* Two instantiations hang under one template. Taking only the first
+     keeps the safe store and loses the racy one, so the kernel clears
+     rather than warning and nothing says an access went missing. *)
+    ("racy-member-template-two.cu", [], 1);
+    (* A table of pointers held as a member of an object passed by value.
+     The object is copied per thread, which is why an array member is
+     the thread's own storage and was dropped, but the cells of this one
+     hold the caller's memory. The race-free pair is what moves. *)
+    ("racy-pointer-array-field.cu", [], 1);
+    ("drf-pointer-array-field.cu", [], 0);
+    (* Two rows of the table are separate memory, so dropping the row
+     index lands both stores on one cell and invents a race. *)
+    ("drf-pointer-array-field-rows.cu", [], 0);
+    (* The table one object further down. A member that is itself an
+     object contributes its own members under the selection that reaches
+     it, and that selection can be any length. *)
+    ("racy-nested-pointer-field.cu", [], 1);
+    ("drf-nested-pointer-field.cu", [], 0);
+    ("drf-nested-pointer-field-deep.cu", [], 0);
     (* A pointer loaded out of a table of pointers names a row of that
      table, which is the same reading [table[cat][0]] already gets when it
      is written out in full. Every thread writes cell 0 of whichever row

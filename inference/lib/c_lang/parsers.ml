@@ -424,9 +424,16 @@ let rec parse_expr (j : json) : c_expr j_result =
             true
         | _ -> false
       in
+      let is_cast_call (f : Decl_expr.t) : bool =
+        f.qualifier = [ "std" ]
+        && match Variable.name f.name with
+           | "forward" | "move" -> true
+           | _ -> false
+      in
       (match func, args with
        | Ident f, [ arg ] when is_reinterpret_cast (Variable.name f.name) ->
            Ok arg
+       | Ident f, [ arg ] when is_cast_call f -> Ok arg
        | _ -> Ok (CallExpr { func; args; ty = J_type.parse ty }))
   | "CXXBindTemporaryExpr" | "MaterializeTemporaryExpr"
   | "CompoundLiteralExpr" ->

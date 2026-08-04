@@ -359,7 +359,8 @@ and parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
         inner
         |> List.filter
              (j_filter_kind (fun k ->
-                  k = "CXXMethodDecl" || k = "CXXRecordDecl"))
+                  k = "CXXMethodDecl" || k = "CXXRecordDecl"
+                  || k = "FunctionTemplateDecl"))
       in
       let* defs = cast_map (parse ~qualifier:inner_qualifier) (`List members) in
       let defs = List.concat defs in

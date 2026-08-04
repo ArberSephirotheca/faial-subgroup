@@ -402,16 +402,26 @@ module Make (L : Logger) = struct
 
   let members_of ~(is_memory : Ty.t -> bool) (ctx : Context.t) (ty : Ty.t) :
       (string * Ty.t) list =
-    match Context.lookup_record ty ctx with
-    | None -> []
-    | Some fields ->
-        fields
-        |> List.filter_map (fun (field, ty) ->
-            let ty = Context.resolve ty ctx in
-            if is_memory ty || Context.is_int ty ctx then Some (field, ty)
-            else None)
+    let rec walk (ty : Ty.t) : (string * Ty.t) list =
+      match Context.lookup_record ty ctx with
+      | None -> []
+      | Some fields ->
+          fields
+          |> List.concat_map (fun (field, ty) ->
+              let ty = Context.resolve ty ctx in
+              if is_memory ty || Context.is_int ty ctx then [ (field, ty) ]
+              else
+                walk ty |> List.map (fun (p, ty) -> (field ^ "." ^ p, ty)))
+    in
+    walk ty
 
-  let members_of_value = members_of ~is_memory:Ty.is_pointer
+  let rec reaches_memory (ty : Ty.t) : bool =
+    match ty.inner with
+    | Ty.Pointer _ -> true
+    | Ty.Array a -> reaches_memory a.base
+    | _ -> false
+
+  let members_of_value = members_of ~is_memory:reaches_memory
   let members_of_memory = members_of ~is_memory:Ty.is_array_or_pointer
 
 
