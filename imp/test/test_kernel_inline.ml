@@ -137,8 +137,7 @@ let rejections (ks : Scoped.Kernel.t list) :
           (r.kernel, ("recursive", path))
       | Rejected_kernel.Reason.UndefinedKernel { path } ->
           (r.kernel, ("undefined", path))
-      | Rejected_kernel.Reason.RuntimePointerField _
-      | Rejected_kernel.Reason.PointerFieldToRecord _
+      | Rejected_kernel.Reason.UnnamedRegion _
       | Rejected_kernel.Reason.WriteThroughCall _ ->
           (r.kernel, (Rejected_kernel.Reason.label r.reason, [])))
 

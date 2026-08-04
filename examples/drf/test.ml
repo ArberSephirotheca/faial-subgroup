@@ -1475,13 +1475,21 @@ let tests =
        region and do meet. *)
     ("racy-pointer-field-cell.cu", [], 1);
     (* Which cell holds the address is decided by a value, so no name
-       denotes one region and the kernel is discarded rather than analyzed
-       under a merged name. *)
-    ("declined-dynamic-pointer-cell.cu", [], 1);
-    (* A record behind a pointer has no regions of its own, so the writes
-       through it name nothing. Discarded rather than deleted, since a
-       verdict reached after deleting an access is about another program. *)
-    ("declined-pointer-to-record.cu", [], 1);
+       denotes one region. The address the read returns carries that
+       question instead, and two cells of one table hold two addresses, so
+       the threads are apart where the kernel used to be discarded. *)
+    ("drf-dynamic-pointer-cell.cu", [], 0);
+    (* The twin where two threads reach one bucket, so they read one cell,
+       hold one address and meet. Without it the pair above could clear by
+       losing its accesses rather than by keeping them apart. *)
+    ("racy-dynamic-pointer-cell.cu", [], 1);
+    (* The members of a record behind a pointer are regions of their own,
+       named through the crossing, so a write to one lands somewhere
+       nameable where it used to name nothing and be discarded. *)
+    ("racy-pointer-to-record.cu", [], 1);
+    (* The same record with each thread reading its own address, which is
+       what separates them. *)
+    ("drf-pointer-to-record.cu", [], 0);
     (* Copying a record copies the address a pointer member holds, so the
        copy touches that member's storage and meets a thread assigning it.
        It does not touch what the pointer points at. *)

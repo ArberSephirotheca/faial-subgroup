@@ -14,6 +14,7 @@ type nexp =
       (* [None] when the element type is not a value type, which is where
          the array-or-scalar seam does not hold. *)
       ty : Scalar.t option;
+      address : bool;
       args : nexp list;
     }
   | Convert of { ty : Scalar.t; arg : nexp }

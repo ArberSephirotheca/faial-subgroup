@@ -35,18 +35,10 @@ let var (name : string) : Variable.t = Variable.from_name name
 let leaves (t : Type_tree.t) : string list =
   t.leaves |> List.map Type_tree.Leaf.to_string
 
-let cuts (t : Type_tree.t) : string list =
-  t.cuts |> List.map Type_tree.Root.to_string
-
 let check_leaves (name : string) (expected : string list) (t : Type_tree.t) =
   ( name,
     `Quick,
     fun () -> Alcotest.(check (list string)) name expected (leaves t) )
-
-let check_cuts (name : string) (expected : string list) (t : Type_tree.t) =
-  ( name,
-    `Quick,
-    fun () -> Alcotest.(check (list string)) name expected (cuts t) )
 
 let parameter (name : string) (ty : Ty.t) : Type_tree.t =
   T.of_parameter ~root:(var name) ty
@@ -74,14 +66,12 @@ let descent_tests =
 
 let pointer_member_tests =
   [
-    check_leaves "a pointer member's storage is a leaf of its object"
-      [ "s.p : int * [?]" ]
+    check_leaves
+      "a pointer member is its storage and the region its address names"
+      [ "s.p : int * [?]"; "*s.p : int [?, ?]" ]
       (parameter "s" (ptr_to vee));
-    check_cuts "and its pointee is a root of its own"
-      [ "*s.p : int" ]
-      (parameter "s" (ptr_to vee));
-    check_cuts "a pointer member of a by-value struct still cuts"
-      [ "*v.p : int" ]
+    check_leaves "the same pair for a by-value struct"
+      [ "v.p : int * []"; "*v.p : int [?, ?]" ]
       (parameter "v" vee);
   ]
 

@@ -480,12 +480,10 @@ type d_subscript = {
    subscript before a crossing says which stored address is taken, so it
    stays on the path. *)
 let subscript_path (s : d_subscript) : Expr.t Field_path.t =
-  if Field_path.is_deref s.path then s.path
-  else Field_path.without_selector s.path
+  Field_path.without_region_index s.path
 
 let subscript_index (s : d_subscript) : Expr.t list =
-  if Field_path.is_deref s.path then s.index
-  else Field_path.selector s.path @ s.index
+  Field_path.region_index s.path @ s.index
 
 let subscript_name (s : d_subscript) : Variable.t =
   let name =
@@ -1403,7 +1401,7 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
             match path with
             (* Only a member of something indexed is memory, the same rule
                an assignment to a member follows. *)
-            | Some path when Field_path.selector path <> [] ->
+            | Some path when Field_path.subscripts path <> [] ->
                 return
                   (Either.Left
                      (make_subscript ~path ~index:[] ~ty
@@ -1679,10 +1677,12 @@ and rewrite_member_path (base : C_lang.Expr.t) (field : string) :
   in
   match base with
   | Ident b -> return (Some (select (Field_path.root b.name)))
-  | MemberExpr { base = inner; name = outer; _ } -> (
+  | MemberExpr { base = inner; name = outer; ty } -> (
       let* path = rewrite_member_path inner outer in
       match path with
-      | Some p -> return (Some (select p))
+      | Some p ->
+          let p = if Ty.is_pointer ty then Field_path.deref p else p in
+          return (Some (select p))
       | None -> return None)
   | ArraySubscriptExpr a ->
       let* s = rewrite_subscript a in
@@ -1764,7 +1764,7 @@ and rewrite_member_write (base : C_lang.Expr.t) (field : string) (ty : Ty.t)
      [c.b = dim3(256)] on a launch configuration relies on. A pointer
      member qualifies: the storage holding the address is memory of the
      object, so [s[i].p = A] is a write to it. *)
-  | Some path when Field_path.selector path <> [] ->
+  | Some path when Field_path.subscripts path <> [] ->
       let target =
         make_subscript ~path ~index:[] ~ty
           ~location:(Variable.location (Field_path.base path)) ()

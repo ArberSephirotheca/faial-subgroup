@@ -44,7 +44,7 @@ let index_intersects (s : Variable.Set.t) (a : t) : bool =
   List.exists (Exp.n_intersects s) a.index
 
 let free_names (a : t) (fns : Variable.Set.t) : Variable.Set.t =
-  List.fold_right Exp.n_free_names (Field_path.selector a.path @ a.index) fns
+  List.fold_right Exp.n_free_names (Field_path.subscripts a.path @ a.index) fns
 
 let to_access (a : t) : Access.t =
   { Access.array = array a; index = a.index; mode = a.mode; id = a.id }

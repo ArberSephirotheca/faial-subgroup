@@ -2,7 +2,6 @@ module K = Kernel
 open Protocols
 open K
 open Exp
-open Field_path.Denotation
 open Rejected_kernel.Reason
 
 let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
@@ -21,11 +20,11 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
     |> Scoped.Code.vars_distinct ~vars:(ParameterList.to_set k.parameters)
     |> Scoped.Code.resolve_pointers ~arrays
   in
-  let arrays = Scoped.Code.deref_arrays arrays resolved in
+  let resolved = Scoped.Code.read_addresses arrays resolved in
   let array_set = Variable.MapSetUtil.map_to_set arrays in
   match Scoped.Code.unnamed_access array_set resolved with
-  | Some (location, Many_regions) -> reject (RuntimePointerField { location })
-  | Some (location, One_region) -> reject (PointerFieldToRecord { location })
+  | Some (location, region) ->
+      reject (UnnamedRegion { location; region = Variable.name region })
   | None ->
   let p =
     resolved

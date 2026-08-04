@@ -582,9 +582,14 @@ module Make (L : Logger) = struct
           Infer_stmt.Foreach { var = v; last = last name dim; body = s })
         vars l.dims body
     in
-    match T.of_declaration ~root:array ty with
-    | { leaves = []; _ } -> None
-    | { leaves; _ } ->
+    let own (t : Imp.Type_tree.t) : Imp.Type_tree.Leaf.t list =
+      t.leaves
+      |> List.filter (fun (l : Imp.Type_tree.Leaf.t) ->
+             not (Field_path.is_deref l.path))
+    in
+    match own (T.of_declaration ~root:array ty) with
+    | [] -> None
+    | leaves ->
         (* A zero extent has no cells, and its loop would run from nought to
            minus one. *)
         if List.exists (fun (l : Imp.Type_tree.Leaf.t) ->
@@ -1256,11 +1261,7 @@ module Make (L : Logger) = struct
       (("### type-tree " ^ Imp.Function_id.label k.id)
        :: List.map (fun n -> line "=" n derived) both
        @ List.map (fun n -> line "+" n derived) only_derived
-       @ List.map (fun n -> line "-" n accumulated) only_accumulated
-       @ List.map
-           (fun (c : Imp.Type_tree.Root.t) ->
-             "  ~ " ^ Imp.Type_tree.Root.to_string c)
-           tree.cuts)
+       @ List.map (fun n -> line "-" n accumulated) only_accumulated)
 
   let parse_kernel ?(report = fun (_ : unit -> string) -> ())
       (ctx : Context.t) (k : D_lang.Kernel.t) :

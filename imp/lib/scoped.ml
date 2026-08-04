@@ -189,47 +189,98 @@ module Code = struct
       | Some x when Variable.equal x target -> s
       | _ -> resolve s
 
-  let deref_arrays (arrays : Memory.t Variable.Map.t) (s : t) :
-      Memory.t Variable.Map.t =
-    let add (a : Mem_access.t) (m : Memory.t Variable.Map.t) =
-      let p = a.path in
-      match Field_path.denotation p with
-      | Field_path.Denotation.One_region when Field_path.selector p <> [] ->
-          let name = Field_path.to_variable p in
-          if Variable.Map.mem name m then m
-          else
-            Variable.Map.find_opt
-              (Field_path.to_variable (Field_path.without_selector p))
-              arrays
-            |> Option.fold ~none:m ~some:(fun mem ->
-                Variable.Map.add name mem m)
-      | Field_path.Denotation.One_region | Field_path.Denotation.Many_regions ->
-          m
+  let read_addresses (arrays : Memory.t Variable.Map.t) : t -> t =
+    let open State.Syntax in
+    let element (p : Exp.nexp Field_path.t) : Ty.t =
+      Variable.Map.find_opt (Field_path.to_variable p) arrays
+      |> Option.map (fun (m : Memory.t) ->
+             Ty.of_c_string (String.concat " " m.data_type))
+      |> Option.value ~default:Ty.unknown
     in
-    let rec walk (m : Memory.t Variable.Map.t) : t -> Memory.t Variable.Map.t =
-      function
-      | Access a -> add a m
-      | Seq (p, q) | If (_, p, q) -> walk (walk m p) q
-      | For (_, p) | Decl (_, p) | Call (_, p) -> walk m p
-      | Assign a -> walk m a.body
-      | PointerBind p -> walk m p.body
-      | Assert _ | Sync _ | Skip -> m
+    let fresh : (int, Variable.t) State.t =
+      State.update_return (fun n ->
+          (n + 1, Variable.from_name ("@addr" ^ string_of_int n)))
     in
-    walk arrays s
+    let rec reads (index : Exp.nexp list)
+        (l : (Exp.nexp Field_path.t * Exp.nexp list) list) :
+        (int, (Mem_access.t * Variable.t * Ty.t) list * Exp.nexp list) State.t =
+      match l with
+      | [] -> State.return ([], index)
+      | (storage, cell) :: l ->
+          let* x = fresh in
+          let rd =
+            Mem_access.make ~path:storage ~index:(index @ cell) ~mode:Read
+          in
+          let* below, index = reads [ Exp.Var x ] l in
+          State.return ((rd, x, element storage) :: below, index)
+    in
+    let stored (l : (Exp.nexp Field_path.t * Exp.nexp list) list) : bool =
+      List.for_all
+        (fun (storage, _) ->
+          Variable.Map.mem (Field_path.to_variable storage) arrays)
+        l
+    in
+    let rewrite (a : Mem_access.t) : (int, t) State.t =
+      match Field_path.crossings a.path with
+      | [], _ -> State.return (Access a)
+      | l, _ when not (stored l) -> State.return (Access a)
+      | l, offset ->
+          let* l, address = reads [] l in
+          let body =
+            Access
+              {
+                a with
+                path = Field_path.without_subscripts a.path;
+                index = address @ offset @ a.index;
+              }
+          in
+          State.return
+            (List.fold_right
+               (fun (rd, x, ty) (s : t) ->
+                 Seq (Access rd, Decl (Decl.unset ~ty x, s)))
+               l body)
+    in
+    let rec walk : t -> (int, t) State.t = function
+      | Access a -> rewrite a
+      | Seq (p, q) ->
+          let* p = walk p in
+          let* q = walk q in
+          State.return (Seq (p, q))
+      | If (b, p, q) ->
+          let* p = walk p in
+          let* q = walk q in
+          State.return (If (b, p, q))
+      | For (r, p) ->
+          let* p = walk p in
+          State.return (For (r, p))
+      | Decl (d, p) ->
+          let* p = walk p in
+          State.return (Decl (d, p))
+      | Call (c, p) ->
+          let* p = walk p in
+          State.return (Call (c, p))
+      | Assign a ->
+          let* body = walk a.body in
+          State.return (Assign { a with body })
+      | PointerBind p ->
+          let* body = walk p.body in
+          State.return (PointerBind { p with body })
+      | (Assert _ | Sync _ | Skip) as i -> State.return i
+    in
+    fun s -> State.run (walk s) 0 |> snd
 
   let unnamed_access (locs : Variable.Set.t) (s : t) :
-      (Stage0.Location.t * Field_path.Denotation.t) option =
+      (Stage0.Location.t * Variable.t) option =
     let rooted (p : Exp.nexp Field_path.t) : bool =
       Variable.Set.exists
         (fun x -> Option.is_some (Field_path.under ~root:x p))
         locs
     in
-    let rec walk : t -> (Stage0.Location.t * Field_path.Denotation.t) option =
-      function
+    let rec walk : t -> (Stage0.Location.t * Variable.t) option = function
       | Access a ->
           if Variable.Set.mem (Mem_access.array a) locs || not (rooted a.path)
           then None
-          else Some (Mem_access.location a, Field_path.denotation a.path)
+          else Some (Mem_access.location a, Mem_access.array a)
       | Seq (p, q) | If (_, p, q) -> (
           match walk p with Some _ as r -> r | None -> walk q)
       | For (_, p) | Decl (_, p) | Call (_, p) -> walk p
@@ -369,6 +420,7 @@ module Code = struct
           array;
           version = Version.get array v;
           ty = Ty.to_scalar ty;
+          address = Ty.is_pointer ty;
           args = index;
         }
     in
