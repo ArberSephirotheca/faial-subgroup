@@ -609,8 +609,10 @@ module Make (L : Logger) = struct
         then None
         else Some (leaves |> List.map leaf |> Infer_stmt.from_list)
 
+  (* The parameters a declaration contributes, and the lane views of one
+     that came back as a single region rather than an array per field. *)
   let parse_param ~(expand_vectors : bool) (ctx : Context.t) (p : Param.t) :
-      Kernel.Parameter.t list =
+      Kernel.Parameter.t list * (Variable.t * Imp.Pointer.t) list =
     let mk_array (h : Mem_hierarchy.t) (ty : Ty.t) : Memory.t =
       {
         hierarchy = h;
@@ -644,8 +646,8 @@ module Make (L : Logger) = struct
           else Kernel.Parameter.scalar v ty)
     in
     if Context.is_enum ty ctx then
-      [ Kernel.Parameter.enum x (Context.get_enum ty ctx) ]
-    else if Context.is_int ty ctx then [ Kernel.Parameter.scalar x ty ]
+      ([ Kernel.Parameter.enum x (Context.get_enum ty ctx) ], [])
+    else if Context.is_int ty ctx then ([ Kernel.Parameter.scalar x ty ], [])
     else if Ty.is_array_or_pointer ty then
       let leaves =
         let module T = Imp.Type_tree.Make (struct
@@ -660,16 +662,23 @@ module Make (L : Logger) = struct
             Context.record_size (Context.resolve ty ctx) ctx
         end) in
         T.of_parameter ~root:x ty
-        |> Imp.Type_tree.to_arrays ~hierarchy:h
-        |> List.filter (fun (v, _) -> not (Variable.equal v x))
-        |> List.map (fun (v, m) -> Kernel.Parameter.array v m)
       in
-      match leaves with
-      | [] -> [ Kernel.Parameter.array x (mk_array h ty) ]
-      | leaves -> Kernel.Parameter.unsupported x ty :: leaves
+      match Imp.Type_tree.to_region ~hierarchy:h leaves with
+      | Some ((_, region), views) ->
+          ([ Kernel.Parameter.array x region ], views)
+      | None -> (
+          let leaves =
+            leaves
+            |> Imp.Type_tree.to_arrays ~hierarchy:h
+            |> List.filter (fun (v, _) -> not (Variable.equal v x))
+            |> List.map (fun (v, m) -> Kernel.Parameter.array v m)
+          in
+          match leaves with
+          | [] -> ([ Kernel.Parameter.array x (mk_array h ty) ], [])
+          | leaves -> (Kernel.Parameter.unsupported x ty :: leaves, []))
     else
       let members = members_of_value ctx ty in
-      if members <> [] then to_params members
+      if members <> [] then (to_params members, [])
       else
         match (if expand_vectors then vector_type_axes p.ty_var.ty else None)
         with
@@ -680,12 +689,13 @@ module Make (L : Logger) = struct
            bound through inlining, where lane-splitting would break the
            call's argument arity. *)
         | Some axes ->
-            List.map
-              (fun axis ->
-                let lane = Variable.update_name (fun n -> n ^ "." ^ axis) x in
-                Kernel.Parameter.scalar lane Ty.int)
-              axes
-        | None -> [ Kernel.Parameter.unsupported x ty ]
+            ( List.map
+                (fun axis ->
+                  let lane = Variable.update_name (fun n -> n ^ "." ^ axis) x in
+                  Kernel.Parameter.scalar lane Ty.int)
+                axes,
+              [] )
+        | None -> ([ Kernel.Parameter.unsupported x ty ], [])
 
   let returns_location : D_lang.SignatureDB.Signature.t option -> bool =
     function
@@ -702,7 +712,8 @@ module Make (L : Logger) = struct
   let ref_result (x : Variable.t) : Variable.t =
     Variable.update_name (fun n -> "@ref_" ^ n) x
 
-  let infer_stmt ~(decomposed : Variable.Set.t) (ctx : Context.t) :
+  let infer_stmt ~(decomposed : Variable.Set.t)
+      ~(regions : Memory.t Variable.Map.t) (ctx : Context.t) :
       D_lang.Stmt.t -> Imp.Infer_stmt.t =
     let resolve ty = Context.resolve ty ctx in
 
@@ -713,7 +724,9 @@ module Make (L : Logger) = struct
     in
 
     let elem_step_of (e : D_lang.Expr.t) : int option =
-      e |> D_lang.Expr.to_type |> infer_type |> Ty.cell_width
+      match Variable.Map.find_opt (parse_var e) regions with
+      | Some m -> Memory.step m
+      | None -> e |> D_lang.Expr.to_type |> infer_type |> Ty.cell_width
     in
 
     (* The view is the step of the pointer being declared, so it is settled
@@ -819,9 +832,17 @@ module Make (L : Logger) = struct
       end) in
       let leaves ?(ty = ty) (root : Variable.t) :
           (Variable.t * Memory.t) list =
-        T.of_parameter ~root ty
-        |> Imp.Type_tree.to_arrays ~hierarchy:Mem_hierarchy.GlobalMemory
-        |> List.filter (fun (v, _) -> not (Variable.equal v root))
+        let tree = T.of_parameter ~root ty in
+        match
+          Imp.Type_tree.to_region ~hierarchy:Mem_hierarchy.GlobalMemory tree
+        with
+        (* The fields are lanes of one region, which the parameter takes
+           whole, so the argument is the region and not a leaf apiece. *)
+        | Some _ -> []
+        | None ->
+            tree
+            |> Imp.Type_tree.to_arrays ~hierarchy:Mem_hierarchy.GlobalMemory
+            |> List.filter (fun (v, _) -> not (Variable.equal v root))
       in
       let named (v : Variable.t) : Infer_exp.t = NExp (Var v) in
       let rec rebase ~(root : Variable.t) ~(step : int) (e : D_lang.Expr.t) :
@@ -880,7 +901,7 @@ module Make (L : Logger) = struct
         parse_param ~expand_vectors ctx
           (Param.make ~is_used:true ~is_shared:false
              ~ty_var:(Ty_variable.make ~name ~ty))
-        |> List.length
+        |> fst |> List.length
       in
       match param with
       | None -> of_argument ()
@@ -1294,8 +1315,9 @@ module Make (L : Logger) = struct
 
   type param = (Variable.t * Ty.t, Variable.t * Memory.t) Either.t
 
-  let parse_shared (ctx : Context.t) (s : D_lang.Stmt.t) :
-      (Variable.t * Memory.t) list =
+  and shared = (Variable.t * Memory.t) list * (Variable.t * Imp.Pointer.t) list
+
+  let parse_shared (ctx : Context.t) (s : D_lang.Stmt.t) : shared =
     let open D_lang in
     (* A decl declares an array of barriers iff its element type, after
        typedef resolution, is [cuda::barrier<_>]. Such decls are identity-only
@@ -1317,13 +1339,17 @@ module Make (L : Logger) = struct
       let size (ty : Ty.t) : int option =
         Context.record_size (Context.resolve ty ctx) ctx
     end) in
-    let members (d : Decl.t) : (Variable.t * array_t) list =
-      T.of_declaration ~root:d.var (Context.resolve d.ty ctx)
-      |> Imp.Type_tree.to_arrays ~hierarchy:SharedMemory
-      |> List.filter (fun (v, _) -> not (Variable.equal v d.var))
+    let members (d : Decl.t) :
+        (Variable.t * array_t) list * (Variable.t * Imp.Pointer.t) list =
+      let tree = T.of_declaration ~root:d.var (Context.resolve d.ty ctx) in
+      match Imp.Type_tree.to_region ~hierarchy:SharedMemory tree with
+      | Some (region, views) -> ([ region ], views)
+      | None ->
+          ( Imp.Type_tree.to_arrays ~hierarchy:SharedMemory tree
+            |> List.filter (fun (v, _) -> not (Variable.equal v d.var)),
+            [] )
     in
-    let rec find_shared (arrays : (Variable.t * array_t) list) (s : Stmt.t) :
-        (Variable.t * array_t) list =
+    let rec find_shared (found : shared) (s : Stmt.t) : shared =
       match s with
       | DeclStmt l ->
           List.concat_map
@@ -1333,28 +1359,33 @@ module Make (L : Logger) = struct
                 match Decl.get_shared d with
                 | None -> []
                 | Some a -> (
-                    match members d with [] -> [ (d.var, a) ] | l -> l))
+                    match members d with
+                    | [], _ -> [ ([ (d.var, a) ], []) ]
+                    | m -> [ m ]))
             l
-          |> Common.append_tr arrays
+          |> List.fold_left
+               (fun (arrays, views) (a, v) ->
+                 (Common.append_tr arrays a, Common.append_tr views v))
+               found
       | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _ | GotoStmt
       | ReturnStmt _ | ContinueStmt | BreakStmt | SExpr _ | AsmStmt _
       | BarrierOp _ | Skip | LambdaDecl _ ->
           (* [LambdaDecl] is removed by [Lift_lambdas.lift_program]
              before [parse_kernel] runs; if one survives here, it
              carries no shared declarations the caller could see. *)
-          arrays
+          found
       | Seq (s1, s2) | IfStmt { then_stmt = s1; else_stmt = s2; _ } ->
-          let arrays = find_shared arrays s1 in
-          find_shared arrays s2
+          let found = find_shared found s1 in
+          find_shared found s2
       | ForStmt { body = d; _ }
       | WhileStmt { body = d; _ }
       | DoStmt { body = d; _ }
       | SwitchStmt { body = d; _ }
       | DefaultStmt d
       | CaseStmt { body = d; _ } ->
-          find_shared arrays d
+          find_shared found d
     in
-    find_shared [] s
+    find_shared ([], []) s
 
   (* The array map this model would derive from the parameter types, set
      beside the one the front end accumulates from declarations, so the two
@@ -1424,6 +1455,8 @@ module Make (L : Logger) = struct
       match k.attribute with KernelAttr.Default -> true | _ -> false
     in
     let per_param = List.map (parse_param ~expand_vectors ctx) k.params in
+    let param_views = List.concat_map snd per_param in
+    let per_param = List.map fst per_param in
     let parameters = List.concat per_param in
     let decomposed =
       per_param
@@ -1432,7 +1465,7 @@ module Make (L : Logger) = struct
            | _ -> None)
       |> Variable.Set.of_list
     in
-    let shared = parse_shared ctx k.code in
+    let shared, lane_views = parse_shared ctx k.code in
     let decomposed =
       (shared |> List.map fst)
       @ (Variable.Map.bindings ctx.arrays |> List.map fst)
@@ -1441,14 +1474,21 @@ module Make (L : Logger) = struct
              if Field_path.is_root p then None else Some (Field_path.base p))
       |> List.fold_left (Fun.flip Variable.Set.add) decomposed
     in
-    let code, return =
-      infer_stmt ~decomposed ctx k.code
-      |> Imp.Atomic_seed_read.rewrite
-      |> Infer_stmt.infer
-    in
-    (* Add inferred shared arrays to global context *)
     let ctx =
       List.fold_left (fun ctx (x, m) -> Context.add_array x m ctx) ctx shared
+    in
+    let regions =
+      List.fold_left
+        (fun m (x, t) ->
+          match t with
+          | Imp.Kernel.Parameter.Type.Array a -> Variable.Map.add x a m
+          | Scalar _ | Enum _ | Unsupported _ -> m)
+        ctx.arrays parameters
+    in
+    let code, return =
+      infer_stmt ~decomposed ~regions ctx k.code
+      |> Imp.Atomic_seed_read.rewrite
+      |> Infer_stmt.infer
     in
     report (fun () -> type_tree_report ctx k parameters);
     (* type parameters become global variables because c-t-j doesn't represent
@@ -1467,6 +1507,12 @@ module Make (L : Logger) = struct
     let global_variables = add_type_params ctx.globals k.type_params in
     let open Imp.Stmt in
     let code = Seq (Context.gen_preamble ctx, code) in
+    let code =
+      List.fold_left
+        (fun code (target, pointer) ->
+          Seq (LocationAlias { target; pointer }, code))
+        code (lane_views @ param_views)
+    in
     let open Imp.Kernel in
     ( ctx,
       {

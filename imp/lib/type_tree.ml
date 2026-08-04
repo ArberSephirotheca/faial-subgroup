@@ -59,6 +59,58 @@ let to_arrays ~(hierarchy : Mem_hierarchy.t) (x : t) :
   |> List.map (fun (l : Leaf.t) ->
          (Leaf.name l, to_memory ~hierarchy ?layout:l.layout l.dims l.ty))
 
+let to_region ~(hierarchy : Mem_hierarchy.t) (x : t) :
+    ((Variable.t * Memory.t) * (Variable.t * Pointer.t) list) option =
+  let ( let* ) = Option.bind in
+  match x.leaves with
+  | [] | [ _ ] -> None
+  | first :: rest ->
+      let root = Field_path.base first.path in
+      let* layout = first.layout in
+      let* width = Ty.width first.ty in
+      let* stride =
+        match List.rev layout.strides with s :: _ -> Some s | [] -> None
+      in
+      let alike (l : Leaf.t) : bool =
+        Variable.equal (Field_path.base l.path) root
+        && l.dims = first.dims
+        && Ty.width l.ty = Some width
+        && match l.layout with
+           | Some m -> m.strides = layout.strides
+           | None -> false
+      in
+      let offset (l : Leaf.t) : int option =
+        let* m = l.layout in
+        if m.offset mod width = 0 then Some (m.offset / width) else None
+      in
+      let* lanes =
+        if width > 0 && stride mod width = 0 && stride / width > 1 then
+          Some (stride / width)
+        else None
+      in
+      if
+        (not (List.for_all alike rest))
+        || not (List.for_all Option.is_some (List.tl first.dims))
+      then None
+      else
+        let lane_of = List.filter_map offset x.leaves in
+        if List.length lane_of <> List.length x.leaves then None
+        else
+        let region =
+          ( root,
+            to_memory ~hierarchy (first.dims @ [ Some lanes ]) first.ty )
+        in
+        let scale = List.map (fun s -> s / width) layout.strides in
+        let views =
+          List.map2
+            (fun (l : Leaf.t) (k : int) ->
+              ( Leaf.name l,
+                Pointer.linear ~scale ~shift:(Exp.Num k)
+                  (Pointer.from_array root) ))
+            x.leaves lane_of
+        in
+        Some (region, views)
+
 (* A vector's lanes occupy disjoint bytes and are selected by name, so
    until a vector is a leaf in its own right (native vector support) they
    are products, which is what both front ends already do for a vector
@@ -70,7 +122,7 @@ let lanes (ty : Ty.t) : Field.t list option =
       Ty.vector_lanes ty
       |> Option.map
            (List.mapi (fun i lane ->
-                Field.make ~offset:(i * width) ~name:lane
+                Field.make ~offset:(i * width * 8) ~name:lane
                   ~ty:(Ty.scalar v.scalar) ()))
   | _ -> None
 

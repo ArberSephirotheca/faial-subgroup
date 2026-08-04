@@ -181,6 +181,7 @@ let split_index ~(dims : int option list) (index : nexp list) : nexp list option
 type t =
   | Base of { array : Variable.t }
   | Row of { base : t; index : nexp }
+  | Lane of { base : t; index : nexp }
   | Shift of { base : t; offset : Offset.t }
   | Select of { cond : Exp.bexp; if_true : t; if_false : t }
   (* The memory read as an object the array underneath is not shaped like:
@@ -191,6 +192,7 @@ type t =
 
 let from_array (array : Variable.t) : t = Base { array }
 let row ~(index : nexp) (base : t) : t = Row { base; index }
+let lane ~(index : nexp) (base : t) : t = Lane { base; index }
 
 let shift ~(offset : Offset.t) (base : t) : t =
   if Offset.is_zero offset then base else Shift { base; offset }
@@ -203,13 +205,14 @@ let linear ~(scale : int list) ~(shift : nexp) (base : t) : t =
 
 let rec arrays : t -> Variable.Set.t = function
   | Base { array } -> Variable.Set.singleton array
-  | Row { base; _ } | Shift { base; _ } | Linear { base; _ } -> arrays base
+  | Row { base; _ } | Lane { base; _ } | Shift { base; _ } | Linear { base; _ }
+    -> arrays base
   | Select { if_true; if_false; _ } ->
       Variable.Set.union (arrays if_true) (arrays if_false)
 
 let rec keeps_payload : t -> bool = function
   | Base _ -> true
-  | Row { base; _ } -> keeps_payload base
+  | Row { base; _ } | Lane { base; _ } -> keeps_payload base
   | Shift { base; offset } -> Offset.keeps_payload offset && keeps_payload base
   (* The innermost axis is the one that decides the cell: while it moves a
      single cell of the array underneath, a write still lands where the
@@ -222,11 +225,12 @@ let rec keeps_payload : t -> bool = function
 
 let to_array : t -> Variable.t option = function
   | Base { array } -> Some array
-  | Row _ | Shift _ | Select _ | Linear _ -> None
+  | Row _ | Lane _ | Shift _ | Select _ | Linear _ -> None
 
 let rec map ~(n : nexp -> nexp) ~(b : Exp.bexp -> Exp.bexp) : t -> t = function
   | Base _ as p -> p
   | Row { base; index } -> Row { base = map ~n ~b base; index = n index }
+  | Lane { base; index } -> Lane { base = map ~n ~b base; index = n index }
   | Shift { base; offset } ->
       Shift { base = map ~n ~b base; offset = Offset.map n offset }
   | Linear { base; scale; shift } ->
@@ -245,7 +249,8 @@ let rec map ~(n : nexp -> nexp) ~(b : Exp.bexp -> Exp.bexp) : t -> t = function
 let rec free_names (p : t) (acc : Variable.Set.t) : Variable.Set.t =
   match p with
   | Base _ -> acc
-  | Row { base; index } -> free_names base (Exp.n_free_names index acc)
+  | Row { base; index } | Lane { base; index } ->
+      free_names base (Exp.n_free_names index acc)
   | Shift { base; offset } ->
       free_names base (Exp.n_free_names (Offset.amount offset) acc)
   | Linear { base; shift; _ } -> free_names base (Exp.n_free_names shift acc)
@@ -260,6 +265,7 @@ let rec subst_bases (f : Variable.t -> t option) (p : t) : t =
   match p with
   | Base { array } -> f array |> Option.value ~default:p
   | Row { base; index } -> Row { base = subst_bases f base; index }
+  | Lane { base; index } -> Lane { base = subst_bases f base; index }
   | Shift { base; offset } -> Shift { base = subst_bases f base; offset }
   | Linear { base; scale; shift } ->
       Linear { base = subst_bases f base; scale; shift }
@@ -284,6 +290,7 @@ let addresses ~(index : nexp list) (p : t) : Address.t list =
     match p with
     | Base { array } -> [ { Address.array; index; guard } ]
     | Row { base; index = i } -> walk base (Index.exact i :: index) guard
+    | Lane { base; index = i } -> walk base (index @ [ Index.exact i ]) guard
     | Shift { base; offset } -> walk base (Offset.apply offset index) guard
     | Linear { base; scale; shift } ->
         if List.length scale <> List.length index then walk base index guard
@@ -314,13 +321,14 @@ let to_nexp (p : t) : nexp option =
     | Base { array } -> Some (Var array)
     | Shift { base; offset } ->
         walk base |> Option.map (n_plus (Offset.amount offset))
-    | Row _ | Select _ | Linear _ -> None
+    | Row _ | Lane _ | Select _ | Linear _ -> None
   in
   walk p
 
 let rec to_string : t -> string = function
   | Base { array } -> Variable.name array
   | Row { base; index } -> to_string base ^ "[" ^ n_to_string index ^ "]"
+  | Lane { base; index } -> to_string base ^ "." ^ n_to_string index
   | Shift { base; offset } -> to_string base ^ " + " ^ Offset.to_string offset
   | Linear { base; scale; shift } ->
       to_string base ^ " by ["
@@ -332,7 +340,7 @@ let rec to_string : t -> string = function
 
 let rec step_comment : t -> string = function
   | Base _ -> ""
-  | Row { base; _ } | Linear { base; _ } -> step_comment base
+  | Row { base; _ } | Lane { base; _ } | Linear { base; _ } -> step_comment base
   | Select { if_true; _ } -> step_comment if_true
   | Shift { base; offset } -> (
       match offset with

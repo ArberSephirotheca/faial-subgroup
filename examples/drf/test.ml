@@ -1703,6 +1703,26 @@ let tests =
     ("drf-unseen-overload.cu", [], 0);
     (* The same overload pair over one output cell. *)
     ("racy-unseen-overload.cu", [], 1);
+    (* A by-value record parameter written through a typedef of an
+       elaborated name, whose fields are found under the name the record
+       was declared with and not under the alias. *)
+    ("racy-typedef-struct-field.cu", [], 1);
+    (* The same parameter with each thread on a cell of its own. *)
+    ("drf-typedef-struct-field.cu", [], 0);
+    (* A view over a vector buffer, whose cell straddles the lanes the
+       array was decomposed into. *)
+    ("declined-vector-view.cu", [ "--all-dims" ], 1);
+    (* The same kernel reached through its launch site, which decomposes
+       the argument as well and so leaves the parameter bound to nothing.
+       The verdict has to be the one above and not silence. *)
+    ("declined-vector-view.cu", [ "--all-dims"; "--assume-launch" ], 1);
+    (* An aggregate whose fields are lanes of one region rather than a
+       region each, so a view reading the same storage as a flat run of
+       scalars lands on cells the lane accesses can be compared against. *)
+    ("drf-lane-region-view.cu", [ "--blockDim=64" ], 0);
+    (* The same pair of views one cell apart, which is the race naming them
+       separately used to hide. *)
+    ("racy-lane-region-view.cu", [ "--blockDim=64" ], 1);
   ]
 
 (* These are kernels that are being documented, but are

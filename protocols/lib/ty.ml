@@ -505,5 +505,6 @@ let of_c_string ?(desugared : string option) (s : string) : t =
   let x = parse s in
   match (x.inner, desugared) with
   | Opaque _, Some d when String.trim d <> String.trim s ->
-      { (parse d) with name = Some (String.trim s) }
+      let y = parse d in
+      if is_struct y then y else { y with name = Some (String.trim s) }
   | _ -> x

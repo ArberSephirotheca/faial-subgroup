@@ -276,22 +276,30 @@ module Code = struct
       |> List.map (fun x -> Field_path.base (Field_path.parse x))
       |> Variable.Set.of_list
     in
-    let rooted (p : Exp.nexp Field_path.t) : bool =
+    let severed (d : Decl.t) : bool =
+      Option.is_none d.init && Ty.is_array_or_pointer d.ty
+    in
+    let rooted (roots : Variable.Set.t) (p : Exp.nexp Field_path.t) : bool =
       Variable.Set.mem (Field_path.base p) roots
     in
-    let rec walk : t -> (Stage0.Location.t * Variable.t) option = function
+    let rec walk (roots : Variable.Set.t) :
+        t -> (Stage0.Location.t * Variable.t) option = function
       | Access a ->
-          if Variable.Set.mem (Mem_access.array a) locs || not (rooted a.path)
+          if
+            Variable.Set.mem (Mem_access.array a) locs
+            || not (rooted roots a.path)
           then None
           else Some (Mem_access.location a, Mem_access.array a)
       | Seq (p, q) | If (_, p, q) -> (
-          match walk p with Some _ as r -> r | None -> walk q)
-      | For (_, p) | Decl (_, p) | Call (_, p) -> walk p
-      | Assign a -> walk a.body
-      | PointerBind p -> walk p.body
+          match walk roots p with Some _ as r -> r | None -> walk roots q)
+      | Decl (d, p) ->
+          walk (if severed d then Variable.Set.add d.var roots else roots) p
+      | For (_, p) | Call (_, p) -> walk roots p
+      | Assign a -> walk roots a.body
+      | PointerBind p -> walk roots p.body
       | Assert _ | Sync _ | Skip -> None
     in
-    walk s
+    walk roots s
 
   (* Discharge every pointer binding, which is the erasure that leaves a
      protocol naming only arrays. Inside out: a pointer taken from another
