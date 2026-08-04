@@ -855,7 +855,9 @@ module Make (L : Logger) = struct
           let index = List.map infer_expr (D_lang.subscript_index w.target) in
           let guard = Option.map infer_expr w.guard in
           let element =
-            peel_subscript (List.length index) (resolve w.target.ty)
+            peel_subscript
+              (List.length w.target.index)
+              (resolve w.target.ty)
             |> Option.map resolve
             |> Fun.flip Option.bind (fun ty ->
                 aggregate ctx ty |> Option.map (fun _ -> ty))
@@ -894,12 +896,16 @@ module Make (L : Logger) = struct
              the race check compares those as though they addressed the same
              cell. *)
           let leaves_memory =
-            peel_subscript (List.length index) (resolve r.source.ty)
+            peel_subscript
+              (List.length r.source.index)
+              (resolve r.source.ty)
             |> Option.map Ty.is_array_or_pointer
             |> Option.value ~default:false
           in
           let element =
-            peel_subscript (List.length index) (resolve r.source.ty)
+            peel_subscript
+              (List.length r.source.index)
+              (resolve r.source.ty)
             |> Option.map resolve
             |> Fun.flip Option.bind (fun ty ->
                 aggregate ctx ty |> Option.map (fun _ -> ty))

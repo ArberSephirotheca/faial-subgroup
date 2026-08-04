@@ -1528,6 +1528,20 @@ let tests =
     (* An object with nothing below it is the memory, which is what keeps
        the rule above from swallowing a plain pointer parameter. *)
     ("racy-object-without-members.cu", [], 1);
+    (* A subscript in the middle of a member path indexes the region and
+       is no part of its name. While it stayed in the name the region
+       matched nothing and the kernel was discarded. *)
+    ("racy-member-array-cell.cu", [], 1);
+    (* The same path with that middle cell separating the threads, which
+       only a name free of it can decide. *)
+    ("drf-member-array-cell.cu", [], 0);
+    (* Reading a cell that holds a record reads every member of it. How
+       many subscripts the cell's type takes is what is written below the
+       member, not what the whole path carries, and counting the whole
+       path left the read unexpanded and unnamed. *)
+    ("racy-record-cell-read.cu", [], 1);
+    (* The same read with each thread on its own site. *)
+    ("drf-record-cell-read.cu", [], 0);
     (* With [f.x] a free variable the prover gave each thread its own, and
        the kernel reported a race that cannot happen; expanded, [f.x] is
        uniform and the indices are disjoint. *)

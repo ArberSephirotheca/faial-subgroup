@@ -47,6 +47,13 @@ let subscripts (p : 'a t) : 'a list =
   let selector, region = split p in
   selector @ region
 
+let without_subscripts (p : 'a t) : 'a t =
+  {
+    p with
+    index = [];
+    steps = List.map (fun (s : 'a Step.t) -> { s with Step.index = [] }) p.steps;
+  }
+
 let without_region_index (p : 'a t) : 'a t =
   let rec walk : 'a Step.t list -> 'a Step.t list = function
     | [] -> []
@@ -55,15 +62,7 @@ let without_region_index (p : 'a t) : 'a t =
         :: List.map (fun (s : 'a Step.t) -> { s with Step.index = [] }) steps
     | s :: steps -> s :: walk steps
   in
-  if is_deref p then { p with steps = walk p.steps }
-  else { p with index = []; steps = walk p.steps }
-
-let without_subscripts (p : 'a t) : 'a t =
-  {
-    p with
-    index = [];
-    steps = List.map (fun (s : 'a Step.t) -> { s with Step.index = [] }) p.steps;
-  }
+  if is_deref p then { p with steps = walk p.steps } else without_subscripts p
 
 let crossings (p : 'a t) : ('a t * 'a list) list * 'a list =
   let rec walk (above : 'a Step.t list) (index : 'a list)
