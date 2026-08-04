@@ -190,6 +190,7 @@ let rewrite_stmt (st : Stmt.t) : Stmt.t state =
               type_params = [];
               params = cap_params @ params;
               attribute = KernelAttr.Auxiliary;
+              returns_location = false;
             }
           in
           let* () =

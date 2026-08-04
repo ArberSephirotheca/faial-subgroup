@@ -696,6 +696,21 @@ module Make (L : Logger) = struct
               axes
         | None -> [ Kernel.Parameter.unsupported x ty ]
 
+  let returns_location : D_lang.SignatureDB.Signature.t option -> bool =
+    function
+    | Some s -> s.returns_location
+    | None -> false
+
+  let address_ty (ty : Ty.t) : Ty.t = Ty.make (Ty.Pointer ty)
+
+  let rec spelled_location : D_lang.Expr.t -> Location.t = function
+    | Ident v -> Variable.location (Decl_expr.name v)
+    | MemberExpr { base; _ } -> spelled_location base
+    | _ -> Location.empty
+
+  let ref_result (x : Variable.t) : Variable.t =
+    Variable.update_name (fun n -> "@ref_" ^ n) x
+
   let infer_stmt ~(decomposed : Variable.Set.t) (ctx : Context.t) :
       D_lang.Stmt.t -> Imp.Infer_stmt.t =
     let resolve ty = Context.resolve ty ctx in
@@ -1079,7 +1094,21 @@ module Make (L : Logger) = struct
                    [infer_decl], which lifts them via the [Functions]
                    registry into an [NCall]-init decl. *)
                 let ty = infer_type d.ty in
-                Some (infer_call ~result:(Some (d.var, ty)) func args)
+                let sigma = Context.lookup_sig func (List.length args) ctx in
+                if returns_location sigma then
+                  Some
+                    (Infer_stmt.seq
+                       (infer_call
+                          ~result:(Some (ref_result d.var, address_ty ty))
+                          func args)
+                       (Infer_stmt.Read
+                          {
+                            target = Some (ty, d.var);
+                            path = Field_path.root (ref_result d.var);
+                            index = [ Infer_exp.num 0 ];
+                            guard = None;
+                          }))
+                else Some (infer_call ~result:(Some (d.var, ty)) func args)
             (* Detect a by-value vector copy [uintN v = w]: bind each
                lane [v.x := w.x; ...] so the caller's component reads
                resolve through the temporary the compiler introduces
@@ -1119,6 +1148,26 @@ module Make (L : Logger) = struct
       | DeclStmt (d :: l) ->
           Infer_stmt.seq (infer (DeclStmt [ d ])) (infer (DeclStmt l))
       | DeclStmt [] -> Skip
+      | SExpr
+          (BinaryOperator
+             { opcode = "=";
+               lhs = (CallExpr { func; args; _ } | CXXOperatorCallExpr { func; args; _ });
+               ty; _ })
+        when Context.lookup_sig func (List.length args) ctx |> returns_location ->
+          let ty = resolve ty in
+          let location = spelled_location func in
+          let target =
+            Variable.from_name "@ref" |> Variable.set_location location
+          in
+          Infer_stmt.seq
+            (infer_call ~result:(Some (target, address_ty ty)) func args)
+            (Infer_stmt.Write
+               {
+                 path = Field_path.root target |> Field_path.set_location location;
+                 index = [ Infer_exp.num 0 ];
+                 payload = None;
+                 guard = None;
+               })
       | SExpr
           (BinaryOperator { opcode = "="; lhs = Ident { ty; _ } as lhs; rhs; _ })
         when Ty.is_pointer ty ->
@@ -1437,7 +1486,10 @@ module Make (L : Logger) = struct
         grid_dim = None;
         return;
         unsupported =
-          D_lang.Stmt.assigned_call k.code
+          D_lang.Stmt.assigned_call
+            ~resolved:(fun func arg_count ->
+              Context.lookup_sig func arg_count ctx |> returns_location)
+            k.code
           |> Option.map (fun location ->
                  Imp.Rejected_kernel.Reason.WriteThroughCall { location });
       } )

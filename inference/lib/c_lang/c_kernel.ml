@@ -11,6 +11,7 @@ module Function_id = Imp.Function_id
 type t = {
   name : string;
   ty : string;
+  return_ty : Ty.t;
   (* Enclosing namespaces, outermost first. Two functions of the same
      signature in different namespaces are different functions, and the
      name clang reports is unqualified. *)
@@ -32,12 +33,13 @@ type t = {
   location : Location.t;
 }
 
-let make ~ty ~name ~qualifier ~decl_id ~code ~has_body ~type_params ~params
-    ~attribute ~template_args ~specialization_kind ~primary_template_name
-    ~location =
+let make ~ty ~return_ty ~name ~qualifier ~decl_id ~code ~has_body ~type_params
+    ~params ~attribute ~template_args ~specialization_kind
+    ~primary_template_name ~location =
   {
     name;
     ty;
+    return_ty;
     qualifier;
     decl_id;
     code;
@@ -53,6 +55,7 @@ let make ~ty ~name ~qualifier ~decl_id ~code ~has_body ~type_params ~params
 
 let name (x : t) : string = x.name
 let decl_id (x : t) : string option = x.decl_id
+let return_ty (x : t) : Ty.t = x.return_ty
 
 (* What separates this declaration from every other function. A
    redeclaration reaches the same value as its definition, which is what
@@ -181,6 +184,10 @@ let parse ?(qualifier = []) (type_params : Ty_param.t list)
   (let* o = cast_object j in
    let* ty = get_signature_type o |> Result.map J_type.parse in
    let ty = Ty.to_string ty in
+   let* return_ty =
+     with_opt_field "returnType" (fun j -> Ok (J_type.parse j)) o
+   in
+   let return_ty = Option.value return_ty ~default:Ty.unknown in
    (* The scopes cu-to-json computes from the semantic declaration
       context, which hold for a definition written out of line with a
       qualified name where the enclosing [NamespaceDecl] nodes, all the
@@ -235,7 +242,8 @@ let parse ?(qualifier = []) (type_params : Ty_param.t list)
      |> Result.value ~default:Location.empty
    in
    Ok
-     (make ~ty ~name ~qualifier ~decl_id:(parse_decl_id o) ~code:body ~has_body
+     (make ~ty ~return_ty ~name ~qualifier ~decl_id:(parse_decl_id o)
+        ~code:body ~has_body
         ~params:ps ~type_params ~attribute:m ~template_args
         ~specialization_kind ~primary_template_name ~location))
   |> wrap_error "Kernel" j

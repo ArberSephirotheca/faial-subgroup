@@ -158,6 +158,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     type_params = [];
     params;
     attribute = C_lang.KernelAttr.Default;
+    returns_location = false;
   }
 
 let rec fold_int (e : Expr.t) : int option =

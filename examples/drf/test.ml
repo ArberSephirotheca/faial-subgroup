@@ -1634,10 +1634,26 @@ let tests =
        two have to be keyed the same way or the parameter resolves to no
        record at all. *)
     ("racy-template-accessor.cu", [], 1);
-    (* Assigning through what a call returns, which needs the location a
-       function returns rather than its value. Declining says so; before,
-       the assignment vanished and the kernel answered on its reads alone. *)
-    ("declined-write-through-call.cu", [], 1);
+    (* Assigning through what a call returns. A reference return hands back
+       the address, so the store is a write through it; before, the
+       assignment vanished and the kernel answered on its reads alone. *)
+    ("racy-write-through-call.cu", [], 1);
+    (* The same store with each thread on a cell of its own, which only
+       holds if the index survives into the address. *)
+    ("drf-write-through-call.cu", [], 0);
+    (* The reference returned by a free function over a pointer parameter,
+       which lands on whatever array the caller bound it to. *)
+    ("racy-write-through-static-ref.cu", [], 1);
+    (* The address of a by-value object's member array names no memory, so
+       the store through it is dropped the way a spelled one is. *)
+    ("racy-write-through-local-ref.cu", [], 1);
+    (* Storing through the dereference of a call, which is the same cell a
+       subscript by zero reaches. This one went missing unreported. *)
+    ("racy-deref-call-write.cu", [], 1);
+    (* A reference return whose lvalue is a choice between two arrays has no
+       address to hand back, so the store still cannot be placed and the
+       kernel is declined rather than losing its only write. *)
+    ("declined-write-through-choice.cu", [], 1);
     (* Two specialisations separated only by a declaration argument, whose
        identity is one level below the argument. The verdict is the same
        either way; what the snapshot holds is which array each write

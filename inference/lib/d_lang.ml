@@ -618,7 +618,8 @@ module Stmt = struct
     in
     SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = J_type.int })
 
-  let rec assigned_call : t -> Location.t option =
+  let assigned_call ~(resolved : Expr.t -> int -> bool) :
+      t -> Location.t option =
     let target (e : Expr.t) : Location.t option =
       let rec spelled : Expr.t -> Location.t option = function
         | Ident v -> Some (Variable.location (Decl_expr.name v))
@@ -628,9 +629,10 @@ module Stmt = struct
       Expr.find_map
         (function
           | Expr.BinaryOperator
-              { opcode = "="; lhs = CallExpr { func; _ }; _ }
+              { opcode = "="; lhs = CallExpr { func; args; _ }; _ }
           | Expr.BinaryOperator
-              { opcode = "="; lhs = CXXOperatorCallExpr { func; _ }; _ } ->
+              { opcode = "="; lhs = CXXOperatorCallExpr { func; args; _ }; _ }
+            when not (resolved func (List.length args)) ->
               Some (Option.value (spelled func) ~default:Location.empty)
           | _ -> None)
         e
@@ -638,30 +640,31 @@ module Stmt = struct
     let ( ||| ) (a : Location.t option) (b : unit -> Location.t option) =
       match a with Some _ -> a | None -> b ()
     in
-    function
-    | Skip | BreakStmt | GotoStmt | ContinueStmt -> None
-    | Seq (s1, s2) -> assigned_call s1 ||| fun () -> assigned_call s2
-    | SExpr e | CaseStmt { case = e; body = Skip } -> target e
-    | ReturnStmt e -> Option.bind e target
-    | AsmStmt _ | BarrierOp _ -> None
-    | WriteAccessStmt w -> target w.source
-    | ReadAccessStmt _ | AtomicAccessStmt _ -> None
-    | DeclStmt l ->
-        l
-        |> List.find_map (fun (d : Decl.t) ->
-               match d.init with Some (IExpr e) -> target e | _ -> None)
-    | IfStmt { cond; then_stmt; else_stmt } ->
-        target cond
-        ||| fun () ->
-        assigned_call then_stmt ||| fun () -> assigned_call else_stmt
-    | WhileStmt { cond; body } | DoStmt { cond; body }
-    | SwitchStmt { cond; body } ->
-        target cond ||| fun () -> assigned_call body
-    | DefaultStmt s | CaseStmt { body = s; _ } | LambdaDecl { body = s; _ } ->
-        assigned_call s
-    | ForStmt f ->
-        (match f.cond with Some e -> target e | None -> None)
-        ||| fun () -> assigned_call f.inc ||| fun () -> assigned_call f.body
+    let rec walk : t -> Location.t option = function
+      | Skip | BreakStmt | GotoStmt | ContinueStmt -> None
+      | Seq (s1, s2) -> walk s1 ||| fun () -> walk s2
+      | SExpr e | CaseStmt { case = e; body = Skip } -> target e
+      | ReturnStmt e -> Option.bind e target
+      | AsmStmt _ | BarrierOp _ -> None
+      | WriteAccessStmt w -> target w.source
+      | ReadAccessStmt _ | AtomicAccessStmt _ -> None
+      | DeclStmt l ->
+          l
+          |> List.find_map (fun (d : Decl.t) ->
+                 match d.init with Some (IExpr e) -> target e | _ -> None)
+      | IfStmt { cond; then_stmt; else_stmt } ->
+          target cond
+          ||| fun () -> walk then_stmt ||| fun () -> walk else_stmt
+      | WhileStmt { cond; body } | DoStmt { cond; body }
+      | SwitchStmt { cond; body } ->
+          target cond ||| fun () -> walk body
+      | DefaultStmt s | CaseStmt { body = s; _ } | LambdaDecl { body = s; _ } ->
+          walk s
+      | ForStmt f ->
+          (match f.cond with Some e -> target e | None -> None)
+          ||| fun () -> walk f.inc ||| fun () -> walk f.body
+    in
+    walk
 
   let rec to_s : t -> Indent.t list = function
     | Skip -> [ Line "skip;" ]
@@ -937,6 +940,7 @@ module Kernel = struct
     type_params : Ty_param.t list;
     params : Param.t list;
     attribute : KernelAttr.t;
+    returns_location : bool;
   }
 
   let is_global (k : t) : bool = k.attribute |> KernelAttr.is_global
@@ -1021,6 +1025,7 @@ module SignatureDB = struct
       params : Variable.t list;
       types : Ty.t list;
       expand_vectors : bool;
+      returns_location : bool;
     }
 
     let to_string (s : t) : string =
@@ -1035,6 +1040,7 @@ module SignatureDB = struct
         types =
           List.map (fun (p : Param.t) -> (Param.ty_var p).ty) k.Kernel.params;
         expand_vectors = KernelAttr.is_global k.Kernel.attribute;
+        returns_location = k.Kernel.returns_location;
       }
   end
 
@@ -1334,6 +1340,22 @@ let to_subscript : C_lang.Expr.t -> C_lang.Expr.c_array_subscript option =
       { func = UnresolvedLookupExpr { name = v; _ }; args = [ Ident x ]; _ }
     when Variable.name v = "operator*" ->
       cell x (IntegerLiteral 0)
+  | UnaryOperator
+      { opcode = "*";
+        child = (CallExpr { func; _ } | CXXOperatorCallExpr { func; _ }) as child;
+        _ } ->
+      let rec spelled : C_lang.Expr.t -> Location.t = function
+        | Ident v -> Variable.location (Decl_expr.name v)
+        | MemberExpr { base; _ } -> spelled base
+        | _ -> Location.empty
+      in
+      Some
+        {
+          lhs = child;
+          rhs = IntegerLiteral 0;
+          ty = C_lang.Expr.to_type child;
+          location = spelled func;
+        }
   | _ -> None
 
 (* An atomic's address is a base plus whatever is added to it, in any
@@ -2167,14 +2189,58 @@ let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
          let* args = State.list_map rewrite_exp args in
          add (BarrierOp { op; target; args; loc }))
 
+let rec address_of (e : C_lang.Expr.t) : C_lang.Expr.t option =
+  match e with
+  | ArraySubscriptExpr { lhs; rhs; _ } ->
+      let ty =
+        let ty = C_lang.Expr.to_type lhs in
+        match ty.inner with
+        | Ty.Array a -> Ty.make (Ty.Pointer a.base)
+        | _ -> ty
+      in
+      Some (BinaryOperator { opcode = "+"; lhs; rhs; ty })
+  | UnaryOperator { opcode = "*"; child; _ } -> Some child
+  | Convert { arg; _ } -> address_of arg
+  | _ -> None
+
+let returned_lvalues (s : C_lang.Stmt.t) : C_lang.Expr.t list =
+  C_lang.Stmt.Visit.fold
+    (fun (s : C_lang.Expr.t list C_lang.Stmt.Visit.t) ->
+      match s with
+      | Return (Some e) -> [ e ]
+      | Return None -> []
+      | If { then_stmt; else_stmt; _ } -> then_stmt @ else_stmt
+      | While { body; _ } | Do { body; _ } | Switch { body; _ }
+      | Default body | Case { body; _ } -> body
+      | For { inc; body; _ } -> inc @ body
+      | Seq (a, b) -> a @ b
+      | Break | Goto | Continue | Decl _ | SExpr _ | Asm _ | Barrier _ | Skip
+        -> [])
+    s
+
+let address_returns : C_lang.Stmt.t -> C_lang.Stmt.t =
+  C_lang.Stmt.Visit.map (function
+    | ReturnStmt (Some e) ->
+        ReturnStmt (Some (Option.value (address_of e) ~default:e))
+    | s -> s)
+
 let rewrite_kernel (k : C_lang.Kernel.t) : Kernel.t =
+  let returns_location =
+    Ty.is_reference (C_lang.Kernel.return_ty k)
+    && returned_lvalues k.code <> []
+    && List.for_all
+         (fun e -> Option.is_some (address_of e))
+         (returned_lvalues k.code)
+  in
   {
     id = C_lang.Kernel.id k;
     decl_id = C_lang.Kernel.decl_id k;
-    code = rewrite_stmt k.code;
+    code = rewrite_stmt (if returns_location then address_returns k.code
+                         else k.code);
     params = k.params;
     type_params = k.type_params;
     attribute = k.attribute;
+    returns_location;
   }
 
 let rewrite_def (d : C_lang.Def.t) : Def.t =

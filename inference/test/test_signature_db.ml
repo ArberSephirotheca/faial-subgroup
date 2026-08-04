@@ -22,6 +22,7 @@ let kernel ?(qualifier = []) ?(template_args = []) ?decl_id ~(name : string)
     type_params = [];
     params;
     attribute = C_lang.KernelAttr.Auxiliary;
+    returns_location = false;
   }
 
 let touch_ty = "void (int *, int)"
