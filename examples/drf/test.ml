@@ -1256,6 +1256,23 @@ let tests =
     ("discarded-with-survivor.cu", [], 1);
     ("discarded-with-survivor.cu", [ "--kernel"; "declined" ], 1);
     ("discarded-with-survivor.cu", [ "--kernel"; "analyzed" ], 0);
+    (* A parameter that reads a flat buffer as an array of structs. The
+       member has no array of its own in the caller, so the access is the
+       byte it lands on, [in[4 * g + i]], read in the caller's cells. *)
+    ("drf-reinterpret-view.cu", [], 0);
+    (* The same view with the write landing in the buffer it reads, so the
+       offset the member contributes decides whether the two meet. *)
+    ("racy-reinterpret-view.cu", [], 1);
+    (* A call whose callee is known but whose arguments cannot be lined up
+       with its parameters, because the argument is not a name and has no
+       members to expand, is discarded for the same reason an unresolved
+       one is: the call node survives inlining and [Encode_assigns] drops
+       it without trace, so the callee used to vanish and the kernel
+       reported no accesses at all. *)
+    ("declined-call-arity.cu", [], 1);
+    (* A call whose argument is the parameter's own type binds member to
+       member, which is the case the expansion above must not disturb. *)
+    ("racy-call-arity.cu", [], 1);
     (* Rejection follows reachability: [k] calls [helper], and [helper] is
        the one that calls the undefined function. *)
     ("undefined-call-indirect.cu", [], 1);

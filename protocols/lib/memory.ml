@@ -1,3 +1,14 @@
+module Layout = struct
+  type t = { offset : int; strides : int list }
+
+  let make ~(offset : int) ~(strides : int list) : t = { offset; strides }
+
+  let to_string (x : t) : string =
+    "+" ^ string_of_int x.offset ^ " by ["
+    ^ (x.strides |> List.map string_of_int |> String.concat ", ")
+    ^ "]"
+end
+
 type t = {
   hierarchy : Mem_hierarchy.t;
   (* One entry per dimension, outermost first. [None] is an extent the
@@ -5,6 +16,7 @@ type t = {
      which a pointer level always supplies. *)
   size : int option list;
   data_type : string list; (* Empty means unknown *)
+  layout : Layout.t option;
 }
 
 (* The extents as every consumer written before per-dimension extents
@@ -19,13 +31,16 @@ let is_constant (x : t) : bool = Mem_hierarchy.is_constant x.hierarchy
 let hierarchy (x : t) : Mem_hierarchy.t = x.hierarchy
 
 let make (h : Mem_hierarchy.t) : t =
-  { hierarchy = h; size = []; data_type = [] }
+  { hierarchy = h; size = []; data_type = []; layout = None }
+
+let layout (x : t) : Layout.t option = x.layout
 
 let from_type (h : Mem_hierarchy.t) (ty : Ty.t) : t =
   {
     hierarchy = h;
     size = Ty.get_array_dims ty;
     data_type = Ty.get_array_type ty;
+    layout = None;
   }
 
 let data_ty (x : t) : Ty.t = x.data_type |> String.concat " " |> Ty.of_c_string

@@ -13,19 +13,30 @@ let ptr_to (base : Ty.t) : Ty.t = Ty.make (Ty.Pointer base)
 let double : Ty.t = Ty.make (Ty.Scalar Scalar.double)
 
 module Records = struct
-  let table : (string * (string * Ty.t) list) list =
+  (* Each record as the declaration side reports it: its width, and each
+     field with its bit offset. *)
+  let table : (string * (int * (string * int * Ty.t) list)) list =
     [
-      ("Atom", [ ("f", array_of ~size:3 double) ]);
-      ("Cell", [ ("key", Ty.int); ("val", Ty.int) ]);
-      ("V", [ ("p", ptr_to Ty.int) ]);
-      ("Inner", [ ("a", array_of ~size:4 double); ("b", double) ]);
-      ("Outer", [ ("x", array_of ~size:8 inner); ("y", double) ]);
+      ("Atom", (24, [ ("f", 0, array_of ~size:3 double) ]));
+      ("Cell", (8, [ ("key", 0, Ty.int); ("val", 32, Ty.int) ]));
+      ("V", (8, [ ("p", 0, ptr_to Ty.int) ]));
+      ("Inner", (40, [ ("a", 0, array_of ~size:4 double); ("b", 256, double) ]));
+      ("Outer", (328, [ ("x", 0, array_of ~size:8 inner); ("y", 320, double) ]));
     ]
 
-  let members (ty : Ty.t) : (string * Ty.t) list option =
+  let lookup (ty : Ty.t) : (int * (string * int * Ty.t) list) option =
     match ty.inner with
     | Ty.Opaque name -> List.assoc_opt name table
     | _ -> None
+
+  let members (ty : Ty.t) : Type_tree.Field.t list option =
+    lookup ty
+    |> Option.map (fun (_, fields) ->
+           fields
+           |> List.map (fun (name, offset, ty) ->
+                  Type_tree.Field.make ~offset ~name ~ty ()))
+
+  let size (ty : Ty.t) : int option = lookup ty |> Option.map fst
 end
 
 module T = Type_tree.Make (Records)

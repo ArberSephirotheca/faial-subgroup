@@ -183,6 +183,11 @@ type t =
   | Row of { base : t; index : nexp }
   | Shift of { base : t; offset : Offset.t }
   | Select of { cond : Exp.bexp; if_true : t; if_false : t }
+  (* The memory read as an object the array underneath is not shaped like:
+     each axis moves [scale] of the array's own cells rather than one, and
+     the object starts [shift] cells in. Every index collapses into the one
+     the array takes. *)
+  | Linear of { base : t; scale : int list; shift : nexp }
 
 let from_array (array : Variable.t) : t = Base { array }
 let row ~(index : nexp) (base : t) : t = Row { base; index }
@@ -193,9 +198,12 @@ let shift ~(offset : Offset.t) (base : t) : t =
 let select ~(cond : Exp.bexp) ~(if_true : t) ~(if_false : t) : t =
   Select { cond; if_true; if_false }
 
+let linear ~(scale : int list) ~(shift : nexp) (base : t) : t =
+  Linear { base; scale; shift }
+
 let rec arrays : t -> Variable.Set.t = function
   | Base { array } -> Variable.Set.singleton array
-  | Row { base; _ } | Shift { base; _ } -> arrays base
+  | Row { base; _ } | Shift { base; _ } | Linear { base; _ } -> arrays base
   | Select { if_true; if_false; _ } ->
       Variable.Set.union (arrays if_true) (arrays if_false)
 
@@ -203,18 +211,26 @@ let rec keeps_payload : t -> bool = function
   | Base _ -> true
   | Row { base; _ } -> keeps_payload base
   | Shift { base; offset } -> Offset.keeps_payload offset && keeps_payload base
+  (* The innermost axis is the one that decides the cell: while it moves a
+     single cell of the array underneath, a write still lands where the
+     payload says it does. *)
+  | Linear { base; scale; _ } ->
+      (match List.rev scale with 1 :: _ -> true | _ -> false)
+      && keeps_payload base
   | Select { if_true; if_false; _ } ->
       keeps_payload if_true && keeps_payload if_false
 
 let to_array : t -> Variable.t option = function
   | Base { array } -> Some array
-  | Row _ | Shift _ | Select _ -> None
+  | Row _ | Shift _ | Select _ | Linear _ -> None
 
 let rec map ~(n : nexp -> nexp) ~(b : Exp.bexp -> Exp.bexp) : t -> t = function
   | Base _ as p -> p
   | Row { base; index } -> Row { base = map ~n ~b base; index = n index }
   | Shift { base; offset } ->
       Shift { base = map ~n ~b base; offset = Offset.map n offset }
+  | Linear { base; scale; shift } ->
+      Linear { base = map ~n ~b base; scale; shift = n shift }
   | Select { cond; if_true; if_false } ->
       Select
         {
@@ -232,6 +248,7 @@ let rec free_names (p : t) (acc : Variable.Set.t) : Variable.Set.t =
   | Row { base; index } -> free_names base (Exp.n_free_names index acc)
   | Shift { base; offset } ->
       free_names base (Exp.n_free_names (Offset.amount offset) acc)
+  | Linear { base; shift; _ } -> free_names base (Exp.n_free_names shift acc)
   | Select { cond; if_true; if_false } ->
       Exp.b_free_names cond acc |> free_names if_true |> free_names if_false
 
@@ -244,6 +261,8 @@ let rec subst_bases (f : Variable.t -> t option) (p : t) : t =
   | Base { array } -> f array |> Option.value ~default:p
   | Row { base; index } -> Row { base = subst_bases f base; index }
   | Shift { base; offset } -> Shift { base = subst_bases f base; offset }
+  | Linear { base; scale; shift } ->
+      Linear { base = subst_bases f base; scale; shift }
   | Select { cond; if_true; if_false } ->
       Select
         {
@@ -266,6 +285,19 @@ let addresses ~(index : nexp list) (p : t) : Address.t list =
     | Base { array } -> [ { Address.array; index; guard } ]
     | Row { base; index = i } -> walk base (Index.exact i :: index) guard
     | Shift { base; offset } -> walk base (Offset.apply offset index) guard
+    | Linear { base; scale; shift } ->
+        if List.length scale <> List.length index then walk base index guard
+        else
+          let combine (pick : Index.t -> nexp) : nexp =
+            List.fold_left2
+              (fun acc s i -> n_plus acc (n_mult (Num s) (pick i)))
+              shift scale index
+          in
+          let first = combine Index.first and last = combine Index.last in
+          let i =
+            if first = last then Index.exact first else Index.Span { first; last }
+          in
+          walk base [ i ] guard
     | Select { cond; if_true; if_false } ->
         walk if_true index (guarded cond guard)
         @ walk if_false index (guarded (b_not cond) guard)
@@ -282,7 +314,7 @@ let to_nexp (p : t) : nexp option =
     | Base { array } -> Some (Var array)
     | Shift { base; offset } ->
         walk base |> Option.map (n_plus (Offset.amount offset))
-    | Row _ | Select _ -> None
+    | Row _ | Select _ | Linear _ -> None
   in
   walk p
 
@@ -290,13 +322,17 @@ let rec to_string : t -> string = function
   | Base { array } -> Variable.name array
   | Row { base; index } -> to_string base ^ "[" ^ n_to_string index ^ "]"
   | Shift { base; offset } -> to_string base ^ " + " ^ Offset.to_string offset
+  | Linear { base; scale; shift } ->
+      to_string base ^ " by ["
+      ^ (scale |> List.map string_of_int |> String.concat ", ")
+      ^ "] + " ^ n_to_string shift
   | Select { cond; if_true; if_false } ->
       "(" ^ b_to_string cond ^ " ? " ^ to_string if_true ^ " : "
       ^ to_string if_false ^ ")"
 
 let rec step_comment : t -> string = function
   | Base _ -> ""
-  | Row { base; _ } -> step_comment base
+  | Row { base; _ } | Linear { base; _ } -> step_comment base
   | Select { if_true; _ } -> step_comment if_true
   | Shift { base; offset } -> (
       match offset with

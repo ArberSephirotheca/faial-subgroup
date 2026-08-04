@@ -265,8 +265,18 @@ let rec closures (j : Yojson.Basic.t) : t list =
             (match self with
              | Some name ->
                  Record
-                   { Record.name; qualifier = []; bases = []; fields = bound;
-                     location }
+                   {
+                     Record.name;
+                     qualifier = [];
+                     bases = [];
+                     fields =
+                       bound
+                       |> List.map (fun (name, ty) ->
+                              Record.Field.make ~name ~ty ());
+                     size = None;
+                     align = None;
+                     location;
+                   }
                  :: operators
              | None -> operators)
   in
@@ -384,11 +394,17 @@ and parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
             |> List.filter_map (fun j ->
                 let field =
                   let* o = cast_object j in
-                  let* n = with_field "name" cast_string o in
+                  let* name = with_field "name" cast_string o in
                   let* ty = get_field "type" o in
-                  Ok (n, J_type.parse ty)
+                  let offset =
+                    with_field "offsetBits" cast_int o |> Result.to_option
+                  in
+                  Ok (Record.Field.make ?offset ~name ~ty:(J_type.parse ty) ())
                 in
                 Result.to_option field)
+          in
+          let layout (field : string) : int option =
+            with_field field cast_int o |> Result.to_option
           in
           let location =
             with_field "range" parse_location o
@@ -397,7 +413,16 @@ and parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
           if fields = [] && bases = [] then Ok defs
           else
             Ok
-              (Record { Record.name; qualifier; bases; fields; location }
+              (Record
+                 {
+                   Record.name;
+                   qualifier;
+                   bases;
+                   fields;
+                   size = layout "size";
+                   align = layout "align";
+                   location;
+                 }
               :: defs)
       | None -> Ok defs)
   | "VarDecl" -> (

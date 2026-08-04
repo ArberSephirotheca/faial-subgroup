@@ -370,8 +370,8 @@ module Make (L : Logger) = struct
         ~bases:(fun path -> record_bases path db)
         e arg_count db.sigs
 
-    let lookup_record (ty : Ty.t) (b : t) : (string * Ty.t) list option =
-      let rec fields (r : Record.t) : (string * Ty.t) list =
+    let lookup_fields (ty : Ty.t) (b : t) : Record.Field.t list option =
+      let rec fields (r : Record.t) : Record.Field.t list =
         List.concat_map
           (fun base ->
             match PathMap.find_opt base b.records with
@@ -381,11 +381,24 @@ module Make (L : Logger) = struct
         @ r.fields
       in
       match ty.inner with
-      | Ty.Struct { members = _ :: _ as members } -> Some members
+      | Ty.Struct { members = _ :: _ as members } ->
+          Some
+            (members
+            |> List.map (fun (name, ty) -> Record.Field.make ~name ~ty ()))
       | _ ->
           Record.type_path ty
           |> Fun.flip Option.bind (fun path -> find_record path b)
           |> Option.map fields
+
+    let lookup_record (ty : Ty.t) (b : t) : (string * Ty.t) list option =
+      lookup_fields ty b
+      |> Option.map
+           (List.map (fun (f : Record.Field.t) -> (f.name, f.ty)))
+
+    let record_size (ty : Ty.t) (b : t) : int option =
+      Record.type_path ty
+      |> Fun.flip Option.bind (fun path -> find_record path b)
+      |> Fun.flip Option.bind (fun (r : Record.t) -> r.size)
 
     let add_enum (e : Enum.t) (b : t) : t =
       let assigns =
@@ -543,8 +556,15 @@ module Make (L : Logger) = struct
       ~(index : Infer_exp.t list) ~(guard : Infer_exp.t option) (ty : Ty.t) :
       Infer_stmt.t option =
     let module T = Imp.Type_tree.Make (struct
-      let members (ty : Ty.t) : (string * Ty.t) list option =
-        Context.lookup_record (Context.resolve ty ctx) ctx
+      let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
+        Context.lookup_fields (Context.resolve ty ctx) ctx
+        |> Option.map
+             (List.map (fun (f : Record.Field.t) ->
+                  Imp.Type_tree.Field.make ?offset:f.offset ~name:f.name
+                    ~ty:f.ty ()))
+
+      let size (ty : Ty.t) : int option =
+        Context.record_size (Context.resolve ty ctx) ctx
     end) in
     let access (name : Variable.t) (extra : Infer_exp.t list) : Infer_stmt.t =
       let path = Field_path.parse name in
@@ -674,7 +694,7 @@ module Make (L : Logger) = struct
           Skip
     in
 
-    let expand_arg (a : D_lang.Expr.t) : Infer_exp.t list =
+    let expand_arg ?(param : Ty.t option) (a : D_lang.Expr.t) : Infer_exp.t list =
       let ty = Context.resolve (D_lang.Expr.to_type a) ctx in
       let pointee =
         match ty.inner with
@@ -691,19 +711,33 @@ module Make (L : Logger) = struct
          list, so the two cannot drift out of step and slide the positional
          binding along. *)
       let module T = Imp.Type_tree.Make (struct
-        let members (ty : Ty.t) : (string * Ty.t) list option =
-          Context.lookup_record (Context.resolve ty ctx) ctx
+        let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
+          Context.lookup_fields (Context.resolve ty ctx) ctx
+          |> Option.map
+               (List.map (fun (f : Record.Field.t) ->
+                    Imp.Type_tree.Field.make ?offset:f.offset ~name:f.name
+                      ~ty:f.ty ()))
+
+        let size (ty : Ty.t) : int option =
+          Context.record_size (Context.resolve ty ctx) ctx
       end) in
-      let leaves (root : Variable.t) : Variable.t list =
+      let leaves ?(ty = ty) (root : Variable.t) : Variable.t list =
         T.of_parameter ~root ty
         |> Imp.Type_tree.to_arrays ~hierarchy:Mem_hierarchy.GlobalMemory
         |> List.filter_map (fun (v, _) ->
             if Variable.equal v root then None else Some v)
       in
       let named (v : Variable.t) : Infer_exp.t = NExp (Var v) in
+      let slots (v : Variable.t) : Variable.t list option =
+        match param with
+        | Some param
+          when List.length (leaves ~ty:param v) <> List.length (leaves v) ->
+            Some (leaves ~ty:param v |> List.map (fun _ -> v))
+        | _ -> None
+      in
       match (Option.is_some pointee, base_var a) with
       | true, Some v -> (
-          match leaves v with
+          match Option.value (slots v) ~default:(leaves v) with
           | [] -> [ infer_expr a ]
           | l -> infer_expr a :: List.map named l)
       | _, _ -> (
@@ -763,12 +797,20 @@ module Make (L : Logger) = struct
               in
               if List.length s.params = List.length args then
                 let open Imp.Infer_stmt in
+                let types =
+                  if List.length s.types = List.length args then
+                    List.map Option.some s.types
+                  else List.map (fun _ -> None) args
+                in
                 Call
                   {
                     result;
                     id = s.id;
                     args =
-                      List.concat_map (fun a -> expand_arg (byte_arg a)) args;
+                      List.concat
+                        (List.map2
+                           (fun param a -> expand_arg ?param (byte_arg a))
+                           types args);
                   }
               else Skip
           | None -> Skip)
@@ -1093,6 +1135,7 @@ module Make (L : Logger) = struct
         hierarchy = h;
         size = Ty.get_array_dims ty;
         data_type = Ty.get_array_type ty;
+        layout = None;
       }
     in
     let ty = Context.resolve p.ty_var.ty ctx in
@@ -1125,8 +1168,15 @@ module Make (L : Logger) = struct
     else if Ty.is_array_or_pointer ty then
       let leaves =
         let module T = Imp.Type_tree.Make (struct
-          let members (ty : Ty.t) : (string * Ty.t) list option =
-            Context.lookup_record (Context.resolve ty ctx) ctx
+          let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
+            Context.lookup_fields (Context.resolve ty ctx) ctx
+            |> Option.map
+                 (List.map (fun (f : Record.Field.t) ->
+                      Imp.Type_tree.Field.make ?offset:f.offset ~name:f.name
+                        ~ty:f.ty ()))
+
+          let size (ty : Ty.t) : int option =
+            Context.record_size (Context.resolve ty ctx) ctx
         end) in
         T.of_parameter ~root:x ty
         |> Imp.Type_tree.to_arrays ~hierarchy:h
@@ -1167,8 +1217,15 @@ module Make (L : Logger) = struct
       || C_lang.BarrierOp.is_barrier_base_type d.ty
     in
     let module T = Imp.Type_tree.Make (struct
-      let members (ty : Ty.t) : (string * Ty.t) list option =
-        Context.lookup_record (Context.resolve ty ctx) ctx
+      let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
+        Context.lookup_fields (Context.resolve ty ctx) ctx
+        |> Option.map
+             (List.map (fun (f : Record.Field.t) ->
+                  Imp.Type_tree.Field.make ?offset:f.offset ~name:f.name
+                    ~ty:f.ty ()))
+
+      let size (ty : Ty.t) : int option =
+        Context.record_size (Context.resolve ty ctx) ctx
     end) in
     let members (d : Decl.t) : (Variable.t * array_t) list =
       match Context.lookup_record (Context.resolve d.ty ctx) ctx with
@@ -1216,8 +1273,14 @@ module Make (L : Logger) = struct
   let type_tree_report (ctx : Context.t) (k : D_lang.Kernel.t)
       (parameters : Imp.Kernel.Parameter.t list) : string =
     let module T = Imp.Type_tree.Make (struct
-      let members (ty : Ty.t) : (string * Ty.t) list option =
-        Context.lookup_record ty ctx
+      let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
+        Context.lookup_fields ty ctx
+        |> Option.map
+             (List.map (fun (f : Record.Field.t) ->
+                  Imp.Type_tree.Field.make ?offset:f.offset ~name:f.name
+                    ~ty:f.ty ()))
+
+      let size (ty : Ty.t) : int option = Context.record_size ty ctx
     end) in
     let tree =
       k.params
@@ -1345,8 +1408,15 @@ module Make (L : Logger) = struct
               let add_members (h : Mem_hierarchy.t) (ctx : Context.t) :
                   Context.t =
                 let module T = Imp.Type_tree.Make (struct
-                  let members (ty : Ty.t) : (string * Ty.t) list option =
-                    Context.lookup_record (Context.resolve ty ctx) ctx
+                  let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
+                    Context.lookup_fields (Context.resolve ty ctx) ctx
+                    |> Option.map
+                         (List.map (fun (f : Record.Field.t) ->
+                              Imp.Type_tree.Field.make ?offset:f.offset
+                                ~name:f.name ~ty:f.ty ()))
+
+                  let size (ty : Ty.t) : int option =
+                    Context.record_size (Context.resolve ty ctx) ctx
                 end) in
                 match Context.lookup_record ty ctx with
                 | None -> ctx

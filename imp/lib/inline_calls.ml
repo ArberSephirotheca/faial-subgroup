@@ -152,15 +152,41 @@ module Inline = struct
                   supplied an array in its own, which is where a [void]
                   pointer parameter over an [int] array gets its 1 against
                   4. *)
-               let view =
+               let param =
                  match p_ty with
-                 | K.Parameter.Type.Array m -> Protocols.Memory.step m
+                 | K.Parameter.Type.Array m -> Some m
                  | _ -> None
                in
+               let caller = Variable.Map.find_opt u.array arrays in
+               let view = param |> Option.map Protocols.Memory.step |> Option.join in
                let elem =
-                 Variable.Map.find_opt u.array arrays
-                 |> Option.map Protocols.Memory.step
-                 |> Option.join
+                 caller |> Option.map Protocols.Memory.step |> Option.join
+               in
+               (* The parameter reads the memory as an object the caller's
+                  array is not shaped like, so the axes it indexes by are
+                  the object's rather than the array's, and they collapse
+                  into the one index the array takes. Divisibility is what
+                  says the two agree on where a cell starts; without it the
+                  binding is left alone and the access goes unnamed. *)
+               let flatten (p : Pointer.t) : Pointer.t option =
+                 let open Protocols in
+                 match (param, caller, elem) with
+                 | Some param, Some caller, Some w
+                   when Option.is_none (Memory.layout caller) ->
+                     Memory.layout param
+                     |> Fun.flip Option.bind (fun (l : Memory.Layout.t) ->
+                            let exact (n : int) : int option =
+                              if w > 0 && n mod w = 0 then Some (n / w) else None
+                            in
+                            let scale = List.map exact l.strides in
+                            if List.for_all Option.is_some scale then
+                              exact l.offset
+                              |> Option.map (fun shift ->
+                                     Pointer.linear
+                                       ~scale:(List.filter_map Fun.id scale)
+                                       ~shift:(Exp.Num shift) p)
+                            else None)
+                 | _ -> None
                in
                let offset =
                  match (view, elem) with
@@ -169,9 +195,13 @@ module Inline = struct
                        ~step:(Pointer.Step.make ~view ~elem)
                  | _ -> Pointer.Offset.elements u.offset
                in
-               Scoped.Code.resolve ~arrays ~target:x
-                 (Pointer.from_array u.array |> Pointer.shift ~offset)
-                 s)
+               let pointer = Pointer.from_array u.array in
+               let pointer =
+                 match flatten pointer with
+                 | Some pointer -> Pointer.shift ~offset:(Pointer.Offset.elements u.offset) pointer
+                 | None -> Pointer.shift ~offset pointer
+               in
+               Scoped.Code.resolve ~arrays ~target:x pointer s)
          (Common.zip k.parameters args)
     (* then add inside the child, meaning that the free-variables of the
        outer-context are preserved  *)
@@ -346,6 +376,15 @@ let rec inline_all (s : t) : t =
     (* inline more *)
     inline_all (inline_kernels n s)
 
+let rec surviving_call : Scoped.Code.t -> Call.t option = function
+  | Call (c, _) -> Some c
+  | Seq (p, q) | If (_, p, q) -> (
+      match surviving_call p with Some _ as r -> r | None -> surviving_call q)
+  | For (_, p) | Decl (_, p) -> surviving_call p
+  | PointerBind p -> surviving_call p.body
+  | Assign a -> surviving_call a.body
+  | Access _ | Sync _ | Assert _ | Skip -> None
+
 (* Every kernel whose calls did not all resolve is discarded, not just the
    recursive ones. Keeping one would leave a [Call] node in its body, and
    [Encode_assigns] drops such a node without trace, so the kernel would be
@@ -371,6 +410,30 @@ let inline_calls (l : Scoped.Kernel.t list) :
         if IdSet.mem id discarded then None
         else path_to_unsupported calls id |> Option.map (fun r -> (id, r)))
   in
+  let mismatched =
+    kernel_list s
+    |> List.filter_map (fun k ->
+        let id = Scoped.Kernel.unique_id k in
+        if IdSet.mem id discarded || List.mem_assoc id unsupported then None
+        else
+          surviving_call k.code
+          |> Option.map (fun (c : Call.t) ->
+              let callee = Call.unique_id c in
+              let parameters =
+                IdMap.find_opt callee s.kernels
+                |> Option.map (fun (k : Scoped.Kernel.t) ->
+                       List.length k.parameters)
+                |> Option.value ~default:0
+              in
+              ( id,
+                Rejected_kernel.Reason.CallArity
+                  {
+                    callee = Function_id.label callee;
+                    parameters;
+                    arguments = List.length c.args;
+                  } )))
+  in
+  let unsupported = unsupported @ mismatched in
   let dropped =
     IdSet.union discarded (unsupported |> List.map fst |> IdSet.of_list)
   in

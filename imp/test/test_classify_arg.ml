@@ -10,7 +10,12 @@ let plus (l : nexp) (r : nexp) : nexp =
   Binary (N_binary.Plus Signedness.Signed, l, r)
 
 let memory : Memory.t =
-  { hierarchy = Mem_hierarchy.GlobalMemory; size = []; data_type = [ "int" ] }
+  {
+    hierarchy = Mem_hierarchy.GlobalMemory;
+    size = [];
+    data_type = [ "int" ];
+    layout = None;
+  }
 
 let arg_testable : Arg.t Alcotest.testable =
   Alcotest.testable

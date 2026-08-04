@@ -1,13 +1,25 @@
 open Protocols
 open Stage0
 
+module Field = struct
+  type t = { name : string; ty : Ty.t; offset : int option }
+
+  let make ?(offset : int option) ~(name : string) ~(ty : Ty.t) () : t =
+    { name; ty; offset }
+end
+
 type t = {
   name : Ty.segment;
   qualifier : Ty.segment list;
   bases : Ty.segment list list;
-  fields : (string * Ty.t) list;
+  fields : Field.t list;
+  size : int option;
+  align : int option;
   location : Location.t;
 }
+
+let field_types (r : t) : (string * Ty.t) list =
+  r.fields |> List.map (fun (f : Field.t) -> (f.name, f.ty))
 
 let location (r : t) : Location.t = r.location
 let path (r : t) : Ty.segment list = r.qualifier @ [ r.name ]
@@ -47,12 +59,12 @@ let type_path (ty : Ty.t) : Ty.segment list option =
   | _ -> None
 
 let to_ty (r : t) : Ty.t =
-  Ty.make ~name:(qualified_name r) (Ty.Struct { members = r.fields })
+  Ty.make ~name:(qualified_name r) (Ty.Struct { members = field_types r })
 
 let to_string (r : t) : string =
   let fields =
     r.fields
-    |> List.map (fun (n, ty) -> Ty.to_string ty ^ " " ^ n)
+    |> List.map (fun (f : Field.t) -> Ty.to_string f.ty ^ " " ^ f.name)
     |> String.concat "; "
   in
   "struct " ^ qualified_name r ^ " { " ^ fields ^ " }"

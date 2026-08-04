@@ -397,6 +397,7 @@ module Decl = struct
           hierarchy = SharedMemory;
           size = Ty.get_array_dims d.ty;
           data_type = Ty.get_array_type d.ty;
+          layout = None;
         }
     else None
 
@@ -1015,7 +1016,11 @@ module SignatureDB = struct
   module Function_id = Imp.Function_id
 
   module Signature = struct
-    type t = { id : Function_id.t; params : Variable.t list }
+    type t = {
+      id : Function_id.t;
+      params : Variable.t list;
+      types : Ty.t list;
+    }
 
     let to_string (s : t) : string =
       Function_id.label s.id
@@ -1023,7 +1028,12 @@ module SignatureDB = struct
       ^ Function_id.ty s.id
 
     let from_kernel (k : Kernel.t) : t =
-      { id = k.Kernel.id; params = List.map Param.name k.Kernel.params }
+      {
+        id = k.Kernel.id;
+        params = List.map Param.name k.Kernel.params;
+        types =
+          List.map (fun (p : Param.t) -> (Param.ty_var p).ty) k.Kernel.params;
+      }
   end
 
   type t = {
