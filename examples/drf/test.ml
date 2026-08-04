@@ -1539,6 +1539,23 @@ let tests =
     ("racy-record-cell-read.cu", [], 1);
     (* The same read with each thread on its own site. *)
     ("drf-record-cell-read.cu", [], 0);
+    (* A vector pointer is decomposed into one array per lane, so the object
+       holding a cell names no memory and only its lanes do. Touching the
+       whole cell was left unexpanded and named that object, which nothing
+       matched, and the accesses went missing. *)
+    ("racy-vector-cell-read.cu", [], 1);
+    (* The same read with each thread on its own cell. *)
+    ("drf-vector-cell-read.cu", [], 0);
+    (* The store half of the same rule. *)
+    ("racy-vector-cell-write.cu", [], 1);
+    (* Shifting a vector pointer argument counts objects, and each lane
+       array holds one cell per object, so the shift is scaled by the lane's
+       cell. Every lane used to collapse onto the object's name carrying the
+       object-scaled shift, which named nothing. *)
+    ("racy-vector-arg-shift.cu", [], 1);
+    (* The same shift with the direct write an object's width further on,
+       which is where the object-scaled shift would have landed. *)
+    ("drf-vector-arg-shift.cu", [], 0);
     (* With [f.x] a free variable the prover gave each thread its own, and
        the kernel reported a race that cannot happen; expanded, [f.x] is
        uniform and the indices are disjoint. *)

@@ -536,14 +536,14 @@ module Make (L : Logger) = struct
   (* Lane axes of a CUDA vector type ([uint2], [const uint3], ...). *)
   let vector_type_axes (ty : Ty.t) : string list option = Ty.vector_lanes ty
 
-  (* Only a record is expanded. A vector's lanes are named by the descent,
-     so a lane of an element resolves, but a whole-vector store is left
-     alone: the widening view that vectorised code writes, a [float4 *]
-     over a [float] array, is rescaled into the array it lands on, and
-     expanding it would name lanes of the view rather than cells of the
-     array. *)
-  let aggregate (ctx : Context.t) (ty : Ty.t) : (string * Ty.t) list option =
-    Context.lookup_record ty ctx
+  let aggregate (ctx : Context.t) ~(decomposed : Variable.Set.t)
+      ~(array : Variable.t) (ty : Ty.t) : Ty.t option =
+    if
+      Option.is_some (Context.lookup_record ty ctx)
+      || Variable.Set.mem array decomposed
+         && Option.is_some (vector_type_axes ty)
+    then Some ty
+    else None
 
   (* Touching a whole record touches every scalar under it, so the access
      is expanded into one per cell of every leaf. The cells are enumerated
@@ -696,7 +696,8 @@ module Make (L : Logger) = struct
               axes
         | None -> [ Kernel.Parameter.unsupported x ty ]
 
-  let infer_stmt (ctx : Context.t) : D_lang.Stmt.t -> Imp.Infer_stmt.t =
+  let infer_stmt ~(decomposed : Variable.Set.t) (ctx : Context.t) :
+      D_lang.Stmt.t -> Imp.Infer_stmt.t =
     let resolve ty = Context.resolve ty ctx in
 
     let infer_type (ty : Ty.t) : Ty.t = Context.resolve ty ctx in
@@ -772,6 +773,12 @@ module Make (L : Logger) = struct
           Skip
     in
 
+    let byte_arg (a : D_lang.Expr.t) : D_lang.Expr.t =
+      if a |> D_lang.Expr.to_type |> infer_type |> Ty.is_array_or_pointer then
+        Option.value (to_byte_offset infer_type a) ~default:a
+      else a
+    in
+
     let expand_arg ?(param : Ty.t option) ~(expand_vectors : bool)
         (a : D_lang.Expr.t) : Infer_exp.t list =
       let ty = Context.resolve (D_lang.Expr.to_type a) ctx in
@@ -787,6 +794,7 @@ module Make (L : Logger) = struct
         | UnaryOperator { opcode = "&"; child; _ } -> base_var child
         | MemberExpr { base; name = field; ty } ->
             base_var base |> Option.map (value_member ~field ~ty)
+        | BinaryOperator { lhs; _ } -> base_var lhs
         | _ -> None
       in
       (* The argument list is built by the same descent as the parameter
@@ -803,22 +811,51 @@ module Make (L : Logger) = struct
         let size (ty : Ty.t) : int option =
           Context.record_size (Context.resolve ty ctx) ctx
       end) in
-      let leaves ?(ty = ty) (root : Variable.t) : Variable.t list =
+      let leaves ?(ty = ty) (root : Variable.t) :
+          (Variable.t * Memory.t) list =
         T.of_parameter ~root ty
         |> Imp.Type_tree.to_arrays ~hierarchy:Mem_hierarchy.GlobalMemory
-        |> List.filter_map (fun (v, _) ->
-            if Variable.equal v root then None else Some v)
+        |> List.filter (fun (v, _) -> not (Variable.equal v root))
       in
       let named (v : Variable.t) : Infer_exp.t = NExp (Var v) in
+      let rec rebase ~(root : Variable.t) ~(step : int) (e : D_lang.Expr.t) :
+          D_lang.Expr.t option =
+        match e with
+        | Ident v -> Some (D_lang.Expr.Ident { v with name = root })
+        | BinaryOperator b ->
+            rebase ~root ~step b.lhs
+            |> Option.map (fun lhs ->
+                   let rhs : D_lang.Expr.t =
+                     if step = 1 then b.rhs
+                     else
+                       BinaryOperator
+                         {
+                           opcode = "*";
+                           lhs = b.rhs;
+                           rhs = IntegerLiteral step;
+                           ty = J_type.int;
+                         }
+                   in
+                   D_lang.Expr.BinaryOperator { b with lhs; rhs })
+        | _ -> None
+      in
+      let leaf_arg ((v, m) : Variable.t * Memory.t) : Infer_exp.t =
+        match (a, Memory.step m) with
+        | D_lang.Expr.BinaryOperator _, Some step -> (
+            match rebase ~root:v ~step a with
+            | Some e -> infer_expr e
+            | None -> named v)
+        | _ -> named v
+      in
       let of_argument () : Infer_exp.t list =
         match (Option.is_some pointee, base_var a) with
         | true, Some v -> (
             match leaves v with
-            | [] -> [ infer_expr a ]
-            | l -> infer_expr a :: List.map named l)
+            | [] -> [ infer_expr (byte_arg a) ]
+            | l -> infer_expr (byte_arg a) :: List.map leaf_arg l)
         | _, _ -> (
             match members_of_value ctx ty with
-            | [] -> [ infer_expr a ]
+            | [] -> [ infer_expr (byte_arg a) ]
             | members ->
                 members
                 |> List.map (fun (field, ty) ->
@@ -845,7 +882,7 @@ module Make (L : Logger) = struct
           let expected = of_parameter param in
           let given = of_argument () in
           if List.length given = expected then given
-          else List.init expected (fun _ -> infer_expr a)
+          else List.init expected (fun _ -> infer_expr (byte_arg a))
     in
     let infer_call ?(result = None) (func : D_lang.Expr.t)
         (args : D_lang.Expr.t list) : Infer_stmt.t =
@@ -869,16 +906,6 @@ module Make (L : Logger) = struct
             fields args
           |> Infer_stmt.from_list
       | _ -> (
-          (* Only the arguments that can reach [Array_use.from_nexp] as an
-             array binding are converted, and never [infer_expr] itself. A
-             blanket rule over pointer-typed additions would also rewrite
-             [(q + 1) - p] and [p < A + k], neither of which becomes an
-             alias, moving values that no alias ever converts back. *)
-          let byte_arg (a : D_lang.Expr.t) : D_lang.Expr.t =
-            if a |> D_lang.Expr.to_type |> infer_type |> Ty.is_array_or_pointer
-            then Option.value (to_byte_offset infer_type a) ~default:a
-            else a
-          in
           match Context.lookup_sig func arg_count ctx with
           | Some s ->
               let args =
@@ -904,7 +931,7 @@ module Make (L : Logger) = struct
                         (List.map2
                            (fun param a ->
                              expand_arg ?param
-                               ~expand_vectors:s.expand_vectors (byte_arg a))
+                               ~expand_vectors:s.expand_vectors a)
                            types args);
                   }
               else Skip
@@ -954,8 +981,7 @@ module Make (L : Logger) = struct
               (List.length w.target.index)
               (resolve w.target.ty)
             |> Option.map resolve
-            |> Fun.flip Option.bind (fun ty ->
-                aggregate ctx ty |> Option.map (fun _ -> ty))
+            |> Fun.flip Option.bind (aggregate ctx ~decomposed ~array)
           in
           (match element with
            | None ->
@@ -1002,8 +1028,7 @@ module Make (L : Logger) = struct
               (List.length r.source.index)
               (resolve r.source.ty)
             |> Option.map resolve
-            |> Fun.flip Option.bind (fun ty ->
-                aggregate ctx ty |> Option.map (fun _ -> ty))
+            |> Fun.flip Option.bind (aggregate ctx ~decomposed ~array)
           in
           if leaves_memory then
             let pointer =
@@ -1355,8 +1380,21 @@ module Make (L : Logger) = struct
       (ctx : Context.t) (k : D_lang.Kernel.t) :
       Context.t * Imp.Kernel.t =
     let ctx = Context.set_scope (Imp.Function_id.qualifier k.id) ctx in
+    (* Parse kernel parameters *)
+    let expand_vectors =
+      match k.attribute with KernelAttr.Default -> true | _ -> false
+    in
+    let per_param = List.map (parse_param ~expand_vectors ctx) k.params in
+    let parameters = List.concat per_param in
+    let decomposed =
+      per_param
+      |> List.filter_map (function
+           | (x, Imp.Kernel.Parameter.Type.Unsupported _) :: _ :: _ -> Some x
+           | _ -> None)
+      |> Variable.Set.of_list
+    in
     let code, return =
-      infer_stmt ctx k.code
+      infer_stmt ~decomposed ctx k.code
       |> Imp.Atomic_seed_read.rewrite
       |> Infer_stmt.infer
     in
@@ -1365,13 +1403,6 @@ module Make (L : Logger) = struct
       List.fold_left
         (fun ctx (x, m) -> Context.add_array x m ctx)
         ctx (parse_shared ctx k.code)
-    in
-    (* Parse kernel parameters *)
-    let expand_vectors =
-      match k.attribute with KernelAttr.Default -> true | _ -> false
-    in
-    let parameters =
-      List.concat_map (parse_param ~expand_vectors ctx) k.params
     in
     report (fun () -> type_tree_report ctx k parameters);
     (* type parameters become global variables because c-t-j doesn't represent
