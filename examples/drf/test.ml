@@ -378,6 +378,12 @@ let tests =
      keeps the safe store and loses the racy one, so the kernel clears
      rather than warning and nothing says an access went missing. *)
     ("racy-member-template-two.cu", [], 1);
+    (* A template type parameter with no name, which is how a constraint
+     is written in place. Only the value form of that idiom was
+     tolerated, so the type form failed to parse and took the whole file
+     with it, whatever the file went on to declare. *)
+    ("drf-anon-template-parm.cu", [], 0);
+    ("racy-anon-template-parm.cu", [], 1);
     (* A table of pointers held as a member of an object passed by value.
      The object is copied per thread, which is why an array member is
      the thread's own storage and was dropped, but the cells of this one
