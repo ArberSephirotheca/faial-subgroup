@@ -1355,9 +1355,17 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   | None -> (
   match c with
   (* When an atomic happens *)
-  | CallExpr { func = Ident f; args = (e : C_lang.Expr.t) :: args; ty }
-    when Atomic.is_valid f.name -> (
-      let atomic = Atomic.from_name f.name |> Option.get in
+  (* A call whose overload set is still open, which is what an atomic in an
+     uninstantiated template is, names its callee the same way a resolved
+     one does. *)
+  | CallExpr
+      {
+        func = (Ident { name = f; _ } | UnresolvedLookupExpr { name = f; _ }) as func;
+        args = (e : C_lang.Expr.t) :: args;
+        ty;
+      }
+    when Atomic.is_valid f -> (
+      let atomic = Atomic.from_name f |> Option.get in
       let addressed : C_lang.Expr.t option =
         match e with
         | UnaryOperator { opcode = "&"; child; _ } -> Some child
@@ -1390,7 +1398,7 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
             let* c = rewrite_exp c in
             return (Either.Right c)
         | None -> (
-            match atomic_cell ~ty ~location:(Variable.location f.name) e with
+            match atomic_cell ~ty ~location:(Variable.location f) e with
             | Some a ->
                 let* a = rewrite_subscript a in
                 return (Either.Left { a with ty })
@@ -1435,8 +1443,10 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
               let index = Option.value offset ~default:(IntegerLiteral 0) in
               rewrite_atomic atomic
                 (make_subscript ~name:x.name ~index:[ index ]
-                   ~location:(Variable.location f.name) ~ty ())
-          | None -> return (CallExpr { func = Ident f; args = e :: args; ty })))
+                   ~location:(Variable.location f) ~ty ())
+          | None ->
+              let* func = rewrite_exp func in
+              return (CallExpr { func; args = e :: args; ty })))
   (* When a write happens *)
   | BinaryOperator { lhs; rhs = src; opcode = "="; ty } -> (
       match to_subscript lhs with

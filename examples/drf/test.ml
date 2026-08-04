@@ -356,6 +356,11 @@ let tests =
      meet. Naming the field instead separates them. *)
     ("racy-atomic-member-target.cu", [], 1);
     ("drf-atomic-member-target.cu", [], 0);
+    (* The other half of what names an atomic: not the target but the
+     callee. In a template that is never instantiated the overload set
+     is still open, and the name arrives as an unresolved lookup. *)
+    ("racy-atomic-dependent-callee.cu", [], 1);
+    ("drf-atomic-dependent-callee.cu", [], 0);
     (* A pointer loaded out of a table of pointers names a row of that
      table, which is the same reading [table[cat][0]] already gets when it
      is written out in full. Every thread writes cell 0 of whichever row
