@@ -338,6 +338,14 @@ let tests =
      the pair moves in opposite directions when it is dropped. *)
     ("drf-call-result-offset.cu", [], 0);
     ("racy-call-result-offset.cu", [], 1);
+    (* An atomic on a scalar counter, whose target is the address of a
+     name rather than of a cell. The first two move: the builtin used
+     to fall out of the atomic rewrite and be declined as a call with
+     no body. The shared one already resolved, by a road of its own,
+     and is here to hold the two spellings together. *)
+    ("racy-atomic-scalar-counter.cu", [], 1);
+    ("drf-atomic-scalar-counter.cu", [], 0);
+    ("drf-atomic-shared-scalar.cu", [], 0);
     (* A pointer loaded out of a table of pointers names a row of that
      table, which is the same reading [table[cat][0]] already gets when it
      is written out in full. Every thread writes cell 0 of whichever row

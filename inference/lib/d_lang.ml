@@ -1366,7 +1366,15 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
             | Some _ | None ->
                 let* e = rewrite_exp e in
                 return (Either.Right e))
-        | Some _ | None ->
+        (* The address of a name is that name's first cell, which is what
+           an atomic on a scalar counter takes. Reading the argument as
+           written leaves the [&] in front of it, and an address is not a
+           spelling the walk below knows, so the whole builtin fell out of
+           this arm and became a call with no body. *)
+        | Some c ->
+            let* c = rewrite_exp c in
+            return (Either.Right c)
+        | None ->
             let* e = rewrite_exp e in
             return (Either.Right e)
       in
