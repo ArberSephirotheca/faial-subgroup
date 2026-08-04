@@ -1183,7 +1183,9 @@ module Make (L : Logger) = struct
         |> List.filter (fun (v, _) -> not (Variable.equal v x))
         |> List.map (fun (v, m) -> Kernel.Parameter.array v m)
       in
-      Kernel.Parameter.array x (mk_array h ty) :: leaves
+      match leaves with
+      | [] -> [ Kernel.Parameter.array x (mk_array h ty) ]
+      | leaves -> Kernel.Parameter.unsupported x ty :: leaves
     else
       let members = members_of_value ctx ty in
       if members <> [] then to_params members

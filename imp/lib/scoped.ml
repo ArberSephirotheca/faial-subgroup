@@ -271,10 +271,13 @@ module Code = struct
 
   let unnamed_access (locs : Variable.Set.t) (s : t) :
       (Stage0.Location.t * Variable.t) option =
+    let roots =
+      locs |> Variable.Set.elements
+      |> List.map (fun x -> Field_path.base (Field_path.parse x))
+      |> Variable.Set.of_list
+    in
     let rooted (p : Exp.nexp Field_path.t) : bool =
-      Variable.Set.exists
-        (fun x -> Option.is_some (Field_path.under ~root:x p))
-        locs
+      Variable.Set.mem (Field_path.base p) roots
     in
     let rec walk : t -> (Stage0.Location.t * Variable.t) option = function
       | Access a ->

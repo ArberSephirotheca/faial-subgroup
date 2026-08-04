@@ -1513,6 +1513,15 @@ let tests =
     ("racy-struct-copy-pointer.cu", [], 1);
     (* The same pair with every thread on its own element. *)
     ("drf-struct-copy-pointer.cu", [], 0);
+    (* An object whose members are the memory is not memory itself. Here
+       the expansion cannot reach the members, since the only one has no
+       cells, so the copy names the object and the kernel is discarded
+       rather than analyzed under a name that denotes the members' own
+       bytes. *)
+    ("declined-object-with-members.cu", [], 1);
+    (* An object with nothing below it is the memory, which is what keeps
+       the rule above from swallowing a plain pointer parameter. *)
+    ("racy-object-without-members.cu", [], 1);
     (* With [f.x] a free variable the prover gave each thread its own, and
        the kernel reported a race that cannot happen; expanded, [f.x] is
        uniform and the indices are disjoint. *)
