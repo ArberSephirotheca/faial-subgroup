@@ -1683,6 +1683,26 @@ let tests =
     (* The same callable bound in the launching function itself, which the
        wrapper used to bind by rewriting its initialiser. *)
     ("racy-launch-site-lambda.cu", [ "--all-dims"; "--assume-launch" ], 1);
+    (* A template recursion the compiler has already unrolled. Its base case
+       is an explicit specialization with an empty body, and dropping that
+       declaration left the last call in the chain to bind by name and
+       signature to a sibling instantiation, which reads as a cycle. *)
+    ("racy-template-recursion.cu", [], 1);
+    (* The same chain with each step a block further along. *)
+    ("drf-template-recursion.cu", [], 0);
+    (* A dependent call, whose candidates are the ones clang's lookup found
+       and not every function of that name and arity in the file. Taking
+       any of them lands an unrelated body's accesses in the kernel. *)
+    ("drf-dependent-operator.cu", [], 0);
+    (* The same call over one output cell, which the kernel's own write
+       still has to reach. *)
+    ("racy-dependent-operator.cu", [], 1);
+    (* A call whose signature matches nothing faial can see. The one other
+       overload of the name is the caller, so binding by the name alone
+       makes the function call itself. *)
+    ("drf-unseen-overload.cu", [], 0);
+    (* The same overload pair over one output cell. *)
+    ("racy-unseen-overload.cu", [], 1);
   ]
 
 (* These are kernels that are being documented, but are

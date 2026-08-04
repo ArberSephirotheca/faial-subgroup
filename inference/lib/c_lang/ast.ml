@@ -36,7 +36,7 @@ type c_expr =
   | IntegerLiteral of int
   | MemberExpr of { name : string; base : c_expr; ty : Ty.t }
   | UnaryOperator of { opcode : string; child : c_expr; ty : Ty.t }
-  | UnresolvedLookupExpr of { name : Variable.t; tys : Ty.t list }
+  | UnresolvedLookupExpr of { name : Variable.t; lookups : Lookup.t list }
   (* GCC statement expression [({ s1; s2; ... ; e; })]. The value of
      the expression is [result] (the trailing expression of the inner
      CompoundStmt); [body] holds the prefix statements (typically

@@ -299,9 +299,7 @@ and parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
       t list j_result =
     if is_kernel j then
       let* k = C_kernel.parse ~qualifier type_params j in
-      if not (C_kernel.has_body k) then Ok [ Prototype k ]
-      else if k.code = Skip then Ok []
-      else Ok [ Kernel k ]
+      if not (C_kernel.has_body k) then Ok [ Prototype k ] else Ok [ Kernel k ]
     else Ok (closures j)
   in
   match k with

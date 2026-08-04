@@ -269,10 +269,11 @@ let rec parse_expr (j : json) : c_expr j_result =
                  decl_id = None; qualifier = [] })
   | "UnresolvedLookupExpr" ->
       let* v = parse_variable j in
-      let* tys = get_field "lookups" o >>= cast_list in
+      let* lookups = with_field_or "lookups" cast_list [] o in
+      let* lookups = map Lookup.parse lookups in
       Ok
         (UnresolvedLookupExpr
-           { name = v; tys = List.map J_type.parse tys })
+           { name = v; lookups = List.filter_map Fun.id lookups })
   | "CXXNewExpr" ->
       let* arg = with_field "inner" (cast_first parse_expr) o in
       let* ty = get_field "type" o in

@@ -39,7 +39,10 @@ module Expr = struct
     | MemberExpr of { name : string; base : t; ty : Ty.t }
     | Ident of Decl_expr.t
     | UnaryOperator of { opcode : string; child : t; ty : Ty.t }
-    | UnresolvedLookupExpr of { name : Variable.t; tys : Ty.t list }
+    | UnresolvedLookupExpr of {
+        name : Variable.t;
+        lookups : C_lang.Lookup.t list;
+      }
 
   and d_binary = { opcode : string; lhs : t; rhs : t; ty : Ty.t }
   and d_call = { func : t; args : t list; ty : Ty.t }
@@ -149,7 +152,7 @@ module Expr = struct
     | Ident d1, Ident d2 -> Decl_expr.compare d1 d2
     | UnresolvedLookupExpr a, UnresolvedLookupExpr b ->
         let@ () = Variable.compare a.name b.name in
-        Stdlib.compare a.tys b.tys
+        Stdlib.compare a.lookups b.lookups
     | Convert a, Convert b ->
         let@ () = compare a.arg b.arg in
         Stdlib.compare a.ty b.ty
@@ -1105,22 +1108,26 @@ module SignatureDB = struct
     |> Option.value ~default:[]
     |> List.filter_map (fun id -> get_id id db)
 
-  (* A call that names no declaration: clang could not resolve the
-     overload, or faial synthesised the call. [ty] is "?" for the
-     former, where the arity is all there is to go on; otherwise the
-     type still has to match, because a name alone would bind the call
-     to an unrelated overload. *)
-  let get_unresolved ~(name : string) ~(ty : string) ~(arg_count : int)
-      (db : t) : Kernel.t option =
-    let candidates = named name db in
-    if ty = "?" then
-      List.find_opt
-        (fun (k : Kernel.t) -> List.length k.params = arg_count)
-        candidates
-    else
-      List.find_opt
-        (fun (k : Kernel.t) -> Function_id.ty k.Kernel.id = ty)
-        candidates
+  (* A call whose callee names no declaration faial indexed. The type
+     still has to match, because a name alone would bind the call to an
+     unrelated overload. *)
+  let get_unresolved ~(name : string) ~(ty : string) (db : t) :
+      Kernel.t option =
+    named name db
+    |> List.find_opt (fun (k : Kernel.t) -> Function_id.ty k.Kernel.id = ty)
+
+  (* A call in a template that is never instantiated. Its arguments have
+     no types yet, so the arity is all that separates the candidates, and
+     which functions are candidates at all is what clang's lookup found
+     at the call, not whatever the translation unit holds under that
+     name. Unrestricted, comparing two values of a template parameter's
+     type reaches any [operator==] in the file. *)
+  let get_overload ~(name : string) ~(lookups : C_lang.Lookup.t list)
+      ~(arg_count : int) (db : t) : Kernel.t option =
+    named name db
+    |> List.find_opt (fun (k : Kernel.t) ->
+           List.length k.params = arg_count
+           && List.exists (C_lang.Lookup.matches k.Kernel.id) lookups)
 
   let get_method ~(record : Ty.segment list) ~(name : string) ~(ty : string)
       ~(arg_count : int) (db : t) : Kernel.t option =
@@ -1139,7 +1146,13 @@ module SignatureDB = struct
           candidates
       with
       | [ k ] -> Some k
-      | _ -> ( match candidates with [ k ] -> Some k | _ -> None)
+      | _ ->
+          (* Settling for the name and the arity is only right where the
+             reference carries no signature to disagree with. One that
+             spells a signature and matches none names an overload faial
+             cannot see, not the single candidate left. *)
+          if ty <> Ty.to_string Ty.unknown then None
+          else (match candidates with [ k ] -> Some k | _ -> None)
     in
     match of_arity (arg_count + 1) with
     | Some k -> Some k
@@ -1170,16 +1183,15 @@ module SignatureDB = struct
       walk [] record
     in
     (match e with
-     | UnresolvedLookupExpr { name = n; _ } ->
-         get_unresolved ~name:(Variable.name n) ~ty:"?" ~arg_count db
+     | UnresolvedLookupExpr { name = n; lookups } ->
+         get_overload ~name:(Variable.name n) ~lookups ~arg_count db
      | Ident { name = n; kind = Function | CXXMethod; ty; decl_id; qualifier }
        -> (
          match by_decl decl_id with
          | Some k -> Some k
          | None -> (
              match
-               get_unresolved ~name:(Variable.name n) ~ty:(Ty.to_string ty)
-                 ~arg_count db
+               get_unresolved ~name:(Variable.name n) ~ty:(Ty.to_string ty) db
              with
              | Some k -> Some k
              | None ->
@@ -1658,8 +1670,8 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       let* base = rewrite_exp base in
       return (MemberExpr { base; name; ty })
   | Ident v -> return (Ident v)
-  | UnresolvedLookupExpr { name = n; tys } ->
-      return (UnresolvedLookupExpr { name = n; tys })
+  | UnresolvedLookupExpr { name = n; lookups } ->
+      return (UnresolvedLookupExpr { name = n; lookups })
   | FloatingLiteral f -> return (FloatingLiteral f)
   | IntegerLiteral i -> return (IntegerLiteral i)
   | CharacterLiteral c -> return (CharacterLiteral c)

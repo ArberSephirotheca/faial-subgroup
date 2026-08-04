@@ -26,7 +26,7 @@ type t = c_expr =
   | IntegerLiteral of int
   | MemberExpr of { name : string; base : t; ty : Ty.t }
   | UnaryOperator of { opcode : string; child : t; ty : Ty.t }
-  | UnresolvedLookupExpr of { name : Variable.t; tys : Ty.t list }
+  | UnresolvedLookupExpr of { name : Variable.t; lookups : Lookup.t list }
   | StmtExpr of { body : c_stmt; result : t; ty : Ty.t }
   | LambdaExpr of {
       captures : (Variable.t * t) list;
@@ -208,7 +208,7 @@ module Visit = struct
     | IntegerLiteral of int
     | Member of { name : string; base : 'a; ty : Ty.t }
     | UnaryOperator of { opcode : string; child : 'a; ty : Ty.t }
-    | UnresolvedLookup of { name : Variable.t; tys : Ty.t list }
+    | UnresolvedLookup of { name : Variable.t; lookups : Lookup.t list }
     | StmtExpr of { body : c_stmt; result : 'a; ty : Ty.t }
     | LambdaExpr of {
         captures : (Variable.t * 'a) list;
@@ -286,7 +286,7 @@ module Visit = struct
           (UnaryOperator
              { opcode = e.opcode; child = fold f e.child; ty = e.ty })
     | UnresolvedLookupExpr e ->
-        f (UnresolvedLookup { name = e.name; tys = e.tys })
+        f (UnresolvedLookup { name = e.name; lookups = e.lookups })
     | StmtExpr e ->
         f (StmtExpr { body = e.body; result = fold f e.result; ty = e.ty })
     | LambdaExpr e ->
@@ -473,8 +473,8 @@ let rewrite_comma : t -> t list * t =
     | UnaryOperator { opcode; child; ty } ->
         let* child = rw child in
         return (UnaryOperator { opcode; child; ty })
-    | UnresolvedLookupExpr { name; tys } ->
-        return (UnresolvedLookupExpr { name; tys })
+    | UnresolvedLookupExpr { name; lookups } ->
+        return (UnresolvedLookupExpr { name; lookups })
     | StmtExpr { body; result; ty } ->
         let* result = rw result in
         return (StmtExpr { body; result; ty })
