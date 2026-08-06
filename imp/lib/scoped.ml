@@ -153,7 +153,13 @@ module Code = struct
             { a with mode = Access.Mode.Write None }
         | _ -> a
       in
-      match Pointer.addresses ~index:a.index pointer |> List.map (materialise a) with
+      let rank (x : Variable.t) : int option =
+        Variable.Map.find_opt x arrays
+        |> Option.map (fun (m : Memory.t) -> List.length m.size)
+      in
+      match
+        Pointer.addresses ~rank ~index:a.index pointer |> List.map (materialise a)
+      with
       | [] -> Skip
       | i :: l -> List.fold_left (fun s i -> Seq (s, i)) i l
     in
@@ -164,30 +170,49 @@ module Code = struct
     let graft (p : Pointer.t) : Pointer.t =
       Pointer.subst_base ~target ~source:pointer p
     in
-    let rec resolve : t -> t = function
+    (* A binder below [target] whose name descends from it, which is what a
+       view of one field of a decomposed object is, owns every access on that
+       field. Its own pointer already reaches [target], so letting the outer
+       substitution take the access as well would apply the outer pointer
+       once here and once again through the binder. *)
+    let owned (bound : Variable.Set.t) (p : Exp.nexp Field_path.t) : bool =
+      Variable.Set.exists
+        (fun x -> Option.is_some (Field_path.under ~root:x p))
+        bound
+    in
+    let rec resolve (bound : Variable.Set.t) : t -> t = function
       | Access a as i -> (
-          match Field_path.under ~root:target a.path with
-          | Some path -> rewrite { a with path }
-          | None -> i)
-      | Decl (d, l) as i -> if Variable.equal d.var target then i else Decl (d, resolve l)
+          if owned bound a.path then i
+          else
+            match Field_path.under ~root:target a.path with
+            | Some path -> rewrite { a with path }
+            | None -> i)
+      | Decl (d, l) as i ->
+          if Variable.equal d.var target then i else Decl (d, resolve bound l)
       | Assign a as i ->
           if Variable.equal a.var target then i
-          else Assign { a with body = resolve a.body }
+          else Assign { a with body = resolve bound a.body }
       | For (r, s) as i ->
-          if Variable.equal r.var target then i else For (r, resolve s)
+          if Variable.equal r.var target then i else For (r, resolve bound s)
       | PointerBind p ->
           let pointer = graft p.pointer in
           if Variable.equal p.var target then PointerBind { p with pointer }
-          else PointerBind { p with pointer; body = resolve p.body }
-      | If (b, s1, s2) -> If (b, resolve s1, resolve s2)
-      | Seq (p, q) -> Seq (resolve p, resolve q)
-      | Call (c, s) -> Call (Call.resolve ~target pointer c, resolve s)
+          else
+            PointerBind
+              {
+                p with
+                pointer;
+                body = resolve (Variable.Set.add p.var bound) p.body;
+              }
+      | If (b, s1, s2) -> If (b, resolve bound s1, resolve bound s2)
+      | Seq (p, q) -> Seq (resolve bound p, resolve bound q)
+      | Call (c, s) -> Call (Call.resolve ~target pointer c, resolve bound s)
       | (Assert _ | Sync _ | Skip) as i -> i
     in
     fun s ->
       match Pointer.to_array pointer with
       | Some x when Variable.equal x target -> s
-      | _ -> resolve s
+      | _ -> resolve Variable.Set.empty s
 
   let read_addresses (arrays : Memory.t Variable.Map.t) : t -> t =
     let open State.Syntax in

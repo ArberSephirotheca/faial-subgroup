@@ -1710,12 +1710,13 @@ let tests =
     (* The same parameter with each thread on a cell of its own. *)
     ("drf-typedef-struct-field.cu", [], 0);
     (* A view over a vector buffer, whose cell straddles the lanes the
-       array was decomposed into. *)
-    ("declined-vector-view.cu", [ "--all-dims" ], 1);
+       array was decomposed into. With the dimensions free the column two
+       rows share is written twice. *)
+    ("racy-vector-flat-view.cu", [ "--all-dims" ], 1);
     (* The same kernel reached through its launch site, which decomposes
-       the argument as well and so leaves the parameter bound to nothing.
-       The verdict has to be the one above and not silence. *)
-    ("declined-vector-view.cu", [ "--all-dims"; "--assume-launch" ], 1);
+       the argument as well. The view has to survive that and land on the
+       lane the thread index picks, which under one row is its own. *)
+    ("racy-vector-flat-view.cu", [ "--all-dims"; "--assume-launch" ], 0);
     (* An aggregate whose fields are lanes of one region rather than a
        region each, so a view reading the same storage as a flat run of
        scalars lands on cells the lane accesses can be compared against. *)

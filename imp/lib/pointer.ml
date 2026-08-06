@@ -127,6 +127,27 @@ module Offset = struct
     | Elements _ -> false
     | Bytes { step; _ } -> Step.is_scaled step
 
+  (* A lane between the shift and the access retunes it, because the axis the
+     shift moves is no longer the one its steps were minted against. [axis] is
+     how many cells that axis now spans, which a lane surviving as a
+     coordinate widens: the shift steps whole objects on both sides. [cells]
+     is how many cells one of the pointer's own units became, which a lane
+     folding back into the index below settles, and only an amount already
+     counted in those units has to follow it. *)
+  let retune ~(axis : int) ~(cells : int) : t -> t = function
+    | Elements { amount } when cells = 1 -> Elements { amount }
+    | Elements { amount } -> Elements { amount = n_mult amount (Num cells) }
+    | Bytes _ as o when axis = 1 -> o
+    | Bytes { amount; step } ->
+        Bytes
+          {
+            amount;
+            step =
+              Step.make
+                ~view:(Step.view step * axis)
+                ~elem:(Step.elem step * axis);
+          }
+
   let to_string : t -> string = function
     | Elements { amount } | Bytes { amount; _ } -> n_to_string amount
 end
@@ -181,7 +202,12 @@ let split_index ~(dims : int option list) (index : nexp list) : nexp list option
 type t =
   | Base of { array : Variable.t }
   | Row of { base : t; index : nexp }
-  | Lane of { base : t; index : nexp }
+  (* One coordinate of the cell the memory underneath is divided into, which
+     is what a field of a decomposed object is. It is an axis rather than an
+     addition, so the coordinates the access already holds survive; [lanes]
+     is how many the cell has, which is what folds the axis back in when the
+     memory it reached turns out not to carry it. *)
+  | Lane of { base : t; index : nexp; lanes : int }
   | Shift of { base : t; offset : Offset.t }
   | Select of { cond : Exp.bexp; if_true : t; if_false : t }
   (* The memory read as an object the array underneath is not shaped like:
@@ -192,7 +218,7 @@ type t =
 
 let from_array (array : Variable.t) : t = Base { array }
 let row ~(index : nexp) (base : t) : t = Row { base; index }
-let lane ~(index : nexp) (base : t) : t = Lane { base; index }
+let lane ~(index : nexp) ~(lanes : int) (base : t) : t = Lane { base; index; lanes }
 
 let shift ~(offset : Offset.t) (base : t) : t =
   if Offset.is_zero offset then base else Shift { base; offset }
@@ -230,7 +256,8 @@ let to_array : t -> Variable.t option = function
 let rec map ~(n : nexp -> nexp) ~(b : Exp.bexp -> Exp.bexp) : t -> t = function
   | Base _ as p -> p
   | Row { base; index } -> Row { base = map ~n ~b base; index = n index }
-  | Lane { base; index } -> Lane { base = map ~n ~b base; index = n index }
+  | Lane { base; index; lanes } ->
+      Lane { base = map ~n ~b base; index = n index; lanes }
   | Shift { base; offset } ->
       Shift { base = map ~n ~b base; offset = Offset.map n offset }
   | Linear { base; scale; shift } ->
@@ -249,7 +276,7 @@ let rec map ~(n : nexp -> nexp) ~(b : Exp.bexp -> Exp.bexp) : t -> t = function
 let rec free_names (p : t) (acc : Variable.Set.t) : Variable.Set.t =
   match p with
   | Base _ -> acc
-  | Row { base; index } | Lane { base; index } ->
+  | Row { base; index } | Lane { base; index; _ } ->
       free_names base (Exp.n_free_names index acc)
   | Shift { base; offset } ->
       free_names base (Exp.n_free_names (Offset.amount offset) acc)
@@ -265,7 +292,8 @@ let rec subst_bases (f : Variable.t -> t option) (p : t) : t =
   match p with
   | Base { array } -> f array |> Option.value ~default:p
   | Row { base; index } -> Row { base = subst_bases f base; index }
-  | Lane { base; index } -> Lane { base = subst_bases f base; index }
+  | Lane { base; index; lanes } ->
+      Lane { base = subst_bases f base; index; lanes }
   | Shift { base; offset } -> Shift { base = subst_bases f base; offset }
   | Linear { base; scale; shift } ->
       Linear { base = subst_bases f base; scale; shift }
@@ -280,18 +308,56 @@ let rec subst_bases (f : Variable.t -> t option) (p : t) : t =
 let subst_base ~(target : Variable.t) ~(source : t) : t -> t =
   subst_bases (fun x -> if Variable.equal x target then Some source else None)
 
-let addresses ~(index : nexp list) (p : t) : Address.t list =
+let addresses ?(rank : Variable.t -> int option = fun _ -> None)
+    ~(index : nexp list) (p : t) : Address.t list =
   let guarded (cond : Exp.bexp) : Exp.bexp option -> Exp.bexp option = function
     | Some guard -> Some (b_and guard cond)
     | None -> Some cond
   in
-  let rec walk (p : t) (index : Index.t list) (guard : Exp.bexp option) :
-      Address.t list =
+  (* A lane is an axis of the memory it names, so it is only a coordinate
+     where the memory it reaches carries that axis. Bound to memory that
+     does not, which is a parameter read as an object over an array of the
+     plain cell, the axis folds back into the index below it: that fold is
+     multiply-and-add, exact and always available, where recovering the axis
+     afterwards would not be. *)
+  let carries_axis (base : t) (arity : int) : bool =
+    let below = arrays base in
+    (not (Variable.Set.is_empty below))
+    && Variable.Set.for_all
+         (fun x -> rank x = Some arity)
+         below
+  in
+  let rec descend ~(axis : int) ~(cells : int) (p : t) (index : Index.t list)
+      (guard : Exp.bexp option) : Address.t list =
+    let walk = descend ~axis ~cells in
     match p with
     | Base { array } -> [ { Address.array; index; guard } ]
     | Row { base; index = i } -> walk base (Index.exact i :: index) guard
-    | Lane { base; index = i } -> walk base (index @ [ Index.exact i ]) guard
-    | Shift { base; offset } -> walk base (Offset.apply offset index) guard
+    | Lane { base; index = i; lanes } ->
+        if carries_axis base (List.length index + 1) then
+          descend ~axis:(axis * lanes) ~cells base
+            (index @ [ Index.exact i ])
+            guard
+        else
+          let split_last (l : Index.t list) : Index.t list * Index.t option =
+            match List.rev l with
+            | last :: rest -> (List.rev rest, Some last)
+            | [] -> ([], None)
+          in
+          let head, last = split_last index in
+          let fold (pick : Index.t -> nexp) : nexp =
+            match last with
+            | Some last -> n_plus (n_mult (pick last) (Num lanes)) i
+            | None -> i
+          in
+          let first = fold Index.first and last = fold Index.last in
+          let folded =
+            if first = last then Index.exact first
+            else Index.Span { first; last }
+          in
+          descend ~axis ~cells:(cells * lanes) base (head @ [ folded ]) guard
+    | Shift { base; offset } ->
+        walk base (Offset.apply (Offset.retune ~axis ~cells offset) index) guard
     | Linear { base; scale; shift } ->
         if List.length scale <> List.length index then walk base index guard
         else
@@ -309,7 +375,7 @@ let addresses ~(index : nexp list) (p : t) : Address.t list =
         walk if_true index (guarded cond guard)
         @ walk if_false index (guarded (b_not cond) guard)
   in
-  walk p (List.map Index.exact index) None
+  descend ~axis:1 ~cells:1 p (List.map Index.exact index) None
 
 (* The root name plus the shift amounts, dropping the steps. A call argument
    is written in the caller's units and rescaled where the callee's parameter
@@ -328,7 +394,7 @@ let to_nexp (p : t) : nexp option =
 let rec to_string : t -> string = function
   | Base { array } -> Variable.name array
   | Row { base; index } -> to_string base ^ "[" ^ n_to_string index ^ "]"
-  | Lane { base; index } -> to_string base ^ "." ^ n_to_string index
+  | Lane { base; index; _ } -> to_string base ^ "." ^ n_to_string index
   | Shift { base; offset } -> to_string base ^ " + " ^ Offset.to_string offset
   | Linear { base; scale; shift } ->
       to_string base ^ " by ["

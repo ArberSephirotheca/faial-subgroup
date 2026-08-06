@@ -100,12 +100,11 @@ let to_region ~(hierarchy : Mem_hierarchy.t) (x : t) :
           ( root,
             to_memory ~hierarchy (first.dims @ [ Some lanes ]) first.ty )
         in
-        let scale = List.map (fun s -> s / width) layout.strides in
         let views =
           List.map2
             (fun (l : Leaf.t) (k : int) ->
               ( Leaf.name l,
-                Pointer.linear ~scale ~shift:(Exp.Num k)
+                Pointer.lane ~index:(Exp.Num k) ~lanes
                   (Pointer.from_array root) ))
             x.leaves lane_of
         in
