@@ -2,6 +2,12 @@ open Protocols
 
 module Phase_timer = Stage0.Phase_timer
 module Stats = Stage0.Stats
+module Logger = Stage0.Logger
+
+let log_enabled : bool =
+  match Sys.getenv_opt "FAIAL_DELIN_LOG" with
+  | None | Some "" | Some "0" -> false
+  | _ -> true
 
 let list_to_string (f : 'a -> string) (l : 'a list): string =
   "[" ^ (l |> List.map f |> String.concat "; ") ^ "]"
@@ -269,12 +275,19 @@ end = struct
       | Access ({ array; index = [a]; _ } as acc)
         when Variable.Set.mem array viable ->
         let radix = Variable.Map.find array radix_map in
-        let a = Poly.from_nexp ~globals a in
+        let a_poly = Poly.from_nexp ~globals a in
         (match
            Phase_timer.measure "delin/from-exp" (fun () ->
-             from_exp ~scope ~loop_scope ~check ~radix a)
+             from_exp ~scope ~loop_scope ~check ~radix a_poly)
          with
          | Some t ->
+           (if log_enabled then Logger.Colors.info (fun () ->
+             Printf.sprintf
+               "delinearize: %s\n  before: [%s]\n  after:  %s\n  dims:   %s"
+               (Variable.name array)
+               (Exp.n_to_string a)
+               (list_to_string Exp.n_to_string t.indices)
+               (list_to_string Exp.n_to_string t.dims)));
            (* [rewrite_access] off: keep the original 1D access and emit
               only the recovered per-axis bounds. Isolates the bounds'
               contribution from the multidimensional rewrite. *)
