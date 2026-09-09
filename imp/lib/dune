@@ -1,4 +1,4 @@
 (library
   (name imp)
-  (libraries stage0 protocols))
+  (libraries stage0 protocols protocols_parsing))
 

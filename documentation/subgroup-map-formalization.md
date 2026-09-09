@@ -12,22 +12,18 @@ page and section. Implementation claims point to local OCaml modules.
 The note has one narrow purpose. The original MAP proof model treats a
 synchronization-free workgroup phase as the unit of race checking. The local
 extension keeps that model for ordinary kernels and adds a second ordering
-layer for subgroup and matrix collectives. The extension does not claim
-arbitrary CUDA support, direct warp lockstep semantics, or a new Coq theorem.
+layer for subgroup barriers, together with participation checks for subgroup
+and matrix collectives. The extension does not claim arbitrary CUDA support,
+direct warp lockstep semantics, or a new Coq theorem.
 
 ### Semantic Target
 
-The subgroup DRF model intentionally treats every recognized, fully convergent
-warp primitive as a subgroup-local synchronization and ordering boundary.
-Thus `__shfl_sync`, reviewed `warp_reduce_*` helpers, explicit subgroup
-barriers, and matrix collectives all advance the subgroup phase, while never
-ordering different subgroups.
-
-This is an explicit abstract-model assumption derived from the project's warp
-semantics, not a claim that CUDA specifies every shuffle intrinsic as a memory
-barrier. A strict CUDA language-memory-model analysis would use a narrower
-ordering relation. Results and reports must state which semantic target they
-use instead of silently moving between the two.
+The subgroup DRF model separates collective participation from memory
+ordering. Recognized shuffles, reductions, ballots, and matrix collectives are
+subgroup participation events, but they do not advance a memory phase.
+Explicit subgroup barriers such as full-mask `__syncwarp` advance the subgroup
+phase according to their documented memory semantics, while never ordering
+different subgroups.
 
 ## Original MAP Model In The Supplied Paper
 
@@ -179,7 +175,7 @@ analysis does not infer a lane mapping from CUDA source text.
 ### Extended Event Language
 
 The extension keeps workgroup phases and adds subgroup phase keys. A subgroup
-phase key is the ordered list of subgroup boundary or collective site ids that
+phase key is the ordered list of memory-ordering subgroup barrier site ids that
 have occurred since the current workgroup phase began:
 
 ```text
@@ -188,22 +184,22 @@ S in SiteId*
 phase = (W, S)
 ```
 
-A workgroup barrier increments `W` and resets the subgroup key. A subgroup
-barrier, subgroup collective, or matrix collective appends its site id to `S`.
-The implementation records these boundaries in
-`Memory_event.Subgroup_event.Phase`.
+A workgroup barrier with memory semantics increments `W` and resets the
+subgroup key. A subgroup barrier with memory semantics appends its site id to
+`S`. Collective and matrix sites remain in the event stream for participation
+checking, but leave `(W, S)` unchanged. The implementation records these
+phases in `Memory_event.Subgroup_event.Phase`. These keys encode ordering for
+non-repeating sites; they are not dynamic invocation identifiers.
 
 The extended event language is:
 
 ```text
-e ::= mem(origin, location, footprint, condition, W, S, site_order, cfg)
+e ::= mem(origin, location, condition, W, S, site_order, cfg)
     | boundary(kind, site, condition, W, S, cfg)
 
 origin ::= ordinary_read
          | ordinary_write
          | ordinary_atomic
-         | matrix_load
-         | matrix_store
 
 kind ::= workgroup_barrier
        | subgroup_barrier
@@ -214,77 +210,54 @@ kind ::= workgroup_barrier
 Only memory events become DRF obligations. Boundary events update the phase key
 and become uniformity obligations when they are subgroup or matrix operations.
 
-### Matrix Footprints
-
-Original MAP accesses are scalar:
-
-```text
-o[e]
-```
-
-WMMA and matrix operations are cooperative operations over a footprint:
-
-```text
-footprint ::= scalar(access)
-            | rectangle(base, rows, cols, ldm, layout, row, col)
-```
-
-`Inference.Subgroup_matrix.Matrix.indexed_access` turns a rectangle into a
-symbolic scalar index by introducing local row and column variables:
-
-```text
-row_major_index = base + row * ldm + col
-col_major_index = base + col * ldm + row
-
-0 <= row < rows
-0 <= col < cols
-```
-
-`Matrix.bounds_condition` contributes the row and column bounds. The resulting
-obligation still asks whether two memory footprints can overlap. Matrix
-collectives are therefore not removed from memory checking. The analysis only
-treats the lanes of one matrix collective as a cooperative operation when the
-two compared tasks are in the same subgroup and at the same matrix collective
-site.
-
 ### Implemented Subgroup Ordering
 
 The original MAP model treats a workgroup barrier as a phase boundary. The
 extension introduces a subgroup-local ordering predicate inside a workgroup
 phase.
 
-For two conditional accesses `a` and `b`, the implementation uses:
+For nonrepeating sites, the implementation uses the following rule for two
+conditional accesses `a` and `b`:
 
 ```text
-same_matrix_site(a, b) =
-  matrix_origin(a)
-  and matrix_origin(b)
-  and collective_site(a) = collective_site(b)
-
 not_ordered_by_subgroup_cfg(a, b) =
-  if same_matrix_site(a, b)
-  then not same_subgroup_cfg(task1, task2)
-  else if subgroup_phase(a) = subgroup_phase(b)
+  if subgroup_phase(a) = subgroup_phase(b)
   then true
   else not same_subgroup_cfg(task1, task2)
 ```
 
 `Memory_event.Subgroup_obligation.not_ordered_by_subgroup_condition`
-implements the predicate. The rule has three consequences.
+implements the predicate. The rule has two consequences.
 
 1. Two accesses in the same subgroup phase are unordered.
-2. Two accesses separated by a subgroup operation are ordered only when the two
-   projected tasks are in the same subgroup.
-3. Two matrix memory effects from the same matrix collective site are treated
-   as one cooperative subgroup operation only for tasks in the same subgroup.
+2. Two accesses separated by a memory-ordering subgroup barrier are ordered
+   only when the two projected tasks are in the same subgroup.
+Different subgroups remain unordered. Neither a subgroup barrier nor a WMMA
+operation is promoted into a workgroup barrier, and a WMMA operation does not
+itself advance the subgroup phase.
 
-Different subgroups remain unordered. A subgroup barrier or WMMA operation is
-not promoted into a workgroup barrier.
+This rule is the intended subgroup DRF semantics. The uniformity obligation
+checks that a collective's required lanes participate in the same dynamic
+instance; it does not turn that collective into a memory-ordering operation.
 
-This rule is the intended subgroup DRF semantics. It models a recognized,
-fully convergent warp primitive as a warp-local synchronization point. The
-uniformity obligation is therefore part of the ordering justification, not an
-independent optional check.
+### Repeated Barrier Sites
+
+A static site id cannot distinguish loop iterations. Source extraction marks a
+site as `may_repeat` whenever it occurs in a `for`, `while`, or `do-while`
+condition, body, or increment. The subgroup phase encoding therefore does not
+classify a repeated memory-ordering barrier by static site alone. Instead, the
+subgroup route also retains Faial's aligned loop protocol and uses its memory
+verdict for this case. The aligned protocol preserves loop structure and does
+not merge executions from different iterations.
+
+For a repeated workgroup barrier, this recovers Faial's ordinary loop-aware
+ordering. For a repeated subgroup barrier, the fallback omits subgroup-local
+ordering; this is conservative and can report a potential race that the scoped
+phase encoding could discharge. Participation remains checked by the subgroup
+uniformity analysis in both cases.
+
+Missing target facts and other unsupported boundaries remain inconclusive;
+only the repeated memory-ordering-barrier boundary invokes the loop protocol.
 
 ### Subgroup Memory Race Obligation
 
@@ -390,10 +363,10 @@ and names the exact facts needed before obligations can be generated.
 | Topic | Supplied paper / original MAP | Local subgroup extension |
 | --- | --- | --- |
 | Unit of analysis | One protocol per array, checked one synchronization-free phase at a time (PDF pp. 7-8, Section 3.1). | One unified memory-event stream, grouped by workgroup phase and memory location. Subgroup phase keys refine ordering inside a workgroup phase. |
-| Synchronization | Workgroup synchronization splits protocols. Synchronization does not appear inside the MAP syntax (PDF p. 7, Section 3.1). | Workgroup barriers still split phases. Under the subgroup DRF semantic assumption, fully convergent subgroup barriers, data-exchange collectives, and matrix collectives update subgroup phase keys without ordering different subgroups. |
+| Synchronization | Workgroup synchronization splits protocols. Synchronization does not appear inside the MAP syntax (PDF p. 7, Section 3.1). | Workgroup barriers still split phases. Subgroup barriers with memory semantics update subgroup phase keys without ordering different subgroups. Data-exchange and matrix collectives impose participation requirements but do not update memory phases. |
 | Thread identity | The semantics uses a thread id `i` and checks pairs of different threads (PDF p. 8, Figure 3; PDF p. 16, Section 4.3). | The two-thread model is preserved. Target configuration maps CUDA thread coordinates to subgroup identity. Missing target configuration is unsupported. |
-| Memory access shape | Scalar array access `o[e]` (PDF p. 7, Figure 2). | Ordinary scalar accesses plus matrix footprints. Rectangular footprints are checked for overlap through indexed row/column variables. |
-| Race predicate | Same array index, different threads, same trace, and at least one write (PDF p. 16, Section 4.3). | Same memory location, overlapping scalar or matrix footprint, different projected tasks, conflicting modes, same workgroup phase, and no subgroup ordering. |
+| Memory access shape | Scalar array access `o[e]` (PDF p. 7, Figure 2). | Ordinary scalar accesses extracted from subgroup kernels. |
+| Race predicate | Same array index, different threads, same trace, and at least one write (PDF p. 16, Section 4.3). | Same ordinary memory location, different projected tasks, conflicting modes, same workgroup phase, and no subgroup ordering. |
 | Symbolic approximation | CI/DI classify whether symbolic variables can affect control or indexes. CIDI alarms are true positives (PDF pp. 9-11 and 16, Sections 3.2 and 4.3). | The extension does not add a CI/DI theorem. The implemented proof accepts DRF only from unsat/pre-solver-unsat obligations plus subgroup-uniform control. |
 | Source inference | The paper infers MAPs from a synchronized source language and proves action-set soundness (PDF pp. 14-16, Sections 4.2-4.4). | The local source layer dispatches ordinary kernels to the existing path and subgroup/WMMA kernels to an explicit subgroup/matrix IR. Unsupported source features fail before ordinary lowering. |
 | Mechanization status | The supplied paper reports a Coq mechanization of the stated theorems (PDF p. 16, Section 4.4). | The subgroup/matrix extension is an executable OCaml analysis and a specification note. The extension is not yet mechanized as a Coq theorem. |
@@ -409,9 +382,9 @@ The local implementation adds the following logical concepts.
 
 2. Subgroup phase keys.
    Workgroup phases remain the outer race-checking unit. Subgroup operations
-   refine ordering inside a workgroup phase without ordering different
-   subgroups. Recognized fully convergent warp primitives intentionally act as
-   subgroup-local ordering boundaries in this model.
+   with documented memory semantics refine ordering inside a workgroup phase
+   without ordering different subgroups. Other recognized warp collectives are
+   participation events and leave the memory phase unchanged.
 
 3. Subgroup uniformity.
    Subgroup barriers, subgroup collectives, and matrix collectives must be
@@ -435,8 +408,9 @@ The local implementation adds the following logical concepts.
 7. Fail-closed unsupported boundary.
    Missing subgroup size, missing lane mapping, unresolved template facts,
    unsupported direct subgroup intrinsics, async operations without a modeled
-   synchronization boundary, CUB, and inline assembly are not silently analyzed
-   by the ordinary MAP path.
+   synchronization boundary, CUB, and inline assembly are not silently
+   analyzed by the ordinary MAP path. Repeated
+   memory-ordering barriers use the loop-aware protocol described above.
 
 ## Code Map
 
@@ -444,14 +418,14 @@ The current implementation locations are:
 
 ```text
 faial/inference/lib/subgroup_matrix.ml
-  Target_config, subgroup sites, collectives, matrix footprints.
+  Target_config, subgroup sites, and collective descriptors.
 
 faial/inference/lib/subgroup_source.ml
   CUDA source dispatch into ordinary Imp or subgroup/matrix IR.
 
 faial/drf/lib/memory_event.ml
   Ordinary memory-event boundary, subgroup event stream, subgroup ordering,
-  matrix footprint obligations, and two-task proof formulas.
+  and two-task proof formulas.
 
 faial/drf/lib/subgroup_uniformity.ml
   Subgroup-uniform control classification and drf_full composition.
@@ -480,7 +454,7 @@ Given:
   explicit target configuration cfg
   accepted source extraction E
   accepted launch/template/shape guard G
-  generated subgroup memory obligations Q
+  generated ordinary-memory obligations Q
   generated subgroup uniformity obligations U
 
 If:
@@ -488,8 +462,8 @@ If:
   and every u in U is subgroup-uniform
 
 Then:
-  the analyzed kernel is DRF with respect to the modeled ordinary, subgroup,
-  and matrix memory events under cfg, E, and G.
+  the analyzed kernel is DRF with respect to the modeled ordinary memory
+  events under cfg, E, and G.
 ```
 
 The statement is intentionally guarded. Unsupported CUDA features, missing

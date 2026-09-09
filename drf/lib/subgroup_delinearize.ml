@@ -1,12 +1,9 @@
 open Protocols
 module SS = Inference.Subgroup_source
 
-type error = Unsupported_weak_algorithm | Unsupported_vacuity_check
+type error = Unsupported_vacuity_check
 
 let error_to_string : error -> string = function
-  | Unsupported_weak_algorithm ->
-      "subgroup ordinary-memory delinearization does not yet support the weak "
-      ^ "stride-order algorithm"
   | Unsupported_vacuity_check ->
       "subgroup ordinary-memory delinearization does not yet support "
       ^ "--delin-avoid-vacuous"
@@ -92,15 +89,56 @@ let rewrite_with_algorithm (module A : Algorithm.S) ~(rewrite_access : bool)
       | _ -> memory_effect)
     effects
 
+let rewrite_weak ~(rewrite_access : bool) ~(in_range : bool)
+    ~(globals : Variable.Set.t) (effects : SS.ordinary_memory_effect list) :
+    SS.ordinary_memory_effect list =
+  let groups = group_effects_by_array effects in
+  let decompositions =
+    Variable.Map.filter_map
+      (fun _ grouped ->
+        let ( let* ) = Option.bind in
+        let* indices = one_dimensional_polys ~globals grouped in
+        let frame, bound =
+          Pv_decomp.analyze ~globals ~in_range (List.map Poly.to_nexp indices)
+        in
+        Some (frame, bound))
+      groups
+  in
+  List.map
+    (fun (memory_effect : SS.ordinary_memory_effect) ->
+      match
+        ( Variable.Map.find_opt memory_effect.access.array decompositions,
+          memory_effect.access.index )
+      with
+      | Some (frame, bound), [ index ] ->
+          let access =
+            if rewrite_access then
+              {
+                memory_effect.access with
+                index = Pv_decomp.subscripts ~globals ~frame index;
+              }
+            else memory_effect.access
+          in
+          {
+            memory_effect with
+            access;
+            source_conditions =
+              dedup_conditions (bound :: memory_effect.source_conditions);
+          }
+      | _ -> memory_effect)
+    effects
+
 let rewrite ~(enabled : bool) ~(rewrite_access : bool) ~(check_vacuity : bool)
-    ~(algo : Delinearize.Algo.t) ~(globals : Variable.Set.t)
-    (effects : SS.ordinary_memory_effect list) :
+    ~(algo : Delinearize.Algo.t) ~(weak_in_range : bool)
+    ~(globals : Variable.Set.t) (effects : SS.ordinary_memory_effect list) :
     (SS.ordinary_memory_effect list, error) result =
   if not enabled then Ok effects
   else if check_vacuity then Error Unsupported_vacuity_check
   else
     match algo with
-    | Delinearize.Algo.Weak -> Error Unsupported_weak_algorithm
+    | Delinearize.Algo.Weak ->
+        Ok
+          (rewrite_weak ~rewrite_access ~in_range:weak_in_range ~globals effects)
     | _ ->
         let module A = (val Delinearize.Algo.to_module algo) in
         Ok (rewrite_with_algorithm (module A) ~rewrite_access ~globals effects)

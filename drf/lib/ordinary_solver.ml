@@ -15,7 +15,6 @@ let conditional_access_of_summary (summary : Symbexp.AccessSummary.t) :
     Memory.conditional_access =
   {
     origin = access_origin_of_mode summary.access.mode;
-    collective_site = None;
     source_site = None;
     source_order = None;
     access = summary.access;

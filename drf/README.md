@@ -25,8 +25,8 @@ Code specific to the DRF analysis.
 
 ## Ordinary Memory-Event Boundary
 
-`lib/memory_event.ml` is the first internal boundary for unifying ordinary and
-subgroup/matrix memory obligations. For ordinary kernels, it consumes
+`lib/memory_event.ml` is the first internal boundary for unifying ordinary
+memory obligations across the ordinary and subgroup routes. For ordinary kernels, it consumes
 `Flatacc.Kernel.t`, which means all original source lowering, workgroup phase
 splitting, location splitting, and flat-access generation have already run.
 The adapter records ordinary memory events with access id, phase id, access
@@ -734,59 +734,52 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   `Inference.Subgroup_source.subgroup_kernel` into unified event artifacts.
   The adapter carries the explicit target configuration, memory globals,
   uniform variables, source-order ordinals, site-control conditions,
-  memory-control conditions, workgroup phase, subgroup phase, matrix site id,
-  and matrix footprint metadata. Matrix load/store memory events keep their
-  original rectangular footprint and indexed access; ordinary source memory
-  effects keep their source/runtime conditions and recorded phase.
+  workgroup phase, and subgroup phase. Ordinary source memory effects keep
+  their source/runtime conditions and recorded phase. Matrix operations are
+  retained only as participation events.
 - `Subgroup_event` remains the unified event stream. `Subgroup_obligation`
   consumes that stream to build subgroup-aware memory obligations, preserving
   solver-facing metadata and error taxonomy. Missing explicit subgroup target
   configuration and ordinary-effect target-config mismatches fail at the
   event-adapter boundary instead of assuming a lane mapping.
-- `Memory_event.Subgroup_obligation` is the direct owner of subgroup/matrix
-  memory obligations. The public subgroup analyzer route and solver-facing
+- `Memory_event.Subgroup_obligation` is the direct owner of ordinary memory
+  obligations for subgroup kernels. The public subgroup analyzer route and solver-facing
   aliases call it directly when solving subgroup/matrix kernels; there is no
   active compatibility wrapper in the DRF library.
-- The unified subgroup memory builder models matrix load/store effects and
-  ordinary source memory effects reported by `Inference.Subgroup_source`.
-  Ordinary effects are converted into subgroup-aware memory obligations with
+- The unified subgroup memory builder models ordinary source memory effects
+  reported by `Inference.Subgroup_source`. These effects are converted into subgroup-aware memory obligations with
   their recorded access mode, base/index expression, source guard,
   source-order ordinal, runtime condition, workgroup phase, subgroup phase,
   and target configuration. They are not silently dropped.
-- Workgroup barriers split workgroup memory phases. Subgroup barriers,
-  subgroup collectives, CUDA warp helper/shuffle collectives, and WMMA matrix
-  collectives advance only the subgroup phase.
-- This phase rule is the intended subgroup DRF semantic assumption: every
-  recognized, fully convergent warp primitive acts as a subgroup-local
-  synchronization and ordering point. It is stronger than interpreting CUDA
-  shuffle intrinsics only through their documented language-level memory
-  ordering. Reports must state whether they target this subgroup model or a
-  strict CUDA memory-model interpretation. See
-  `../documentation/ggml-cuda-alarm-investigation.md`.
-- Matrix load/store effects are consumed through the rectangular footprint API:
-  `memory_effect_footprint`, `indexed_access`, and `bounds_condition`. The DRF
-  boundary must not collapse matrix footprints to a scalar base pointer.
-- Matrix memory obligations also consume the source bridge's per-site
-  memory-control metadata when it is present. That metadata is intentionally
-  separate from uniformity control: uniformity uses source participation
-  guards, while memory DRF needs the aliases and loop facts that make the
-  matrix footprint index precise.
+- Workgroup barriers with memory semantics split workgroup memory phases.
+  Subgroup barriers with memory semantics advance the subgroup phase.
+  Subgroup collectives, CUDA warp helper/shuffle collectives, and WMMA matrix
+  collectives remain participation events but do not advance memory phases.
+- Static subgroup phase keys are used only for nonrepeating barriers. When a
+  memory-ordering barrier occurs in a loop, the subgroup route reuses Faial's
+  aligned loop protocol for the memory verdict so executions from different
+  iterations remain distinct. This recovers ordinary workgroup-barrier
+  ordering; repeated subgroup barriers are handled conservatively without
+  adding subgroup-local ordering. Unrelated unsupported boundaries do not use
+  this fallback.
+- This phase rule separates collective participation from memory ordering.
+  A well-formed collective may constrain which lanes execute a dynamic
+  instance, but it suppresses a memory-race candidate only when the relevant
+  language specification gives that operation memory-ordering semantics.
 - Subgroup ordering suppresses a candidate memory race only for same-subgroup
-  invocations whose accesses are separated by subgroup phase, or whose matrix
-  effects are attached to the same matrix collective site. Different subgroups
-  remain solver-visible.
+  invocations whose ordinary accesses are separated by subgroup phase.
+  Different subgroups remain solver-visible.
 - Ordinary source memory effects before and after focused warp helper/shuffle
   collectives, such as `warp_max`, `warp_sum`, `warp_reduce_max`,
   `warp_reduce_sum`, `warp_reduce_all`, `warp_reduce_any`, `__shfl_sync`,
   `__shfl_down_sync`, `__shfl_up_sync`, and `__shfl_xor_sync`, use that same
-  rule: helper calls do not split workgroup phases and do not introduce memory
-  effects, but they do provide subgroup phase boundaries for same-subgroup
-  ordering by design. Direct shuffle calls accept the CUDA three- or
+  rule: helper calls do not split workgroup phases, introduce memory effects,
+  or advance subgroup memory phases. Direct shuffle calls accept the CUDA three- or
   four-argument AST
   shape only when the participation mask is statically the full configured
-  subgroup mask; a partial or symbolic mask fails closed because it cannot
-  order every lane in the modeled subgroup. Shuffle width controls data
-  routing, not the set of lanes admitted by this phase boundary. The
+  subgroup mask; a partial or symbolic mask fails closed because it does not
+  establish the physical-full-warp participation required by WarpDRF. Shuffle
+  width controls data routing, not the participating-lane set. The
   `warp_reduce_*` aliases summarize reviewed helper calls; they do not infer
   subgroup size from `WARP_SIZE` or model the returned value relation.
 - Source control metadata accumulates guards from top-level early returns
@@ -798,7 +791,7 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
 - Source-order ordinals are carried to the obligation boundary as evidence,
   but they are not by themselves a workgroup barrier or a cross-subgroup
   ordering rule.
-- Ordinary and matrix memory obligations project scalar facts per task unless
+- Ordinary memory obligations project scalar facts per task unless
   `Inference.Subgroup_source` marks the variable as a memory global. Memory
   globals cover task-invariant arithmetic such as kernel parameters, member
   fields rooted in those parameters, CUDA block/grid dimensions, and locals
@@ -915,13 +908,13 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   `solver=sat(racy)`, `solver=unknown(reason=...)`,
   `solver=timeout(reason=...)`, `unsupported(reason=...)`, and the reserved
   future `pre_solver=unsat(reason=...)` classification.
-- Before handing a subgroup/matrix memory obligation to Z3,
+- Before handing a subgroup memory obligation to Z3,
   `lib/subgroup_solver.ml` substitutes unambiguous numeric constants proven by
   the obligation itself, folds the result, and then invokes the configured
   solver. This is formula normalization, not a pre-solver discharge: it does
   not emit `pre_solver=unsat(reason=...)` and it preserves the solver
   classification taxonomy.
-- Unsupported subgroup/matrix memory boundaries, such as missing checked block
+- Unsupported subgroup memory boundaries, such as missing checked block
   dimensions for subgroup ordering or mismatched ordinary-effect target
   configuration, are reported as unsupported boundaries. They are not converted
   into solver unknown, timeout, racy, or DRF results.
@@ -969,23 +962,6 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   and an address equality whose component delta is not divisible by that
   vector width. The rule compares logical variable names after projection; it
   does not depend on source locations carried by parser variables.
-- The WMMA tile row/lane ownership rule is also guarded and parameterized by
-  the explicit target configuration. It requires a CUDA x-contiguous subgroup
-  target, a one-dimensional checked block with `blockDim.x > 0`, and
-  `blockDim.x` divisible by the configured subgroup size. From those facts it
-  derives the number of subgroups in the block, then derives the tile-row
-  count, tile-column count, head dimension, and head-block step from
-  obligation-local matrix ownership facts rather than from fixed constants.
-  The head-block step must equal `num_subgroups * tile_cols`, and the head
-  dimension must be a positive multiple of that step. The matched access must
-  still have the same logical shape: an index alias of
-  `row * head_dim + head_block + elem`, an `elem_idx / tile_cols` and
-  `elem_idx % tile_cols` decomposition, lane ownership of `elem_idx`, and
-  subgroup-owned `head_block` bounds using the configured subgroup size. It
-  discharges only the matched candidate pair; missing target configuration,
-  missing element bounds, non-positive dimensions, incompatible head-step
-  layout, changed address shape, or multidimensional blocks remain
-  solver-visible.
 - Subgroup-row ownership plus a fixed writer lane is not by itself a
   pre-solver proof. An any-lane reader and a lane-zero writer can still be
   distinct invocations at the same row unless a separately reviewed subgroup
@@ -1077,61 +1053,31 @@ family obligations are proved, racy, unknown, timed out, or unsupported.
   Faial commands send canonical `Symbexp` obligations directly to Z3.
 - The focused Flash Attention analyzer path is not final Rust/OCaml semantic
   parity. The command reaches the subgroup pipeline, preserves the deterministic
-  subgroup/matrix artifact, turns ordinary shared/global source effects into
-  memory obligations beside WMMA effects, and feeds matrix-site memory controls
-  into matrix obligations. For the current focused Flash-Attention
-  configuration, matrix store self-pairs discharge, guarded WMMA tile pairs and
-  lane-vector cross-component pairs discharge structurally before Z3, and no
-  SAT/racy memory obligations remain at the 1000ms solver budget. The WMMA
-  structural rule is no longer fixed to the current kernel's literal
-  `64/32/16/64` constants, but it is still a shape-guarded proof over explicit
-  CUDA x-contiguous target configuration and obligation-local matrix metadata.
-  The historical W509 boundary included the `row_max_shmem` same-subgroup
-  source-order residual and `dst` arithmetic ownership cases; W510 closed
-  `row_max_shmem` by same-subgroup subgroup-phase ordering, W512 carried the
-  `dst` lane-vector arithmetic/range facts, and the current pre-solver closes
+  subgroup artifact and turns ordinary shared/global source effects into
+  memory obligations. Matrix operations remain participation events. The
+  historical W509 boundary included the `row_max_shmem` same-subgroup
+  source-order residual and `dst` arithmetic ownership cases. The historical
+  W510 prototype closed `row_max_shmem` by treating collectives as subgroup
+  phase boundaries; current WarpDRF deliberately does not use that rule.
+  W512 carried the `dst` lane-vector arithmetic/range facts, and the current pre-solver closes
   the focused solver-budget residual without changing the original Faial memory
   obligation semantics. This is not arbitrary CUDA, arbitrary Flash Attention
   support, full Rust/OCaml semantic parity, or a structured Rust/OCaml memory
   artifact parity claim.
 
-## Current Focused Evidence
+## Current Focused Configuration
 
-The checked focused command uses `flash_attn_wmma_mirror_kernel` from
-`../flash_attn_wgsl_matrix_mirror.cu` with `-DFAIAL_CAPTURE`,
-`-D__float2half_rn(x)=((half)(x))`, `--ignore-asserts`, `-t 1000`,
-`--block-dim 64`, `--subgroup-size 32`, and `--find-true-dr`.
+The checked focused command uses
+`flash_attn_ext_f16_ggml_wmma_d64_ncols16` from `../fattn.cu` with
+`--ignore-asserts`, `-t 10000`, `--block-dim 128`, and
+`--subgroup-size 32`. It reports one `KQ_max` read/write race and passes the
+participation check.
 
-Current OCaml evidence:
-
-```text
-mem_drf: drf
-memory_checks: 28 total, 0 racy, 0 unknown, 0 timeout, 0 unsupported, 8 pre_solver_unsat
-subgroup_uniformity: drf
-drf_full: drf
-```
-
-The eight structural discharges are `o_shmem` obligations `#16` and `#17` by
-WMMA tile row/lane ownership, plus `dst` cross-component obligations `#19`,
-`#20`, `#21`, `#23`, `#24`, and `#26` by hierarchical subgroup
-row/lane-vector ownership. Same-component `dst` pairs remain solver-visible.
-
-Live Rust oracle evidence for the same source/configuration:
-
-```text
-mem_drf: drf
-subgroup_uniformity: drf
-drf_full: drf
-memory_checks: 774 total, 0 racy
-```
-
-The previous focused OCaml memory boundary was solver-budget sensitivity, not
-a SAT race model: `o_shmem` obligations `#16` and `#17` and `dst` obligation
-`#26` needed a larger Z3 budget before the guarded pre-solver rules. The
-current focused result is DRF at the 1000ms budget because those obligations
-are discharged by obligation-local structural proofs before Z3. The result is
-still not arbitrary CUDA, arbitrary Flash Attention support, or full Rust/OCaml
-structured memory artifact parity.
+The subgroup route checks matrix-operation participation and applies memory DRF
+only to ordinary accesses extracted from the source. For repeated block
+barriers, the memory check uses Faial's loop alignment and retains the source
+locations of both accesses. Detector-only filtering is disabled for this final
+subgroup DRF judgment.
 
 Ordinary non-WMMA behavior remains separate from that focused extension
 boundary. The W515 regression evidence reran `opam exec -- make`,

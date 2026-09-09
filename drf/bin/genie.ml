@@ -27,12 +27,13 @@ type verdict =
 let conv_assume =
   let looks_like_ident s =
     s <> ""
-    && String.for_all (fun c ->
-      (c >= 'a' && c <= 'z')
-      || (c >= 'A' && c <= 'Z')
-      || (c >= '0' && c <= '9')
-      || c = '_')
-      s
+    && String.for_all
+         (fun c ->
+           (c >= 'a' && c <= 'z')
+           || (c >= 'A' && c <= 'Z')
+           || (c >= '0' && c <= '9')
+           || c = '_')
+         s
   in
   let parse_bexp s =
     match Parsers.BExpParser.of_string s with
@@ -41,25 +42,20 @@ let conv_assume =
   in
   let parse s =
     match String.index_opt s ':' with
-    | None ->
-      (match parse_bexp s with
-       | Ok b -> Ok (None, b)
-       | Error e -> Error e)
-    | Some i ->
-      let prefix = String.sub s 0 i |> String.trim in
-      let rest = String.sub s (i + 1) (String.length s - i - 1) in
-      if looks_like_ident prefix then
-        match parse_bexp rest with
-        | Ok b -> Ok (Some prefix, b)
-        | Error e -> Error e
-      else
-        (match parse_bexp s with
-         | Ok b -> Ok (None, b)
-         | Error e -> Error e)
+    | None -> (
+        match parse_bexp s with Ok b -> Ok (None, b) | Error e -> Error e)
+    | Some i -> (
+        let prefix = String.sub s 0 i |> String.trim in
+        let rest = String.sub s (i + 1) (String.length s - i - 1) in
+        if looks_like_ident prefix then
+          match parse_bexp rest with
+          | Ok b -> Ok (Some prefix, b)
+          | Error e -> Error e
+        else match parse_bexp s with Ok b -> Ok (None, b) | Error e -> Error e)
   in
   let print ppf = function
-    | (Some n, b) -> Format.fprintf ppf "%s:%s" n (Exp.b_to_string b)
-    | (None, b) -> Format.fprintf ppf "%s" (Exp.b_to_string b)
+    | Some n, b -> Format.fprintf ppf "%s:%s" n (Exp.b_to_string b)
+    | None, b -> Format.fprintf ppf "%s" (Exp.b_to_string b)
   in
   Arg.conv (parse, print)
 
@@ -77,19 +73,20 @@ let conv_tactic =
 let int_params (k : Kernel.t) : Variable.t list =
   Params.to_list k.global_variables
   |> List.filter_map (fun (v, ty) ->
-      if C_type.is_int ty && not (Variable.is_launch_config v)
-      then Some v else None)
+      if C_type.is_int ty && not (Variable.is_launch_config v) then Some v
+      else None)
 
 (* Reduce a [bexp]'s free-variable set to a single signedness by
    "any-unsigned wins" — matches C's usual arithmetic conversions
    for the operator that would coerce these operands. *)
-let bexp_signedness (sign : Variable.t -> Signedness.t) (b : Exp.bexp)
-    : Signedness.t =
+let bexp_signedness (sign : Variable.t -> Signedness.t) (b : Exp.bexp) :
+    Signedness.t =
   let fvs = Exp.b_free_names b Variable.Set.empty in
-  Variable.Set.fold (fun v acc ->
-    match acc, sign v with
-    | Signedness.Unsigned, _ | _, Signedness.Unsigned -> Signedness.Unsigned
-    | _, _ -> Signedness.Signed)
+  Variable.Set.fold
+    (fun v acc ->
+      match (acc, sign v) with
+      | Signedness.Unsigned, _ | _, Signedness.Unsigned -> Signedness.Unsigned
+      | _, _ -> Signedness.Signed)
     fvs Signedness.Signed
 
 let all_safe (rs : App_analysis.t list) : bool =
@@ -127,12 +124,10 @@ let ordinary_drf_analyses_exn (analyses : App_analysis.t list) :
 let access_set_of (app : App.t) : Reachability.AccessSet.t =
   ordinary_kernels app
   |> List.concat_map (fun k ->
-    k
-    |> Reachability.prepare_kernel
-         ~assumes:(App.assumes_of k app)
-         ~assume_dims:app.assume_dims
-         ~params:app.params
-    |> Reachability.check_kernel ?timeout:app.timeout)
+      k
+      |> Reachability.prepare_kernel ~assumes:(App.assumes_of k app)
+           ~assume_dims:app.assume_dims ~params:app.params
+      |> Reachability.check_kernel ?timeout:app.timeout)
   |> Reachability.reachable_set
 
 (* Build the co-reach proof stream for one kernel under the
@@ -141,11 +136,9 @@ let access_set_of (app : App.t) : Reachability.AccessSet.t =
    conflict / same-address constraints; SAT means the fragment's
    two-thread reachability is still live under the precondition
    stack [app] carries. *)
-let coreach_stream_of (arch : Architecture.t) (app : App.t)
-    (k : Kernel.t) : Symbexp.Proof.t Streamutil.stream =
-  k
-  |> App.translate arch app
-  |> Symbexp.translate_coreach arch
+let coreach_stream_of (arch : Architecture.t) (app : App.t) (k : Kernel.t) :
+    Symbexp.Proof.t Streamutil.stream =
+  k |> App.translate arch app |> Symbexp.translate_coreach arch
 
 (* Build the single-thread (T1-only) proof stream for one kernel
    under the current [app] state. Each fragment's goal asserts
@@ -153,11 +146,9 @@ let coreach_stream_of (arch : Architecture.t) (app : App.t)
    pre-filter's shape. Fragment identities ([kernel_name, array_name,
    id]) line up with [coreach_stream_of] since both run the same
    [Streamutil.mapi] over the same flat-acc stream. *)
-let t1_stream_of (arch : Architecture.t) (app : App.t)
-    (k : Kernel.t) : Symbexp.Proof.t Streamutil.stream =
-  k
-  |> App.translate arch app
-  |> Symbexp.translate_t1 arch
+let t1_stream_of (arch : Architecture.t) (app : App.t) (k : Kernel.t) :
+    Symbexp.Proof.t Streamutil.stream =
+  k |> App.translate arch app |> Symbexp.translate_t1 arch
 
 (* Build [baseline] or [under-Φ] pair sets from an [app]. The
    precondition stack that drives the SAT outcome of each fragment
@@ -167,11 +158,12 @@ let t1_stream_of (arch : Architecture.t) (app : App.t)
 let coreach_pairs_of (app : App.t) : Co_reach.pair list =
   ordinary_kernels app
   |> List.concat_map (fun (k : Kernel.t) ->
-    List.concat_map (fun arch ->
-      coreach_stream_of arch app k
-      |> Co_reach.candidates ~tag:"baseline" ~timeout:app.timeout
-           ~logic:app.logic)
-      app.archs)
+      List.concat_map
+        (fun arch ->
+          coreach_stream_of arch app k
+          |> Co_reach.candidates ~tag:"baseline" ~timeout:app.timeout
+               ~logic:app.logic)
+        app.archs)
 
 (* Per-round under-Φ pair set, restricted to baseline keys. Drops
    the SAT work for any fragment whose key isn't in the baseline:
@@ -183,27 +175,30 @@ let coreach_pairs_restricted_of (baseline_keys : Co_reach.KeySet.t)
     (app : App.t) : Co_reach.pair list =
   ordinary_kernels app
   |> List.concat_map (fun (k : Kernel.t) ->
-    List.concat_map (fun arch ->
-      coreach_stream_of arch app k
-      |> Co_reach.candidates_restricted ~tag:"under-phi"
-           ~timeout:app.timeout baseline_keys)
-      app.archs)
+      List.concat_map
+        (fun arch ->
+          coreach_stream_of arch app k
+          |> Co_reach.candidates_restricted ~tag:"under-phi"
+               ~timeout:app.timeout baseline_keys)
+        app.archs)
 
 (* Per-round under-Φ T1 (single-thread) SAT keys, restricted to
    baseline keys. The Tier 1 baseline is [baseline_keys] (the set
    of pair-relevant fragments), and the under-Φ accept condition
    is "every baseline key remains T1-SAT". *)
-let t1_keys_restricted_of (baseline_keys : Co_reach.KeySet.t)
-    (app : App.t) : Co_reach.KeySet.t =
+let t1_keys_restricted_of (baseline_keys : Co_reach.KeySet.t) (app : App.t) :
+    Co_reach.KeySet.t =
   ordinary_kernels app
-  |> List.fold_left (fun acc (k : Kernel.t) ->
-    List.fold_left (fun acc arch ->
-      t1_stream_of arch app k
-      |> Co_reach.t1_keys_restricted ~tag:"tier1"
-           ~timeout:app.timeout baseline_keys
-      |> Co_reach.KeySet.union acc)
-      acc app.archs)
-    Co_reach.KeySet.empty
+  |> List.fold_left
+       (fun acc (k : Kernel.t) ->
+         List.fold_left
+           (fun acc arch ->
+             t1_stream_of arch app k
+             |> Co_reach.t1_keys_restricted ~tag:"tier1" ~timeout:app.timeout
+                  baseline_keys
+             |> Co_reach.KeySet.union acc)
+           acc app.archs)
+       Co_reach.KeySet.empty
 
 (* Tier 1 pre-filter (legacy, per-access shape). For each access
    [a], [Reachability.check_kernel] (Slot-grouped, one Z3
@@ -218,11 +213,11 @@ let t1_keys_restricted_of (baseline_keys : Co_reach.KeySet.t)
    in a co-reach pair, so a Φ that drops it would be rejected here
    yet accepted by Tier 2, breaking the "Tier 1 reject ⇒ Tier 2
    reject" pre-filter contract. *)
-let[@warning "-32"] gate_holds_per_access
-    (baseline : Reachability.AccessSet.t) (app : App.t) : bool =
+let[@warning "-32"] gate_holds_per_access (baseline : Reachability.AccessSet.t)
+    (app : App.t) : bool =
   Phase_timer.measure "genie/gate" (fun () ->
-    Stats.incr "gate_checks";
-    Reachability.AccessSet.subset baseline (access_set_of app))
+      Stats.incr "gate_checks";
+      Reachability.AccessSet.subset baseline (access_set_of app))
 
 (* Tier 1 pre-filter (pair-aware). Restricts the single-thread
    reachability question to fragments that participate in some
@@ -239,25 +234,23 @@ let[@warning "-32"] gate_holds_per_access
    Reject Φ if any baseline key drops out of the T1-SAT set.
    Cheaper per call than Tier 2: the T1 goal drops the second-thread
    conjunct and the [id_le] canonicalisation. *)
-let gate_holds_t1_pairs (baseline_keys : Co_reach.KeySet.t)
-    (app : App.t) : bool =
+let gate_holds_t1_pairs (baseline_keys : Co_reach.KeySet.t) (app : App.t) : bool
+    =
   Phase_timer.measure "genie/gate" (fun () ->
-    Stats.incr "gate_checks";
-    let under_phi = t1_keys_restricted_of baseline_keys app in
-    Co_reach.KeySet.subset baseline_keys under_phi)
+      Stats.incr "gate_checks";
+      let under_phi = t1_keys_restricted_of baseline_keys app in
+      Co_reach.KeySet.subset baseline_keys under_phi)
 
-let gate_holds_simple (_baseline : Reachability.AccessSet.t)
-    (app : App.t) : bool =
+let gate_holds_simple (_baseline : Reachability.AccessSet.t) (app : App.t) :
+    bool =
   Phase_timer.measure "genie/gate" (fun () ->
-    Stats.incr "gate_checks";
-    ordinary_kernels app
-    |> List.for_all (fun k ->
-      k
-      |> Reachability.prepare_kernel
-           ~assumes:(App.assumes_of k app)
-           ~assume_dims:app.assume_dims
-           ~params:app.params
-      |> Reachability.preconditions_satisfiable ?timeout:app.timeout))
+      Stats.incr "gate_checks";
+      ordinary_kernels app
+      |> List.for_all (fun k ->
+          k
+          |> Reachability.prepare_kernel ~assumes:(App.assumes_of k app)
+               ~assume_dims:app.assume_dims ~params:app.params
+          |> Reachability.preconditions_satisfiable ?timeout:app.timeout))
 
 (* Cached gate. Per kernel we keep one Z3 context, one solver with
    the base encoding ([kernel.pre + runtime] under
@@ -281,6 +274,7 @@ let gate_holds_simple (_baseline : Reachability.AccessSet.t)
    kernels still share, preserving the [--gate-cache] benefit. *)
 module Gate_cache = struct
   type key = string * int * int
+
   let key_of (k : Kernel.t) : key =
     (k.name, Hashtbl.hash k.pre, Hashtbl.hash k.code)
 
@@ -288,32 +282,26 @@ module Gate_cache = struct
 
   let create () : t = Hashtbl.create 8
 
-  let get_or_init (cache : t) ~(timeout : int option)
-      ~(assume_dims : bool) ~(params : (string * int) list)
-      (k : Kernel.t) : Reachability.Slot.t =
+  let get_or_init (cache : t) ~(timeout : int option) ~(assume_dims : bool)
+      ~(params : (string * int) list) (k : Kernel.t) : Reachability.Slot.t =
     let key = key_of k in
     match Hashtbl.find_opt cache key with
     | Some s -> s
     | None ->
-      let s =
-        Reachability.make_slot ~timeout ~assume_dims ~params k
-      in
-      Hashtbl.add cache key s;
-      s
+        let s = Reachability.make_slot ~timeout ~assume_dims ~params k in
+        Hashtbl.add cache key s;
+        s
 end
 
 let gate_holds_cached (cache : Gate_cache.t)
     (_baseline : Reachability.AccessSet.t) (app : App.t) : bool =
   ordinary_kernels app
   |> List.for_all (fun k ->
-    let slot =
-      Gate_cache.get_or_init cache
-        ~timeout:app.timeout
-        ~assume_dims:app.assume_dims
-        ~params:app.params
-        k
-    in
-    Reachability.preconditions_satisfiable_delta slot (App.assumes_of k app))
+      let slot =
+        Gate_cache.get_or_init cache ~timeout:app.timeout
+          ~assume_dims:app.assume_dims ~params:app.params k
+      in
+      Reachability.preconditions_satisfiable_delta slot (App.assumes_of k app))
 
 let[@warning "-32"] gate_holds = gate_holds_simple
 
@@ -335,10 +323,10 @@ let[@warning "-32"] gate_holds = gate_holds_simple
    baseline picked, which is already a filter by SAT-ability. *)
 let gate_holds_pairs (baseline : Co_reach.pair list) (app : App.t) : bool =
   Phase_timer.measure "genie/gate" (fun () ->
-    Stats.incr "gate_checks";
-    let baseline_keys = Co_reach.keys_of baseline in
-    let under_phi = coreach_pairs_restricted_of baseline_keys app in
-    Co_reach.preserves_subset ~under_phi ~baseline)
+      Stats.incr "gate_checks";
+      let baseline_keys = Co_reach.keys_of baseline in
+      let under_phi = coreach_pairs_restricted_of baseline_keys app in
+      Co_reach.preserves_subset ~under_phi ~baseline)
 
 (* Per-kernel extras. Keyed by [Kernel.name]. Each kernel's clauses
    are conjoined onto that kernel's own pre — no cross-kernel
@@ -351,12 +339,9 @@ type per_kernel_extras = (string * Exp.bexp list) list
 let app_with_extras (extras : per_kernel_extras) (app : App.t) : App.t =
   let lookup kn =
     List.find_opt (fun (n, _) -> n = kn) extras
-    |> Option.map snd
-    |> Option.value ~default:[]
+    |> Option.map snd |> Option.value ~default:[]
   in
-  let assumes' =
-    List.map (fun (kn, bs) -> (kn, bs @ lookup kn)) app.assumes
-  in
+  let assumes' = List.map (fun (kn, bs) -> (kn, bs @ lookup kn)) app.assumes in
   { app with assumes = assumes' }
 
 let is_extras_empty (extras : per_kernel_extras) : bool =
@@ -366,12 +351,14 @@ let extras_flatten (extras : per_kernel_extras) : (string * Exp.bexp) list =
   List.concat_map (fun (kn, bs) -> List.map (fun b -> (kn, b)) bs) extras
 
 let extras_group (pairs : (string * Exp.bexp) list) : per_kernel_extras =
-  List.fold_left (fun acc (kn, b) ->
-    let existing =
-      List.find_opt (fun (n, _) -> n = kn) acc |> Option.map snd |> Option.value ~default:[]
-    in
-    let others = List.filter (fun (n, _) -> n <> kn) acc in
-    (kn, existing @ [ b ]) :: others)
+  List.fold_left
+    (fun acc (kn, b) ->
+      let existing =
+        List.find_opt (fun (n, _) -> n = kn) acc
+        |> Option.map snd |> Option.value ~default:[]
+      in
+      let others = List.filter (fun (n, _) -> n <> kn) acc in
+      (kn, existing @ [ b ]) :: others)
     [] pairs
   |> List.rev
 
@@ -380,30 +367,30 @@ let extras_group (pairs : (string * Exp.bexp) list) : per_kernel_extras =
    to merge IR-derived dim pins (see [usage_constrained_kernel])
    with abductive / blanket clauses so both flow into the same
    [Discovered: --assume ...] output. *)
-let merge_extras (first : per_kernel_extras) (second : per_kernel_extras)
-    : per_kernel_extras =
+let merge_extras (first : per_kernel_extras) (second : per_kernel_extras) :
+    per_kernel_extras =
   let lookup l kn =
     List.find_opt (fun (n, _) -> n = kn) l
-    |> Option.map snd
-    |> Option.value ~default:[]
+    |> Option.map snd |> Option.value ~default:[]
   in
   let names_in_first = List.map fst first in
   let names_only_in_second =
-    List.filter_map (fun (n, _) ->
-      if List.mem n names_in_first then None else Some n) second
+    List.filter_map
+      (fun (n, _) -> if List.mem n names_in_first then None else Some n)
+      second
   in
-  List.map (fun kn -> (kn, lookup first kn @ lookup second kn))
+  List.map
+    (fun kn -> (kn, lookup first kn @ lookup second kn))
     (names_in_first @ names_only_in_second)
 
-let run_assuming (extras : per_kernel_extras) (app : App.t) : App_analysis.t list =
+let run_assuming (extras : per_kernel_extras) (app : App.t) :
+    App_analysis.t list =
   Phase_timer.measure "genie/race" (fun () ->
-    Stats.incr "race_queries";
-    app |> app_with_extras extras |> App.run)
+      Stats.incr "race_queries";
+      app |> app_with_extras extras |> App.run)
 
 let verifies_drf_only (app : App.t) (extras : per_kernel_extras) : bool =
-  app
-  |> run_assuming extras
-  |> all_safe
+  app |> run_assuming extras |> all_safe
 
 (* Drop-clause shrink, per-kernel. For each [(kn, b)] flattened pair,
    try removing it from [extras]; if the kernel set still clears DRF,
@@ -413,19 +400,19 @@ let verifies_drf_only (app : App.t) (extras : per_kernel_extras) : bool =
    is purely a DRF check, independent of which baseline representation
    the gate uses ([AccessSet.t] under [--legacy-gate], [Co_reach.pair
    list] under the default Tier 3 gate). *)
-let shrink_linear (_baseline : 'a) (app : App.t)
-    (extras : per_kernel_extras) : per_kernel_extras =
+let shrink_linear (_baseline : 'a) (app : App.t) (extras : per_kernel_extras) :
+    per_kernel_extras =
   Phase_timer.measure "genie/shrink" (fun () ->
-    let flat = extras_flatten extras in
-    let rec loop kept remaining =
-      match remaining with
-      | [] -> kept
-      | c :: rest ->
-        if verifies_drf_only app (extras_group (kept @ rest))
-        then loop kept rest
-        else loop (kept @ [ c ]) rest
-    in
-    loop [] flat |> extras_group)
+      let flat = extras_flatten extras in
+      let rec loop kept remaining =
+        match remaining with
+        | [] -> kept
+        | c :: rest ->
+            if verifies_drf_only app (extras_group (kept @ rest)) then
+              loop kept rest
+            else loop (kept @ [ c ]) rest
+      in
+      loop [] flat |> extras_group)
 
 (* UNSAT-core shrink: run the DRF pipeline once with [extras] added as
    tracked Z3 assumptions (named [extra_<id>]) instead of conjoining
@@ -443,8 +430,8 @@ let shrink_linear (_baseline : 'a) (app : App.t)
    caller should use [shrink_linear] as the fallback. *)
 module IntSet = Set.Make (Int)
 
-let shrink_via_core (_baseline : 'a) (app : App.t)
-    (extras : per_kernel_extras) : per_kernel_extras option =
+let shrink_via_core (_baseline : 'a) (app : App.t) (extras : per_kernel_extras)
+    : per_kernel_extras option =
   if is_extras_empty extras then Some extras
   else
     (* Tag each kernel's clauses with kernel-local integer IDs. The
@@ -452,8 +439,7 @@ let shrink_via_core (_baseline : 'a) (app : App.t)
        clauses; that's fine because each kernel's [assert_and_track]
        happens in its own Z3 context. *)
     let core_extras : (string * (int * Exp.bexp) list) list =
-      List.map (fun (kn, bs) -> (kn, List.mapi (fun i b -> (i, b)) bs))
-        extras
+      List.map (fun (kn, bs) -> (kn, List.mapi (fun i b -> (i, b)) bs)) extras
     in
     let analyses = App.run { app with core_extras } in
     if not (all_safe analyses) then None
@@ -463,52 +449,52 @@ let shrink_via_core (_baseline : 'a) (app : App.t)
       let per_kernel_needed : (string * IntSet.t) list =
         analyses
         |> List.map (fun analysis ->
-          let a = ordinary_analysis_exn analysis in
-          let ids =
-            a.report
-            |> List.concat_map (fun (s : Solve_drf.Solution.t) ->
-                match s.outcome with
-                | Solve_drf.Outcome.Drf_with_core c -> c
-                | _ -> [])
-            |> IntSet.of_list
-          in
-          (Protocols.Kernel.name a.kernel, ids))
+            let a = ordinary_analysis_exn analysis in
+            let ids =
+              a.report
+              |> List.concat_map (fun (s : Solve_drf.Solution.t) ->
+                  match s.outcome with
+                  | Solve_drf.Outcome.Drf_with_core c -> c
+                  | _ -> [])
+              |> IntSet.of_list
+            in
+            (Protocols.Kernel.name a.kernel, ids))
       in
       (* Empty-core guard, applied across all kernels. With non-empty
          [extras] but every kernel reporting an empty core, the
          caller should fall back to [shrink_linear] (see the
          [shrink_linear]-fallback comment in the dropped version of
          this function). *)
-      if List.for_all (fun (_, s) -> IntSet.is_empty s) per_kernel_needed
-      then None
+      if List.for_all (fun (_, s) -> IntSet.is_empty s) per_kernel_needed then
+        None
       else
         (* Walk each kernel's tagged list in input order and keep
            those whose ID the core mentions. *)
         let kept : per_kernel_extras =
-          List.map (fun (kn, tagged) ->
-            let needed =
-              List.find_opt (fun (n, _) -> n = kn) per_kernel_needed
-              |> Option.map snd
-              |> Option.value ~default:IntSet.empty
-            in
-            let kept_bs =
-              tagged
-              |> List.filter_map (fun (id, b) ->
-                if IntSet.mem id needed then Some b else None)
-            in
-            (kn, kept_bs))
+          List.map
+            (fun (kn, tagged) ->
+              let needed =
+                List.find_opt (fun (n, _) -> n = kn) per_kernel_needed
+                |> Option.map snd
+                |> Option.value ~default:IntSet.empty
+              in
+              let kept_bs =
+                tagged
+                |> List.filter_map (fun (id, b) ->
+                    if IntSet.mem id needed then Some b else None)
+              in
+              (kn, kept_bs))
             core_extras
         in
         Some kept
 
-let shrink ~(use_core : bool) (baseline : 'a)
-    (app : App.t) (extras : per_kernel_extras) : per_kernel_extras =
+let shrink ~(use_core : bool) (baseline : 'a) (app : App.t)
+    (extras : per_kernel_extras) : per_kernel_extras =
   if use_core then
     match shrink_via_core baseline app extras with
     | Some kept -> kept
     | None -> shrink_linear baseline app extras
-  else
-    shrink_linear baseline app extras
+  else shrink_linear baseline app extras
 
 (* Per-clause weakening lattice. Replacing an equality with one of its
    one-sided variants admits strictly more models; if the kernel still
@@ -520,47 +506,49 @@ let shrink ~(use_core : bool) (baseline : 'a)
    [sign] is the per-kernel signedness of [b]'s free variables: each
    clause comes from a specific kernel's [build_pool] and its
    signedness is resolved against that kernel. *)
-let weaken_clause (sign : Variable.t -> Signedness.t)
-    : Exp.bexp -> Exp.bexp list = function
+let weaken_clause (sign : Variable.t -> Signedness.t) :
+    Exp.bexp -> Exp.bexp list = function
   | Exp.NRel (Eq, e1, e2) as b ->
-    let s = bexp_signedness sign b in
-    [ Exp.NRel (Ge s, e1, e2); Exp.NRel (Le s, e1, e2) ]
+      let s = bexp_signedness sign b in
+      [ Exp.NRel (Ge s, e1, e2); Exp.NRel (Le s, e1, e2) ]
   | _ -> []
 
 (* Walk [extras] per-kernel; for each clause, if some weaker variant
    keeps the predicate [check] true, swap it in. The signedness used
    for an Eq's weakening is the producing kernel's. *)
-let weaken_for_gate
-    (app : App.t)
-    (check : per_kernel_extras -> bool)
+let weaken_for_gate (app : App.t) (check : per_kernel_extras -> bool)
     (extras : per_kernel_extras) : per_kernel_extras =
   Phase_timer.measure "genie/weaken" (fun () ->
-    let kernel_by_name (kn : string) : Kernel.t option =
-      List.find_opt (fun (k : Kernel.t) -> Kernel.name k = kn)
-        (ordinary_kernels app)
-    in
-    List.map (fun (kn, bs) ->
-      match kernel_by_name kn with
-      | None -> (kn, bs)
-      | Some k ->
-        let sign v = Abduction.signedness_of k v in
-        let others_unchanged =
-          List.filter (fun (n, _) -> n <> kn) extras
-        in
-        let rec loop acc = function
-          | [] -> acc
-          | c :: rest ->
-            let weakers = weaken_clause sign c in
-            let candidate w =
-              let updated = (kn, acc @ (w :: rest)) :: others_unchanged in
-              check updated
-            in
-            let best = List.find_opt candidate weakers in
-            let kept = match best with Some w -> w | None -> c in
-            loop (acc @ [ kept ]) rest
-        in
-        (kn, loop [] bs))
-      extras)
+      let kernel_by_name (kn : string) : Kernel.t option =
+        List.find_opt
+          (fun (k : Kernel.t) -> Kernel.name k = kn)
+          (ordinary_kernels app)
+      in
+      List.map
+        (fun (kn, bs) ->
+          match kernel_by_name kn with
+          | None -> (kn, bs)
+          | Some k ->
+              let sign v = Abduction.signedness_of k v in
+              let others_unchanged =
+                List.filter (fun (n, _) -> n <> kn) extras
+              in
+              let rec loop acc = function
+                | [] -> acc
+                | c :: rest ->
+                    let weakers = weaken_clause sign c in
+                    let candidate w =
+                      let updated =
+                        (kn, acc @ (w :: rest)) :: others_unchanged
+                      in
+                      check updated
+                    in
+                    let best = List.find_opt candidate weakers in
+                    let kept = match best with Some w -> w | None -> c in
+                    loop (acc @ [ kept ]) rest
+              in
+              (kn, loop [] bs))
+        extras)
 
 (* Abductive search with weakening and CEGIS-style gate-rejection
    feedback. On each iteration:
@@ -582,28 +570,26 @@ let weaken_for_gate
    carries its single-thread reach check in [gate_check] itself, so
    it leaves [pre_filter] unset. The default Tier 3 path supplies a
    dedicated [pre_filter] derived from [Reachability.AccessSet]. *)
-let abductive_loop
-    ?(iter_cap = 32)
+let abductive_loop ?(iter_cap = 32)
     ?(scope_of : (string -> Variable.Set.t option) option)
     ?(prune_candidate : (string -> Exp.bexp -> bool) option)
     ?(accessed_dims_of : (string -> Variable.Set.t option) option)
-    ?(pre_filter : (App.t -> bool) = fun _ -> true)
+    ?(pre_filter : App.t -> bool = fun _ -> true)
     ?(non_trivial : (per_kernel_extras -> bool) option)
-    ~(use_core_shrink : bool)
-    ~(gate_check : 'baseline -> App.t -> bool)
-    (app : App.t)
-    (baseline : 'baseline)
-    : per_kernel_extras option =
+    ~(use_core_shrink : bool) ~(gate_check : 'baseline -> App.t -> bool)
+    (app : App.t) (baseline : 'baseline) : per_kernel_extras option =
   let kernels = ordinary_kernels app in
   if kernels = [] then None
   else
     let session =
-      Abduction.create_for_kernels
-        ?scope_of ?prune_candidate ?accessed_dims_of kernels
+      Abduction.create_for_kernels ?scope_of ?prune_candidate ?accessed_dims_of
+        kernels
     in
     Stats.set "pool_size" (List.length session.candidates);
-    let solve s = Phase_timer.measure "genie/maxsat" (fun () ->
-      Stats.incr "maxsat_solves"; Abduction.solve s)
+    let solve s =
+      Phase_timer.measure "genie/maxsat" (fun () ->
+          Stats.incr "maxsat_solves";
+          Abduction.solve s)
     in
     (* Run baseline (extras = []) once upfront. Two purposes:
        (1) if every kernel is already DRF the abductive search is
@@ -621,16 +607,18 @@ let abductive_loop
     Stats.set "cti_rounds" 0;
     let baseline_result =
       Phase_timer.measure "genie/baseline-race" (fun () ->
-        Stats.incr "race_queries"; App.run app)
+          Stats.incr "race_queries";
+          App.run app)
     in
     if all_safe baseline_result then Some []
     else
       let racy_names =
-        List.filter_map (fun analysis ->
-          if App_analysis.is_safe analysis then None
-          else
-            let a = ordinary_analysis_exn analysis in
-            Some (Protocols.Kernel.name a.kernel))
+        List.filter_map
+          (fun analysis ->
+            if App_analysis.is_safe analysis then None
+            else
+              let a = ordinary_analysis_exn analysis in
+              Some (Protocols.Kernel.name a.kernel))
           baseline_result
       in
       Stats.set "racy_kernels" (List.length racy_names);
@@ -639,7 +627,7 @@ let abductive_loop
         let kernels =
           kernels
           |> List.filter (fun k ->
-                 List.mem (Protocols.Kernel.name k) racy_names)
+              List.mem (Protocols.Kernel.name k) racy_names)
           |> wrap_ordinary_kernels
         in
         { app with kernels }
@@ -670,16 +658,15 @@ let abductive_loop
         match non_trivial with
         | Some f -> f
         | None ->
-          fun extras ->
-            let app' = app_with_extras extras app in
-            ordinary_kernels app'
-            |> List.exists (fun k ->
-              k
-              |> Reachability.prepare_kernel
-                   ~assumes:(App.assumes_of k app')
-                   ~assume_dims:app'.assume_dims
-                   ~params:app'.params
-              |> Reachability.any_access_reachable ?timeout:app'.timeout)
+            fun extras ->
+              let app' = app_with_extras extras app in
+              ordinary_kernels app'
+              |> List.exists (fun k ->
+                  k
+                  |> Reachability.prepare_kernel
+                       ~assumes:(App.assumes_of k app')
+                       ~assume_dims:app'.assume_dims ~params:app'.params
+                  |> Reachability.any_access_reachable ?timeout:app'.timeout)
       in
       let try_finalize (extras : per_kernel_extras) : per_kernel_extras option =
         let minimal = shrink' baseline app_for_drf extras in
@@ -690,7 +677,9 @@ let abductive_loop
           let weakened = weaken_for_gate app_for_drf drf_and_gate minimal in
           let weakened_min = shrink' baseline app_for_drf weakened in
           let app'' = app_with_extras weakened_min app in
-          if pre_filter app'' && gate_check baseline app'' && non_trivial weakened_min
+          if
+            pre_filter app'' && gate_check baseline app''
+            && non_trivial weakened_min
           then Some weakened_min
           else None
       in
@@ -702,15 +691,15 @@ let abductive_loop
           if all_safe result then
             match try_finalize extras with
             | Some final -> Some final
-            | None ->
-              (* Gate rejected even after weakening — ban this exact
+            | None -> (
+                (* Gate rejected even after weakening — ban this exact
                  per-kernel combination and re-solve. *)
-              Stats.incr "rejections";
-              if Abduction.reject_combination session extras = 0 then None
-              else
-                (match solve session with
-                 | None -> None
-                 | Some new_extras -> loop (iter + 1) new_extras)
+                Stats.incr "rejections";
+                if Abduction.reject_combination session extras = 0 then None
+                else
+                  match solve session with
+                  | None -> None
+                  | Some new_extras -> loop (iter + 1) new_extras)
           else
             let added =
               Abduction.add_all (ordinary_drf_analyses_exn result) session
@@ -739,24 +728,32 @@ let abductive_loop
    its own [int_params] and its own signedness function — every
    clause references variables scoped to one kernel. *)
 let blanket_extras (app : App.t) : per_kernel_extras =
-  let dims = [
-    Variable.bdim_x; Variable.bdim_y; Variable.bdim_z;
-    Variable.gdim_x; Variable.gdim_y; Variable.gdim_z;
-  ] in
+  let dims =
+    [
+      Variable.bdim_x;
+      Variable.bdim_y;
+      Variable.bdim_z;
+      Variable.gdim_x;
+      Variable.gdim_y;
+      Variable.gdim_z;
+    ]
+  in
   ordinary_kernels app
   |> List.map (fun (k : Kernel.t) ->
-    let params = int_params k in
-    let sign v = Abduction.signedness_of k v in
-    let signs =
-      params |> List.map (fun v ->
-        Exp.NRel (Gt (sign v), Exp.Var v, Exp.Num 0))
-    in
-    let bounds =
-      params |> List.concat_map (fun p ->
-        List.map (fun d ->
-          Exp.NRel (Ge Unsigned, Exp.Var p, Exp.Var d)) dims)
-    in
-    (Kernel.name k, signs @ bounds))
+      let params = int_params k in
+      let sign v = Abduction.signedness_of k v in
+      let signs =
+        params
+        |> List.map (fun v -> Exp.NRel (Gt (sign v), Exp.Var v, Exp.Num 0))
+      in
+      let bounds =
+        params
+        |> List.concat_map (fun p ->
+            List.map
+              (fun d -> Exp.NRel (Ge Unsigned, Exp.Var p, Exp.Var d))
+              dims)
+      in
+      (Kernel.name k, signs @ bounds))
 
 (* Inline unary predicates ([nonneg], [pow2], [uintN]) before
    emission so the user-visible [--assume KERNEL:BEXP] reproduces
@@ -768,9 +765,11 @@ let blanket_extras (app : App.t) : per_kernel_extras =
 let format_assume_flags (extras : per_kernel_extras) : string =
   extras
   |> List.concat_map (fun (kn, bs) ->
-       List.map (fun b ->
-         Printf.sprintf "--assume \"%s:%s\"" kn
-           (b |> Predicates.b_inline |> Exp.b_to_string)) bs)
+      List.map
+        (fun b ->
+          Printf.sprintf "--assume \"%s:%s\"" kn
+            (b |> Predicates.b_inline |> Exp.b_to_string))
+        bs)
   |> String.concat " "
 
 (* Use-derived dim bounds. For each axis (x, y, z) and level (thread,
@@ -790,28 +789,33 @@ let format_assume_flags (extras : per_kernel_extras) : string =
    actually added (a strict subset of the six candidates). The pins
    are first-class assumptions and the caller threads them into the
    verdict so they surface in [Discovered: --assume ...]. *)
-let usage_constrained_kernel
-    ~(gate_timeout_ms : int)
-    ~(params : (string * int) list)
-    (k : Kernel.t) : Kernel.t * Exp.bexp list =
+let usage_constrained_kernel ~(gate_timeout_ms : int)
+    ~(params : (string * int) list) (k : Kernel.t) : Kernel.t * Exp.bexp list =
   let used = Code.free_names k.code Variable.Set.empty in
   let probe0 =
     Reachability.prepare_kernel ~assumes:[] ~assume_dims:false ~params k
   in
   let open Variable in
   let _, k_final, pins_rev =
-    [ tid_x, bdim_x; tid_y, bdim_y; tid_z, bdim_z;
-      bid_x, gdim_x; bid_y, gdim_y; bid_z, gdim_z ]
-    |> List.fold_left (fun (probe, k_acc, pins) (idx, dim) ->
-      let candidate =
-        if Set.mem idx used
-        (* [dim] is a CUDA built-in (unsigned int), so the comparison
+    [
+      (tid_x, bdim_x);
+      (tid_y, bdim_y);
+      (tid_z, bdim_z);
+      (bid_x, gdim_x);
+      (bid_y, gdim_y);
+      (bid_z, gdim_z);
+    ]
+    |> List.fold_left
+         (fun (probe, k_acc, pins) (idx, dim) ->
+           let candidate =
+             if Set.mem idx used
+             (* [dim] is a CUDA built-in (unsigned int), so the comparison
            is unsigned. *)
-        then Exp.NRel (Ge Unsigned, Var dim, Num 2)
-        else Exp.NRel (Eq, Var dim, Num 1)
-      in
-      let probe' = Kernel.add_pre candidate probe in
-      (* Reject-on-Unknown here. A pin accepted on Unknown can
+             then Exp.NRel (Ge Unsigned, Var dim, Num 2)
+             else Exp.NRel (Eq, Var dim, Num 1)
+           in
+           let probe' = Kernel.add_pre candidate probe in
+           (* Reject-on-Unknown here. A pin accepted on Unknown can
          silently make [k.pre] unsatisfiable when the truth was Unsat,
          making later axis pre-flights and downstream gate queries
          answer against a contradictory pre, and the answer would
@@ -821,14 +825,14 @@ let usage_constrained_kernel
          [gate_timeout_ms] cap safe: a slow axis query that exceeds
          the budget returns UNKNOWN, drops the pin, and the kernel
          is analysed without that extra prune. *)
-      match
-        Reachability.preconditions_check ~timeout:gate_timeout_ms probe'
-      with
-      | Reachability.Pre_sat ->
-        (probe', Kernel.add_pre candidate k_acc, candidate :: pins)
-      | Reachability.Pre_unsat | Reachability.Pre_unknown ->
-        (probe, k_acc, pins))
-      (probe0, k, [])
+           match
+             Reachability.preconditions_check ~timeout:gate_timeout_ms probe'
+           with
+           | Reachability.Pre_sat ->
+               (probe', Kernel.add_pre candidate k_acc, candidate :: pins)
+           | Reachability.Pre_unsat | Reachability.Pre_unknown ->
+               (probe, k_acc, pins))
+         (probe0, k, [])
   in
   (k_final, List.rev pins_rev)
 
@@ -851,9 +855,8 @@ let usage_constrained_kernel
    two-thread universe exists under the baseline — and the kernel
    is vacuously DRF. *)
 let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
-    ~(prune_timeout_ms : int)
-    ~(usage_pins : per_kernel_extras)
-    (app : App.t) : verdict =
+    ~(prune_timeout_ms : int) ~(usage_pins : per_kernel_extras) (app : App.t) :
+    verdict =
   let drf source clauses =
     Drf { source; assumes = merge_extras usage_pins clauses }
   in
@@ -867,8 +870,8 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
   let tier1_cache : bool Tier_cache.t = Tier_cache.create () in
   let tier2_cache : bool Tier_cache.t = Tier_cache.create () in
   let baseline_pairs =
-    Phase_timer.measure "genie/baseline-coreach"
-      (fun () -> coreach_pairs_of app)
+    Phase_timer.measure "genie/baseline-coreach" (fun () ->
+        coreach_pairs_of app)
   in
   (* Tier 1 baseline: the pair-relevant fragment keys. Restricting
      the Tier 1 baseline to fragments that feed some Tier 2 pair
@@ -889,35 +892,40 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
      hit/miss counters drive the cost picture. *)
   let cached_tier1 (app' : App.t) : bool =
     match Tier_cache.find_opt tier1_cache app'.assumes with
-    | Some v -> Stats.incr "tier1_gate_hits"; v
+    | Some v ->
+        Stats.incr "tier1_gate_hits";
+        v
     | None ->
-      Stats.incr "tier1_gate_misses";
-      let v = gate_holds_t1_pairs baseline_keys app' in
-      Tier_cache.add tier1_cache app'.assumes v;
-      v
+        Stats.incr "tier1_gate_misses";
+        let v = gate_holds_t1_pairs baseline_keys app' in
+        Tier_cache.add tier1_cache app'.assumes v;
+        v
   in
   let cached_tier2 (_baseline : Co_reach.pair list) (app' : App.t) : bool =
     match Tier_cache.find_opt tier2_cache app'.assumes with
-    | Some v -> Stats.incr "tier2_gate_hits"; v
+    | Some v ->
+        Stats.incr "tier2_gate_hits";
+        v
     | None ->
-      Stats.incr "tier2_gate_misses";
-      let v = gate_holds_pairs baseline_pairs app' in
-      Tier_cache.add tier2_cache app'.assumes v;
-      v
+        Stats.incr "tier2_gate_misses";
+        let v = gate_holds_pairs baseline_pairs app' in
+        Tier_cache.add tier2_cache app'.assumes v;
+        v
   in
   let gate_check = cached_tier2 in
   let pre_filter = cached_tier1 in
   let baseline =
     Phase_timer.measure "genie/baseline" (fun () ->
-      Stats.incr "race_queries"; App.run app)
+        Stats.incr "race_queries";
+        App.run app)
   in
   if all_safe baseline then
-    if baseline_pairs = [] then Drf_vacuous
-    else drf Source_baseline []
+    if baseline_pairs = [] then Drf_vacuous else drf Source_baseline []
   else
     let scopes =
-      List.map (fun (k : Kernel.t) ->
-        (Kernel.name k, Access_partition.abductive_scope k))
+      List.map
+        (fun (k : Kernel.t) ->
+          (Kernel.name k, Access_partition.abductive_scope k))
         (ordinary_kernels app)
     in
     let scope_of (kn : string) : Variable.Set.t option =
@@ -933,8 +941,9 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
     let accessed_dims_of : (string -> Variable.Set.t option) option =
       if app.assume_launch then
         let table =
-          List.map (fun (k : Kernel.t) ->
-            (Kernel.name k, Access_partition.accessed_dims k))
+          List.map
+            (fun (k : Kernel.t) ->
+              (Kernel.name k, Access_partition.accessed_dims k))
             (ordinary_kernels app)
         in
         Some (fun kn -> List.assoc_opt kn table)
@@ -961,18 +970,16 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
        too loose for per-call pruning. *)
     let slots =
       Phase_timer.measure "genie/prune-prep" (fun () ->
-        List.map (fun (k : Kernel.t) ->
-          let prepared =
-            Reachability.prepare_kernel
-              ~assumes:(App.assumes_of k app)
-              ~assume_dims:app.assume_dims
-              ~params:app.params
-              k
-          in
-          (Kernel.name k,
-           Reachability.make_any_access_slot
-             ~timeout:prune_timeout_ms prepared))
-          (ordinary_kernels app))
+          List.map
+            (fun (k : Kernel.t) ->
+              let prepared =
+                Reachability.prepare_kernel ~assumes:(App.assumes_of k app)
+                  ~assume_dims:app.assume_dims ~params:app.params k
+              in
+              ( Kernel.name k,
+                Reachability.make_any_access_slot ~timeout:prune_timeout_ms
+                  prepared ))
+            (ordinary_kernels app))
     in
     let prune_candidate (kn : string) (b : Exp.bexp) : bool =
       match List.assoc_opt kn slots with
@@ -995,45 +1002,48 @@ let compute_verdict_new ~(use_core_shrink : bool) ~(iter_cap : int)
     let non_trivial (extras : per_kernel_extras) : bool =
       ordinary_kernels app
       |> List.exists (fun k ->
-        let kn = Protocols.Kernel.name k in
-        let delta_clauses =
-          List.assoc_opt kn extras |> Option.value ~default:[]
-        in
-        match List.assoc_opt kn slots with
-        | None | Some None -> false
-        | Some (Some slot) ->
-          let delta = Exp.b_and_ex delta_clauses in
-          Reachability.any_access_reachable_delta slot delta)
+          let kn = Protocols.Kernel.name k in
+          let delta_clauses =
+            List.assoc_opt kn extras |> Option.value ~default:[]
+          in
+          match List.assoc_opt kn slots with
+          | None | Some None -> false
+          | Some (Some slot) ->
+              let delta = Exp.b_and_ex delta_clauses in
+              Reachability.any_access_reachable_delta slot delta)
     in
-    match Phase_timer.measure "genie/abductive" (fun () ->
-            abductive_loop ~iter_cap ~scope_of ~prune_candidate
-              ?accessed_dims_of ~pre_filter ~non_trivial ~use_core_shrink
-              ~gate_check app baseline_pairs)
+    match
+      Phase_timer.measure "genie/abductive" (fun () ->
+          abductive_loop ~iter_cap ~scope_of ~prune_candidate ?accessed_dims_of
+            ~pre_filter ~non_trivial ~use_core_shrink ~gate_check app
+            baseline_pairs)
     with
     | Some minimal -> drf Source_abductive minimal
     | None ->
-      Phase_timer.measure "genie/blanket" (fun () ->
-        Stats.set "blanket_attempted" 1;
-        let blanket = blanket_extras app in
-        if is_extras_empty blanket || not (verifies_drf_only app blanket)
-        then Racy
-        else
-          let minimal =
-            shrink ~use_core:use_core_shrink baseline_pairs app blanket
-          in
-          let app' = app_with_extras minimal app in
-          let blanket_non_trivial = non_trivial minimal in
-          if pre_filter app' && gate_check baseline_pairs app'
-             && blanket_non_trivial
-          then drf Source_blanket minimal
-          else Racy)
+        Phase_timer.measure "genie/blanket" (fun () ->
+            Stats.set "blanket_attempted" 1;
+            let blanket = blanket_extras app in
+            if is_extras_empty blanket || not (verifies_drf_only app blanket)
+            then Racy
+            else
+              let minimal =
+                shrink ~use_core:use_core_shrink baseline_pairs app blanket
+              in
+              let app' = app_with_extras minimal app in
+              let blanket_non_trivial = non_trivial minimal in
+              if
+                pre_filter app'
+                && gate_check baseline_pairs app'
+                && blanket_non_trivial
+              then drf Source_blanket minimal
+              else Racy)
 
 (* Legacy [AccessSet]-based gate path. Retained behind [--legacy-gate]
    for one release cycle so a kernel whose verdict regresses unexpectedly
    under the Tier 3 gate can be re-run with the previous semantics. *)
 let compute_verdict_legacy ~(use_core_shrink : bool) ~(iter_cap : int)
-    ~(cached_gate : bool) ~(usage_pins : per_kernel_extras)
-    (app : App.t) : verdict =
+    ~(cached_gate : bool) ~(usage_pins : per_kernel_extras) (app : App.t) :
+    verdict =
   let drf source clauses =
     Drf { source; assumes = merge_extras usage_pins clauses }
   in
@@ -1041,24 +1051,24 @@ let compute_verdict_legacy ~(use_core_shrink : bool) ~(iter_cap : int)
     if cached_gate then
       let cache = Gate_cache.create () in
       gate_holds_cached cache
-    else
-      gate_holds_simple
+    else gate_holds_simple
   in
   let baseline_reachable =
-    Phase_timer.measure "genie/baseline-reach"
-      (fun () -> access_set_of app)
+    Phase_timer.measure "genie/baseline-reach" (fun () -> access_set_of app)
   in
   let baseline =
     Phase_timer.measure "genie/baseline" (fun () ->
-      Stats.incr "race_queries"; App.run app)
+        Stats.incr "race_queries";
+        App.run app)
   in
   if all_safe baseline then
     if Reachability.AccessSet.is_empty baseline_reachable then Drf_vacuous
     else drf Source_baseline []
   else
     let scopes =
-      List.map (fun (k : Kernel.t) ->
-        (Kernel.name k, Access_partition.abductive_scope k))
+      List.map
+        (fun (k : Kernel.t) ->
+          (Kernel.name k, Access_partition.abductive_scope k))
         (ordinary_kernels app)
     in
     let scope_of (kn : string) : Variable.Set.t option =
@@ -1067,48 +1077,47 @@ let compute_verdict_legacy ~(use_core_shrink : bool) ~(iter_cap : int)
     let accessed_dims_of : (string -> Variable.Set.t option) option =
       if app.assume_launch then
         let table =
-          List.map (fun (k : Kernel.t) ->
-            (Kernel.name k, Access_partition.accessed_dims k))
+          List.map
+            (fun (k : Kernel.t) ->
+              (Kernel.name k, Access_partition.accessed_dims k))
             (ordinary_kernels app)
         in
         Some (fun kn -> List.assoc_opt kn table)
       else None
     in
-    match Phase_timer.measure "genie/abductive" (fun () ->
-            abductive_loop ~iter_cap ~scope_of ?accessed_dims_of
-              ~use_core_shrink ~gate_check app baseline_reachable)
+    match
+      Phase_timer.measure "genie/abductive" (fun () ->
+          abductive_loop ~iter_cap ~scope_of ?accessed_dims_of ~use_core_shrink
+            ~gate_check app baseline_reachable)
     with
     | Some minimal -> drf Source_abductive minimal
     | None ->
-      Phase_timer.measure "genie/blanket" (fun () ->
-        Stats.set "blanket_attempted" 1;
-        let blanket = blanket_extras app in
-        if is_extras_empty blanket || not (verifies_drf_only app blanket)
-        then Racy
-        else
-          let minimal =
-            shrink ~use_core:use_core_shrink baseline_reachable app blanket
-          in
-          let app' = app_with_extras minimal app in
-          let blanket_non_trivial =
-            ordinary_kernels app'
-            |> List.exists (fun k ->
-              k
-              |> Reachability.prepare_kernel
-                   ~assumes:(App.assumes_of k app')
-                   ~assume_dims:app'.assume_dims
-                   ~params:app'.params
-              |> Reachability.any_access_reachable ?timeout:app'.timeout)
-          in
-          if gate_check baseline_reachable app' && blanket_non_trivial
-          then drf Source_blanket minimal
-          else Racy)
+        Phase_timer.measure "genie/blanket" (fun () ->
+            Stats.set "blanket_attempted" 1;
+            let blanket = blanket_extras app in
+            if is_extras_empty blanket || not (verifies_drf_only app blanket)
+            then Racy
+            else
+              let minimal =
+                shrink ~use_core:use_core_shrink baseline_reachable app blanket
+              in
+              let app' = app_with_extras minimal app in
+              let blanket_non_trivial =
+                ordinary_kernels app'
+                |> List.exists (fun k ->
+                    k
+                    |> Reachability.prepare_kernel
+                         ~assumes:(App.assumes_of k app')
+                         ~assume_dims:app'.assume_dims ~params:app'.params
+                    |> Reachability.any_access_reachable ?timeout:app'.timeout)
+              in
+              if gate_check baseline_reachable app' && blanket_non_trivial then
+                drf Source_blanket minimal
+              else Racy)
 
 let compute_verdict ~(use_core_shrink : bool) ~(iter_cap : int)
-    ~(cached_gate : bool) ~(legacy_gate : bool)
-    ~(prune_timeout_ms : int)
-    ~(usage_pins : per_kernel_extras)
-    (app : App.t) : verdict =
+    ~(cached_gate : bool) ~(legacy_gate : bool) ~(prune_timeout_ms : int)
+    ~(usage_pins : per_kernel_extras) (app : App.t) : verdict =
   (* Stats and Phase_timer are module-level globals. Reset at entry so
      a second [compute_verdict] in the same process (test harness,
      batch wrapper, future LSP integration) doesn't see accumulated
@@ -1116,77 +1125,77 @@ let compute_verdict ~(use_core_shrink : bool) ~(iter_cap : int)
   Stats.reset ();
   Phase_timer.reset ();
   try
-    if legacy_gate
-    then compute_verdict_legacy ~use_core_shrink ~iter_cap ~cached_gate
-           ~usage_pins app
-    else compute_verdict_new ~use_core_shrink ~iter_cap ~prune_timeout_ms
-           ~usage_pins app
+    if legacy_gate then
+      compute_verdict_legacy ~use_core_shrink ~iter_cap ~cached_gate ~usage_pins
+        app
+    else
+      compute_verdict_new ~use_core_shrink ~iter_cap ~prune_timeout_ms
+        ~usage_pins app
   with Z3.Error _ -> Racy
 
 let report_prose (v : verdict) : unit =
   match v with
   | Drf_vacuous ->
-    print_endline
-      "Baseline preconditions are unsatisfiable — kernel is vacuously DRF.";
-    print_endline
-      "Check that the kernel and any user --assume flags are mutually \
-       satisfiable."
+      print_endline
+        "Baseline preconditions are unsatisfiable — kernel is vacuously DRF.";
+      print_endline
+        "Check that the kernel and any user --assume flags are mutually \
+         satisfiable."
   | Drf { source; assumes } ->
-    let preamble = match source with
-      | Source_baseline -> "DRF under baseline."
-      | Source_abductive -> "DRF after abductive refinement."
-      | Source_blanket -> "DRF after blanket fallback."
-    in
-    print_endline preamble;
-    if is_extras_empty assumes
-    then print_endline "No --assume needed."
-    else print_endline ("Discovered: " ^ format_assume_flags assumes)
+      let preamble =
+        match source with
+        | Source_baseline -> "DRF under baseline."
+        | Source_abductive -> "DRF after abductive refinement."
+        | Source_blanket -> "DRF after blanket fallback."
+      in
+      print_endline preamble;
+      if is_extras_empty assumes then print_endline "No --assume needed."
+      else print_endline ("Discovered: " ^ format_assume_flags assumes)
   | Racy ->
-    print_endline
-      "Racy; either a real race or a modelling gap (or vacuous DRF rejected)."
+      print_endline
+        "Racy; either a real race or a modelling gap (or vacuous DRF rejected)."
 
 let report_json (app : App.t) (v : verdict) : unit =
   (* The [assumes] field is per-kernel: an [Assoc] from kernel name
      to the list of clauses discovered for that kernel. A kernel with
      no clauses appears with an empty list, so consumers can iterate
      without missing entries. *)
-  let assumes_to_json (extras : (string * Exp.bexp list) list) : Yojson.Basic.t =
-    `Assoc (List.map (fun (kn, bs) ->
-      (kn, `List (List.map (fun b -> `String (Exp.b_to_string b)) bs)))
-      extras)
+  let assumes_to_json (extras : (string * Exp.bexp list) list) : Yojson.Basic.t
+      =
+    `Assoc
+      (List.map
+         (fun (kn, bs) ->
+           (kn, `List (List.map (fun b -> `String (Exp.b_to_string b)) bs)))
+         extras)
   in
-  let verdict_str, source_json, assumes_json = match v with
+  let verdict_str, source_json, assumes_json =
+    match v with
     | Drf { source; assumes } ->
-      "drf",
-      `String (source_to_string source),
-      assumes_to_json assumes
-    | Drf_vacuous -> "drf_vacuous", `Null, `Assoc []
-    | Racy -> "racy", `Null, `Assoc []
+        ("drf", `String (source_to_string source), assumes_to_json assumes)
+    | Drf_vacuous -> ("drf_vacuous", `Null, `Assoc [])
+    | Racy -> ("racy", `Null, `Assoc [])
   in
   let status = match v with Racy -> "racy" | _ -> "drf" in
   let kernels =
     ordinary_kernels app
     |> List.map (fun (k : Kernel.t) ->
-      `Assoc [
-        ("kernel_name", `String k.name);
-        ("status", `String status);
-      ])
+        `Assoc [ ("kernel_name", `String k.name); ("status", `String status) ])
   in
-  `Assoc [
-    ("verdict", `String verdict_str);
-    ("source", source_json);
-    ("assumes", assumes_json);
-    ("kernels", `List kernels);
-    ("phase_times", Phase_timer.to_json ());
-    ("genie_stats", Stats.to_json ());
-    ("argv",
-     `List (Sys.argv |> Array.to_list |> List.map (fun x -> `String x)));
-    ("executable_name", `String Sys.executable_name);
-    ("z3_version", `String Z3.Version.to_string);
-    ("commit", `String Build_info.commit);
-  ]
-  |> Yojson.Basic.to_string
-  |> print_endline
+  `Assoc
+    [
+      ("verdict", `String verdict_str);
+      ("source", source_json);
+      ("assumes", assumes_json);
+      ("kernels", `List kernels);
+      ("phase_times", Phase_timer.to_json ());
+      ("genie_stats", Stats.to_json ());
+      ( "argv",
+        `List (Sys.argv |> Array.to_list |> List.map (fun x -> `String x)) );
+      ("executable_name", `String Sys.executable_name);
+      ("z3_version", `String Z3.Version.to_string);
+      ("commit", `String Build_info.commit);
+    ]
+  |> Yojson.Basic.to_string |> print_endline
 
 let main =
   let doc = "Search for assume-constraints that make a CUDA kernel DRF." in
@@ -1195,197 +1204,198 @@ let main =
   @@
   let open Cmdliner.Term.Syntax in
   let+ filename =
-    Arg.(required & pos 0 (some file) None
-         & info [] ~docv:"FILENAME"
-             ~doc:"Path to the GPU program.")
+    Arg.(
+      required
+      & pos 0 (some file) None
+      & info [] ~docv:"FILENAME" ~doc:"Path to the GPU program.")
   and+ timeout =
-    Arg.(value & opt (some int) None
-         & info [ "t"; "timeout" ] ~docv:"MS"
-             ~doc:"Per-iteration solver timeout in milliseconds.")
+    Arg.(
+      value
+      & opt (some int) None
+      & info [ "t"; "timeout" ] ~docv:"MS"
+          ~doc:"Per-iteration solver timeout in milliseconds.")
   and+ logic =
-    Arg.(value & opt (some string) None
-         & info [ "logic" ] ~doc:"Z3 logic.")
+    Arg.(value & opt (some string) None & info [ "logic" ] ~doc:"Z3 logic.")
   and+ solve_tactic =
-    Arg.(value & opt (some conv_tactic) None
-         & info [ "solve-tactic" ] ~docv:"TACTIC"
-             ~doc:"Z3 tactic expression for the race-query solver. When \
-                   omitted, the solver uses Z3's default strategy.")
+    Arg.(
+      value
+      & opt (some conv_tactic) None
+      & info [ "solve-tactic" ] ~docv:"TACTIC"
+          ~doc:
+            "Z3 tactic expression for the race-query solver. When omitted, the \
+             solver uses Z3's default strategy.")
   and+ includes =
-    Arg.(value & opt_all string []
-         & info [ "I"; "include-dir" ] ~docv:"DIR"
-             ~doc:"Add to include search path.")
+    Arg.(
+      value & opt_all string []
+      & info [ "I"; "include-dir" ] ~docv:"DIR"
+          ~doc:"Add to include search path.")
   and+ params =
-    Arg.(value & opt_all (pair ~sep:'=' string int) []
-         & info [ "p"; "param" ] ~docv:"K=V"
-             ~doc:"Set integer parameter.")
+    Arg.(
+      value
+      & opt_all (pair ~sep:'=' string int) []
+      & info [ "p"; "param" ] ~docv:"K=V" ~doc:"Set integer parameter.")
   and+ macros =
-    Arg.(value & opt_all string []
-         & info [ "D"; "macro" ] ~docv:"NAME[=VAL]"
-             ~doc:"Define macro.")
+    Arg.(
+      value & opt_all string []
+      & info [ "D"; "macro" ] ~docv:"NAME[=VAL]" ~doc:"Define macro.")
   and+ cu_to_json =
-    Arg.(value & opt string "cu-to-json"
-         & info [ "cu-to-json" ] ~docv:"PATH"
-             ~doc:"Path to cu-to-json.")
+    Arg.(
+      value & opt string "cu-to-json"
+      & info [ "cu-to-json" ] ~docv:"PATH" ~doc:"Path to cu-to-json.")
   and+ ignore_parsing_errors =
-    Arg.(value & flag
-         & info [ "ignore-parsing-errors" ] ~doc:"Ignore parsing errors.")
+    Arg.(
+      value & flag
+      & info [ "ignore-parsing-errors" ] ~doc:"Ignore parsing errors.")
   and+ ignore_calls =
-    Arg.(value & flag
-         & info [ "ignore-calls" ] ~doc:"Skip kernel-call inlining.")
+    Arg.(
+      value & flag & info [ "ignore-calls" ] ~doc:"Skip kernel-call inlining.")
   and+ ignore_asserts =
-    Arg.(value & flag
-         & info [ "ignore-asserts" ] ~doc:"Ignore asserts.")
+    Arg.(value & flag & info [ "ignore-asserts" ] ~doc:"Ignore asserts.")
   and+ only_kernel =
-    Arg.(value & opt (some string) None
-         & info [ "kernel" ] ~doc:"Only check a specific kernel.")
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "kernel" ] ~doc:"Only check a specific kernel.")
   and+ extra_assumes =
-    Arg.(value & opt_all conv_assume []
-         & info [ "assume" ] ~docv:"[KERNEL:]BEXP"
-             ~doc:"Pre-condition. With no prefix, applied to every kernel \
-                   whose declared params plus the launch-config dims \
-                   cover the clause's free variables. With a [KERNEL:] \
-                   prefix the clause is scoped to a specific kernel by \
-                   name; names not matching any kernel are silently \
-                   ignored. May be repeated.")
+    Arg.(
+      value & opt_all conv_assume []
+      & info [ "assume" ] ~docv:"[KERNEL:]BEXP"
+          ~doc:
+            "Pre-condition. With no prefix, applied to every kernel whose \
+             declared params plus the launch-config dims cover the clause's \
+             free variables. With a [KERNEL:] prefix the clause is scoped to a \
+             specific kernel by name; names not matching any kernel are \
+             silently ignored. May be repeated.")
   and+ output_json =
-    Arg.(value & flag
-         & info [ "json" ] ~doc:"Output result as a single JSON object.")
+    Arg.(
+      value & flag
+      & info [ "json" ] ~doc:"Output result as a single JSON object.")
   and+ list_kernels =
-    Arg.(value & flag
-         & info [ "list-kernels" ]
-             ~doc:"Print one kernel name per line on stdout, then exit. \
-                   No analysis is run. Duplicate names in the parsed \
-                   list are uniquified with a [_N] suffix so each \
-                   printed name addresses a distinct kernel under \
-                   [--assume KERNEL:...] and [--kernel].")
+    Arg.(
+      value & flag
+      & info [ "list-kernels" ]
+          ~doc:
+            "Print one kernel name per line on stdout, then exit. No analysis \
+             is run. Duplicate names in the parsed list are uniquified with a \
+             [_N] suffix so each printed name addresses a distinct kernel \
+             under [--assume KERNEL:...] and [--kernel].")
   and+ show_signature =
-    Arg.(value & flag
-         & info [ "show-signature" ]
-             ~doc:"Modify [--list-kernels] output to also print each \
-                   kernel's parameters with declared C type and \
-                   ([signed] | [unsigned]) annotation.")
+    Arg.(
+      value & flag
+      & info [ "show-signature" ]
+          ~doc:
+            "Modify [--list-kernels] output to also print each kernel's \
+             parameters with declared C type and ([signed] | [unsigned]) \
+             annotation.")
   and+ use_core_shrink =
-    Arg.(value & flag
-         & info [ "shrink-core" ]
-             ~doc:"Use UNSAT-core extraction to shrink the abductive \
-                   precondition in one Z3 call, instead of the default \
-                   linear drop-clause loop. Falls back to the linear \
-                   path on any racy / unknown subproof.")
+    Arg.(
+      value & flag
+      & info [ "shrink-core" ]
+          ~doc:
+            "Use UNSAT-core extraction to shrink the abductive precondition in \
+             one Z3 call, instead of the default linear drop-clause loop. \
+             Falls back to the linear path on any racy / unknown subproof.")
   and+ cached_gate =
-    Arg.(value & flag
-         & info [ "gate-cache" ]
-             ~doc:"Reuse a single Z3 context and solver per kernel \
-                   across abductive rounds (push/pop on the assertion \
-                   stack), preserving learned clauses. Disable to fall \
-                   back to a fresh context per gate call. Effective \
-                   only with [--legacy-gate]; the default Tier 3 gate \
-                   rebuilds the under-Φ pair set per round and does \
-                   not share a Z3 slot across rounds.")
+    Arg.(
+      value & flag
+      & info [ "gate-cache" ]
+          ~doc:
+            "Reuse a single Z3 context and solver per kernel across abductive \
+             rounds (push/pop on the assertion stack), preserving learned \
+             clauses. Disable to fall back to a fresh context per gate call. \
+             Effective only with [--legacy-gate]; the default Tier 3 gate \
+             rebuilds the under-Φ pair set per round and does not share a Z3 \
+             slot across rounds.")
   and+ legacy_gate =
-    Arg.(value & flag
-         & info [ "legacy-gate" ]
-             ~doc:"Use the Phase 2 single-thread reachability gate \
-                   (per-kernel [AccessSet] subset check) instead of \
-                   the default Phase 3 pair-level gate. Retained as a \
-                   single-release escape hatch: if a kernel's verdict \
-                   regresses under the new gate, [--legacy-gate] \
-                   reproduces the previous semantics. Slated for \
-                   removal after one release cycle.")
+    Arg.(
+      value & flag
+      & info [ "legacy-gate" ]
+          ~doc:
+            "Use the Phase 2 single-thread reachability gate (per-kernel \
+             [AccessSet] subset check) instead of the default Phase 3 \
+             pair-level gate. Retained as a single-release escape hatch: if a \
+             kernel's verdict regresses under the new gate, [--legacy-gate] \
+             reproduces the previous semantics. Slated for removal after one \
+             release cycle.")
   and+ seed =
-    Arg.(value & opt (some int) None
-         & info [ "seed" ] ~docv:"N"
-             ~doc:"Pin Z3's [smt.random_seed] and [sat.random_seed] to $(docv) \
-                   for reproducible solver behaviour across runs. When unset, \
-                   Z3 picks its own seed.")
+    Arg.(
+      value
+      & opt (some int) None
+      & info [ "seed" ] ~docv:"N"
+          ~doc:
+            "Pin Z3's [smt.random_seed] and [sat.random_seed] to $(docv) for \
+             reproducible solver behaviour across runs. When unset, Z3 picks \
+             its own seed.")
   and+ iter_cap =
-    Arg.(value & opt int 32
-         & info [ "iter-cap" ] ~docv:"N"
-             ~doc:"Cap the number of CEGAR rounds in the abductive loop. \
-                   Default is 32. Raise to give the MaxSAT search more \
-                   budget on kernels whose abductive Φ candidates keep \
-                   getting rejected by the gate.")
+    Arg.(
+      value & opt int 32
+      & info [ "iter-cap" ] ~docv:"N"
+          ~doc:
+            "Cap the number of CEGAR rounds in the abductive loop. Default is \
+             32. Raise to give the MaxSAT search more budget on kernels whose \
+             abductive Φ candidates keep getting rejected by the gate.")
   and+ prune_timeout_ms =
-    Arg.(value & opt int 500
-         & info [ "prune-timeout-ms" ] ~docv:"MS"
-             ~doc:"Per-candidate Z3 timeout for [prune_candidate] during \
-                   abductive pool construction. On a heavy inlined body, \
-                   a small tail of candidates can each take seconds to \
-                   decide and dominate [abduction/create]'s wall time. \
-                   Queries hitting the cap return UNKNOWN, which is \
-                   already treated as 'keep'; the surviving pool grows \
-                   by however many timed out and MaxSAT carries them \
-                   downstream. Default is 500. Lower to bound the \
-                   prune step harder, accepting a larger MaxSAT \
-                   workload in return.")
+    Arg.(
+      value & opt int 500
+      & info [ "prune-timeout-ms" ] ~docv:"MS"
+          ~doc:
+            "Per-candidate Z3 timeout for [prune_candidate] during abductive \
+             pool construction. On a heavy inlined body, a small tail of \
+             candidates can each take seconds to decide and dominate \
+             [abduction/create]'s wall time. Queries hitting the cap return \
+             UNKNOWN, which is already treated as 'keep'; the surviving pool \
+             grows by however many timed out and MaxSAT carries them \
+             downstream. Default is 500. Lower to bound the prune step harder, \
+             accepting a larger MaxSAT workload in return.")
   and+ gate_timeout_ms =
-    Arg.(value & opt int 500
-         & info [ "gate-timeout-ms" ] ~docv:"MS"
-             ~doc:"Per-axis Z3 timeout for [usage_constrained_kernel]'s \
-                   pin pre-flight. The pin discovery step issues 6 \
-                   satisfiability queries per kernel (one per \
-                   tid.{x,y,z} / bid.{x,y,z} axis). On kernels whose \
-                   [k.pre] is structurally heavy (e.g. inlined device \
-                   functions with control flow), a single axis can \
-                   burn seconds of wall time. Queries hitting the cap \
-                   return UNKNOWN, which already drops the pin in the \
-                   conservative reject-on-Unknown policy, so the cap \
-                   trades a possible prune for bounded gate cost. \
-                   Default is 500. Set to 0 to disable the cap.")
+    Arg.(
+      value & opt int 500
+      & info [ "gate-timeout-ms" ] ~docv:"MS"
+          ~doc:
+            "Per-axis Z3 timeout for [usage_constrained_kernel]'s pin \
+             pre-flight. The pin discovery step issues 6 satisfiability \
+             queries per kernel (one per tid.{x,y,z} / bid.{x,y,z} axis). On \
+             kernels whose [k.pre] is structurally heavy (e.g. inlined device \
+             functions with control flow), a single axis can burn seconds of \
+             wall time. Queries hitting the cap return UNKNOWN, which already \
+             drops the pin in the conservative reject-on-Unknown policy, so \
+             the cap trades a possible prune for bounded gate cost. Default is \
+             500. Set to 0 to disable the cap.")
   in
-  seed |> Option.iter (fun n ->
-    let s = string_of_int n in
-    Z3.set_global_param "smt.random_seed" s;
-    Z3.set_global_param "sat.random_seed" s);
+  seed
+  |> Option.iter (fun n ->
+      let s = string_of_int n in
+      Z3.set_global_param "smt.random_seed" s;
+      Z3.set_global_param "sat.random_seed" s);
   let archs = [ Architecture.Block ] in
   let app =
-    App.parse
-      ~filename ~timeout
-      ~show_proofs:false ~show_proto:false ~show_wf:false ~show_align:false
-      ~show_delin:false ~show_phase_split:false ~show_loc_split:false
-      ~show_flat_acc:false ~show_symbexp:false
-      ~logic ~solve_tactic
-      ~ge_index:[] ~le_index:[] ~eq_index:[]
-      ~only_array:None ~only_kernel
-      ~only_true_data_races:false
-      ~thread_idx_1:None ~thread_idx_2:None
-      ~block_idx_1:None ~block_idx_2:None
-      ~archs
-      ~inline_calls:(not ignore_calls)
-      ~ignore_parsing_errors
-      ~includes
-      ~block_dim:None ~grid_dim:None
-      ~params
-      ~macros
-      ~cu_to_json
-      ~all_dims:true
-      ~ignore_asserts
-      ~assume_delin:false
-      ~rewrite_delin:true
-      ~delin_elide:true
-      ~delin_algo:App.Delin_algo.Ics15_opt
-      ~delin_check_vacuosity:false
-      ~delin_weak_in_range:false
-      ~assumes:extra_assumes
-      ~assume_dims:false
-      ~assume_launch:true
-      ~check_pre_sat:false
-      ~memory_model:Memory_model.default
-      ~cbor:true
-      ~stop_at:None
-      ~subgroup_size:None
-      ~launch_contract:None
+    App.parse ~filename ~timeout ~show_proofs:false ~show_proto:false
+      ~show_wf:false ~show_align:false ~show_delin:false ~show_phase_split:false
+      ~show_loc_split:false ~show_flat_acc:false ~show_symbexp:false ~logic
+      ~solve_tactic ~ge_index:[] ~le_index:[] ~eq_index:[] ~only_array:None
+      ~only_kernel ~only_true_data_races:false ~thread_idx_1:None
+      ~thread_idx_2:None ~block_idx_1:None ~block_idx_2:None ~archs
+      ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
+      ~block_dim:None ~grid_dim:None ~params ~macros ~cu_to_json ~all_dims:true
+      ~ignore_asserts ~assume_delin:false ~rewrite_delin:true ~delin_elide:true
+      ~delin_algo:App.Delin_algo.Ics15_opt ~delin_check_vacuosity:false
+      ~delin_weak_in_range:false ~assumes:extra_assumes ~assume_dims:false
+      ~assume_launch:true ~check_pre_sat:false
+      ~memory_model:Memory_model.default ~cbor:true ~stop_at:None
+      ~subgroup_size:None ~launch_contract:None ~rules_file:None
   in
   try
-  if list_kernels then begin
-    ordinary_kernels app
-    |> List.iter (fun k ->
-      if show_signature
-      then print_endline (Protocols.Kernel.signature_string k)
-      else print_endline (Protocols.Kernel.name k));
-    Ok ()
-  end else
-    let app, usage_pins =
-      (* Compute use-derived dim pins only for kernels [App.only_kernel]
+    if list_kernels then begin
+      ordinary_kernels app
+      |> List.iter (fun k ->
+          if show_signature then
+            print_endline (Protocols.Kernel.signature_string k)
+          else print_endline (Protocols.Kernel.name k));
+      Ok ()
+    end
+    else
+      let app, usage_pins =
+        (* Compute use-derived dim pins only for kernels [App.only_kernel]
          would analyse. Each [usage_constrained_kernel] call issues 6
          Z3 SAT queries (one per dim axis); on heavily-templated
          launch sites (e.g. 11 wrappers from a [switch] over
@@ -1394,32 +1404,32 @@ let main =
          output appears. Skipped kernels keep their unpinned [k.pre]
          and contribute an empty pin list, preserving the [(name, [])]
          entry shape that [report_json]'s [assumes] consumer expects. *)
-      let selected_names =
-        ordinary_kernels app
-        |> List.map Protocols.Kernel.name
+        let selected_names =
+          ordinary_kernels app |> List.map Protocols.Kernel.name
+        in
+        let all_kernels = List.map ordinary_kernel_exn app.kernels in
+        let kernels_with_pins =
+          List.map
+            (fun k ->
+              if List.mem (Protocols.Kernel.name k) selected_names then
+                usage_constrained_kernel ~gate_timeout_ms ~params:app.params k
+              else (k, []))
+            all_kernels
+        in
+        let kernels = List.map fst kernels_with_pins in
+        let pins =
+          List.map
+            (fun (k, ps) -> (Protocols.Kernel.name k, ps))
+            kernels_with_pins
+        in
+        ({ app with kernels = wrap_ordinary_kernels kernels }, pins)
       in
-      let all_kernels = List.map ordinary_kernel_exn app.kernels in
-      let kernels_with_pins =
-        List.map (fun k ->
-          if List.mem (Protocols.Kernel.name k) selected_names then
-            usage_constrained_kernel ~gate_timeout_ms ~params:app.params k
-          else
-            (k, []))
-          all_kernels
+      let v =
+        compute_verdict ~use_core_shrink ~iter_cap ~cached_gate ~legacy_gate
+          ~prune_timeout_ms ~usage_pins app
       in
-      let kernels = List.map fst kernels_with_pins in
-      let pins =
-        List.map (fun (k, ps) -> (Protocols.Kernel.name k, ps))
-          kernels_with_pins
-      in
-      { app with kernels = wrap_ordinary_kernels kernels }, pins
-    in
-    let v =
-      compute_verdict ~use_core_shrink ~iter_cap ~cached_gate ~legacy_gate
-        ~prune_timeout_ms ~usage_pins app
-    in
-    if output_json then report_json app v else report_prose v;
-    Ok ()
+      if output_json then report_json app v else report_prose v;
+      Ok ()
   with App.Kernel_not_found name ->
     Error (Printf.sprintf "kernel '%s' not found!" name)
 

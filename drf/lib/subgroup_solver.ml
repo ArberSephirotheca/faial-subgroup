@@ -1,7 +1,6 @@
 open Stage0
 open Protocols
 module Memory = Memory_event.Subgroup_obligation
-module SM = Inference.Subgroup_matrix
 module Uniformity = Subgroup_uniformity
 module Solver = Z3.Solver
 
@@ -59,8 +58,10 @@ type obligation_evidence = {
   array_name : string;
   goal : Exp.bexp;
   left_origin : Memory.access_origin;
+  left_source_site : string option;
   left_subgroup_phase : Memory.Subgroup_phase_key.t;
   right_origin : Memory.access_origin;
+  right_source_site : string option;
   right_subgroup_phase : Memory.Subgroup_phase_key.t;
   classification : classification;
 }
@@ -79,8 +80,17 @@ type unsupported_boundary = {
   reason : string;
 }
 
+type loop_protocol_report = {
+  kernel_name : string;
+  config : solver_config;
+  z3_version : string;
+  classifications : classification list;
+  evidence : string list;
+}
+
 type memory_outcome =
   | Memory_report of report
+  | Memory_loop_protocol of loop_protocol_report
   | Memory_unsupported of unsupported_boundary
 
 type memory_verdict =
@@ -201,8 +211,10 @@ let evidence_of_obligation ?(classification = None) ?(config = default_config)
     array_name = obligation.array_name;
     goal = obligation.goal;
     left_origin = obligation.left.origin;
+    left_source_site = obligation.left.source_site;
     left_subgroup_phase = obligation.left.subgroup_phase;
     right_origin = obligation.right.origin;
+    right_source_site = obligation.right.source_site;
     right_subgroup_phase = obligation.right.subgroup_phase;
     classification;
   }
@@ -702,328 +714,6 @@ let hierarchical_subgroup_row_lane_vector_goal_matches ~(block_dim : Dim3.t)
             right_descriptors)
         left_descriptors)
 
-type wmma_tile_index_shape = {
-  tile_index : Variable.t;
-  tile_row : Variable.t;
-  head_dim : Exp.nexp;
-  head_block : Variable.t;
-  elem : Variable.t;
-}
-
-let wmma_tile_index_alias_shapes (terms : Exp.bexp list)
-    ~(tile_index : Variable.t) : wmma_tile_index_shape list =
-  equalities_for_var terms tile_index
-  |> List.map (fun alias ->
-      let terms = add_terms alias in
-      terms
-      |> List.mapi (fun index term ->
-          match mult_terms term with
-          | [ Exp.Var row; head_dim ] | [ head_dim; Exp.Var row ] -> (
-              let rest =
-                terms
-                |> List.filteri (fun other_index _ -> other_index <> index)
-              in
-              match rest with
-              | [ Exp.Var first; Exp.Var second ] ->
-                  [
-                    {
-                      tile_index;
-                      tile_row = row;
-                      head_dim;
-                      head_block = first;
-                      elem = second;
-                    };
-                    {
-                      tile_index;
-                      tile_row = row;
-                      head_dim;
-                      head_block = second;
-                      elem = first;
-                    };
-                  ]
-              | _ -> [])
-          | _ -> [])
-      |> List.concat)
-  |> List.concat
-
-let equality_var_to_binary (terms : Exp.bexp list) ~(var : Variable.t)
-    ~(op : N_binary.t) : (Exp.nexp * Exp.nexp) list =
-  equalities_for_var terms var
-  |> List.filter_map (function
-    | Exp.Binary (candidate_op, lhs, rhs) when candidate_op = op ->
-        Some (lhs, rhs)
-    | _ -> None)
-
-let expr_proven_positive_constant (terms : Exp.bexp list) (expr : Exp.nexp) :
-    int option =
-  match expr_proven_constant terms expr with
-  | Some value when value > 0 -> Some value
-  | _ -> None
-
-let lane_owner_for_index (terms : Exp.bexp list) ~(task : Task.t)
-    ~(index : Variable.t) : (Variable.t * Exp.nexp) list =
-  terms
-  |> List.filter_map (function
-    | Exp.NRel (N_rel.Eq, lhs, rhs) when expr_is_zero lhs || expr_is_zero rhs
-      -> (
-        let mod_expr = if expr_is_zero lhs then rhs else lhs in
-        match mod_expr with
-        | Exp.Binary
-            ( N_binary.Mod _,
-              Exp.Binary (N_binary.Minus _, Exp.Var owned, Exp.Var lane),
-              subgroup )
-          when Variable.equal owned index ->
-            let lane_expr = Exp.Var lane in
-            let has_lane_id =
-              List.exists
-                (function
-                  | Exp.NRel
-                      ( N_rel.Eq,
-                        Exp.Var lhs,
-                        Exp.Binary
-                          (N_binary.Mod _, thread_candidate, subgroup_candidate)
-                      )
-                  | Exp.NRel
-                      ( N_rel.Eq,
-                        Exp.Binary
-                          (N_binary.Mod _, thread_candidate, subgroup_candidate),
-                        Exp.Var lhs )
-                    when Variable.equal lhs lane ->
-                      nexp_equiv subgroup_candidate subgroup
-                      && expression_is_thread_x_or_alias terms ~task
-                           thread_candidate
-                  | _ -> false)
-                terms
-            in
-            if
-              has_lane_id
-              && term_has_relation terms ~op:(N_rel.Le Signedness.Signed)
-                   ~lhs:lane_expr ~rhs:(Exp.Var index)
-            then Some (lane, subgroup)
-            else None
-        | _ -> None)
-    | _ -> None)
-
-let warp_owner_for_thread (terms : Exp.bexp list) ~(task : Task.t)
-    ~(warp : Variable.t) ~(subgroup : Exp.nexp) : bool =
-  List.exists
-    (function
-      | Exp.NRel
-          ( N_rel.Eq,
-            Exp.Var lhs,
-            Exp.Binary (N_binary.Div _, thread_candidate, subgroup_candidate) )
-      | Exp.NRel
-          ( N_rel.Eq,
-            Exp.Binary (N_binary.Div _, thread_candidate, subgroup_candidate),
-            Exp.Var lhs )
-        when Variable.equal lhs warp ->
-          nexp_equiv subgroup_candidate subgroup
-          && expression_is_thread_x_or_alias terms ~task thread_candidate
-      | _ -> false)
-    terms
-
-let head_block_owner_matches (terms : Exp.bexp list) ~(task : Task.t)
-    ~(head_block : Variable.t) ~(head_dim : Exp.nexp) ~(tile_cols_value : int)
-    ~(head_step_value : int) ~(subgroup : Exp.nexp) : bool =
-  terms
-  |> List.exists (function
-    | Exp.NRel (N_rel.Eq, lhs, rhs) when expr_is_zero lhs || expr_is_zero rhs
-      -> (
-        let mod_expr = if expr_is_zero lhs then rhs else lhs in
-        match mod_expr with
-        | Exp.Binary
-            ( N_binary.Mod _,
-              Exp.Binary (N_binary.Minus _, Exp.Var block, warp_base),
-              step )
-          when Variable.equal block head_block -> (
-            match match_var_times_int warp_base with
-            | Some (warp, tile_cols_factor)
-              when Int.equal tile_cols_factor tile_cols_value
-                   && expr_proven_as ~value:head_step_value terms step
-                   && warp_owner_for_thread terms ~task ~warp ~subgroup ->
-                term_has_relation terms ~op:(N_rel.Le Signedness.Signed)
-                  ~lhs:warp_base ~rhs:(Exp.Var head_block)
-                && term_has_relation terms ~op:(N_rel.Lt Signedness.Signed)
-                     ~lhs:(Exp.Var head_block) ~rhs:head_dim
-            | _ -> false)
-        | _ -> false)
-    | _ -> false)
-
-type wmma_tile_descriptor = {
-  tile_shape : wmma_tile_index_shape;
-  elem_idx : Variable.t;
-  lane : Variable.t;
-  subgroup : Exp.nexp;
-  tile_cols : Exp.nexp;
-  tile_rows : int;
-  tile_cols_value : int;
-  head_dim_value : int;
-  head_step_value : int;
-}
-
-type wmma_rule_config = { subgroup_size : int; num_subgroups : int }
-
-let wmma_tile_rows_from_elem_bound (terms : Exp.bexp list)
-    ~(elem_idx : Variable.t) ~(tile_cols_value : int) : int option =
-  terms
-  |> List.find_map (function
-    | Exp.NRel (N_rel.Lt _, lhs, rhs) when nexp_equiv lhs (Exp.Var elem_idx)
-      -> (
-        match expr_proven_positive_constant terms rhs with
-        | Some limit when limit mod tile_cols_value = 0 ->
-            Some (limit / tile_cols_value)
-        | _ -> None)
-    | _ -> None)
-
-let wmma_rule_config_from_target ?target_config ~(block_dim : Dim3.t) () :
-    wmma_rule_config option =
-  match target_config with
-  | Some target_config -> (
-      match SM.Target_config.cuda_x_contiguous_subgroup_size target_config with
-      | Some subgroup_size ->
-          let subgroup_size =
-            SM.Target_config.subgroup_size_value subgroup_size
-          in
-          if
-            subgroup_size > 0 && block_dim.x > 0 && Int.equal block_dim.y 1
-            && Int.equal block_dim.z 1
-            && block_dim.x mod subgroup_size = 0
-          then
-            Some { subgroup_size; num_subgroups = block_dim.x / subgroup_size }
-          else None
-      | None -> None)
-  | None -> None
-
-let wmma_tile_descriptors (terms : Exp.bexp list) ~(task : Task.t)
-    ~(rule_config : wmma_rule_config) (index : Exp.nexp) :
-    wmma_tile_descriptor list =
-  match index with
-  | Exp.Var tile_index ->
-      wmma_tile_index_alias_shapes terms ~tile_index
-      |> List.map (fun tile_shape ->
-          equality_var_to_binary terms ~var:tile_shape.elem
-            ~op:(N_binary.Mod Signedness.Signed)
-          |> List.map (fun (elem_idx, tile_cols) ->
-              match elem_idx with
-              | Exp.Var elem_idx -> (
-                  let has_row_decomposition =
-                    List.exists
-                      (fun (row_elem_idx, row_tile_cols) ->
-                        nexp_equiv row_elem_idx (Exp.Var elem_idx)
-                        && nexp_equiv row_tile_cols tile_cols)
-                      (equality_var_to_binary terms ~var:tile_shape.tile_row
-                         ~op:(N_binary.Div Signedness.Signed))
-                  in
-                  if not has_row_decomposition then []
-                  else
-                    match
-                      ( expr_proven_positive_constant terms tile_cols,
-                        expr_proven_positive_constant terms tile_shape.head_dim
-                      )
-                    with
-                    | Some tile_cols_value, Some head_dim_value ->
-                        let head_step_value =
-                          rule_config.num_subgroups * tile_cols_value
-                        in
-                        if
-                          head_step_value <= 0
-                          || head_dim_value < head_step_value
-                          || head_dim_value mod head_step_value <> 0
-                        then []
-                        else
-                          let tile_rows =
-                            wmma_tile_rows_from_elem_bound terms ~elem_idx
-                              ~tile_cols_value
-                          in
-                          lane_owner_for_index terms ~task ~index:elem_idx
-                          |> List.filter_map (fun (lane, subgroup) ->
-                              match tile_rows with
-                              | None -> None
-                              | Some tile_rows
-                                when tile_rows > 0
-                                     && expr_proven_as
-                                          ~value:rule_config.subgroup_size terms
-                                          subgroup
-                                     && head_block_owner_matches terms ~task
-                                          ~head_block:tile_shape.head_block
-                                          ~head_dim:tile_shape.head_dim
-                                          ~tile_cols_value ~head_step_value
-                                          ~subgroup ->
-                                  Some
-                                    {
-                                      tile_shape;
-                                      elem_idx;
-                                      lane;
-                                      subgroup;
-                                      tile_cols;
-                                      tile_rows;
-                                      tile_cols_value;
-                                      head_dim_value;
-                                      head_step_value;
-                                    }
-                              | Some _ -> None)
-                    | _ -> [])
-              | _ -> [])
-          |> List.concat)
-      |> List.concat
-  | _ -> []
-
-let wmma_tile_descriptor_roles_share_base (left : wmma_tile_descriptor)
-    (right : wmma_tile_descriptor) : bool =
-  let shares =
-    projected_variable_shares_base ~left_task:Task.Task1 ~right_task:Task.Task2
-  in
-  shares left.tile_shape.tile_index right.tile_shape.tile_index
-  && shares left.tile_shape.tile_row right.tile_shape.tile_row
-  && shares left.tile_shape.head_block right.tile_shape.head_block
-  && shares left.tile_shape.elem right.tile_shape.elem
-  && shares left.elem_idx right.elem_idx
-  && shares left.lane right.lane
-
-let wmma_tile_row_lane_ownership_matches ?(globals = Variable.Set.empty)
-    ?target_config ~(block_dim : Dim3.t) (obligation : Memory.obligation) : bool
-    =
-  match
-    ( wmma_rule_config_from_target ?target_config ~block_dim (),
-      obligation.left.access.index,
-      obligation.right.access.index )
-  with
-  | Some rule_config, [ left_index ], [ right_index ] ->
-      let globals = projection_globals globals in
-      let left_index = Memory.project_nexp globals Task.Task1 left_index in
-      let right_index = Memory.project_nexp globals Task.Task2 right_index in
-      let left_terms =
-        Memory.project_bexp globals Task.Task1 obligation.left.condition
-        |> normalized_condition_terms_with_constants
-      in
-      let right_terms =
-        Memory.project_bexp globals Task.Task2 obligation.right.condition
-        |> normalized_condition_terms_with_constants
-      in
-      let left_descriptors =
-        wmma_tile_descriptors left_terms ~task:Task.Task1 ~rule_config
-          left_index
-      in
-      let right_descriptors =
-        wmma_tile_descriptors right_terms ~task:Task.Task2 ~rule_config
-          right_index
-      in
-      List.exists
-        (fun left ->
-          List.exists
-            (fun right ->
-              wmma_tile_descriptor_roles_share_base left right
-              && nexp_equiv left.tile_shape.head_dim right.tile_shape.head_dim
-              && nexp_equiv left.subgroup right.subgroup
-              && nexp_equiv left.tile_cols right.tile_cols
-              && Int.equal left.tile_rows right.tile_rows
-              && Int.equal left.tile_cols_value right.tile_cols_value
-              && Int.equal left.head_dim_value right.head_dim_value
-              && Int.equal left.head_step_value right.head_step_value)
-            right_descriptors)
-        left_descriptors
-  | _ -> false
-
 let numeric_relation_is_negation (left : N_rel.t) (right : N_rel.t) : bool =
   match (left, right) with
   | Eq, Neq | Neq, Eq | Lt _, Ge _ | Ge _, Lt _ | Gt _, Le _ | Le _, Gt _ ->
@@ -1130,7 +820,7 @@ let checked_block_dim_for_pre_solver ?block_dim (obligation : Memory.obligation)
   | Some block_dim -> Some block_dim
   | None -> concrete_block_dim_from_goal obligation.goal
 
-let pre_solver_classification ?globals ?block_dim ?target_config
+let pre_solver_classification ?globals ?block_dim
     (obligation : Memory.obligation) : classification option =
   if contradictory_path_conditions_match ?globals obligation then
     Some (Pre_solver_unsat "contradictory path-condition filter")
@@ -1147,44 +837,34 @@ let pre_solver_classification ?globals ?block_dim ?target_config
                 obligation ->
         Some
           (Pre_solver_unsat "hierarchical subgroup row/lane-vector ownership")
-    | Some block_dim
-      when wmma_tile_row_lane_ownership_matches ?globals ?target_config
-             ~block_dim obligation ->
-        Some (Pre_solver_unsat "WMMA tile row/lane ownership")
     | _ -> None
 
-let evidence_with_pre_solver ?globals ?block_dim ?target_config
-    ~(config : solver_config) (obligation : Memory.obligation) :
-    obligation_evidence =
-  match
-    pre_solver_classification ?globals ?block_dim ?target_config obligation
-  with
+let evidence_with_pre_solver ?globals ?block_dim ~(config : solver_config)
+    (obligation : Memory.obligation) : obligation_evidence =
+  match pre_solver_classification ?globals ?block_dim obligation with
   | Some classification ->
       evidence_of_obligation ~classification:(Some classification) obligation
   | None -> evidence_of_obligation ~config obligation
 
 let solve_obligations ?(config = default_config) ?globals ?block_dim
-    ?target_config ~kernel_name (obligations : Memory.obligation list) : report
-    =
+    ~kernel_name (obligations : Memory.obligation list) : report =
   {
     kernel_name;
     config;
     z3_version = Z3.Version.to_string;
     obligations =
       List.map
-        (evidence_with_pre_solver ?globals ?block_dim ?target_config ~config)
+        (evidence_with_pre_solver ?globals ?block_dim ~config)
         obligations;
   }
 
 let solve_obligation_result ?(config = default_config) ?globals ?block_dim
-    ?target_config ~kernel_name
-    (obligations : (Memory.obligation list, Memory.error) result) :
+    ~kernel_name (obligations : (Memory.obligation list, Memory.error) result) :
     memory_outcome =
   match obligations with
   | Ok obligations ->
       Memory_report
-        (solve_obligations ~config ?globals ?block_dim ?target_config
-           ~kernel_name obligations)
+        (solve_obligations ~config ?globals ?block_dim ~kernel_name obligations)
   | Error error ->
       Memory_unsupported
         {
@@ -1194,10 +874,8 @@ let solve_obligation_result ?(config = default_config) ?globals ?block_dim
           reason = Memory.error_to_string error;
         }
 
-let memory_verdict_of_report (report : report) : memory_verdict =
-  let classifications =
-    List.map (fun evidence -> evidence.classification) report.obligations
-  in
+let memory_verdict_of_classifications (classifications : classification list) :
+    memory_verdict =
   if
     List.exists
       (function Solver_sat_racy -> true | _ -> false)
@@ -1218,9 +896,40 @@ let memory_verdict_of_report (report : report) : memory_verdict =
   then Memory_unknown
   else Memory_drf
 
+let memory_verdict_of_report (report : report) : memory_verdict =
+  report.obligations
+  |> List.map (fun evidence -> evidence.classification)
+  |> memory_verdict_of_classifications
+
 let memory_verdict : memory_outcome -> memory_verdict = function
   | Memory_report report -> memory_verdict_of_report report
+  | Memory_loop_protocol report ->
+      memory_verdict_of_classifications report.classifications
   | Memory_unsupported _ -> Memory_unsupported
+
+let loop_protocol_outcome ?(config = default_config) ~(kernel_name : string)
+    ~(classifications : classification list) ~(evidence : string list) :
+    unit -> memory_outcome =
+ fun () ->
+  Memory_loop_protocol
+    {
+      kernel_name;
+      config;
+      z3_version = Z3.Version.to_string;
+      classifications;
+      evidence;
+    }
+
+let is_repeated_site_boundary : memory_outcome -> bool = function
+  | Memory_unsupported boundary ->
+      Common.contains ~substring:"a memory-ordering barrier" boundary.reason
+      && Common.contains ~substring:"dynamic invocation matching"
+           boundary.reason
+  | Memory_report _ | Memory_loop_protocol _ -> false
+
+let resolve_repeated_site_with_loop_protocol ~(protocol : memory_outcome)
+    (primary : memory_outcome) : memory_outcome =
+  if is_repeated_site_boundary primary then protocol else primary
 
 module Counts = struct
   type t = {
@@ -1279,31 +988,41 @@ module Counts = struct
 end
 
 let obligation_evidence_to_string (evidence : obligation_evidence) : string =
+  let source_site = Option.value ~default:"unknown" in
   Printf.sprintf
-    "obligation#%d phase=%d array=%s left=%s/%s right=%s/%s %s goal=%s"
+    "obligation#%d phase=%d array=%s left=%s/%s left_site=%s right=%s/%s \
+     right_site=%s %s goal=%s"
     evidence.obligation_id evidence.phase_id evidence.array_name
     (Memory.access_origin_to_string evidence.left_origin)
     (Memory.Subgroup_phase_key.to_string evidence.left_subgroup_phase)
+    (source_site evidence.left_source_site)
     (Memory.access_origin_to_string evidence.right_origin)
     (Memory.Subgroup_phase_key.to_string evidence.right_subgroup_phase)
+    (source_site evidence.right_source_site)
     (classification_to_string evidence.classification)
     (Exp.b_to_string evidence.goal)
 
 let memory_outcome_kernel_name : memory_outcome -> string = function
   | Memory_report report -> report.kernel_name
+  | Memory_loop_protocol report -> report.kernel_name
   | Memory_unsupported boundary -> boundary.kernel_name
 
 let memory_outcome_config : memory_outcome -> solver_config = function
   | Memory_report report -> report.config
+  | Memory_loop_protocol report -> report.config
   | Memory_unsupported boundary -> boundary.config
 
 let memory_counts : memory_outcome -> Counts.t = function
   | Memory_report report -> Counts.of_report report
+  | Memory_loop_protocol report ->
+      List.fold_left Counts.add_classification Counts.empty
+        report.classifications
   | Memory_unsupported _ -> Counts.unsupported_boundary
 
 let memory_evidence_lines : memory_outcome -> string list = function
   | Memory_report report ->
       List.map obligation_evidence_to_string report.obligations
+  | Memory_loop_protocol report -> report.evidence
   | Memory_unsupported boundary ->
       [ "unsupported(reason=" ^ normalize_reason boundary.reason ^ ")" ]
 

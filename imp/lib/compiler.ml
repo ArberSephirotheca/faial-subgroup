@@ -4,7 +4,8 @@ module Params = Protocols.Params
 module Exp = Protocols.Exp
 open Exp
 
-let compile (k : Scoped.Kernel.t) : Protocols.Kernel.t =
+let compile ?(rules = Idiom_rewrite.all) (k : Scoped.Kernel.t) :
+    Protocols.Kernel.t =
   (* Merge globally-defined arrays and arrays defined in parameters. *)
   let arrays =
     k.global_arrays
@@ -13,14 +14,14 @@ let compile (k : Scoped.Kernel.t) : Protocols.Kernel.t =
   let array_set = arrays |> Variable.MapSetUtil.map_to_set in
   let p =
     k.code
-    |> Scoped.Code.filter_locs array_set
-       (* Remove unknown arrays *)
+    |> Scoped.Code.filter_locs array_set (* Remove unknown arrays *)
     |> (fun c ->
-         let read_only = Variable.Set.diff array_set (Scoped.Code.rw_arrays c) in
-         Scoped.Code.bind_uniform_reads read_only c)
+    let read_only = Variable.Set.diff array_set (Scoped.Code.rw_arrays c) in
+    Scoped.Code.bind_uniform_reads read_only c)
     |> Scoped.Code.fix_assigns
     (* Inline local variable assignment and ensure variables are distinct*)
     |> Encode_assigns.from_scoped (ParameterList.to_set k.parameters)
+    |> Idiom_rewrite.rewrite rules
     |> Encode_asserts.from_encode_assigns
   in
   let p, locals, pre =
@@ -52,8 +53,8 @@ let compile (k : Scoped.Kernel.t) : Protocols.Kernel.t =
     grid_dim = k.grid_dim;
   }
 
-let compile_all ?(inline_calls = true) (l : Kernel.t list) :
-    Protocols.Kernel.t list =
+let compile_all ?(rules = Idiom_rewrite.all) ?(inline_calls = true)
+    (l : Kernel.t list) : Protocols.Kernel.t list =
   let l = List.map Scoped.Kernel.from_imp l in
   let l = if inline_calls then Inline_calls.inline_calls l else l in
-  List.map compile l
+  List.map (compile ~rules) l

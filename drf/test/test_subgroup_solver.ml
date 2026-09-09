@@ -46,8 +46,7 @@ let base_access ?(mode = `Write) ?(array = "tile") () : Access.t =
 
 let conditional_access : Memory.conditional_access =
   {
-    origin = Memory.Matrix_store;
-    collective_site = None;
+    origin = Memory.Ordinary_write;
     source_site = None;
     source_order = None;
     access = base_access ();
@@ -89,8 +88,7 @@ let strided_conditional_access ?index_name ?condition () :
     Option.value condition ~default:(strided_owner_condition ~index_name ())
   in
   {
-    origin = Memory.Matrix_store;
-    collective_site = None;
+    origin = Memory.Ordinary_write;
     source_site = None;
     source_order = None;
     access = strided_access ~index_name ();
@@ -105,8 +103,7 @@ let affine_strided_conditional_access ?index_name ?offset_name ?condition () :
     Option.value condition ~default:(strided_owner_condition ~index_name ())
   in
   {
-    origin = Memory.Matrix_store;
-    collective_site = None;
+    origin = Memory.Ordinary_write;
     source_site = None;
     source_order = None;
     access = affine_strided_access ~index_name ?offset_name ();
@@ -408,147 +405,6 @@ let lane_vector_obligation_without_row_stride () : Memory.obligation =
     array_name = "vector_buffer";
     left;
     right;
-    goal = Exp.Bool true;
-  }
-
-let wmma_tile_access ?(tile_index_name = "o_idx") () : Access.t =
-  Access.write (var "o_shmem") [ Exp.Var (var tile_index_name) ] None
-
-let wmma_tile_condition ?(tile_index_name = "o_idx")
-    ?(tile_row_name = "q_tile_row") ?(head_block_name = "head_dim_block")
-    ?(elem_name = "elem") ?(elem_idx_name = "elem_idx") ?(lane_name = "lane_id")
-    ?(warp_name = "warp_id") ?(head_dim = Exp.Num 64) ?(tile_cols = Exp.Num 16)
-    ?(tile_rows = Exp.Num 16) ?(subgroup_size = Exp.Num 32)
-    ?(head_step = Exp.Num 32) ?(include_elem_bound = true) () : Exp.bexp =
-  let tile_index = Exp.Var (var tile_index_name) in
-  let tile_row = Exp.Var (var tile_row_name) in
-  let head_block = Exp.Var (var head_block_name) in
-  let elem = Exp.Var (var elem_name) in
-  let elem_idx = Exp.Var (var elem_idx_name) in
-  let lane = Exp.Var (var lane_name) in
-  let warp = Exp.Var (var warp_name) in
-  let warp_base = Exp.n_mult warp tile_cols in
-  let elem_bound =
-    if include_elem_bound then
-      [ Exp.n_lt elem_idx (Exp.n_mult tile_rows tile_cols) ]
-    else []
-  in
-  Exp.b_and_ex
-    ([
-       Exp.n_eq tile_index
-         (Exp.n_plus
-            (Exp.n_plus (Exp.n_mult tile_row head_dim) head_block)
-            elem);
-       Exp.n_eq elem (Exp.n_mod elem_idx tile_cols);
-       Exp.n_eq tile_row (Exp.n_div elem_idx tile_cols);
-       Exp.n_eq lane (Exp.n_mod (Exp.Var Variable.tid_x) subgroup_size);
-       Exp.n_eq warp (Exp.n_div (Exp.Var Variable.tid_x) subgroup_size);
-       Exp.n_eq
-         (Exp.n_mod (Exp.n_minus elem_idx lane) subgroup_size)
-         (Exp.Num 0);
-       Exp.n_le lane elem_idx;
-       Exp.n_eq
-         (Exp.n_mod (Exp.n_minus head_block warp_base) head_step)
-         (Exp.Num 0);
-       Exp.n_le warp_base head_block;
-       Exp.n_lt head_block head_dim;
-     ]
-    @ elem_bound)
-
-let wmma_tile_obligation ?tile_index_name ?tile_row_name ?head_block_name
-    ?elem_name ?elem_idx_name ?lane_name ?warp_name ?head_dim ?tile_cols
-    ?tile_rows ?subgroup_size ?head_step ?include_elem_bound () :
-    Memory.obligation =
-  let condition =
-    wmma_tile_condition ?tile_index_name ?tile_row_name ?head_block_name
-      ?elem_name ?elem_idx_name ?lane_name ?warp_name ?head_dim ?tile_cols
-      ?tile_rows ?subgroup_size ?head_step ?include_elem_bound ()
-  in
-  let access = wmma_tile_access ?tile_index_name () in
-  let left =
-    {
-      conditional_access with
-      origin = Memory.Ordinary_write;
-      access;
-      condition;
-    }
-  in
-  let right =
-    { conditional_access with origin = Memory.Ordinary_read; access; condition }
-  in
-  {
-    id = 43;
-    phase_id = 7;
-    array_name = "o_shmem";
-    left;
-    right;
-    goal = Exp.Bool true;
-  }
-
-let wmma_tile_obligation_with_locations () : Memory.obligation =
-  let access_var = located_var ~line:30 in
-  let guard_var = located_var ~line:40 in
-  let tile_index = Exp.Var (guard_var "o_idx") in
-  let tile_row = Exp.Var (guard_var "q_tile_row") in
-  let head_block = Exp.Var (guard_var "head_dim_block") in
-  let elem = Exp.Var (guard_var "elem") in
-  let elem_idx = Exp.Var (guard_var "elem_idx") in
-  let lane = Exp.Var (guard_var "lane_id") in
-  let warp = Exp.Var (guard_var "warp_id") in
-  let tile_cols = Exp.Var (guard_var "WMMA_N") in
-  let subgroup_size = Exp.Var (guard_var "WARP_SIZE") in
-  let head_dim = Exp.Var (guard_var "HEAD_DIM_V") in
-  let condition =
-    Exp.b_and_ex
-      [
-        Exp.n_eq head_dim (Exp.Num 64);
-        Exp.n_eq (Exp.Var (guard_var "WMMA_M")) (Exp.Num 16);
-        Exp.n_eq tile_cols (Exp.Num 16);
-        Exp.n_eq subgroup_size (Exp.Num 32);
-        Exp.n_eq (Exp.Var (guard_var "WG_SIZE")) (Exp.Num 64);
-        Exp.n_eq tile_index
-          (Exp.n_plus
-             (Exp.n_plus (Exp.n_mult tile_row head_dim) head_block)
-             elem);
-        Exp.n_eq elem (Exp.n_mod elem_idx tile_cols);
-        Exp.n_eq tile_row (Exp.n_div elem_idx tile_cols);
-        Exp.n_eq lane (Exp.n_mod (Exp.Var Variable.tid_x) subgroup_size);
-        Exp.n_eq warp (Exp.n_div (Exp.Var Variable.tid_x) subgroup_size);
-        Exp.n_eq
-          (Exp.n_mod (Exp.n_minus elem_idx lane) subgroup_size)
-          (Exp.Num 0);
-        Exp.n_le lane elem_idx;
-        Exp.n_lt elem_idx (Exp.n_mult (Exp.Var (guard_var "WMMA_M")) tile_cols);
-        Exp.n_eq
-          (Exp.n_mod
-             (Exp.n_minus head_block (Exp.n_mult warp tile_cols))
-             (Exp.Num 32))
-          (Exp.Num 0);
-        Exp.n_le (Exp.n_mult warp tile_cols) head_block;
-        Exp.n_lt head_block head_dim;
-      ]
-  in
-  let access =
-    Access.write (var "o_shmem") [ Exp.Var (access_var "o_idx") ] None
-  in
-  {
-    id = 45;
-    phase_id = 7;
-    array_name = "o_shmem";
-    left =
-      {
-        conditional_access with
-        origin = Memory.Ordinary_read;
-        access;
-        condition;
-      };
-    right =
-      {
-        conditional_access with
-        origin = Memory.Ordinary_write;
-        access;
-        condition;
-      };
     goal = Exp.Bool true;
   }
 
@@ -931,8 +787,7 @@ let test_symbolic_k_goal_requires_executable_upper_guard () : unit =
 
 let test_unsupported_memory_boundary_is_not_solver_unknown () : unit =
   let outcome =
-    kernel ~name:"missing_block_dim" [ matrix_store 10 ]
-    |> Memory.obligations
+    Error Memory.Missing_block_dim_for_subgroup_ordering
     |> Solver.solve_obligation_result ~kernel_name:"missing_block_dim"
   in
   Alcotest.(check string)
@@ -946,10 +801,91 @@ let test_unsupported_memory_boundary_is_not_solver_unknown () : unit =
     "summary does not call unsupported unknown" false
     (Stage0.Common.contains ~substring:"mem_drf: unknown" summary)
 
+let unsupported_outcome ~(reason : string) : Solver.memory_outcome =
+  Solver.Memory_unsupported
+    {
+      kernel_name = "repeated_sync";
+      config = Solver.default_config;
+      z3_version = Z3.Version.to_string;
+      reason;
+    }
+
+let test_loop_protocol_replaces_only_repeated_site_boundary () : unit =
+  let protocol =
+    Solver.loop_protocol_outcome ~kernel_name:"repeated_sync"
+      ~classifications:[ Solver.Solver_unsat_drf ]
+      ~evidence:[ "loop-aware protocol proof" ]
+      ()
+  in
+  let repeated =
+    unsupported_outcome
+      ~reason:
+        "kernel contains a memory-ordering barrier at repeating site; dynamic \
+         invocation matching is not yet supported"
+  in
+  let resolved =
+    Solver.resolve_repeated_site_with_loop_protocol ~protocol repeated
+  in
+  Alcotest.(check string)
+    "loop protocol supplies repeated-site verdict" "drf"
+    (Solver.memory_verdict_to_string (Solver.memory_verdict resolved));
+  let evidence = Solver.memory_evidence_lines resolved |> String.concat "\n" in
+  Alcotest.(check bool)
+    "loop protocol evidence is retained" true
+    (Stage0.Common.contains ~substring:"loop-aware protocol proof" evidence);
+  let missing_dims =
+    unsupported_outcome
+      ~reason:"missing checked block dimensions for subgroup memory ordering"
+  in
+  let unresolved =
+    Solver.resolve_repeated_site_with_loop_protocol ~protocol missing_dims
+  in
+  Alcotest.(check string)
+    "unrelated unsupported boundary is retained" "unsupported"
+    (Solver.memory_verdict_to_string (Solver.memory_verdict unresolved))
+
+let test_loop_protocol_preserves_racy_verdict () : unit =
+  let protocol =
+    Solver.loop_protocol_outcome ~kernel_name:"repeated_sync"
+      ~classifications:[ Solver.Solver_sat_racy ]
+      ~evidence:[ "loop-aware protocol race" ]
+      ()
+  in
+  let repeated =
+    unsupported_outcome
+      ~reason:
+        "kernel contains a memory-ordering barrier at repeating site; dynamic \
+         invocation matching is not yet supported"
+  in
+  let resolved =
+    Solver.resolve_repeated_site_with_loop_protocol ~protocol repeated
+  in
+  Alcotest.(check string)
+    "loop protocol retains potential race" "not_drf"
+    (Solver.memory_verdict_to_string (Solver.memory_verdict resolved))
+
 let test_symbolic_obligation_evidence_is_deterministic () : unit =
+  let left =
+    {
+      conditional_access with
+      source_site = Some "ordinary#1[write]@fixture.cu:10:3";
+    }
+  in
+  let right =
+    {
+      conditional_access with
+      source_site = Some "ordinary#2[write]@fixture.cu:11:3";
+    }
+  in
   let report =
     Solver.solve_obligations ~kernel_name:"fixture"
-      [ obligation ~id:7 ~goal:(Exp.n_eq (Exp.Num 1) (Exp.Num 1)) () ]
+      [
+        {
+          (obligation ~id:7 ~goal:(Exp.n_eq (Exp.Num 1) (Exp.Num 1)) ()) with
+          left;
+          right;
+        };
+      ]
   in
   let lines = Solver.summary_lines (Solver.Memory_report report) in
   Alcotest.(check bool)
@@ -968,6 +904,18 @@ let test_symbolic_obligation_evidence_is_deterministic () : unit =
     "obligation line includes symbolic goal" true
     (List.exists
        (Stage0.Common.contains ~substring:"obligation#7 phase=0 array=tile")
+       lines);
+  Alcotest.(check bool)
+    "obligation line includes left source site" true
+    (List.exists
+       (Stage0.Common.contains
+          ~substring:"left_site=ordinary#1[write]@fixture.cu:10:3")
+       lines);
+  Alcotest.(check bool)
+    "obligation line includes right source site" true
+    (List.exists
+       (Stage0.Common.contains
+          ~substring:"right_site=ordinary#2[write]@fixture.cu:11:3")
        lines)
 
 let test_pre_solver_unsat_is_reserved_but_not_a_rule () : unit =
@@ -1241,65 +1189,6 @@ let test_pre_solver_lane_vector_location_insensitive_names () : unit =
   |> expect_pre_solver_discharge
        ~reason:"hierarchical subgroup row/lane-vector ownership"
 
-let test_pre_solver_discharges_wmma_tile_owner () : unit =
-  let block_dim = Dim3.make ~x:64 () in
-  let target_config = subgroup_config () in
-  wmma_tile_obligation ()
-  |> Solver.pre_solver_classification ~block_dim ~target_config
-  |> expect_pre_solver_discharge ~reason:"WMMA tile row/lane ownership"
-
-let test_pre_solver_discharges_parameterized_wmma_tile_owner () : unit =
-  let block_dim = Dim3.make ~x:96 () in
-  let target_config = subgroup_config ~size:32 () in
-  wmma_tile_obligation ~head_dim:(Exp.Num 48) ~tile_rows:(Exp.Num 12)
-    ~tile_cols:(Exp.Num 8) ~subgroup_size:(Exp.Num 32) ~head_step:(Exp.Num 24)
-    ()
-  |> Solver.pre_solver_classification ~block_dim ~target_config
-  |> expect_pre_solver_discharge ~reason:"WMMA tile row/lane ownership"
-
-let test_pre_solver_rejects_wmma_missing_target_config () : unit =
-  let block_dim = Dim3.make ~x:64 () in
-  wmma_tile_obligation ()
-  |> Solver.pre_solver_classification ~block_dim
-  |> expect_pre_solver_none "WMMA missing target config"
-
-let test_pre_solver_rejects_wmma_nonmultiple_head_dimension () : unit =
-  let block_dim = Dim3.make ~x:64 () in
-  let target_config = subgroup_config () in
-  wmma_tile_obligation ~head_dim:(Exp.Num 48) ()
-  |> Solver.pre_solver_classification ~block_dim ~target_config
-  |> expect_pre_solver_none "WMMA changed head dimension"
-
-let test_pre_solver_rejects_wmma_multidimensional_block () : unit =
-  let block_dim = Dim3.make ~x:64 ~y:2 () in
-  let target_config = subgroup_config () in
-  wmma_tile_obligation ()
-  |> Solver.pre_solver_classification ~block_dim ~target_config
-  |> expect_pre_solver_none "WMMA multidimensional block"
-
-let test_pre_solver_rejects_wmma_missing_elem_bound () : unit =
-  let block_dim = Dim3.make ~x:64 () in
-  let target_config = subgroup_config () in
-  wmma_tile_obligation ~include_elem_bound:false ()
-  |> Solver.pre_solver_classification ~block_dim ~target_config
-  |> expect_pre_solver_none "WMMA missing elem_idx bound"
-
-let test_pre_solver_wmma_alpha_renaming () : unit =
-  let block_dim = Dim3.make ~x:64 () in
-  let target_config = subgroup_config () in
-  wmma_tile_obligation ~tile_index_name:"tile_i" ~tile_row_name:"tile_r"
-    ~head_block_name:"head_b" ~elem_name:"col_i" ~elem_idx_name:"owned_i"
-    ~lane_name:"ln" ~warp_name:"warp" ()
-  |> Solver.pre_solver_classification ~block_dim ~target_config
-  |> expect_pre_solver_discharge ~reason:"WMMA tile row/lane ownership"
-
-let test_pre_solver_wmma_location_insensitive_names () : unit =
-  let block_dim = Dim3.make ~x:64 () in
-  let target_config = subgroup_config () in
-  wmma_tile_obligation_with_locations ()
-  |> Solver.pre_solver_classification ~block_dim ~target_config
-  |> expect_pre_solver_discharge ~reason:"WMMA tile row/lane ownership"
-
 let test_uniformity_ub_remains_separate_from_memory_drf () : unit =
   let memory =
     Solver.solve_obligations ~kernel_name:"uniformity_ub"
@@ -1354,6 +1243,12 @@ let tests : unit Alcotest.test_case list =
     ( "unsupported memory boundary",
       `Quick,
       test_unsupported_memory_boundary_is_not_solver_unknown );
+    ( "loop protocol repeated-site boundary",
+      `Quick,
+      test_loop_protocol_replaces_only_repeated_site_boundary );
+    ( "loop protocol racy verdict",
+      `Quick,
+      test_loop_protocol_preserves_racy_verdict );
     ( "symbolic obligation evidence",
       `Quick,
       test_symbolic_obligation_evidence_is_deterministic );
@@ -1426,28 +1321,6 @@ let tests : unit Alcotest.test_case list =
     ( "lane-vector location-insensitive names",
       `Quick,
       test_pre_solver_lane_vector_location_insensitive_names );
-    ( "WMMA tile ownership discharge",
-      `Quick,
-      test_pre_solver_discharges_wmma_tile_owner );
-    ( "WMMA parameterized tile ownership discharge",
-      `Quick,
-      test_pre_solver_discharges_parameterized_wmma_tile_owner );
-    ( "WMMA missing target config no-match",
-      `Quick,
-      test_pre_solver_rejects_wmma_missing_target_config );
-    ( "WMMA nonmultiple head dimension no-match",
-      `Quick,
-      test_pre_solver_rejects_wmma_nonmultiple_head_dimension );
-    ( "WMMA multidimensional no-match",
-      `Quick,
-      test_pre_solver_rejects_wmma_multidimensional_block );
-    ( "WMMA missing elem bound no-match",
-      `Quick,
-      test_pre_solver_rejects_wmma_missing_elem_bound );
-    ("WMMA alpha-renamed discharge", `Quick, test_pre_solver_wmma_alpha_renaming);
-    ( "WMMA location-insensitive names",
-      `Quick,
-      test_pre_solver_wmma_location_insensitive_names );
     ( "uniformity UB component",
       `Quick,
       test_uniformity_ub_remains_separate_from_memory_drf );

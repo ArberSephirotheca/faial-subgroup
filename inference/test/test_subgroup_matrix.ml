@@ -146,6 +146,15 @@ let test_subgroup_statement_boundary_classification () : unit =
     "workgroup barrier is not a subgroup boundary" false
     (SM.Stmt.is_subgroup_boundary workgroup_stmt);
   Alcotest.(check bool)
+    "subgroup barrier orders memory" true
+    (SM.Stmt.orders_memory subgroup_stmt);
+  Alcotest.(check bool)
+    "workgroup barrier orders memory" true
+    (SM.Stmt.orders_memory workgroup_stmt);
+  Alcotest.(check bool)
+    "matrix collective does not order memory" false
+    (SM.Stmt.orders_memory matrix_stmt);
+  Alcotest.(check bool)
     "matrix collective exposes matrix memory effect" true
     (Option.is_some (SM.Stmt.matrix_memory_effect matrix_stmt))
 

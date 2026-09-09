@@ -21,10 +21,11 @@ module Make (L : Logger.Logger) = struct
     { options; kernels }
 
   let proto_of_imp ?(inline_calls = true) ?(only_globals = true)
-      (parsed : imp_kernel t) : proto_kernel t =
+      ?(rules = Imp.Idiom_rewrite.all) (parsed : imp_kernel t) : proto_kernel t
+      =
     let compiled =
       Phase_timer.measure "inference/imp-to-proto" (fun () ->
-          Imp.Compiler.compile_all ~inline_calls parsed.kernels)
+          Imp.Compiler.compile_all ~rules ~inline_calls parsed.kernels)
     in
     {
       parsed with
@@ -35,10 +36,10 @@ module Make (L : Logger.Logger) = struct
     }
 
   let d_program_to_proto ?(ignore_asserts = false) ?(inline_calls = true)
-      ?(only_globals = true) (options : Gv_parser.t)
-      (program : D_lang.Program.t) : proto_kernel t =
+      ?(only_globals = true) ?(rules = Imp.Idiom_rewrite.all)
+      (options : Gv_parser.t) (program : D_lang.Program.t) : proto_kernel t =
     imp_of_d_program ~ignore_asserts options program
-    |> proto_of_imp ~inline_calls ~only_globals
+    |> proto_of_imp ~inline_calls ~only_globals ~rules
 
   (* Shared JSON-to-Imp pipeline used by both [cu_to_imp] (live cu-to-json
      subprocess) and [cjson_to_imp] (cached cu-to-json output on disk). *)
@@ -55,16 +56,16 @@ module Make (L : Logger.Logger) = struct
           (match grid_dim with Some g -> g | None -> options.grid_dim);
       }
     in
-    match Phase_timer.measure "inference/c-lang" (fun () ->
-            C_lang.Program.parse j) with
+    match
+      Phase_timer.measure "inference/c-lang" (fun () -> C_lang.Program.parse j)
+    with
     | Ok k1 ->
         let synth =
-          if assume_launch then Synthesise_launches.rewrite_program
-          else Fun.id
+          if assume_launch then Synthesise_launches.rewrite_program else Fun.id
         in
         let d_ast =
           Phase_timer.measure "inference/d-lang" (fun () ->
-            k1 |> D_lang.rewrite_program |> synth)
+              k1 |> D_lang.rewrite_program |> synth)
         in
         imp_of_d_program ~ignore_asserts options d_ast
     | Error e ->
@@ -89,12 +90,12 @@ module Make (L : Logger.Logger) = struct
       match Gv_parser.parse fname with
       | Some gv ->
           Logger.Colors.info (fun () ->
-            "Found GPUVerify args in source file: " ^ Gv_parser.to_string gv);
+              "Found GPUVerify args in source file: " ^ Gv_parser.to_string gv);
           gv
       | None -> Gv_parser.make ()
     in
-    imp_of_json ~block_dim ~grid_dim ~ignore_asserts ~assume_launch
-      ~exit_status options j
+    imp_of_json ~block_dim ~grid_dim ~ignore_asserts ~assume_launch ~exit_status
+      options j
 
   (* Loads a cached cu-to-json output (.cjson). [Gv_parser] is intentionally
      skipped — the source file's // args: header isn't reachable from the
@@ -107,27 +108,29 @@ module Make (L : Logger.Logger) = struct
        the cu-to-json path so dataset sweeps can compare like-for-like. *)
     let raw =
       Phase_timer.measure "inference/cjson-load" (fun () ->
-        try In_channel.with_open_text fname In_channel.input_all
-        with Sys_error e -> prerr_endline ("cjson: " ^ e); exit exit_status)
+          try In_channel.with_open_text fname In_channel.input_all
+          with Sys_error e ->
+            prerr_endline ("cjson: " ^ e);
+            exit exit_status)
     in
     let j =
       Phase_timer.measure "inference/yojson-parse" (fun () ->
-        try Yojson.Basic.from_string raw
-        with Yojson.Json_error e ->
-          prerr_endline ("cjson: invalid JSON in " ^ fname ^ ": " ^ e);
-          exit exit_status)
+          try Yojson.Basic.from_string raw
+          with Yojson.Json_error e ->
+            prerr_endline ("cjson: invalid JSON in " ^ fname ^ ": " ^ e);
+            exit exit_status)
     in
-    imp_of_json ~block_dim ~grid_dim ~ignore_asserts ~assume_launch
-      ~exit_status (Gv_parser.make ()) j
+    imp_of_json ~block_dim ~grid_dim ~ignore_asserts ~assume_launch ~exit_status
+      (Gv_parser.make ()) j
 
   let wgsl_to_imp ?(block_dim = None) ?(grid_dim = None) ?(exit_status = 2)
       ?(wgsl_to_json = "wgsl-to-json") ?(ignore_asserts = false)
       (fname : string) : imp_kernel t =
     let j =
       Phase_timer.measure "inference/wgsl-to-json" (fun () ->
-        Wgsl_to_json.wgsl_to_json
-          ~on_error:(fun _ -> exit exit_status)
-          ~exe:wgsl_to_json fname)
+          Wgsl_to_json.wgsl_to_json
+            ~on_error:(fun _ -> exit exit_status)
+            ~exe:wgsl_to_json fname)
     in
     let options : Gv_parser.t = Gv_parser.make () in
     (* Override block_dim/grid_dim if they user provided *)
@@ -140,12 +143,13 @@ module Make (L : Logger.Logger) = struct
           (match grid_dim with Some g -> g | None -> options.grid_dim);
       }
     in
-    match Phase_timer.measure "inference/w-lang" (fun () ->
-            W_lang.Program.parse j) with
+    match
+      Phase_timer.measure "inference/w-lang" (fun () -> W_lang.Program.parse j)
+    with
     | Ok p ->
         let kernels =
           Phase_timer.measure "inference/w-to-imp" (fun () ->
-            W_to_imp.translate p)
+              W_to_imp.translate p)
         in
         let kernels =
           if ignore_asserts then
@@ -161,8 +165,7 @@ module Make (L : Logger.Logger) = struct
       ?(grid_dim = None) ?(includes = []) ?(macros = []) ?(exit_status = 2)
       ?(cu_to_json = "cu-to-json") ?(wgsl_to_json = "wgsl-to-json")
       ?(ignore_asserts = false) ?(assume_launch = false)
-      ?(launch_params = false) ?(cbor = false) (fname : string) :
-      imp_kernel t =
+      ?(launch_params = false) ?(cbor = false) (fname : string) : imp_kernel t =
     if String.ends_with ~suffix:".wgsl" fname then
       wgsl_to_imp ~block_dim ~grid_dim ~exit_status ~wgsl_to_json
         ~ignore_asserts fname
@@ -179,13 +182,13 @@ module Make (L : Logger.Logger) = struct
       ?(inline_calls = true) ?(only_globals = true) ?(macros = [])
       ?(cu_to_json = "cu-to-json") ?(ignore_asserts = false)
       ?(assume_launch = false) ?(launch_params = false) ?(cbor = false)
-      (fname : string) : proto_kernel t =
+      ?(rules = Imp.Idiom_rewrite.all) (fname : string) : proto_kernel t =
     let parsed =
       to_imp ~cu_to_json ~abort_on_parsing_failure ~block_dim ~grid_dim
         ~includes ~exit_status ~macros ~ignore_asserts ~assume_launch
         ~launch_params ~cbor fname
     in
-    proto_of_imp ~inline_calls ~only_globals parsed
+    proto_of_imp ~inline_calls ~only_globals ~rules parsed
 end
 
 module Default = Make (Logger.Colors)

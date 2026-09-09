@@ -10,22 +10,30 @@ module Subgroup_uniformity_solver = Drf.Subgroup_uniformity_solver
 module Subgroup_obligation = Drf.Memory_event.Subgroup_obligation
 module StringMap = Common.StringMap
 
+type subgroup_kernel = {
+  subgroup : Subgroup_source.subgroup_kernel;
+  loop_protocol : Protocols.Kernel.t;
+}
+
 type kernel =
   | Ordinary_kernel of Protocols.Kernel.t
-  | Subgroup_kernel of Subgroup_source.subgroup_kernel
+  | Subgroup_kernel of subgroup_kernel
 
 let kernel_name : kernel -> string = function
   | Ordinary_kernel kernel -> Protocols.Kernel.name kernel
-  | Subgroup_kernel kernel -> kernel.matrix_kernel.name
+  | Subgroup_kernel kernel -> kernel.subgroup.matrix_kernel.name
 
 let with_kernel_name (name : string) : kernel -> kernel = function
   | Ordinary_kernel kernel -> Ordinary_kernel { kernel with name }
   | Subgroup_kernel kernel ->
       let matrix_kernel =
-        SM.Kernel.make ~target_config:kernel.matrix_kernel.target_config ~name
-          kernel.matrix_kernel.body
+        SM.Kernel.make
+          ~target_config:kernel.subgroup.matrix_kernel.target_config ~name
+          kernel.subgroup.matrix_kernel.body
       in
-      Subgroup_kernel { kernel with matrix_kernel }
+      let subgroup = { kernel.subgroup with matrix_kernel } in
+      let loop_protocol = { kernel.loop_protocol with name } in
+      Subgroup_kernel { subgroup; loop_protocol }
 
 (* Kernel enumeration and [--kernel] selection must use one identifier space.
    Apply the same collision policy to ordinary and subgroup kernels in source
@@ -426,11 +434,11 @@ let subgroup_target_config (subgroup_size : int) : SM.Target_config.t =
       exit 2
 
 let compile_original_ordinary_program ~(inline_calls : bool)
-    ~(ignore_asserts : bool) (options : Gv_parser.t)
-    (program : D_lang.Program.t) : kernel StringMap.t =
+    ~(ignore_asserts : bool) ~(rules : Exp_match.rule list)
+    (options : Gv_parser.t) (program : D_lang.Program.t) : kernel StringMap.t =
   let parsed =
     Protocol_parser.Silent.d_program_to_proto ~inline_calls ~ignore_asserts
-      options program
+      ~rules options program
   in
   parsed.kernels
   |> List.map (fun kernel -> Ordinary_kernel kernel)
@@ -452,11 +460,20 @@ let kernels_of_routed ~(ordinary_kernels : kernel StringMap.t)
                  pipeline output"
                 source.name);
           exit 2)
-  | Subgroup_source.Subgroup_matrix kernel -> [ Subgroup_kernel kernel ]
+  | Subgroup_source.Subgroup_matrix subgroup -> (
+      match StringMap.find_opt subgroup.matrix_kernel.name ordinary_kernels with
+      | Some (Ordinary_kernel loop_protocol) ->
+          [ Subgroup_kernel { subgroup; loop_protocol } ]
+      | Some (Subgroup_kernel _) | None ->
+          Logger.Colors.error (fun () ->
+              Printf.sprintf
+                "subgroup route '%s' is missing its loop-aware Faial protocol"
+                subgroup.matrix_kernel.name);
+          exit 2)
 
 let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
     ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json ~ignore_asserts
-    ~assume_launch ~cbor ~only_kernel ~(subgroup_size : int) : parsed =
+    ~assume_launch ~cbor ~only_kernel ~rules ~(subgroup_size : int) : parsed =
   if String.ends_with ~suffix:".wgsl" filename then (
     Logger.Colors.error (fun () ->
         "--subgroup-size is only supported for CUDA subgroup/matrix analysis.");
@@ -477,18 +494,9 @@ let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
       Logger.Colors.error (fun () -> Subgroup_source.error_to_string error);
       exit 2
   | Ok routed ->
-      let needs_ordinary_pipeline =
-        List.exists
-          (function
-            | Subgroup_source.Ordinary_source _ -> true
-            | Subgroup_source.Subgroup_matrix _ -> false)
-          routed
-      in
       let ordinary_kernels =
-        if needs_ordinary_pipeline then
-          compile_original_ordinary_program ~inline_calls ~ignore_asserts
-            options program
-        else StringMap.empty
+        compile_original_ordinary_program ~inline_calls ~ignore_asserts ~rules
+          options program
       in
       {
         options;
@@ -500,10 +508,10 @@ let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
 
 let parse_without_subgroup_config ~filename ~block_dim ~grid_dim ~includes
     ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json ~ignore_asserts
-    ~assume_launch ~cbor : parsed =
+    ~assume_launch ~cbor ~rules : parsed =
   let parsed =
     Phase_timer.measure "inference" (fun () ->
-        Protocol_parser.Silent.to_proto
+        Protocol_parser.Silent.to_proto ~rules
           ~abort_on_parsing_failure:(not ignore_parsing_errors)
           ~includes ~block_dim ~grid_dim ~inline_calls ~macros ~cu_to_json
           ~ignore_asserts ~assume_launch ~launch_params:assume_launch ~cbor
@@ -522,7 +530,19 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     ~params ~macros ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
     ~rewrite_delin ~delin_elide ~delin_algo ~delin_check_vacuosity
     ~delin_weak_in_range ~assumes ~assume_dims ~assume_launch ~check_pre_sat
-    ~memory_model ~cbor ~stop_at ~subgroup_size ~launch_contract : t =
+    ~memory_model ~cbor ~stop_at ~subgroup_size ~launch_contract ~rules_file : t
+    =
+  let rules =
+    match rules_file with
+    | None -> Imp.Idiom_rewrite.all
+    | Some path -> (
+        let text = In_channel.with_open_text path In_channel.input_all in
+        match Imp.Idiom_rewrite.parse text with
+        | Ok custom_rules -> Imp.Idiom_rewrite.all @ custom_rules
+        | Error message ->
+            prerr_endline ("--rules " ^ path ^ ": " ^ message);
+            exit 2)
+  in
   let launch_contract = parse_launch_contract launch_contract in
   let block_dim, params =
     match launch_contract with
@@ -536,11 +556,12 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     | None ->
         parse_without_subgroup_config ~filename ~block_dim ~grid_dim ~includes
           ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json
-          ~ignore_asserts ~assume_launch ~cbor
+          ~ignore_asserts ~assume_launch ~cbor ~rules
     | Some subgroup_size ->
         parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
           ~inline_calls ~ignore_parsing_errors ~macros ~cu_to_json
-          ~ignore_asserts ~assume_launch ~cbor ~only_kernel ~subgroup_size
+          ~ignore_asserts ~assume_launch ~cbor ~only_kernel ~rules
+          ~subgroup_size
   in
   let kernels =
     match launch_contract with
@@ -554,14 +575,15 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
                   (Protocols.Kernel.name kernel)
                   contract.parsed_kernel
             | Subgroup_kernel kernel ->
-                String.equal kernel.matrix_kernel.name contract.parsed_kernel)
+                String.equal kernel.subgroup.matrix_kernel.name
+                  contract.parsed_kernel)
         in
         if List.length selected = 0 then
           let actual =
             parsed.kernels
             |> List.map (function
               | Ordinary_kernel kernel -> Protocols.Kernel.name kernel
-              | Subgroup_kernel kernel -> kernel.matrix_kernel.name)
+              | Subgroup_kernel kernel -> kernel.subgroup.matrix_kernel.name)
             |> String.concat ", "
           in
           launch_contract_error
@@ -585,7 +607,7 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
             | Subgroup_kernel kernel ->
                 launch_contract_error
                   (Launch_contract.Subgroup_kernel_unsupported
-                     kernel.matrix_kernel.name))
+                     kernel.subgroup.matrix_kernel.name))
   in
   let kernels = uniquify_kernel_names kernels in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
@@ -640,10 +662,10 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     List.map
       (function
         | Subgroup_kernel kernel ->
-            let name = kernel.matrix_kernel.name in
+            let name = kernel.subgroup.matrix_kernel.name in
             ( name,
               assumptions_for_kernel ~name
-                ~has_vars:(subgroup_kernel_has_vars kernel) )
+                ~has_vars:(subgroup_kernel_has_vars kernel.subgroup) )
         | Ordinary_kernel (k : Protocols.Kernel.t) ->
             let name = Protocols.Kernel.name k in
             ( name,
@@ -818,35 +840,99 @@ let only_kernel (a : t) (ks : kernel list) : kernel list =
   | None -> ks
 
 let run (a : t) : App_analysis.t list =
-  let check_ordinary_kernel arch (kernel : Protocols.Kernel.t) :
+  let check_ordinary_kernel (options : t) arch (kernel : Protocols.Kernel.t) :
       App_analysis.ordinary =
     let report =
-      kernel |> translate arch a
-      |> Symbexp.translate ~memory_model:a.memory_model arch
-      |> Symbexp.add_rel_index (N_rel.Le Signedness.Signed) a.le_index
-      |> Symbexp.add_rel_index (N_rel.Ge Signedness.Signed) a.ge_index
-      |> Symbexp.add_rel_index N_rel.Eq a.eq_index
-      |> Symbexp.add ~tid:a.thread_idx_1 ~bid:a.block_idx_1
-      |> Symbexp.add ~tid:a.thread_idx_2 ~bid:a.block_idx_2
+      kernel |> translate arch options
+      |> Symbexp.translate ~memory_model:options.memory_model arch
+      |> Symbexp.add_rel_index (N_rel.Le Signedness.Signed) options.le_index
+      |> Symbexp.add_rel_index (N_rel.Ge Signedness.Signed) options.ge_index
+      |> Symbexp.add_rel_index N_rel.Eq options.eq_index
+      |> Symbexp.add ~tid:options.thread_idx_1 ~bid:options.block_idx_1
+      |> Symbexp.add ~tid:options.thread_idx_2 ~bid:options.block_idx_2
       |> Phase_timer.boundary "symbexp"
-      |> show_or_stop ~stop_at:a.stop_at ~stage:Stage.Symbexp
-           ~show:a.show_symbexp Symbexp.print_kernels
+      |> show_or_stop ~stop_at:options.stop_at ~stage:Stage.Symbexp
+           ~show:options.show_symbexp Symbexp.print_kernels
       |> (fun ps ->
       let kernel_extras =
-        List.assoc_opt (Protocols.Kernel.name kernel) a.core_extras
+        List.assoc_opt (Protocols.Kernel.name kernel) options.core_extras
         |> Option.value ~default:[]
       in
-      Solve_drf.Solution.solve ~timeout:a.timeout ~show_proofs:a.show_proofs
-        ~logic:a.logic ~solve_tactic:a.solve_tactic ~extras:kernel_extras
-        ~pre_solver:(Option.is_some a.launch_contract)
-        ?block_dim:a.block_dim ps)
+      Solve_drf.Solution.solve ~timeout:options.timeout
+        ~show_proofs:options.show_proofs ~logic:options.logic
+        ~solve_tactic:options.solve_tactic ~extras:kernel_extras
+        ~pre_solver:(Option.is_some options.launch_contract)
+        ?block_dim:options.block_dim ps)
       |> Phase_timer.boundary "solve"
       |> Streamutil.to_list
     in
     App_analysis.{ kernel; report; vacuous = None }
   in
-  let check_subgroup_kernel (subgroup : Subgroup_source.subgroup_kernel) :
-      App_analysis.subgroup =
+  let rec check_ordinary_until (options : t) (kernel : Protocols.Kernel.t)
+      (archs : Architecture.t list) : App_analysis.ordinary =
+    match archs with
+    | [] -> App_analysis.{ kernel; report = []; vacuous = None }
+    | [ arch ] -> check_ordinary_kernel options arch kernel
+    | arch :: rest ->
+        let ordinary = check_ordinary_kernel options arch kernel in
+        if App_analysis.ordinary_is_safe ordinary then
+          check_ordinary_until options kernel rest
+        else ordinary
+  in
+  let loop_protocol_memory_outcome ~(config : Subgroup_solver.solver_config)
+      (kernel : Protocols.Kernel.t) : Subgroup_solver.memory_outcome =
+    (* The subgroup result is a DRF judgment, so its loop-aligned fallback must
+       not inherit the detector-only access filter. *)
+    let complete_options = { a with only_true_data_races = false } in
+    let ordinary = check_ordinary_until complete_options kernel a.archs in
+    let classify (solution : Solve_drf.Solution.t) =
+      match solution.outcome with
+      | Solve_drf.Outcome.Drf | Solve_drf.Outcome.Drf_with_core _ ->
+          Subgroup_solver.Solver_unsat_drf
+      | Solve_drf.Outcome.Racy _ -> Subgroup_solver.Solver_sat_racy
+      | Solve_drf.Outcome.Unknown ->
+          Subgroup_solver.Solver_unknown "loop-aware Faial protocol"
+    in
+    let classifications = List.map classify ordinary.report in
+    let classifications =
+      match classifications with
+      | [] -> [ Subgroup_solver.Solver_unsat_drf ]
+      | classifications -> classifications
+    in
+    let evidence =
+      match ordinary.report with
+      | [] ->
+          [ "loop_protocol#0 source=faial_aligned_protocol solver=unsat(drf)" ]
+      | report ->
+          report
+          |> List.mapi (fun index (solution : Solve_drf.Solution.t) ->
+              let classification = classify solution in
+              let details =
+                match solution.outcome with
+                | Solve_drf.Outcome.Racy witness ->
+                    let left, right = witness.tasks in
+                    Printf.sprintf
+                      " array=%s left=%s left_site=%s right=%s right_site=%s"
+                      witness.array_name
+                      (Access.Mode.to_string left.access.mode)
+                      (Location.to_string (Access.location left.access))
+                      (Access.Mode.to_string right.access.mode)
+                      (Location.to_string (Access.location right.access))
+                | Solve_drf.Outcome.Drf | Solve_drf.Outcome.Drf_with_core _
+                | Solve_drf.Outcome.Unknown ->
+                    ""
+              in
+              Printf.sprintf
+                "loop_protocol#%d source=faial_aligned_protocol%s %s" index
+                details
+                (Subgroup_solver.classification_to_string classification))
+    in
+    Subgroup_solver.loop_protocol_outcome ~config
+      ~kernel_name:(Protocols.Kernel.name kernel)
+      ~classifications ~evidence ()
+  in
+  let check_subgroup_kernel (routed : subgroup_kernel) : App_analysis.subgroup =
+    let subgroup = routed.subgroup in
     let user_precondition =
       List.assoc_opt subgroup.matrix_kernel.name a.assumes
       |> Option.value ~default:[] |> Exp.b_and_ex
@@ -861,8 +947,8 @@ let run (a : t) : App_analysis.t list =
     let ordinary_memory_effects =
       Subgroup_delinearize.rewrite ~enabled:a.assume_delin
         ~rewrite_access:a.rewrite_delin ~check_vacuity:a.delin_check_vacuosity
-        ~algo:a.delin_algo ~globals:subgroup.memory_globals
-        subgroup.ordinary_memory_effects
+        ~algo:a.delin_algo ~weak_in_range:a.delin_weak_in_range
+        ~globals:subgroup.memory_globals subgroup.ordinary_memory_effects
       |> function
       | Ok effects -> effects
       | Error error ->
@@ -932,7 +1018,7 @@ let run (a : t) : App_analysis.t list =
     | Error error ->
         Logger.Colors.error (fun () -> error);
         exit 2);
-    let memory =
+    let primary_memory =
       let globals = subgroup.memory_globals in
       kernel
       |> Subgroup_obligation.obligations ~globals ?checked_block_dim
@@ -940,8 +1026,16 @@ let run (a : t) : App_analysis.t list =
            ~site_controls:subgroup.site_controls
            ~ordinary_memory_effects:subgroup.ordinary_memory_effects
       |> Subgroup_solver.solve_obligation_result ~config ~globals
-           ?block_dim:a.block_dim ~target_config:kernel.target_config
-           ~kernel_name:kernel.name
+           ?block_dim:a.block_dim ~kernel_name:kernel.name
+    in
+    let memory =
+      if Subgroup_solver.is_repeated_site_boundary primary_memory then
+        let protocol =
+          loop_protocol_memory_outcome ~config routed.loop_protocol
+        in
+        Subgroup_solver.resolve_repeated_site_with_loop_protocol ~protocol
+          primary_memory
+      else primary_memory
     in
     let uniformity =
       let site_controls =
@@ -997,18 +1091,6 @@ let run (a : t) : App_analysis.t list =
         match vacuous with
         | Some _ -> App_analysis.Ordinary { kernel; report = []; vacuous }
         | None -> (
-            let rec check_until (archs : Architecture.t list) : App_analysis.t =
-              match archs with
-              | [] ->
-                  App_analysis.Ordinary { kernel; report = []; vacuous = None }
-              | [ arch ] ->
-                  App_analysis.Ordinary (check_ordinary_kernel arch kernel)
-              | arch :: archs ->
-                  let ordinary = check_ordinary_kernel arch kernel in
-                  if App_analysis.ordinary_is_safe ordinary then
-                    check_until archs
-                  else App_analysis.Ordinary ordinary
-            in
-            try check_until a.archs
+            try App_analysis.Ordinary (check_ordinary_until a kernel a.archs)
             with Stop_at_stage ->
               App_analysis.Ordinary { kernel; report = []; vacuous = None })))

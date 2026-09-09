@@ -211,6 +211,15 @@ let matrix_load (site_id : int) : SM.Stmt.t =
   in
   SM.Stmt.Matrix_collective collective
 
+let subgroup_collective (site_id : int) : SM.Stmt.t =
+  let site = SM.Site.make ~label:"ballot" site_id in
+  let collective =
+    SM.Collective.make site
+      (SM.Collective.Ballot_payload
+         { result = var "ballot_result"; predicate = None })
+  in
+  SM.Stmt.Subgroup_collective collective
+
 let subgroup_kernel ?(target_config = subgroup_config ()) ?(body = [])
     ?(site_controls = []) ?(uniform_vars = Variable.Set.empty)
     ?(memory_globals = Variable.Set.empty) ?(ordinary_memory_effects = [])
@@ -403,9 +412,10 @@ let test_subgroup_event_stream_preserves_phase_domains () : unit =
         [
           matrix_store 1;
           SM.Stmt.subgroup_barrier (SM.Site.make ~label:"syncwarp" 2);
-          matrix_load 3;
-          SM.Stmt.workgroup_barrier (SM.Site.make ~label:"syncthreads" 4);
-          matrix_store 5;
+          subgroup_collective 3;
+          matrix_load 4;
+          SM.Stmt.workgroup_barrier (SM.Site.make ~label:"syncthreads" 5);
+          matrix_store 6;
         ]
   in
   let unified =
@@ -413,23 +423,10 @@ let test_subgroup_event_stream_preserves_phase_domains () : unit =
   in
   let memories = Subgroup_event.memory_events unified in
   let boundaries = Subgroup_event.boundary_events unified in
-  Alcotest.(check int) "three matrix memory events" 3 (List.length memories);
   Alcotest.(check int)
-    "five subgroup/matrix boundaries" 5 (List.length boundaries);
-  let first, second, third =
-    match memories with
-    | [ first; second; third ] -> (first, second, third)
-    | _ -> Alcotest.fail "expected three matrix memory events"
-  in
-  Alcotest.(check string)
-    "first memory phase" "W0/S[]"
-    (Subgroup_event.Phase.to_string first.phase);
-  Alcotest.(check string)
-    "subgroup barrier advances only S" "W0/S[1;2]"
-    (Subgroup_event.Phase.to_string second.phase);
-  Alcotest.(check string)
-    "workgroup barrier advances W" "W1/S[1;2;3]"
-    (Subgroup_event.Phase.to_string third.phase);
+    "matrix collectives add no memory events" 0 (List.length memories);
+  Alcotest.(check int)
+    "six collective/barrier events" 6 (List.length boundaries);
   let workgroup =
     match
       boundaries
@@ -442,20 +439,33 @@ let test_subgroup_event_stream_preserves_phase_domains () : unit =
     | None -> Alcotest.fail "expected workgroup boundary"
   in
   Alcotest.(check string)
-    "workgroup boundary before phase" "W0/S[1;2;3]"
+    "workgroup boundary before phase" "W0/S[2]"
     (Subgroup_event.Phase.to_string workgroup.phase_before);
   Alcotest.(check string)
-    "workgroup boundary after phase" "W1/S[1;2;3]"
-    (Subgroup_event.Phase.to_string workgroup.phase_after)
+    "workgroup boundary after phase" "W1/S[2]"
+    (Subgroup_event.Phase.to_string workgroup.phase_after);
+  let collective =
+    match
+      boundaries
+      |> List.find_opt (fun (boundary : Subgroup_event.boundary) ->
+          match boundary.kind with
+          | Subgroup_event.Subgroup_collective -> true
+          | _ -> false)
+    with
+    | Some boundary -> boundary
+    | None -> Alcotest.fail "expected subgroup collective event"
+  in
+  Alcotest.(check string)
+    "collective leaves phase unchanged"
+    (Subgroup_event.Phase.to_string collective.phase_before)
+    (Subgroup_event.Phase.to_string collective.phase_after)
 
-let test_subgroup_matrix_event_preserves_footprint_and_controls () : unit =
+let test_matrix_collective_is_participation_only () : unit =
   let warp_id = var "warp_id" in
   let site_controls =
     [
       source_site_control 40 ~source_order:20
         ~conditions:[ Exp.n_gt (Exp.Var Variable.tid_x) (Exp.Num 0) ]
-        ~memory_conditions:
-          [ Exp.n_eq (Exp.Var (var "base")) (Exp.Var Variable.tid_x) ]
         ~uniform_vars:(Variable.Set.singleton warp_id);
     ]
   in
@@ -465,50 +475,20 @@ let test_subgroup_matrix_event_preserves_footprint_and_controls () : unit =
   let unified =
     Subgroup_event.from_subgroup_kernel kernel |> expect_subgroup_event_ok
   in
-  let memory =
-    match Subgroup_event.memory_events unified with
-    | [ memory ] -> memory
-    | _ -> Alcotest.fail "expected one matrix memory event"
-  in
+  Alcotest.(check int)
+    "no matrix memory event" 0
+    (List.length (Subgroup_event.memory_events unified));
   let boundary =
     match Subgroup_event.boundary_events unified with
     | [ boundary ] -> boundary
     | _ -> Alcotest.fail "expected one matrix boundary event"
   in
   Alcotest.(check string)
-    "matrix origin" "matrix_store"
-    (Subgroup_event.memory_origin_to_string memory.origin);
-  Alcotest.(check (option int))
-    "matrix source order" (Some 20) memory.source_order;
-  Alcotest.(check (option int))
-    "matrix site" (Some 40)
-    (Option.map SM.Site.id memory.matrix_site);
-  begin match memory.footprint with
-  | Some
-      (SM.Matrix.Rectangular { rows = Exp.Num 16; cols = Exp.Num 8; layout; _ })
-    ->
-      Alcotest.(check string)
-        "rectangular layout" "row_major"
-        (SM.Matrix.layout_to_string layout)
-  | Some footprint ->
-      Alcotest.fail
-        ("expected rectangular footprint, got "
-        ^ SM.Matrix.footprint_to_string footprint)
-  | None -> Alcotest.fail "expected matrix footprint"
-  end;
-  let condition = Exp.b_to_string memory.condition in
-  expect_substring ~label:"memory condition is carried"
-    ~needle:"base == threadIdx.x" condition;
-  expect_substring ~label:"row bounds are carried" ~needle:"row < 16" condition;
-  Alcotest.(check string)
     "boundary kind" "matrix_collective:store_matrix_sync"
     (Subgroup_event.boundary_kind_to_string boundary.kind);
   Alcotest.(check int)
     "boundary control count" 1
     (List.length boundary.control_conditions);
-  Alcotest.(check int)
-    "boundary memory-control count" 1
-    (List.length boundary.memory_conditions);
   Alcotest.(check bool)
     "boundary carries uniform vars" true
     (Variable.Set.mem warp_id boundary.uniform_vars)
@@ -551,12 +531,6 @@ let test_subgroup_ordinary_event_preserves_source_metadata () : unit =
   Alcotest.(check bool)
     "uniform vars carried" true
     (Variable.Set.mem (var "warp_id") unified.uniform_vars);
-  Alcotest.(check (option string))
-    "ordinary has no matrix site" None
-    (Option.map SM.Site.to_string memory.matrix_site);
-  Alcotest.(check (option string))
-    "ordinary has no matrix footprint" None
-    (Option.map SM.Matrix.footprint_to_string memory.footprint);
   let condition = Exp.b_to_string memory.condition in
   expect_substring ~label:"ordinary source guard carried" ~needle:"i < 16"
     condition;
@@ -591,6 +565,41 @@ let test_subgroup_event_rejects_ordinary_target_config_mismatch () : unit =
       expect_substring ~label:"target config mismatch error"
         ~needle:"target configuration mismatch"
         (Subgroup_event.error_to_string error)
+
+let expect_repeated_site_unsupported ~(label : string) (stmt : SM.Stmt.t) : unit
+    =
+  let kernel = subgroup_kernel label ~body:[ stmt ] in
+  match Subgroup_event.from_subgroup_kernel kernel with
+  | Ok _ -> Alcotest.fail (label ^ " unexpectedly accepted a repeating site")
+  | Error error ->
+      let message = Subgroup_event.error_to_string error in
+      expect_substring ~label ~needle:"repeating site" message;
+      expect_substring ~label ~needle:"dynamic invocation matching" message
+
+let test_subgroup_event_rejects_repeated_memory_barrier () : unit =
+  SM.Site.make ~label:"syncwarp" ~may_repeat:true 7
+  |> SM.Stmt.subgroup_barrier
+  |> expect_repeated_site_unsupported ~label:"repeated_barrier"
+
+let test_subgroup_event_accepts_repeated_matrix_collective () : unit =
+  let site = SM.Site.make ~label:"store_matrix_sync" ~may_repeat:true 8 in
+  let collective =
+    SM.Matrix.store_matrix_sync site (rectangular (write_access ()))
+    |> expect_ok
+  in
+  let kernel =
+    subgroup_kernel "repeated_matrix_store"
+      ~body:[ SM.Stmt.Matrix_collective collective ]
+  in
+  let unified =
+    Subgroup_event.from_subgroup_kernel kernel |> expect_subgroup_event_ok
+  in
+  Alcotest.(check int)
+    "no matrix memory events" 0
+    (List.length (Subgroup_event.memory_events unified));
+  Alcotest.(check int)
+    "one participation boundary" 1
+    (List.length (Subgroup_event.boundary_events unified))
 
 let test_subgroup_obligations_match_direct_owner_api () : unit =
   let memory_globals = Variable.Set.singleton (var "params") in
@@ -672,9 +681,9 @@ let tests : unit Alcotest.test_case list =
     ( "subgroup event phase domains",
       `Quick,
       test_subgroup_event_stream_preserves_phase_domains );
-    ( "subgroup matrix event footprint and controls",
+    ( "matrix collective is participation only",
       `Quick,
-      test_subgroup_matrix_event_preserves_footprint_and_controls );
+      test_matrix_collective_is_participation_only );
     ( "subgroup ordinary event source metadata",
       `Quick,
       test_subgroup_ordinary_event_preserves_source_metadata );
@@ -684,6 +693,12 @@ let tests : unit Alcotest.test_case list =
     ( "subgroup event ordinary config mismatch",
       `Quick,
       test_subgroup_event_rejects_ordinary_target_config_mismatch );
+    ( "subgroup event repeated memory barrier",
+      `Quick,
+      test_subgroup_event_rejects_repeated_memory_barrier );
+    ( "subgroup event repeated matrix collective",
+      `Quick,
+      test_subgroup_event_accepts_repeated_matrix_collective );
     ( "subgroup obligations match direct owner API",
       `Quick,
       test_subgroup_obligations_match_direct_owner_api );

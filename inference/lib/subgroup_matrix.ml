@@ -7,20 +7,22 @@ module Site = struct
     id : id;
     location : Stage0.Location.t option;
     label : string option;
+    may_repeat : bool;
   }
 
-  let make ?location ?label (id : id) : t =
+  let make ?location ?label ?(may_repeat = false) (id : id) : t =
     if id < 0 then invalid_arg "subgroup/matrix site ids must be non-negative";
     Option.iter
       (fun label ->
         if String.equal label "" then
           invalid_arg "subgroup/matrix site labels must not be empty")
       label;
-    { id; location; label }
+    { id; location; label; may_repeat }
 
   let id (site : t) : id = site.id
   let location_opt (site : t) : Stage0.Location.t option = site.location
   let label_opt (site : t) : string option = site.label
+  let may_repeat (site : t) : bool = site.may_repeat
 
   let to_string (site : t) : string =
     let label =
@@ -143,6 +145,11 @@ module Barrier = struct
     { storage; workgroup; subgroup; mem_sem }
 
   let make (site : Site.t) (kind : kind) : t = { site; kind }
+
+  let orders_memory (kind : kind) : bool =
+    match kind.mem_sem with
+    | No_memory_semantics -> false
+    | Acquire | Release | Acq_rel -> true
 
   let scopes (kind : kind) : string list =
     [
@@ -453,10 +460,14 @@ module Stmt = struct
     | Matrix_collective of Matrix.collective
 
   let workgroup_barrier (site : Site.t) : t =
-    Workgroup_barrier (Barrier.make site (Barrier.kind ~workgroup:true ()))
+    Workgroup_barrier
+      (Barrier.make site
+         (Barrier.kind ~workgroup:true ~mem_sem:Barrier.Acq_rel ()))
 
   let subgroup_barrier (site : Site.t) : t =
-    Subgroup_barrier (Barrier.make site (Barrier.kind ~subgroup:true ()))
+    Subgroup_barrier
+      (Barrier.make site
+         (Barrier.kind ~subgroup:true ~mem_sem:Barrier.Acq_rel ()))
 
   let site : t -> Site.t = function
     | Workgroup_barrier barrier | Subgroup_barrier barrier -> barrier.site
@@ -466,6 +477,11 @@ module Stmt = struct
   let is_subgroup_boundary : t -> bool = function
     | Workgroup_barrier _ -> false
     | Subgroup_barrier _ | Subgroup_collective _ | Matrix_collective _ -> true
+
+  let orders_memory : t -> bool = function
+    | Workgroup_barrier barrier | Subgroup_barrier barrier ->
+        Barrier.orders_memory barrier.kind
+    | Subgroup_collective _ | Matrix_collective _ -> false
 
   let matrix_memory_effect : t -> Matrix.memory_effect option = function
     | Matrix_collective collective -> collective.memory

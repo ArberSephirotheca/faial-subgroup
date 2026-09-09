@@ -125,8 +125,20 @@ let strip_array (c : t) : t = array_elements c |> Option.value ~default:c
 let vector_lanes (c : t) : string list option =
   let name = strip_const c |> to_string in
   let bases =
-    [ "char"; "uchar"; "short"; "ushort"; "int"; "uint"; "long"; "ulong";
-      "longlong"; "ulonglong"; "float"; "double" ]
+    [
+      "char";
+      "uchar";
+      "short";
+      "ushort";
+      "int";
+      "uint";
+      "long";
+      "ulong";
+      "longlong";
+      "ulonglong";
+      "float";
+      "double";
+    ]
   in
   let axes = function
     | 1 -> Some [ "x" ]
@@ -149,7 +161,7 @@ let sizeof (x : t) : int option =
   else
     let x =
       x |> String.split_on_char ' '
-      |> List.filter (fun x -> x <> "const" || x <> "unsigned")
+      |> List.filter (fun x -> x <> "const" && x <> "unsigned" && x <> "signed")
       |> String.concat " "
     in
     if String.starts_with ~prefix:"long" x then Some 8
@@ -196,6 +208,4 @@ let to_int_dom (c : t) : Int_dom.t option =
 let is_int (c : t) : bool = to_int_dom c |> Option.is_some
 
 let is_unsigned (c : t) : bool =
-  match to_int_dom c with
-  | Some d -> not d.signed
-  | None -> false
+  match to_int_dom c with Some d -> not d.signed | None -> false

@@ -36,7 +36,7 @@ let expect_single = function
 let test_rewrites_access_and_attaches_axis_bound () =
   let effects =
     SD.rewrite ~enabled:true ~rewrite_access:true ~check_vacuity:false
-      ~algo:Drf.Delinearize.Algo.Cramer
+      ~algo:Drf.Delinearize.Algo.Cramer ~weak_in_range:false
       ~globals:(Variable.Set.singleton (var "N"))
       [ memory_effect flat_index ]
     |> expect_ok
@@ -59,7 +59,7 @@ let test_rewrites_access_and_attaches_axis_bound () =
 let test_no_rewrite_keeps_flat_index_but_attaches_bound () =
   let effects =
     SD.rewrite ~enabled:true ~rewrite_access:false ~check_vacuity:false
-      ~algo:Drf.Delinearize.Algo.Cramer
+      ~algo:Drf.Delinearize.Algo.Cramer ~weak_in_range:false
       ~globals:(Variable.Set.singleton (var "N"))
       [ memory_effect flat_index ]
     |> expect_ok
@@ -73,16 +73,21 @@ let test_no_rewrite_keeps_flat_index_but_attaches_bound () =
          Common.contains ~substring:"col < N" (Exp.b_to_string condition))
        rewritten.source_conditions)
 
-let test_weak_algorithm_fails_explicitly () =
-  match
+let test_weak_algorithm_rewrites_access () =
+  let effects =
     SD.rewrite ~enabled:true ~rewrite_access:true ~check_vacuity:false
-      ~algo:Drf.Delinearize.Algo.Weak
+      ~algo:Drf.Delinearize.Algo.Weak ~weak_in_range:false
       ~globals:(Variable.Set.singleton (var "N"))
       [ memory_effect flat_index ]
-  with
-  | Error SD.Unsupported_weak_algorithm -> ()
-  | Error error -> Alcotest.fail (SD.error_to_string error)
-  | Ok _ -> Alcotest.fail "weak subgroup delinearization must fail explicitly"
+    |> expect_ok
+  in
+  let rewritten = expect_single effects in
+  Alcotest.(check bool)
+    "weak decomposition adds an axis" true
+    (List.length rewritten.access.index > 1);
+  Alcotest.(check bool)
+    "weak decomposition adds its bound" true
+    (List.length rewritten.source_conditions > 1)
 
 let () =
   Alcotest.run "Subgroup_delinearize"
@@ -93,7 +98,7 @@ let () =
             test_rewrites_access_and_attaches_axis_bound;
           Alcotest.test_case "bounds without rewrite" `Quick
             test_no_rewrite_keeps_flat_index_but_attaches_bound;
-          Alcotest.test_case "weak unsupported" `Quick
-            test_weak_algorithm_fails_explicitly;
+          Alcotest.test_case "weak rewrite" `Quick
+            test_weak_algorithm_rewrites_access;
         ] );
     ]

@@ -33,62 +33,38 @@ Next, feel free to access the [`tutorial/`](tutorial/) directory!
 
 # Focused subgroup/matrix DRF extension
 
-The local I501+ integration campaign keeps the original OCaml Faial memory
-logic as the base case while routing the focused subgroup/matrix memory checks
-through the unified DRF event/obligation boundary. The supported public route
-for the focused `flash_attn_wmma_mirror_kernel` fixture is still narrow: this
-is not arbitrary CUDA or arbitrary Flash Attention support, and it is not a
-wrapper around the Rust oracle.
+The subgroup route keeps original Faial's loop alignment for repeated block
+barriers while retaining source locations for the accesses in each memory
+check. Subgroup participation is checked separately. A detector-only
+`--find-true-dr` request never filters the loop-aligned memory protocol used
+for the final subgroup DRF judgment.
 
 The subgroup path is enabled explicitly:
 
 ```bash
 opam exec -- dune exec drf/bin/main.exe -- \
   --cu-to-json=./bin/cu-to-json \
-  -DFAIAL_CAPTURE \
-  '-D__float2half_rn(x)=((half)(x))' \
   --ignore-asserts \
-  -t 1000 \
-  --kernel flash_attn_wmma_mirror_kernel \
-  --block-dim 64 \
+  -t 10000 \
+  --kernel flash_attn_ext_f16_ggml_wmma_d64_ncols16 \
+  --block-dim 128 \
   --subgroup-size 32 \
-  --find-true-dr \
-  ../flash_attn_wgsl_matrix_mirror.cu
+  ../fattn.cu
 ```
 
-Current OCaml outcome for that focused command at the historical 1000ms
-per-obligation solver budget is DRF:
+The extracted kernel currently reports one ordinary-memory race while passing
+the participation check:
 
 ```text
-mem_drf: drf
-memory_checks: 28 total, 0 racy, 0 unknown, 0 timeout, 0 unsupported, 8 pre_solver_unsat
+mem_drf: not_drf
+memory_checks: 10 total, 1 racy, 0 unknown, 0 timeout, 0 unsupported
 subgroup_uniformity: drf
-drf_full: drf
+drf_full: not_drf
 ```
 
-The eight structural discharges are the focused solver-budget residuals:
-`o_shmem` obligations `#16` and `#17` discharge by guarded WMMA tile
-row/lane ownership, while `dst` cross-component obligations `#19`, `#20`,
-`#21`, `#23`, `#24`, and `#26` discharge by guarded hierarchical subgroup
-row/lane-vector ownership. Same-component `dst` pairs remain solver-visible
-and classify as `solver=unsat(drf)`.
-
-The previous focused OCaml boundary was solver-budget sensitivity, not a SAT
-race model: before the guarded pre-solver rules, `o_shmem` obligations `#16`
-and `#17` and `dst` obligation `#26` needed a larger Z3 budget. The current
-1000ms result closes that focused residual without claiming arbitrary CUDA,
-arbitrary Flash Attention support, or focused Rust/OCaml structured parity.
-
-```text
-solver_config: logic=default timeout_ms=1000
-```
-
-The live Rust oracle for the same source and configuration still reports
-`mem_drf: drf`, `subgroup_uniformity: drf`, `drf_full: drf`, and
-`memory_checks: 774 total, 0 racy`. This is still not a structured Rust/OCaml
-source/site/effect/obligation memory-parity claim, because Rust does not yet
-expose an equivalent subgroup-lowered structured artifact for this focused
-command.
+The witness is the read of `KQ_max[j]` at line 191 and the lane-zero write at
+line 215. The intervening warp reductions exchange register values but do not
+order shared-memory accesses.
 
 Ordinary shared/global source memory effects in subgroup/matrix kernels are
 now modeled as subgroup-aware memory obligations owned by

@@ -112,6 +112,11 @@ module Subgroup_event = struct
         actual : string;
         memory_effect : string;
       }
+    | Repeated_dynamic_site_unsupported of {
+        kernel : string;
+        site : string;
+        construct : string;
+      }
 
   let error_to_string : error -> string = function
     | Missing_explicit_target_config { kernel; target_config } ->
@@ -125,6 +130,11 @@ module Subgroup_event = struct
           "ordinary source memory effect target configuration mismatch: \
            expected %s, got %s for %s"
           expected actual memory_effect
+    | Repeated_dynamic_site_unsupported { kernel; site; construct } ->
+        Printf.sprintf
+          "kernel '%s' contains %s at repeating %s; dynamic invocation \
+           matching is not yet supported"
+          kernel construct site
 
   module Phase = struct
     type t = { workgroup : int; subgroup : SM.Site.id list }
@@ -147,12 +157,7 @@ module Subgroup_event = struct
         (subgroup_to_string phase.subgroup)
   end
 
-  type memory_origin =
-    | Ordinary_read
-    | Ordinary_write
-    | Ordinary_atomic
-    | Matrix_load
-    | Matrix_store
+  type memory_origin = Ordinary_read | Ordinary_write | Ordinary_atomic
 
   type boundary_kind =
     | Workgroup_barrier
@@ -162,11 +167,9 @@ module Subgroup_event = struct
 
   type memory = {
     origin : memory_origin;
-    matrix_site : SM.Site.t option;
     source_site : string option;
     source_order : int option;
     access : Access.t;
-    footprint : SM.Matrix.footprint option;
     source_conditions : bexp list;
     runtime_condition : bexp option;
     condition : bexp;
@@ -179,7 +182,6 @@ module Subgroup_event = struct
     site : SM.Site.t;
     source_order : int option;
     control_conditions : bexp list;
-    memory_conditions : bexp list;
     uniform_vars : Variable.Set.t;
     phase_before : Phase.t;
     phase_after : Phase.t;
@@ -201,8 +203,6 @@ module Subgroup_event = struct
     | Ordinary_read -> "ordinary_read"
     | Ordinary_write -> "ordinary_write"
     | Ordinary_atomic -> "ordinary_atomic"
-    | Matrix_load -> "matrix_load"
-    | Matrix_store -> "matrix_store"
 
   let boundary_kind_to_string : boundary_kind -> string = function
     | Workgroup_barrier -> "workgroup_barrier"
@@ -240,43 +240,11 @@ module Subgroup_event = struct
     |> Option.map (fun (control : SS.site_control) -> control.conditions)
     |> Option.value ~default:[]
 
-  let site_memory_conditions (site_controls : SS.site_control list)
-      (site : SM.Site.t) : bexp list =
-    site_control site_controls site
-    |> Option.map SS.site_control_memory_conditions
-    |> Option.value ~default:[]
-
   let site_uniform_vars (site_controls : SS.site_control list)
       (site : SM.Site.t) : Variable.Set.t =
     site_control site_controls site
     |> Option.map (fun (control : SS.site_control) -> control.uniform_vars)
     |> Option.value ~default:Variable.Set.empty
-
-  let matrix_memory_origin : SM.Matrix.memory_effect -> memory_origin = function
-    | SM.Matrix.Read _ -> Matrix_load
-    | SM.Matrix.Write _ -> Matrix_store
-
-  let matrix_memory ~(target_config : SM.Target_config.t)
-      ~(site_controls : SS.site_control list) ~(phase : Phase.t)
-      (site : SM.Site.t) (memory_effect : SM.Matrix.memory_effect) : memory =
-    let footprint = SM.Matrix.memory_effect_footprint memory_effect in
-    let source_conditions = site_memory_conditions site_controls site in
-    {
-      origin = matrix_memory_origin memory_effect;
-      matrix_site = Some site;
-      source_site = Some (SM.Site.to_string site);
-      source_order = site_source_order site_controls site;
-      access = SM.Matrix.indexed_access footprint;
-      footprint = Some footprint;
-      source_conditions;
-      runtime_condition = None;
-      condition =
-        Exp.b_and
-          (Exp.b_and_ex source_conditions)
-          (SM.Matrix.bounds_condition footprint);
-      phase;
-      target_config;
-    }
 
   let ordinary_memory_origin : SS.ordinary_memory_kind -> memory_origin =
     function
@@ -303,11 +271,9 @@ module Subgroup_event = struct
     in
     {
       origin = ordinary_memory_origin memory_effect.kind;
-      matrix_site = None;
       source_site = Some (ordinary_site_to_string memory_effect.site);
       source_order = Some memory_effect.site.source_order;
       access = memory_effect.access;
-      footprint = None;
       source_conditions = memory_effect.source_conditions;
       runtime_condition = memory_effect.runtime_condition;
       condition = Exp.b_and_ex (memory_effect.source_conditions @ runtime);
@@ -324,7 +290,6 @@ module Subgroup_event = struct
       site;
       source_order = site_source_order site_controls site;
       control_conditions = site_control_conditions site_controls site;
-      memory_conditions = site_memory_conditions site_controls site;
       uniform_vars = site_uniform_vars site_controls site;
       phase_before;
       phase_after;
@@ -351,38 +316,30 @@ module Subgroup_event = struct
     in
     { (add_event event builder) with phase = phase_after }
 
-  let add_matrix_memory (site : SM.Site.t)
-      (memory_effect : SM.Matrix.memory_effect) (builder : builder) : builder =
-    matrix_memory ~target_config:builder.target_config
-      ~site_controls:builder.site_controls ~phase:builder.phase site
-      memory_effect
-    |> fun memory -> add_event (Memory memory) builder
-
   let add_stmt (builder : builder) (stmt : SM.Stmt.t) : builder =
     match stmt with
     | Workgroup_barrier barrier ->
-        add_boundary ~kind:Workgroup_barrier ~site:barrier.site
-          ~phase_after:(Phase.enter_workgroup builder.phase)
+        let phase_after =
+          if SM.Barrier.orders_memory barrier.kind then
+            Phase.enter_workgroup builder.phase
+          else builder.phase
+        in
+        add_boundary ~kind:Workgroup_barrier ~site:barrier.site ~phase_after
           builder
     | Subgroup_barrier barrier ->
-        add_boundary ~kind:Subgroup_barrier ~site:barrier.site
-          ~phase_after:(Phase.enter_subgroup barrier.site builder.phase)
+        let phase_after =
+          if SM.Barrier.orders_memory barrier.kind then
+            Phase.enter_subgroup barrier.site builder.phase
+          else builder.phase
+        in
+        add_boundary ~kind:Subgroup_barrier ~site:barrier.site ~phase_after
           builder
     | Subgroup_collective collective ->
         add_boundary ~kind:Subgroup_collective ~site:collective.site
-          ~phase_after:(Phase.enter_subgroup collective.site builder.phase)
-          builder
+          ~phase_after:builder.phase builder
     | Matrix_collective collective ->
-        let builder =
-          match collective.memory with
-          | None -> builder
-          | Some memory_effect ->
-              add_matrix_memory collective.site memory_effect builder
-        in
         add_boundary ~kind:(Matrix_collective collective.kind)
-          ~site:collective.site
-          ~phase_after:(Phase.enter_subgroup collective.site builder.phase)
-          builder
+          ~site:collective.site ~phase_after:builder.phase builder
 
   let explicit_target_config (kernel : SM.Kernel.t) :
       (SM.Target_config.t, error) result =
@@ -410,6 +367,24 @@ module Subgroup_event = struct
              memory_effect = SS.ordinary_memory_effect_to_string memory_effect;
            })
 
+  let validate_repeated_dynamic_site ~(kernel : string) (stmt : SM.Stmt.t) :
+      (unit, error) result =
+    let site = SM.Stmt.site stmt in
+    if not (SM.Site.may_repeat site) then Ok ()
+    else
+      let unsupported construct =
+        Error
+          (Repeated_dynamic_site_unsupported
+             { kernel; site = SM.Site.to_string site; construct })
+      in
+      match stmt with
+      | (Workgroup_barrier barrier | Subgroup_barrier barrier)
+        when SM.Barrier.orders_memory barrier.kind ->
+          unsupported "a memory-ordering barrier"
+      | Workgroup_barrier _ | Subgroup_barrier _ | Subgroup_collective _
+      | Matrix_collective _ ->
+          Ok ()
+
   let from_subgroup_kernel (kernel : SS.subgroup_kernel) : (t, error) result =
     let ( let* ) = Result.bind in
     let matrix_kernel = kernel.matrix_kernel in
@@ -420,6 +395,14 @@ module Subgroup_event = struct
            (fun result memory_effect ->
              let* () = result in
              validate_ordinary_memory_effect_config target_config memory_effect)
+           (Ok ())
+    in
+    let* () =
+      matrix_kernel.body
+      |> List.fold_left
+           (fun result stmt ->
+             let* () = result in
+             validate_repeated_dynamic_site ~kernel:matrix_kernel.name stmt)
            (Ok ())
     in
     let builder =
@@ -465,6 +448,11 @@ module Subgroup_obligation = struct
         actual : string;
         memory_effect : string;
       }
+    | Repeated_dynamic_site_unsupported of {
+        kernel : string;
+        site : string;
+        construct : string;
+      }
 
   let error_to_string : error -> string = function
     | Subgroup_config_error error -> SM.Target_config.error_to_string error
@@ -488,6 +476,11 @@ module Subgroup_obligation = struct
           "ordinary source memory effect target configuration mismatch: \
            expected %s, got %s for %s"
           expected actual memory_effect
+    | Repeated_dynamic_site_unsupported { kernel; site; construct } ->
+        Printf.sprintf
+          "kernel '%s' contains %s at repeating %s; dynamic invocation \
+           matching is not yet supported"
+          kernel construct site
 
   let error_of_event_error : Subgroup_event.error -> error = function
     | Missing_explicit_target_config _ ->
@@ -501,6 +494,8 @@ module Subgroup_obligation = struct
       ->
         Ordinary_effect_target_config_mismatch
           { expected; actual; memory_effect }
+    | Repeated_dynamic_site_unsupported { kernel; site; construct } ->
+        Repeated_dynamic_site_unsupported { kernel; site; construct }
 
   module Subgroup_phase_key = struct
     type t = int list
@@ -519,19 +514,12 @@ module Subgroup_obligation = struct
     | Ordinary_read
     | Ordinary_write
     | Ordinary_atomic
-    | Matrix_load
-    | Matrix_store
 
   let access_origin_to_string : access_origin -> string =
     Subgroup_event.memory_origin_to_string
 
-  let access_origin_is_matrix_collective : access_origin -> bool = function
-    | Matrix_load | Matrix_store -> true
-    | Ordinary_read | Ordinary_write | Ordinary_atomic -> false
-
   type conditional_access = {
     origin : access_origin;
-    collective_site : int option;
     source_site : string option;
     source_order : int option;
     access : Access.t;
@@ -733,55 +721,16 @@ module Subgroup_obligation = struct
       ~right:(thread_projection Task.Task2)
     |> Result.map_error (fun error -> Subgroup_config_error error)
 
-  let same_matrix_collective_site (left : conditional_access)
-      (right : conditional_access) : bool =
-    access_origin_is_matrix_collective left.origin
-    && access_origin_is_matrix_collective right.origin
-    &&
-    match (left.collective_site, right.collective_site) with
-    | Some left_site, Some right_site -> Int.equal left_site right_site
-    | _ -> false
-
   let not_ordered_by_subgroup_condition (config : SM.Target_config.t)
       (left : conditional_access) (right : conditional_access) :
       (Exp.bexp, error) result =
-    if same_matrix_collective_site left right then
-      same_subgroup_condition config |> Result.map Exp.b_not
-    else if Subgroup_phase_key.equal left.subgroup_phase right.subgroup_phase
-    then Ok (Exp.Bool true)
+    if Subgroup_phase_key.equal left.subgroup_phase right.subgroup_phase then
+      Ok (Exp.Bool true)
     else same_subgroup_condition config |> Result.map Exp.b_not
 
   let subgroup_ordering_needs_identity (left : conditional_access)
       (right : conditional_access) : bool =
-    same_matrix_collective_site left right
-    || not (Subgroup_phase_key.equal left.subgroup_phase right.subgroup_phase)
-
-  let matrix_site_control = Subgroup_event.site_control
-  let matrix_site_source_order = Subgroup_event.site_source_order
-
-  let matrix_site_memory_condition (site_controls : SS.site_control list)
-      (site : SM.Site.t) : Exp.bexp =
-    Subgroup_event.site_memory_conditions site_controls site |> Exp.b_and_ex
-
-  let matrix_memory_access ~(site_controls : SS.site_control list)
-      (site : SM.Site.t) (subgroup_phase : Subgroup_phase_key.t)
-      (memory : SM.Matrix.memory_effect) : conditional_access =
-    let phase : Subgroup_event.Phase.t =
-      { workgroup = 0; subgroup = subgroup_phase }
-    in
-    let memory =
-      Subgroup_event.matrix_memory ~target_config:SM.Target_config.missing_cuda
-        ~site_controls ~phase site memory
-    in
-    {
-      origin = memory.origin;
-      collective_site = Option.map SM.Site.id memory.matrix_site;
-      source_site = memory.source_site;
-      source_order = memory.source_order;
-      access = memory.access;
-      condition = memory.condition;
-      subgroup_phase = memory.phase.subgroup;
-    }
+    not (Subgroup_phase_key.equal left.subgroup_phase right.subgroup_phase)
 
   let ordinary_memory_kind_to_origin = Subgroup_event.ordinary_memory_origin
 
@@ -802,7 +751,6 @@ module Subgroup_obligation = struct
       conditional_access =
     {
       origin = memory.origin;
-      collective_site = Option.map SM.Site.id memory.matrix_site;
       source_site = memory.source_site;
       source_order = memory.source_order;
       access = memory.access;

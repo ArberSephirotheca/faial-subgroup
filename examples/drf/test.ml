@@ -35,6 +35,13 @@ let tests =
         "gridDim.y == 1 && gridDim.z == 1";
       ],
       0 );
+    (* __builtin_assume(cond), clang's assumption builtin, is honoured as a
+       precondition like the __assume() stub: [tid < D] forces [tid % D == tid]
+       so each thread writes a distinct cell and the kernel is DRF. *)
+    ("drf-builtin-assume.cu", [], 0);
+    (* Same kernel without the __builtin_assume: with D free the prover picks
+       D = 1 and every thread aliases onto out[0], so it is racy. *)
+    ("racy-builtin-assume.cu", [], 1);
     (* This example is only racy at the grid-level *)
     ("racy-grid-level.cu", [], 0);
     ("racy-grid-level.cu", [ "--grid-level" ], 1);
@@ -89,14 +96,23 @@ let tests =
        racy under post-Volta independent thread scheduling, DRF under
        --assume-warp-synch. *)
     ("drf-warp-synch-reduce.cu", [ "--block-dim=32" ], 1);
-    ( "drf-warp-synch-reduce.cu",
-      [ "--block-dim=32"; "--assume-warp-synch" ],
-      0 );
+    ("drf-warp-synch-reduce.cu", [ "--block-dim=32"; "--assume-warp-synch" ], 0);
     (* Negative companion: a cross-warp data race that must survive
        --assume-warp-synch, since the implicit same-warp barrier does
        not order threads in different warps. *)
-    ( "racy-cross-warp.cu",
-      [ "--block-dim=64"; "--assume-warp-synch" ],
+    ("racy-cross-warp.cu", [ "--block-dim=64"; "--assume-warp-synch" ], 1);
+    (* Subgroup kernels retain Faial's structured loop protocol for memory
+       analysis, so repeated workgroup barriers are matched by iteration. *)
+    ( "drf-subgroup-repeated-barrier.cu",
+      [ "--subgroup-size=32"; "--block-dim=32" ],
+      0 );
+    ( "drf-subgroup-repeated-syncwarp.cu",
+      [ "--subgroup-size=32"; "--block-dim=32" ],
+      0 );
+    (* The subgroup contract must retain the complete, loop-aligned memory
+       protocol even when the detector-only access filter is requested. *)
+    ( "racy-subgroup-repeated-barrier-sites.cu",
+      [ "--subgroup-size=32"; "--block-dim=32"; "--find-true-dr" ],
       1 );
     (* A data-race free example as long as the analysis understands typedefs. *)
     ("drf-typedef.cu", [], 0);
@@ -283,27 +299,31 @@ let tests =
      racy when blockDim/gridDim's [y]/[z] axes are free: synthesising
      the launch's [dim3((n+255)/256)] / [dim3(256)] pins the unused
      axes to 1 via [assert(...)] in the pseudo-kernel body. *)
-    ("drf-launch-rescue.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-rescue.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Two distinct launches of the same templated kernel must each
      produce their own pseudo-kernel and analyse independently with
      the launch's concrete dims. *)
-    ("drf-launch-multi.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-multi.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Negative control: a kernel that races regardless of launch
      dims (every thread writes [out[0]]) stays racy under
      [--assume-launch] — pinning blockDim doesn't suppress real
      races. *)
-    ("racy-launch-mismatch.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
+    ( "racy-launch-mismatch.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      1 );
     (* A scalar kernel arg supplied by a non-Ident launch-site
      expression (here [params[0]]). The launch-arg resolver folds
      the array-subscript into a fresh uniform pseudo-parameter so
      the formal stays block-uniform; analyses DRF. Without the
      resolver, this would false-positive racy because the launch
      arg surfaces as a per-thread @AccessState. *)
-    ("drf-launch-complex-arg.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-complex-arg.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* A scalar kernel arg fed by a [const int N = 256] host
      variable that c-to-json const-folds to its literal value at
      the launch site. The resolver passes literals through as
@@ -312,15 +332,15 @@ let tests =
      unbound and Z3 picks an adversarial witness, false-positive
      reporting racy on a kernel where every (blockIdx.x,
      threadIdx.x) pair writes a distinct address. *)
-    ("drf-launch-const-arg.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-const-arg.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* A structured-binding variable ([const auto [slot, token] = ...])
      passed as a scalar launch argument. The launch-arg walk reads the
      [slot] reference, whose [DeclRefExpr] resolves to a [BindingDecl];
      that decl kind is read like a [VarDecl]. Without it the launch
      synthesis hits parse_exp and the whole file exits 2. *)
-    ("drf-launch-binding-arg.cu",
-     [ "--all-dims"; "--assume-launch" ], 0);
+    ("drf-launch-binding-arg.cu", [ "--all-dims"; "--assume-launch" ], 0);
     (* Grid-arithmetic relation flowing transitively to a kernel
      arg: launch picks [gridDim.x = imageW / 128]. The launch-arg
      resolver passes the BinaryOp structure through verbatim
@@ -331,8 +351,9 @@ let tests =
      into a fresh uniform), Z3 has no link between [gridDim.x]
      and [imageW], witnesses [imageW < 128], and false-positive
      reports racy. *)
-    ("drf-launch-grid-arith.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-grid-arith.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Host-side guard ([if (n >= 256)]) enclosing the launch
      reaches the analyser via c-to-json's [path_condition] slot;
      the synth kernel lifts it into [assert(n >= 256)] alongside
@@ -340,8 +361,9 @@ let tests =
      stride pattern: two threads in different blocks collide
      when [n < blockDim.x]); with the lifted path condition Z3
      rules out small [n] and the kernel verifies DRF. *)
-    ("drf-launch-path-cond.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-path-cond.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Host-side const-binding ([const int inum = N * 1024]) used
      nested in the grid axis ([dim3(inum / 256)]) reaches the
      analyser via c-to-json's [const_bindings] slot. The synth
@@ -353,8 +375,9 @@ let tests =
      binding lift, [inum] is a free uniform with no tie to [N],
      Z3 picks [N == 0], and the kernel false-positive reports
      racy. *)
-    ("drf-launch-const-binding.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-const-binding.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Opaque-block launch: the launch supplies a struct field of
      type [dim3] as the block dim, which cu-to-json wraps in a
      copy-ctor [CXXConstructExpr] whose first arg is itself
@@ -364,8 +387,9 @@ let tests =
      writes via [atomicInc], DRF regardless of contention. Pins
      that the "no constraint" output for opaque axes doesn't lose
      legitimate DRF cases. *)
-    ("drf-launch-opaque-block.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-opaque-block.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Opaque-block launch on a kernel whose index uses only
      [threadIdx.x] and thus races when [blockDim.y]/[.z] can exceed
      1. With the resolver emitting no constraint on the opaque
@@ -374,8 +398,9 @@ let tests =
      [threadIdx.y]. A prior implementation fabricated
      [blockDim.y == 1] / [blockDim.z == 1] for this case,
      suppressing the race (false-negative DRF). *)
-    ("racy-launch-opaque-block.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
+    ( "racy-launch-opaque-block.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      1 );
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)
@@ -398,9 +423,16 @@ let tests =
      promotes it to an array dimension and drops it from the subscript,
      so every thread appears to write the same cell and faial reports a
      false race. *)
-    ("drf-delin-gridstride.cu",
-     [ "--all-dims"; "--assume-dims"; "--assume-launch";
-       "--assume-delin"; "--delin-algo"; "cramer" ], 0);
+    ( "drf-delin-gridstride.cu",
+      [
+        "--all-dims";
+        "--assume-dims";
+        "--assume-launch";
+        "--assume-delin";
+        "--delin-algo";
+        "cramer";
+      ],
+      0 );
     (* Each thread writes to a unique cell of [arr]. The callee
      [f] has a local [int i;] whose name collides with the
      caller's [i]; faial-drf's parameter-substitution path under
@@ -415,8 +447,9 @@ let tests =
      to a fresh name that collided with a deeper binder, and the
      resulting capture landed the access on the wrong local, reporting
      a false race. *)
-    ("drf-inline-rename-capture.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-inline-rename-capture.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* ensure that an aligned protocol remains aligned *)
     ("drf-loop-aligned-1.cu", [], 0);
     (* End-to-end smoke test for IntegerLiteral parsing of uint64

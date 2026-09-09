@@ -23,12 +23,13 @@ The review distinguishes three claims:
    subgroup DRF semantic target.
 3. Which additional application invariant would exclude the race.
 
-This distinction matters for `mm_ids_helper`: one emitted model uses an
-impossible launch shape. Under the subgroup DRF model, the intervening fully
-convergent warp primitives order same-subgroup accesses, so the production
-one-warp launch discharges that alarm. Strict CUDA-spec memory ordering is a
-separate portability boundary discussed below; it is not the semantic target
-of this classification.
+This note records an investigation against an older prototype semantics. The
+current WarpDRF implementation follows the CUDA specification: shuffle and
+reduction operations constrain collective participation but do not order
+shared-memory accesses. Consequently, a one-warp launch alone does not
+discharge the `mm_ids_helper` shared write/read alarm; that handoff needs an
+explicit memory-ordering operation such as `__syncwarp()`, or an independent
+proof that the accesses cannot conflict.
 
 ## Summary
 
@@ -36,14 +37,15 @@ of this classification.
 | --- | --- | --- | --- |
 | 12 `topk_moe_cuda` `ids` write/write alarms | SAT | True when a biased selection score is NaN; false when every selection score is non-NaN | Sanitize `selection_wt` after adding bias, or enforce a non-NaN input contract |
 | `mm_ids_helper` obligation 0, shared write/write | SAT | True when one token selects the same expert more than once | Enforce pairwise-distinct expert IDs per token, or make duplicate handling race-free |
-| `mm_ids_helper` obligation 1, shared write/read | SAT only through an unresolved launch dimension | False alarm under the subgroup DRF model: the production launch contains one subgroup and intervening warp primitives order its accesses | Preserve `blockDim.x = subgroup_size` in the launch contract |
+| `mm_ids_helper` obligation 1, shared write/read | SAT in the historical model only through an unresolved launch dimension | Not discharged by a one-warp launch under current WarpDRF semantics | Add `__syncwarp()` or prove the accesses cannot conflict |
 | `mm_ids_helper` obligations 2 and 3, output write/write | SAT | False alarm | Model the lane-uniform result of `warp_reduce_sum` |
 
 At row granularity, the 12 `topk_moe_cuda` rows have a concrete race under the
 low-level input contract. The `mm_ids_helper` row has a concrete race only
 when duplicate expert IDs are admitted; under the normal pairwise-unique
-producer contract, all four reported `mm_ids_helper` obligations are false
-under the subgroup DRF model.
+producer contract, the duplicate-ID write/write alarm is excluded, but the
+shared-memory handoff still requires explicit ordering under current WarpDRF
+semantics.
 
 ## `topk_moe_cuda`
 
@@ -249,37 +251,31 @@ The emitted Faial obligation contains:
 threadIdx.x$T1 / 32 != threadIdx.x$T2 / 32
 ```
 
-That requirement comes from the current rule that treats intervening shuffle
-and reduction operations as subgroup memory-ordering boundaries. Combined
-with the unresolved `@Launch6`, Z3 can invent a block larger than one warp.
-That exact witness is impossible for the production launch.
+That requirement came from the historical rule that treated intervening
+shuffle and reduction operations as subgroup memory-ordering boundaries.
+Combined with the unresolved `@Launch6`, Z3 could invent a block larger than
+one warp. The production launch excludes that particular witness, but this no
+longer proves memory ordering in the current model.
 
-In the subgroup DRF model, every recognized fully convergent warp primitive
-acts as a subgroup-local synchronization and ordering boundary. The production
-launch has exactly one subgroup:
+The production launch has exactly one subgroup:
 
 ```text
 blockDim = (32, 1, 1)
 subgroup_size = 32
 ```
 
-There is therefore no pair of production threads satisfying the obligation's
-different-subgroup clause. This obligation is a false alarm caused by losing
-the equality between the runtime physical warp size and the configured
-subgroup size.
+This fact establishes the physical participation scope, but it does not turn a
+shuffle or reduction into a memory barrier. Current WarpDRF therefore retains
+the shared write/read candidate unless an explicit ordering operation or a
+non-conflict argument discharges it.
 
-#### Strict CUDA portability boundary
+#### CUDA and WarpDRF interpretation
 
-The subgroup DRF model intentionally gives fully convergent warp primitives
-barrier-like ordering. That is a model assumption, not the literal memory
-ordering specified for CUDA shuffle intrinsics. CUDA documents
-`__shfl*_sync` as value-exchange operations without a general memory-ordering
-guarantee, while `__syncwarp()` provides warp-local memory ordering.
-
-If the verification claim is changed from the subgroup DRF model to the strict
-CUDA language memory model, the shared write/read should be protected by
-`__syncwarp()`. That is a portability recommendation, not a true alarm under
-the current subgroup model.
+CUDA documents `__shfl*_sync` as value-exchange operations without a general
+memory-ordering guarantee, while `__syncwarp()` provides warp-local memory
+ordering. Current WarpDRF preserves this distinction. The shared write/read
+should therefore be protected by `__syncwarp()` unless a separate proof shows
+that the accesses cannot conflict.
 
 ### Obligations 2 and 3: output write/write
 
@@ -374,10 +370,9 @@ not allowed to replace that path with an isolated-kernel translation.
 4. Define the `mm_ids_helper` input contract.
    Decide whether duplicate expert IDs are rejected or supported without
    races.
-5. Keep the CUDA portability boundary explicit.
-   A strict CUDA-spec mode would require `__syncwarp()` for the shared-memory
-   handoff; the current subgroup model intentionally treats the intervening
-   warp primitives as ordering boundaries.
+5. Respect the CUDA memory-ordering boundary.
+   Use `__syncwarp()` for the shared-memory handoff; shuffle and reduction
+   operations are participation events, not memory-ordering boundaries.
 
 ## External Semantic Reference
 

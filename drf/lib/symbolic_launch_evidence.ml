@@ -1222,7 +1222,6 @@ let maybe_write_artifacts ~(filename : string) ~(contract : LC.t option)
               (fun path ->
                 let report =
                   Subgroup_solver.solve_obligations ~config ~globals
-                    ~target_config:kernel.matrix_kernel.target_config
                     ~kernel_name:kernel.matrix_kernel.name obligations
                 in
                 symbolic_proof_artifact_lines ~filename
@@ -1247,7 +1246,6 @@ let maybe_write_artifacts ~(filename : string) ~(contract : LC.t option)
             in
             let report =
               Subgroup_solver.solve_obligations ~config ~globals
-                ~target_config:kernel.matrix_kernel.target_config
                 ~kernel_name:kernel.matrix_kernel.name obligations
             in
             let* () =

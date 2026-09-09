@@ -64,19 +64,6 @@ let ordinary_effect ?(kind = Source.Ordinary_write) ?(site = ordinary_site ())
     target_config;
   }
 
-let source_site_control ?source_order ?(conditions = [])
-    ?(memory_conditions = []) ?(uniform_vars = Variable.Set.empty)
-    ?(numeric_aliases = Variable.Map.empty) site_id : Source.site_control =
-  let source_order = Option.value source_order ~default:site_id in
-  {
-    site_id;
-    source_order;
-    conditions;
-    memory_conditions;
-    uniform_vars;
-    numeric_aliases;
-  }
-
 let rectangular (access : Access.t) : SM.Matrix.footprint =
   SM.Matrix.rectangular ~base:access ~rows:(Exp.Num 16) ~cols:(Exp.Num 8)
     ~leading_dimension:(Exp.Num 32) ~layout:SM.Matrix.Row_major ~row:(var "row")
@@ -91,7 +78,7 @@ let variable_set (names : string list) : Variable.Set.t =
     (fun vars name -> Variable.Set.add (var name) vars)
     Variable.Set.empty names
 
-let matrix_goal_assignments ~(block_dim : Dim3.t) ~(t1 : Dim3.t) ~(t2 : Dim3.t)
+let indexed_goal_assignments ~(block_dim : Dim3.t) ~(t1 : Dim3.t) ~(t2 : Dim3.t)
     : (string * int) list =
   [
     ("blockIdx.x", 0);
@@ -111,10 +98,6 @@ let matrix_goal_assignments ~(block_dim : Dim3.t) ~(t1 : Dim3.t) ~(t2 : Dim3.t)
     ("threadIdx.z$T2", t2.z);
     ("base$T1", 0);
     ("base$T2", 0);
-    ("row$T1", 0);
-    ("row$T2", 0);
-    ("col$T1", 0);
-    ("col$T2", 0);
   ]
 
 let thread_goal_assignments ~(block_dim : Dim3.t) ~(t1 : Dim3.t) ~(t2 : Dim3.t)
@@ -158,32 +141,30 @@ let matrix_store (site_id : int) : SM.Stmt.t =
   in
   SM.Stmt.Matrix_collective collective
 
-let matrix_load (site_id : int) : SM.Stmt.t =
-  let site = SM.Site.make ~label:"load_matrix_sync" site_id in
-  let collective =
-    SM.Matrix.load_matrix_sync site (rectangular (base_access ~mode:`Read ()))
-    |> expect_ok
-  in
-  SM.Stmt.Matrix_collective collective
+let conditional_access ?(subgroup_phase = []) () : Memory.conditional_access =
+  {
+    origin = Memory.Ordinary_write;
+    source_site = None;
+    source_order = None;
+    access = base_access ();
+    condition = Exp.Bool true;
+    subgroup_phase;
+  }
 
-let single_access (site_id : int) : Memory.conditional_access =
-  let phased =
-    SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"single"
-      [ matrix_store site_id ]
-    |> Memory.phases_of_kernel
-  in
-  match phased.phases with
-  | [ { accesses = [ access ]; _ } ] -> access
-  | _ -> Alcotest.fail "expected one matrix memory access"
-
-let single_store_obligation ~(block_dim : Dim3.t) () : Memory.obligation =
+let ordinary_base_self_obligation ~(block_dim : Dim3.t) () : Memory.obligation =
   let kernel =
-    SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"obligation"
-      [ matrix_store 40 ]
+    SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"obligation" []
   in
-  match Memory.obligations ~block_dim kernel |> expect_memory_ok with
+  let ordinary = ordinary_effect () in
+  match
+    Memory.obligations ~block_dim ~ordinary_memory_effects:[ ordinary ] kernel
+    |> expect_memory_ok
+  with
   | [ obligation ] -> obligation
-  | _ -> Alcotest.fail "expected one self-pair matrix obligation"
+  | obligations ->
+      Alcotest.fail
+        (Printf.sprintf "expected one ordinary self-pair obligation, got %d"
+           (List.length obligations))
 
 let ordinary_threadidx_self_obligation ~(block_dim : Dim3.t) () :
     Memory.obligation =
@@ -209,17 +190,18 @@ let ordinary_threadidx_self_obligation ~(block_dim : Dim3.t) () :
 let test_subgroup_barrier_advances_only_subgroup_phase () : unit =
   let kernel =
     SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"sg"
-      [
-        matrix_store 1;
-        SM.Stmt.subgroup_barrier (SM.Site.make ~label:"syncwarp" 2);
-        matrix_load 3;
-      ]
+      [ SM.Stmt.subgroup_barrier (SM.Site.make ~label:"syncwarp" 2) ]
   in
-  let phased = Memory.phases_of_kernel kernel in
+  let before = ordinary_effect () in
+  let after = ordinary_effect ~phase:(ordinary_phase ~subgroup:[ 2 ] ()) () in
+  let phased =
+    Memory.phases_with_ordinary_memory_effects
+      ~ordinary_memory_effects:[ before; after ] kernel
+  in
   match phased.phases with
   | [ phase ] ->
       Alcotest.(check int) "same workgroup phase" 0 phase.id;
-      Alcotest.(check int) "two matrix effects" 2 (List.length phase.accesses);
+      Alcotest.(check int) "two ordinary effects" 2 (List.length phase.accesses);
       let left, right =
         match phase.accesses with
         | [ left; right ] -> (left, right)
@@ -229,20 +211,21 @@ let test_subgroup_barrier_advances_only_subgroup_phase () : unit =
         "first access before subgroup boundaries" "S[]"
         (Memory.Subgroup_phase_key.to_string left.subgroup_phase);
       Alcotest.(check string)
-        "second access after matrix site and syncwarp" "S[1;2]"
+        "second access after syncwarp only" "S[2]"
         (Memory.Subgroup_phase_key.to_string right.subgroup_phase)
   | _ -> Alcotest.fail "subgroup barrier must not split workgroup phase"
 
 let test_workgroup_barrier_splits_workgroup_phase () : unit =
   let kernel =
     SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"wg"
-      [
-        matrix_store 1;
-        SM.Stmt.workgroup_barrier (SM.Site.make ~label:"syncthreads" 2);
-        matrix_load 3;
-      ]
+      [ SM.Stmt.workgroup_barrier (SM.Site.make ~label:"syncthreads" 2) ]
   in
-  let phased = Memory.phases_of_kernel kernel in
+  let before = ordinary_effect () in
+  let after = ordinary_effect ~phase:(ordinary_phase ~workgroup:1 ()) () in
+  let phased =
+    Memory.phases_with_ordinary_memory_effects
+      ~ordinary_memory_effects:[ before; after ] kernel
+  in
   match phased.phases with
   | [ before; after ] ->
       Alcotest.(check int) "before phase id" 0 before.id;
@@ -252,31 +235,18 @@ let test_workgroup_barrier_splits_workgroup_phase () : unit =
   | _ -> Alcotest.fail "workgroup barrier must split workgroup phases"
 
 let test_same_subgroup_phase_keeps_candidate_visible () : unit =
-  let access = single_access 10 in
+  let access = conditional_access () in
   let condition =
     Memory.not_ordered_by_subgroup_condition (subgroup_config ()) access access
     |> expect_memory_ok
   in
-  Alcotest.(check bool)
-    "same matrix site is ordered by negating same-subgroup" true
-    (Stage0.Common.contains ~substring:"threadIdx.x$T1 / 32"
-       (Exp.b_to_string condition));
-  let plain_left = { access with collective_site = None } in
-  let plain_right = { access with collective_site = None } in
-  let plain_condition =
-    Memory.not_ordered_by_subgroup_condition (subgroup_config ()) plain_left
-      plain_right
-    |> expect_memory_ok
-  in
   Alcotest.(check string)
-    "plain same subgroup phase remains visible" "true"
-    (Exp.b_to_string plain_condition)
+    "same subgroup phase remains visible" "true"
+    (Exp.b_to_string condition)
 
 let test_different_subgroup_phase_requires_different_subgroups () : unit =
-  let left = single_access 20 in
-  let right =
-    { left with collective_site = Some 21; subgroup_phase = [ 20 ] }
-  in
+  let left = conditional_access () in
+  let right = conditional_access ~subgroup_phase:[ 20 ] () in
   let condition =
     Memory.not_ordered_by_subgroup_condition (subgroup_config ()) left right
     |> expect_memory_ok
@@ -290,10 +260,8 @@ let test_different_subgroup_phase_requires_different_subgroups () : unit =
     (Stage0.Common.contains ~substring:"!=" rendered)
 
 let test_missing_config_fails_when_subgroup_reasoning_is_needed () : unit =
-  let left = single_access 30 in
-  let right =
-    { left with collective_site = Some 31; subgroup_phase = [ 30 ] }
-  in
+  let left = conditional_access () in
+  let right = conditional_access ~subgroup_phase:[ 30 ] () in
   match
     Memory.not_ordered_by_subgroup_condition SM.Target_config.missing_cuda left
       right
@@ -306,60 +274,24 @@ let test_missing_config_fails_when_subgroup_reasoning_is_needed () : unit =
            ~substring:"missing explicit subgroup lane mapping"
            (Memory.error_to_string error))
 
-let test_obligation_consumes_rectangular_matrix_footprint () : unit =
-  let obligation =
-    single_store_obligation ~block_dim:(checked_block_dim ()) ()
-  in
-  let goal = Exp.b_to_string obligation.goal in
-  Alcotest.(check string) "array" "tile" obligation.array_name;
-  Alcotest.(check bool)
-    "goal uses row witness from indexed rectangular footprint" true
-    (Stage0.Common.contains ~substring:"row$T1 * 32" goal);
-  Alcotest.(check bool)
-    "goal uses column witness from indexed rectangular footprint" true
-    (Stage0.Common.contains ~substring:"col$T1" goal);
-  Alcotest.(check bool)
-    "goal keeps row bounds condition" true
-    (Stage0.Common.contains ~substring:"row$T1 < 16" goal);
-  Alcotest.(check bool)
-    "same matrix collective site suppresses only same subgroup" true
-    (Stage0.Common.contains ~substring:"threadIdx.x$T1 / 32" goal)
-
-let test_matrix_site_memory_conditions_feed_obligation () : unit =
+let test_matrix_collective_adds_no_memory_obligation () : unit =
   let kernel =
-    SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"matrix_condition"
+    SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"matrix_only"
       [ matrix_store 40 ]
   in
-  let site_controls =
-    [
-      source_site_control 40
-        ~memory_conditions:
-          [ Exp.n_eq (Exp.Var (var "base")) (Exp.Var Variable.tid_x) ];
-    ]
-  in
-  match
-    Memory.obligations ~block_dim:(checked_block_dim ()) ~site_controls kernel
-    |> expect_memory_ok
-  with
-  | [ obligation ] ->
-      let goal = Exp.b_to_string obligation.goal in
-      Alcotest.(check bool)
-        "matrix source memory condition is projected on the left task" true
-        (Stage0.Common.contains ~substring:"base$T1 == threadIdx.x$T1" goal);
-      Alcotest.(check bool)
-        "matrix source memory condition is projected on the right task" true
-        (Stage0.Common.contains ~substring:"base$T2 == threadIdx.x$T2" goal)
-  | obligations ->
-      Alcotest.fail
-        (Printf.sprintf "expected one matrix obligation, got %d"
-           (List.length obligations))
+  let obligations = Memory.obligations kernel |> expect_memory_ok in
+  Alcotest.(check int)
+    "matrix operation is participation-only" 0 (List.length obligations)
 
 let test_missing_block_dim_fails_for_subgroup_ordered_obligation () : unit =
   let kernel =
-    SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"obligation"
-      [ matrix_store 40 ]
+    SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"obligation" []
   in
-  match Memory.obligations kernel with
+  let before = ordinary_effect () in
+  let after = ordinary_effect ~phase:(ordinary_phase ~subgroup:[ 40 ] ()) () in
+  match
+    Memory.obligations ~ordinary_memory_effects:[ before; after ] kernel
+  with
   | Ok _ -> Alcotest.fail "missing checked block dimensions unexpectedly worked"
   | Error error ->
       Alcotest.(check bool)
@@ -552,35 +484,25 @@ let test_memory_globals_project_parameter_members_without_task_suffix () : unit
         (Printf.sprintf "expected one ordinary obligation, got %d"
            (List.length obligations))
 
-let test_ordinary_and_matrix_effects_share_workgroup_phase () : unit =
+let test_matrix_collective_does_not_add_to_ordinary_memory () : unit =
   let kernel =
     SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"ordinary_matrix"
       [ matrix_store 41 ]
   in
-  let ordinary =
-    ordinary_effect ~kind:Source.Ordinary_read
-      ~access:(Access.read (var "tile") [ Exp.Var (var "base") ])
-      ()
-  in
+  let ordinary = ordinary_effect () in
   let obligations =
     Memory.obligations ~block_dim:(checked_block_dim ())
       ~ordinary_memory_effects:[ ordinary ] kernel
     |> expect_memory_ok
   in
   Alcotest.(check int)
-    "matrix self plus matrix/ordinary read/write pair" 2
-    (List.length obligations);
-  Alcotest.(check bool)
-    "ordinary source effect participates with matrix effect" true
-    (List.exists
-       (fun (obligation : Memory.obligation) ->
-         String.equal
-           (Memory.access_origin_to_string obligation.left.origin)
-           "matrix_store"
-         && String.equal
-              (Memory.access_origin_to_string obligation.right.origin)
-              "ordinary_read")
-       obligations)
+    "only the ordinary self-pair remains" 1 (List.length obligations);
+  match obligations with
+  | [ obligation ] ->
+      Alcotest.(check string)
+        "ordinary origin" "ordinary_write"
+        (Memory.access_origin_to_string obligation.left.origin)
+  | _ -> Alcotest.fail "expected one ordinary obligation"
 
 let test_ordinary_effects_in_different_subgroup_phases_keep_cross_subgroups_visible
     () : unit =
@@ -639,7 +561,7 @@ let test_ordinary_effects_in_different_subgroup_phases_keep_cross_subgroups_visi
     (Stage0.Common.contains ~substring:"threadIdx.x$T1 / 32" goal
     && Stage0.Common.contains ~substring:"!=" goal);
   let same_subgroup =
-    matrix_goal_assignments ~block_dim
+    indexed_goal_assignments ~block_dim
       ~t1:(Dim3.make ~x:0 ~y:0 ~z:0 ())
       ~t2:(Dim3.make ~x:1 ~y:0 ~z:0 ())
   in
@@ -647,7 +569,7 @@ let test_ordinary_effects_in_different_subgroup_phases_keep_cross_subgroups_visi
     "different subgroup phase suppresses same-subgroup ordinary pair" false
     (eval_goal same_subgroup cross.goal);
   let different_subgroup =
-    matrix_goal_assignments ~block_dim
+    indexed_goal_assignments ~block_dim
       ~t1:(Dim3.make ~x:0 ~y:0 ~z:0 ())
       ~t2:(Dim3.make ~x:32 ~y:0 ~z:0 ())
   in
@@ -727,19 +649,22 @@ let test_row_max_read_write_phase_ordering_is_same_subgroup_only () : unit =
 
 let test_obligation_carries_source_order_metadata () : unit =
   let kernel =
-    SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"source_order"
-      [ matrix_store 41 ]
+    SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"source_order" []
   in
-  let ordinary =
+  let read =
     ordinary_effect ~kind:Source.Ordinary_read
       ~site:(ordinary_site ~id:7 ~source_order:10 ())
       ~access:(Access.read (var "tile") [ Exp.Var (var "base") ])
       ()
   in
+  let write =
+    ordinary_effect ~kind:Source.Ordinary_write
+      ~site:(ordinary_site ~id:8 ~source_order:20 ())
+      ()
+  in
   let obligations =
     Memory.obligations ~block_dim:(checked_block_dim ())
-      ~site_controls:[ source_site_control ~source_order:20 41 ]
-      ~ordinary_memory_effects:[ ordinary ] kernel
+      ~ordinary_memory_effects:[ read; write ] kernel
     |> expect_memory_ok
   in
   match
@@ -747,26 +672,26 @@ let test_obligation_carries_source_order_metadata () : unit =
     |> List.find_opt (fun (obligation : Memory.obligation) ->
         String.equal
           (Memory.access_origin_to_string obligation.left.origin)
-          "matrix_store"
+          "ordinary_read"
         && String.equal
              (Memory.access_origin_to_string obligation.right.origin)
-             "ordinary_read")
+             "ordinary_write")
   with
   | Some obligation ->
       Alcotest.(check (option int))
-        "left matrix source order" (Some 20) obligation.left.source_order;
+        "left read source order" (Some 10) obligation.left.source_order;
       Alcotest.(check (option int))
-        "right ordinary source order" (Some 10) obligation.right.source_order
+        "right write source order" (Some 20) obligation.right.source_order
   | None ->
       Alcotest.fail
-        ("expected matrix/ordinary source-order obligation, got:\n"
+        ("expected ordinary source-order obligation, got:\n"
         ^ (obligations
           |> List.map Memory.obligation_to_string
           |> String.concat "\n"))
 
 let test_obligation_constrains_checked_invocation_domain () : unit =
   let obligation =
-    single_store_obligation ~block_dim:(checked_block_dim ()) ()
+    ordinary_base_self_obligation ~block_dim:(checked_block_dim ()) ()
   in
   let goal = Exp.b_to_string obligation.goal in
   Alcotest.(check bool)
@@ -887,9 +812,9 @@ let test_launch_checked_precondition_rejects_zero_dimension () : unit =
 
 let test_domain_rejects_impossible_yz_subgroup_escape () : unit =
   let block_dim = checked_block_dim ~x:64 () in
-  let obligation = single_store_obligation ~block_dim () in
+  let obligation = ordinary_base_self_obligation ~block_dim () in
   let assignments =
-    matrix_goal_assignments ~block_dim
+    indexed_goal_assignments ~block_dim
       ~t1:(Dim3.make ~x:0 ~y:0 ~z:0 ())
       ~t2:(Dim3.make ~x:0 ~y:1 ~z:0 ())
   in
@@ -911,9 +836,9 @@ let test_ordinary_domain_rejects_impossible_same_phase_yz_escape () : unit =
 
 let test_domain_rejects_x_at_block_bound_escape () : unit =
   let block_dim = checked_block_dim ~x:32 () in
-  let obligation = single_store_obligation ~block_dim () in
+  let obligation = ordinary_base_self_obligation ~block_dim () in
   let assignments =
-    matrix_goal_assignments ~block_dim
+    indexed_goal_assignments ~block_dim
       ~t1:(Dim3.make ~x:0 ~y:0 ~z:0 ())
       ~t2:(Dim3.make ~x:32 ~y:0 ~z:0 ())
   in
@@ -921,21 +846,21 @@ let test_domain_rejects_x_at_block_bound_escape () : unit =
     "blockDim.x == subgroup size rejects x-at-bound escape" false
     (eval_goal assignments obligation.goal)
 
-let test_valid_cross_subgroup_pair_remains_visible () : unit =
+let test_valid_distinct_thread_pair_remains_visible () : unit =
   let block_dim = checked_block_dim ~x:64 () in
-  let obligation = single_store_obligation ~block_dim () in
+  let obligation = ordinary_base_self_obligation ~block_dim () in
   let assignments =
-    matrix_goal_assignments ~block_dim
+    indexed_goal_assignments ~block_dim
       ~t1:(Dim3.make ~x:0 ~y:0 ~z:0 ())
       ~t2:(Dim3.make ~x:32 ~y:0 ~z:0 ())
   in
   Alcotest.(check bool)
-    "valid different-subgroup matrix pair remains solver-visible" true
+    "valid distinct-thread pair remains solver-visible" true
     (eval_goal assignments obligation.goal)
 
 let test_obligation_constrains_block_index_domain () : unit =
   let block_dim = checked_block_dim ~x:64 () in
-  let obligation = single_store_obligation ~block_dim () in
+  let obligation = ordinary_base_self_obligation ~block_dim () in
   let rendered = Exp.b_to_string obligation.goal in
   Alcotest.(check bool)
     "goal has nonnegative block x" true
@@ -944,7 +869,7 @@ let test_obligation_constrains_block_index_domain () : unit =
     "goal bounds block x by grid x" true
     (Stage0.Common.contains ~substring:"blockIdx.x < gridDim.x" rendered);
   let assignments =
-    matrix_goal_assignments ~block_dim
+    indexed_goal_assignments ~block_dim
       ~t1:(Dim3.make ~x:0 ~y:0 ~z:0 ())
       ~t2:(Dim3.make ~x:32 ~y:0 ~z:0 ())
     |> List.map (fun (name, value) ->
@@ -1178,12 +1103,9 @@ let tests : unit Alcotest.test_case list =
     ( "missing config fails",
       `Quick,
       test_missing_config_fails_when_subgroup_reasoning_is_needed );
-    ( "rectangular matrix footprint obligation",
+    ( "matrix collective adds no memory obligation",
       `Quick,
-      test_obligation_consumes_rectangular_matrix_footprint );
-    ( "matrix site memory conditions feed obligations",
-      `Quick,
-      test_matrix_site_memory_conditions_feed_obligation );
+      test_matrix_collective_adds_no_memory_obligation );
     ( "missing checked block dimensions",
       `Quick,
       test_missing_block_dim_fails_for_subgroup_ordered_obligation );
@@ -1196,9 +1118,9 @@ let tests : unit Alcotest.test_case list =
     ( "memory globals project parameter members without task suffix",
       `Quick,
       test_memory_globals_project_parameter_members_without_task_suffix );
-    ( "ordinary and matrix effects share workgroup phase",
+    ( "matrix collective excluded from ordinary memory",
       `Quick,
-      test_ordinary_and_matrix_effects_share_workgroup_phase );
+      test_matrix_collective_does_not_add_to_ordinary_memory );
     ( "ordinary cross-subgroup visibility",
       `Quick,
       test_ordinary_effects_in_different_subgroup_phases_keep_cross_subgroups_visible
@@ -1235,7 +1157,7 @@ let tests : unit Alcotest.test_case list =
       test_domain_rejects_x_at_block_bound_escape );
     ( "valid cross-subgroup visibility",
       `Quick,
-      test_valid_cross_subgroup_pair_remains_visible );
+      test_valid_distinct_thread_pair_remains_visible );
     ( "block index invocation domain",
       `Quick,
       test_obligation_constrains_block_index_domain );

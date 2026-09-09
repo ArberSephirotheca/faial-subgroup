@@ -16,6 +16,7 @@ open Protocols.Exp
 %token L_AND L_OR L_NOT
 %token QUESTION COLON
 %token CAST_INT CAST_BOOL
+%token BVUMUL
 %token EOF
 
 (* C operator precedence (lowest to highest) *)
@@ -51,8 +52,9 @@ nexp:
   | i=INT                                { Num i }
   | v=var                                { Var v }
 
-  (* Function calls *)
-  | name=IDENT LPAREN arg=nexp RPAREN    { NCall (name, [ arg ]) }
+  (* Function calls (polyadic) *)
+  | name=IDENT LPAREN args=separated_nonempty_list(COMMA, nexp) RPAREN
+                                         { NCall (name, args) }
 
   (* Arithmetic binary operators (signed + unsigned variants) *)
   | left=nexp PLUS right=nexp            { Binary (N_binary.Plus Signedness.Signed, left, right) }
@@ -104,18 +106,11 @@ bexp:
   | left=nexp GE right=nexp              { NRel (N_rel.Ge Signedness.Signed, left, right) }
   | left=nexp GE_U right=nexp            { NRel (N_rel.Ge Signedness.Unsigned, left, right) }
 
-  (* Predicate call with 2+ arguments — [name(arg1, arg2, ...)].
-     The arity-2+ form disambiguates from [NCall (name, arg)] in
-     [nexp] (which is exactly 1 argument and would otherwise create
-     a shift/reduce conflict on [IDENT LPAREN nexp RPAREN]).
-     Unary predicates ([pow2], [nonneg], [uintN]) have inline
-     bodies in [Predicates.all_predicates]; their canonical
-     round-trip form runs through [Predicates.b_inline] before
-     printing, so [nonneg(v)] becomes [v >= 0] and [pow2(v)]
-     becomes the disjunction of [v == 2^k] equalities. *)
-  | name=IDENT LPAREN first=nexp COMMA
-        rest=separated_nonempty_list(COMMA, nexp) RPAREN
-                                         { Pred (name, first :: rest) }
+  (* The sole n-ary predicate; every other call is a polyadic [NCall]
+     in [nexp]. Unary predicates ([pow2], [nonneg], [uintN]) parse as
+     [NCall] and are reinterpreted by [Predicates.b_inline]. *)
+  | BVUMUL LPAREN a=nexp COMMA b=nexp RPAREN
+                                         { Pred ("bvumul_noovfl", [ a; b ]) }
 
   (* Boolean binary operators *)
   | left=bexp L_AND right=bexp           { BRel (B_rel.BAnd, left, right) }

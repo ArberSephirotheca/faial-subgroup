@@ -58,8 +58,8 @@ module TypeAlias = struct
 end
 
 module Make (L : Logger) = struct
-  let parse_bin ?(sign = Signedness.Signed) (op : string)
-      (l : Imp.Infer_exp.t) (r : Infer_exp.t) : Infer_exp.t =
+  let parse_bin ?(sign = Signedness.Signed) (op : string) (l : Imp.Infer_exp.t)
+      (r : Infer_exp.t) : Infer_exp.t =
     match op with
     (* bool -> bool -> bool *)
     | "||" -> BExp (BRel (BOr, l, r))
@@ -83,7 +83,8 @@ module Make (L : Logger) = struct
     | "|" -> NExp (Binary (BitOr, l, r))
     | "&" -> NExp (Binary (BitAnd, l, r))
     | _ ->
-        L.warning (fun () -> "parse_bin: rewriting to unknown binary operator: " ^ op);
+        L.warning (fun () ->
+            "parse_bin: rewriting to unknown binary operator: " ^ op);
         let lbl =
           "(" ^ Infer_exp.to_string l ^ ") " ^ op ^ " " ^ "("
           ^ Infer_exp.to_string r ^ ")"
@@ -103,7 +104,7 @@ module Make (L : Logger) = struct
         | Ok ty ->
             let size = C_type.sizeof ty |> Option.value ~default:4 in
             L.warning (fun () ->
-              "sizeof(" ^ C_type.to_string ty ^ ") = " ^ string_of_int size);
+                "sizeof(" ^ C_type.to_string ty ^ ") = " ^ string_of_int size);
             NExp (Num size)
         | Error _ ->
             let lbl = "sizeof(" ^ J_type.to_string ty ^ ")" in
@@ -112,7 +113,8 @@ module Make (L : Logger) = struct
     | IntegerLiteral n | CharacterLiteral n -> NExp (Num n)
     | FloatingLiteral n ->
         L.warning (fun () ->
-          "parse_nexp: converting float '" ^ Float.to_string n ^ "' to integer");
+            "parse_nexp: converting float '" ^ Float.to_string n
+            ^ "' to integer");
         NExp (Num (Float.to_int n))
     | ConditionalOperator o ->
         let b = infer_expr o.cond in
@@ -128,13 +130,11 @@ module Make (L : Logger) = struct
        time. [Functions.supported] covers [divUp] / [min] / [max] /
        [log2] / [log] / [sqrt] / [__ffs] / [__clz]; [Predicates.supported]
        covers [__is_pow2] / [__uniform_int] / [__distinct_int]. *)
-    | CallExpr
-        { func = Ident { name = f; kind = Function; _ }; args; _ }
+    | CallExpr { func = Ident { name = f; kind = Function; _ }; args; _ }
       when Functions.supported (Variable.name f) ->
         let args = List.map infer_expr args in
         NExp (NCall (Variable.name f, args))
-    | CallExpr
-        { func = Ident { name = f; kind = Function; _ }; args; _ }
+    | CallExpr { func = Ident { name = f; kind = Function; _ }; args; _ }
       when Predicates.supported (Variable.name f) ->
         let args = List.map infer_expr args in
         BExp (Pred (Variable.name f, args))
@@ -170,16 +170,13 @@ module Make (L : Logger) = struct
     | BinaryOperator { opcode = ","; lhs = _; rhs = e; _ } -> infer_expr e
     | BinaryOperator { opcode = o; lhs = n1; rhs = n2; _ } ->
         let is_unsigned_operand (e : D_lang.Expr.t) : bool =
-          e
-          |> D_lang.Expr.to_type
-          |> J_type.to_c_type_res
-          |> Result.to_option
+          e |> D_lang.Expr.to_type |> J_type.to_c_type_res |> Result.to_option
           |> Option.map C_type.is_unsigned
           |> Option.value ~default:false
         in
         let sign : Signedness.t =
-          if is_unsigned_operand n1 || is_unsigned_operand n2
-          then Unsigned else Signed
+          if is_unsigned_operand n1 || is_unsigned_operand n2 then Unsigned
+          else Signed
         in
         let n1 = infer_expr n1 in
         let n2 = infer_expr n2 in
@@ -361,6 +358,7 @@ module Make (L : Logger) = struct
         Variable.from_name "assert";
         Variable.from_name "static_assert";
         Variable.from_name "__requires";
+        Variable.from_name "__builtin_assume";
       ]
 
   (* CUDA vector lanes are named [x], [y], [z], [w] in argument order. *)
@@ -420,8 +418,8 @@ module Make (L : Logger) = struct
           let x = Variable.name x in
           let ty = J_type.to_string d.ty in
           L.warning (fun () ->
-            "parse_decl: skipping non-int local variable '" ^ x ^ "' "
-           ^ "type: " ^ ty);
+              "parse_decl: skipping non-int local variable '" ^ x ^ "' "
+              ^ "type: " ^ ty);
           Skip
     in
 
@@ -433,9 +431,9 @@ module Make (L : Logger) = struct
          [v.x := a; ...] so downstream member reads [v.x] resolve,
          instead of leaving [v] an opaque call result. *)
       | Ident { name = f; _ }, Some (var, _)
-        when (match vector_ctor_fields (Variable.name f) with
-              | Some fields -> List.length fields = arg_count
-              | None -> false) ->
+        when match vector_ctor_fields (Variable.name f) with
+             | Some fields -> List.length fields = arg_count
+             | None -> false ->
           let fields = Option.get (vector_ctor_fields (Variable.name f)) in
           List.map2
             (fun field arg ->
@@ -507,14 +505,7 @@ module Make (L : Logger) = struct
           let atomic = Atomic.map infer_expr r.atomic in
           let guard = Option.map infer_expr r.guard in
           Infer_stmt.Atomic
-            {
-              target = r.target;
-              atomic;
-              array;
-              index;
-              ty;
-              guard;
-            }
+            { target = r.target; atomic; array; index; ty; guard }
       | IfStmt { cond; then_stmt; else_stmt } ->
           Imp.Infer_stmt.If (infer_expr cond, infer then_stmt, infer else_stmt)
       (* Support for location aliasing that declares a new variable *)
@@ -545,7 +536,9 @@ module Make (L : Logger) = struct
                 Some
                   (List.map
                      (fun axis ->
-                       let lane = Variable.update_name (fun n -> n ^ "." ^ axis) in
+                       let lane =
+                         Variable.update_name (fun n -> n ^ "." ^ axis)
+                       in
                        Infer_stmt.Assign
                          {
                            var = lane d.var;
@@ -594,9 +587,13 @@ module Make (L : Logger) = struct
           Infer_stmt.Assign { var; ty; data = rhs }
       | SExpr
           (BinaryOperator
-             { opcode = "=";
+             {
+               opcode = "=";
                lhs = MemberExpr { base = Ident base; name = field; _ };
-               rhs; ty; _ }) ->
+               rhs;
+               ty;
+               _;
+             }) ->
           let var =
             base.name |> Variable.update_name (fun n -> n ^ "." ^ field)
           in
@@ -613,7 +610,8 @@ module Make (L : Logger) = struct
          falling back to an unbounded [Star]. *)
       | SExpr
           (UnaryOperator
-             { opcode = ("++" | "--") as opcode;
+             {
+               opcode = ("++" | "--") as opcode;
                child = Ident { name = var; _ };
                ty;
              }) ->
@@ -633,16 +631,17 @@ module Make (L : Logger) = struct
          be a single scalar return value, so lower it to per-lane
          assignments on a synthetic return variable and return that
          variable; the inliner then binds the caller's lanes from it. *)
-      | ReturnStmt
-          (Some (CallExpr { func = Ident { name = f; _ }; args; _ }))
-        when (match vector_ctor_fields (Variable.name f) with
-              | Some fields -> List.length fields = List.length args
-              | None -> false) ->
+      | ReturnStmt (Some (CallExpr { func = Ident { name = f; _ }; args; _ }))
+        when match vector_ctor_fields (Variable.name f) with
+             | Some fields -> List.length fields = List.length args
+             | None -> false ->
           let fields = Option.get (vector_ctor_fields (Variable.name f)) in
           let retvar = Variable.from_name "@vec_return" in
           List.map2
             (fun field arg ->
-              let lane = Variable.update_name (fun n -> n ^ "." ^ field) retvar in
+              let lane =
+                Variable.update_name (fun n -> n ^ "." ^ field) retvar
+              in
               Infer_stmt.Assign
                 { var = lane; ty = C_type.int; data = infer_expr arg })
             fields args
@@ -679,19 +678,19 @@ module Make (L : Logger) = struct
           While (cond, body)
       | SwitchStmt { body = s; _ } | CaseStmt { body = s; _ } | DefaultStmt s ->
           infer s
-      | AsmStmt a ->
+      | AsmStmt a -> (
           (* Outputs precede inputs in %N indexing, per GCC inline-asm. *)
           let operands : Exp.nexp option list =
-            (a.outputs @ a.inputs)
+            a.outputs @ a.inputs
             |> List.map (fun (o : D_lang.Expr.t Asm.operand) ->
-                   try_to_nexp o.expr)
+                try_to_nexp o.expr)
           in
-          (match Ptx.parse ?loc:a.loc ~operands a.asm_string with
-           | Some s -> Infer_stmt.Sync s
-           | None ->
-               L.warning (fun () ->
-                 "asm: dropping (unrecognized PTX template): " ^ a.asm_string);
-               Skip)
+          match Ptx.parse ?loc:a.loc ~operands a.asm_string with
+          | Some s -> Infer_stmt.Sync s
+          | None ->
+              L.warning (fun () ->
+                  "asm: dropping (unrecognized PTX template): " ^ a.asm_string);
+              Skip)
       | BarrierOp { op; target; args = _; loc } ->
           let mode : Sync.Mode.t =
             match op with
@@ -707,8 +706,8 @@ module Make (L : Logger) = struct
           (* [Lift_lambdas.lift_program] runs at the start of
              [parse_program] and removes every [LambdaDecl]. *)
           failwith
-            "D_to_imp.infer: LambdaDecl leaked past Lift_lambdas — \
-             pass not run?"
+            "D_to_imp.infer: LambdaDecl leaked past Lift_lambdas — pass not \
+             run?"
     in
     infer
 
@@ -743,7 +742,7 @@ module Make (L : Logger) = struct
       in
       [ Kernel.Parameter.array x (mk_array h ty) ]
     else
-      match (if expand_vectors then vector_type_axes p.ty_var.ty else None) with
+      match if expand_vectors then vector_type_axes p.ty_var.ty else None with
       (* A vector param [uintN v] exposes each lane [v.x], [v.y], ... as
          a uniform scalar parameter, so component reads resolve to a
          per-launch value rather than a thread-divergent free var. Only
@@ -807,9 +806,7 @@ module Make (L : Logger) = struct
   let parse_kernel (ctx : Context.t) (k : D_lang.Kernel.t) :
       Context.t * Imp.Kernel.t =
     let code, return =
-      infer_stmt ctx k.code
-      |> Imp.Atomic_seed_read.rewrite
-      |> Infer_stmt.infer
+      infer_stmt ctx k.code |> Imp.Atomic_seed_read.rewrite |> Infer_stmt.infer
     in
     (* Add inferred shared arrays to global context *)
     let ctx =
@@ -881,10 +878,12 @@ module Make (L : Logger) = struct
                   let is_mut = not (C_type.is_const ty) in
                   if is_mut && List.mem C_lang.c_attr_shared v.attrs then
                     Context.add_array v.var
-                      (Memory.from_type SharedMemory ty) ctx
+                      (Memory.from_type SharedMemory ty)
+                      ctx
                   else if is_mut && List.mem C_lang.c_attr_device v.attrs then
                     Context.add_array v.var
-                      (Memory.from_type GlobalMemory ty) ctx
+                      (Memory.from_type GlobalMemory ty)
+                      ctx
                   else if Context.is_int ty ctx then
                     (* Fold a global's initializer into a constant only
                        when it is immutable: a C-level [const], or a
@@ -894,14 +893,13 @@ module Make (L : Logger) = struct
                        otherwise be pinned to its stale initializer;
                        without proof of immutability, keep it symbolic. *)
                     let immutable =
-                      (not is_mut)
-                      || List.mem C_lang.c_attr_immutable v.attrs
+                      (not is_mut) || List.mem C_lang.c_attr_immutable v.attrs
                     in
                     let g =
                       if immutable then
-                        (match v.init with
-                         | Some (IExpr n) -> try_to_nexp n
-                         | _ -> None)
+                        match v.init with
+                        | Some (IExpr n) -> try_to_nexp n
+                        | _ -> None
                       else None
                     in
                     match g with

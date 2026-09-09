@@ -9,14 +9,13 @@ type t =
   | For of Range.t * t
   | Seq of t * t
   | Skip
-  | Decl of {
-      var : Variable.t;
-      ty : C_type.t;
-      body : t;
-    }
+  | Decl of { var : Variable.t; ty : C_type.t; body : t }
 
 let decl ?(ty = C_type.int) (var : Variable.t) (body : t) : t =
   Decl { var; ty; body }
+
+let seq (p : t) (q : t) : t =
+  match (p, q) with Skip, s | s, Skip -> s | _, _ -> Seq (p, q)
 
 let to_string : t -> string =
   let rec to_s : t -> Indent.t list = function
@@ -96,8 +95,7 @@ let from_scoped (known : Variable.Set.t) : Scoped.Code.t -> t =
   in
   let rec inline (known : Variable.Set.t) (st : Subst.Vars.t)
       (i : Scoped.Code.t) : t =
-    let add_var (x : Variable.t) :
-        Variable.t * Variable.Set.t * Subst.Vars.t =
+    let add_var (x : Variable.t) : Variable.t * Variable.Set.t * Subst.Vars.t =
       let x, st =
         if Variable.Set.mem x known then
           let new_x = Variable.fresh known x in

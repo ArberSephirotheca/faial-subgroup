@@ -65,12 +65,29 @@ let test_parse_array_dim_opt () : unit =
         (parse_array_dim_opt given))
     test_cases
 
+let test_sizeof_ignores_integer_qualifiers () : unit =
+  let cases =
+    [
+      ("unsigned long", Some 8);
+      ("signed long", Some 8);
+      ("const unsigned int", Some 4);
+    ]
+  in
+  List.iter
+    (fun (given, expected) ->
+      Alcotest.check
+        Alcotest.(option int)
+        ("sizeof " ^ given) expected
+        (sizeof (make given)))
+    cases
+
 let tests : unit Alcotest.test_case list =
   [
     ("split_array_type", `Quick, test_split_array_type);
     ("parse_array_type_opt", `Quick, test_parse_dim);
     ("parse_array_type_opt_1", `Quick, test_parse_array_type_opt);
     ("parse_array_split_opt_2", `Quick, test_parse_array_dim_opt);
+    ("sizeof qualifiers", `Quick, test_sizeof_ignores_integer_qualifiers);
   ]
 
 let () = Alcotest.run "C_type" [ ("ctype", tests) ]

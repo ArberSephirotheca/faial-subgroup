@@ -7,12 +7,16 @@ module Site : sig
     id : id;
     location : Stage0.Location.t option;
     label : string option;
+    may_repeat : bool;
   }
 
-  val make : ?location:Stage0.Location.t -> ?label:string -> id -> t
+  val make :
+    ?location:Stage0.Location.t -> ?label:string -> ?may_repeat:bool -> id -> t
+
   val id : t -> id
   val location_opt : t -> Stage0.Location.t option
   val label_opt : t -> string option
+  val may_repeat : t -> bool
   val to_string : t -> string
 end
 
@@ -73,6 +77,7 @@ module Barrier : sig
 
   val make : Site.t -> kind -> t
   val scopes : kind -> string list
+  val orders_memory : kind -> bool
   val to_string : t -> string
 end
 
@@ -195,6 +200,7 @@ module Stmt : sig
   val subgroup_barrier : Site.t -> t
   val site : t -> Site.t
   val is_subgroup_boundary : t -> bool
+  val orders_memory : t -> bool
   val matrix_memory_effect : t -> Matrix.memory_effect option
   val to_string : t -> string
 end
