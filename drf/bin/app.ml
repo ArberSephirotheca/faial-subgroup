@@ -621,7 +621,8 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
     | None -> if all_dims then None else Some parsed.options.grid_dim
     | Some _ -> None
   in
-  (* [assumes] entries are [(kernel_name option, bexp)]. A [None]
+  (* [assumes] entries are [(kernel_name option, bexp)]. A source-kernel
+     prefix also matches its synthesised [name@launch-site] variants. A [None]
      prefix means "apply to every kernel that can take this clause"
      — i.e., every kernel whose declared params plus the
      launch-config dims cover the clause's free variables. A [Some n]
@@ -648,13 +649,22 @@ let parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
         Variable.is_launch_config variable
         || Variable.Set.mem variable available)
   in
+  let source_kernel_name (name : string) : string =
+    match String.index_opt name '@' with
+    | Some index -> String.sub name 0 index
+    | None -> name
+  in
   let assumptions_for_kernel ~(name : string) ~(has_vars : Exp.bexp -> bool) =
     List.filter_map
       (fun (prefix, clause) ->
         match prefix with
         | None -> if has_vars clause then Some clause else None
         | Some expected ->
-            if String.equal expected name && has_vars clause then Some clause
+            if
+              (String.equal expected name
+              || String.equal expected (source_kernel_name name))
+              && has_vars clause
+            then Some clause
             else None)
       assumes
   in

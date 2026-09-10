@@ -1,6 +1,7 @@
 type error =
   | Missing_subgroup_config of { kernel : string }
   | Unsupported_expression of { context : string; expr : string }
+  | Unsupported_participation_control of { kernel : string; control : string }
   | Unsupported_matrix_call of { op : string; reason : string; expr : string }
   | Subgroup_callee_requires_inlining of { kernel : string; callee : string }
   | Launch_wrapper_inlining_error of {

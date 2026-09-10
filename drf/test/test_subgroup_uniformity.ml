@@ -39,6 +39,14 @@ let call_expr (name : string) (args : D_lang.Expr.t list) : D_lang.Expr.t =
       ty = J_type.void;
     }
 
+let int_call_expr (name : string) (args : D_lang.Expr.t list) : D_lang.Expr.t =
+  CallExpr
+    {
+      func = ident ~kind:Decl_expr.Kind.Function ~ty:J_type.int name;
+      args;
+      ty = J_type.int;
+    }
+
 let thread_x_lt_32 () : D_lang.Expr.t =
   D_lang.Expr.BinaryOperator
     {
@@ -603,6 +611,92 @@ let test_source_subgroup_id_alias_requires_matching_size () : unit =
     "mismatched subgroup-id divisor rejects" "undefined_behavior"
     (Uniformity.verdict_to_string (Uniformity.function_verdict result))
 
+let physical_warp_size_alias_program () : D_lang.Program.t =
+  let helper =
+    D_lang.Def.Kernel
+      {
+        ty = "int ()";
+        name = "ggml_cuda_get_physical_warp_size";
+        code = ReturnStmt (Some (IntegerLiteral 32));
+        type_params = [];
+        template_args = [];
+        params = [];
+        attribute = D_lang.KernelAttr.Auxiliary;
+      }
+  in
+  let code =
+    D_lang.Stmt.from_list
+      [
+        DeclStmt
+          [
+            decl "tid" (member_expr "threadIdx" "x");
+            decl "warp_size"
+              (int_call_expr "ggml_cuda_get_physical_warp_size" []);
+            decl "warp" (bin (ident "tid") "/" (ident "warp_size"));
+          ];
+        IfStmt
+          {
+            cond = bin ~ty:J_type.bool (ident "warp") "==" (IntegerLiteral 0);
+            then_stmt = syncwarp_stmt;
+            else_stmt = Skip;
+          };
+      ]
+  in
+  [
+    helper;
+    D_lang.Def.Kernel
+      {
+        ty = "void ()";
+        name = "physical_warp_size_alias_syncwarp";
+        code;
+        type_params = [];
+        template_args = [];
+        params = [];
+        attribute = D_lang.KernelAttr.Default;
+      };
+  ]
+
+let test_source_physical_warp_size_alias_accepts () : unit =
+  let result =
+    check_source_program_uniformity (physical_warp_size_alias_program ())
+  in
+  Alcotest.(check string)
+    "physical warp helper matches configured subgroup" "drf"
+    (Uniformity.verdict_to_string (Uniformity.function_verdict result))
+
+let test_non_type_template_control_is_uniform () : unit =
+  let enabled = var "enabled" in
+  let code =
+    D_lang.Stmt.IfStmt
+      {
+        cond = ident ~kind:Decl_expr.Kind.NonTypeTemplateParm "enabled";
+        then_stmt = syncwarp_stmt;
+        else_stmt = Skip;
+      }
+  in
+  let program =
+    [
+      D_lang.Def.Kernel
+        {
+          ty = "void ()";
+          name = "template_uniform_control";
+          code;
+          type_params =
+            [
+              D_lang.Ty_param.NonTypeTemplate
+                { name = enabled; ty = J_type.bool };
+            ];
+          template_args = [];
+          params = [];
+          attribute = D_lang.KernelAttr.Default;
+        };
+    ]
+  in
+  let result = check_source_program_uniformity program in
+  Alcotest.(check string)
+    "non-type template parameter is lane invariant" "drf"
+    (Uniformity.verdict_to_string (Uniformity.function_verdict result))
+
 let stale_subgroup_id_alias_program () : D_lang.Program.t =
   let code =
     D_lang.Stmt.from_list
@@ -1120,6 +1214,12 @@ let tests : unit Alcotest.test_case list =
     ( "source subgroup-id alias requires matching size",
       `Quick,
       test_source_subgroup_id_alias_requires_matching_size );
+    ( "source physical-warp-size alias accepts",
+      `Quick,
+      test_source_physical_warp_size_alias_accepts );
+    ( "non-type template control is uniform",
+      `Quick,
+      test_non_type_template_control_is_uniform );
     ( "source subgroup-id alias reassignment rejects",
       `Quick,
       test_source_subgroup_id_alias_reassignment_rejects );

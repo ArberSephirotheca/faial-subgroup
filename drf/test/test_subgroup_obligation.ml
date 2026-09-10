@@ -283,21 +283,60 @@ let test_matrix_collective_adds_no_memory_obligation () : unit =
   Alcotest.(check int)
     "matrix operation is participation-only" 0 (List.length obligations)
 
-let test_missing_block_dim_fails_for_subgroup_ordered_obligation () : unit =
+let test_symbolic_domain_supports_subgroup_ordered_obligation () : unit =
   let kernel =
     SM.Kernel.make ~target_config:(subgroup_config ()) ~name:"obligation" []
   in
   let before = ordinary_effect () in
   let after = ordinary_effect ~phase:(ordinary_phase ~subgroup:[ 40 ] ()) () in
-  match
+  let obligations =
     Memory.obligations ~ordinary_memory_effects:[ before; after ] kernel
-  with
-  | Ok _ -> Alcotest.fail "missing checked block dimensions unexpectedly worked"
-  | Error error ->
+    |> expect_memory_ok
+  in
+  match obligations with
+  | [ _; obligation; _ ] ->
+      let goal = Exp.b_to_string obligation.goal in
       Alcotest.(check bool)
-        "error explains missing checked block dimensions" true
-        (Stage0.Common.contains ~substring:"missing checked block dimensions"
-           (Memory.error_to_string error))
+        "symbolic domain bounds T1 x" true
+        (Stage0.Common.contains ~substring:"threadIdx.x$T1 < blockDim.x" goal);
+      Alcotest.(check bool)
+        "symbolic domain bounds T2 z" true
+        (Stage0.Common.contains ~substring:"threadIdx.z$T2 < blockDim.z" goal)
+  | _ ->
+      Alcotest.fail
+        (Printf.sprintf "expected three obligations, got %d"
+           (List.length obligations))
+
+let test_ordinary_obligation_has_symbolic_invocation_domain () : unit =
+  let kernel =
+    SM.Kernel.make ~target_config:(subgroup_config ())
+      ~name:"ordinary_symbolic_domain" []
+  in
+  let ordinary =
+    ordinary_effect
+      ~access:(Access.write (var "tile") [ Exp.Var Variable.tid_x ] None)
+      ()
+  in
+  let obligations =
+    Memory.obligations ~ordinary_memory_effects:[ ordinary ] kernel
+    |> expect_memory_ok
+  in
+  match obligations with
+  | [ obligation ] ->
+      let goal = Exp.b_to_string obligation.goal in
+      Alcotest.(check bool)
+        "symbolic domain requires positive x" true
+        (Stage0.Common.contains ~substring:"blockDim.x > 0" goal);
+      Alcotest.(check bool)
+        "symbolic domain bounds T1 x" true
+        (Stage0.Common.contains ~substring:"threadIdx.x$T1 < blockDim.x" goal);
+      Alcotest.(check bool)
+        "symbolic domain bounds T2 y" true
+        (Stage0.Common.contains ~substring:"threadIdx.y$T2 < blockDim.y" goal)
+  | _ ->
+      Alcotest.fail
+        (Printf.sprintf "expected one ordinary obligation, got %d"
+           (List.length obligations))
 
 let test_ordinary_source_memory_effect_generates_obligation () : unit =
   let kernel =
@@ -1106,9 +1145,12 @@ let tests : unit Alcotest.test_case list =
     ( "matrix collective adds no memory obligation",
       `Quick,
       test_matrix_collective_adds_no_memory_obligation );
-    ( "missing checked block dimensions",
+    ( "symbolic domain supports subgroup ordering",
       `Quick,
-      test_missing_block_dim_fails_for_subgroup_ordered_obligation );
+      test_symbolic_domain_supports_subgroup_ordered_obligation );
+    ( "ordinary symbolic invocation domain",
+      `Quick,
+      test_ordinary_obligation_has_symbolic_invocation_domain );
     ( "ordinary source memory effect obligation",
       `Quick,
       test_ordinary_source_memory_effect_generates_obligation );

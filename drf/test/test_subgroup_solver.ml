@@ -787,7 +787,9 @@ let test_symbolic_k_goal_requires_executable_upper_guard () : unit =
 
 let test_unsupported_memory_boundary_is_not_solver_unknown () : unit =
   let outcome =
-    Error Memory.Missing_block_dim_for_subgroup_ordering
+    Error
+      (Memory.Invalid_symbolic_checked_block_dim
+         "missing subgroup ordering dimensions")
     |> Solver.solve_obligation_result ~kernel_name:"missing_block_dim"
   in
   Alcotest.(check string)

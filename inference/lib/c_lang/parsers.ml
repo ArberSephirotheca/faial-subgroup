@@ -27,9 +27,9 @@ let rec parse_expr (j : json) : c_expr j_result =
       (* Unknown value *)
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.from_json ty))
-  | "ImplicitValueInitExpr" | "CXXNullPtrLiteralExpr"
-  | "StringLiteral" | "PredefinedExpr" | "SizeOfPackExpr"
-  | "RecoveryExpr" | "CXXThisExpr" ->
+  | "CXXNullPtrLiteralExpr" -> Ok (IntegerLiteral 0)
+  | "ImplicitValueInitExpr" | "StringLiteral" | "PredefinedExpr"
+  | "SizeOfPackExpr" | "RecoveryExpr" | "CXXThisExpr" ->
       (* Unknown value *)
       let* ty = get_field "type" o in
       Ok (RecoveryExpr (J_type.from_json ty))
@@ -68,9 +68,18 @@ let rec parse_expr (j : json) : c_expr j_result =
   | "CharacterLiteral" ->
       let* i = with_field "value" cast_int o in
       Ok (CharacterLiteral i)
-  | "CXXConstCastExpr" | "CXXReinterpretCastExpr"
-  | "ImplicitCastExpr" | "CXXStaticCastExpr" | "ConstantExpr" | "ParenExpr"
-  | "ExprWithCleanups" | "CStyleCastExpr" | "CXXDefaultArgExpr" ->
+  | "ConstantExpr" -> (
+      match (with_opt_field "value" cast_string o, get_field "type" o) with
+      | Ok (Some ("true" | "1")), Ok ty
+        when String.equal (J_type.to_string (J_type.from_json ty)) "bool" ->
+          Ok (CXXBoolLiteralExpr true)
+      | Ok (Some ("false" | "0")), Ok ty
+        when String.equal (J_type.to_string (J_type.from_json ty)) "bool" ->
+          Ok (CXXBoolLiteralExpr false)
+      | _ -> with_field "inner" (cast_list_1 parse_expr) o)
+  | "CXXConstCastExpr" | "CXXReinterpretCastExpr" | "ImplicitCastExpr"
+  | "CXXStaticCastExpr" | "ParenExpr" | "ExprWithCleanups" | "CStyleCastExpr"
+  | "CXXDefaultArgExpr" ->
       with_field "inner" (cast_list_1 parse_expr) o
   | "PackExpansionExpr" ->
       (* Preserve the pack-expansion wrapper rather than collapsing to
@@ -195,12 +204,7 @@ let rec parse_expr (j : json) : c_expr j_result =
       let* ty = get_field "type" o in
       Ok
         (ConditionalOperator
-           {
-             cond = c;
-             then_expr = t;
-             else_expr = e;
-             ty = J_type.from_json ty;
-           })
+           { cond = c; then_expr = t; else_expr = e; ty = J_type.from_json ty })
   | "UnaryExprOrTypeTraitExpr" ->
       let* ty = get_field "type" o in
       Ok (SizeOfExpr (J_type.from_json ty))
@@ -211,14 +215,12 @@ let rec parse_expr (j : json) : c_expr j_result =
   | "NonTypeTemplateParmDecl" ->
       let* name = parse_variable j in
       let* ty = get_field "type" o in
-      Ok
-        (Ident { name; ty = J_type.from_json ty; kind = NonTypeTemplateParm })
+      Ok (Ident { name; ty = J_type.from_json ty; kind = NonTypeTemplateParm })
   | "UnresolvedLookupExpr" ->
       let* v = parse_variable j in
       let* tys = get_field "lookups" o >>= cast_list in
       Ok
-        (UnresolvedLookupExpr
-           { name = v; tys = List.map J_type.from_json tys })
+        (UnresolvedLookupExpr { name = v; tys = List.map J_type.from_json tys })
   | "CXXNewExpr" ->
       let* arg = with_field "inner" (cast_first parse_expr) o in
       let* ty = get_field "type" o in
@@ -316,8 +318,7 @@ let rec parse_expr (j : json) : c_expr j_result =
         (match (func, args) with
         | Ident { name = n; kind = CXXMethod; _ }, [ lhs; rhs ]
           when Variable.name n = "operator=" ->
-            BinaryOperator
-              { lhs; opcode = "="; rhs; ty = c_expr_to_type lhs }
+            BinaryOperator { lhs; opcode = "="; rhs; ty = c_expr_to_type lhs }
         | UnresolvedLookupExpr { name = n; _ }, [ lhs; rhs ]
         | Ident { name = n; kind = Function; _ }, [ lhs; rhs ] -> (
             let ty = J_type.from_json ty in
@@ -334,7 +335,7 @@ let rec parse_expr (j : json) : c_expr j_result =
             | "operator>>=" -> c_expr_compound ty lhs ">>" rhs
             | _ -> CXXOperatorCallExpr { func; args; ty })
         | _ -> CXXOperatorCallExpr { func; args; ty = J_type.from_json ty })
-  | "CallExpr" ->
+  | "CallExpr" -> (
       let* func, args =
         with_field "inner"
           (fun j ->
@@ -354,21 +355,20 @@ let rec parse_expr (j : json) : c_expr j_result =
          pipeline see the bare argument as if the intrinsic
          were absent. *)
       let is_reinterpret_cast = function
-        | "__double_as_longlong" | "__longlong_as_double"
-        | "__float_as_int" | "__int_as_float"
-        | "__float_as_uint" | "__uint_as_float" ->
+        | "__double_as_longlong" | "__longlong_as_double" | "__float_as_int"
+        | "__int_as_float" | "__float_as_uint" | "__uint_as_float" ->
             true
         | _ -> false
       in
-      (match func, args with
-       | Ident f, [ arg ] when is_reinterpret_cast (Variable.name f.name) ->
-           Ok arg
-       | _ -> Ok (CallExpr { func; args; ty = J_type.from_json ty }))
+      match (func, args) with
+      | Ident f, [ arg ] when is_reinterpret_cast (Variable.name f.name) ->
+          Ok arg
+      | _ -> Ok (CallExpr { func; args; ty = J_type.from_json ty }))
   | "CXXBindTemporaryExpr" | "CXXFunctionalCastExpr"
   | "MaterializeTemporaryExpr" | "CompoundLiteralExpr" ->
       let* body = with_field "inner" (cast_list_1 parse_expr) o in
       Ok body
-  | "StmtExpr" ->
+  | "StmtExpr" -> (
       (* GCC statement expression [({ s1; s2; ... ; e; })]. The inner
          CompoundStmt's body is a sequence of statements with the
          trailing element being the value-yielding expression. We
@@ -394,7 +394,7 @@ let rec parse_expr (j : json) : c_expr j_result =
             | None -> None)
         | _ -> None
       in
-      (match split_trailing body_stmt with
+      match split_trailing body_stmt with
       | Some (body, result) -> Ok (StmtExpr { body; result; ty })
       | None ->
           (* No trailing expression — illegal C, treat as unknown. *)
@@ -485,8 +485,7 @@ let rec parse_expr (j : json) : c_expr j_result =
       let rec resolve_capture (e : c_expr) : (Variable.t * c_expr) option =
         match e with
         | Ident i -> Some (i.name, Ident i)
-        | CXXConstructExpr { args = [ single ]; _ } ->
-            resolve_capture single
+        | CXXConstructExpr { args = [ single ]; _ } -> resolve_capture single
         | _ -> None
       in
       let* captures =
@@ -496,8 +495,7 @@ let rec parse_expr (j : json) : c_expr j_result =
             match resolve_capture e with
             | Some r -> Ok r
             | None ->
-                root_cause
-                  "LambdaExpr capture init not resolvable to a name"
+                root_cause "LambdaExpr capture init not resolvable to a name"
                   init_j)
           cap_inits
       in
@@ -545,8 +543,7 @@ and parse_decl (j : json) : c_decl option j_result =
      parse_variable. *)
   let is_tag_decl =
     match k with
-    | "CXXRecordDecl" | "RecordDecl" | "EnumDecl" | "ClassTemplateDecl" ->
-        true
+    | "CXXRecordDecl" | "RecordDecl" | "EnumDecl" | "ClassTemplateDecl" -> true
     | _ -> false
   in
   (* Block-scope declaration statements that introduce no runtime value
@@ -559,9 +556,7 @@ and parse_decl (j : json) : c_decl option j_result =
   else
     let* name = parse_variable j in
     let* ty = get_field "type" o in
-    let inner =
-      List.assoc_opt "inner" o |> Option.value ~default:(`List [])
-    in
+    let inner = List.assoc_opt "inner" o |> Option.value ~default:(`List []) in
     let* inner = cast_list inner in
     let inner = List.filter decl_is_valid_j inner in
     let attrs, inits =
@@ -604,14 +599,7 @@ and parse_decl (j : json) : c_decl option j_result =
           Error (Because (("Field 'init'", j), RootCause (msg, `List inner)))
     in
     let ty_var = Ty_variable.make ~name ~ty:(J_type.from_json ty) in
-    Ok
-      (Some
-         {
-           ty = ty_var.ty;
-           var = Ty_variable.name ty_var;
-           init;
-           attrs;
-         })
+    Ok (Some { ty = ty_var.ty; var = Ty_variable.name ty_var; init; attrs })
 
 and parse_for_init (j : json) : c_for_init j_result =
   let open Rjson in
@@ -633,9 +621,7 @@ and parse_stmt (j : json) : c_stmt j_result =
       with_field "inner"
         (fun j ->
           let* l = cast_list j in
-          let wrap (m : string) handle_ok =
-            wrap handle_ok (fun _ -> (m, j))
-          in
+          let wrap (m : string) handle_ok = wrap handle_ok (fun _ -> (m, j)) in
           match l with
           | [ cond; then_stmt; else_stmt ] ->
               let* cond = wrap "cond" parse_expr cond in
@@ -649,8 +635,8 @@ and parse_stmt (j : json) : c_stmt j_result =
           | _ ->
               let g = List.length l |> string_of_int in
               root_cause
-                ("Expecting a list of length 2 or 3, but got a length of \
-                  list " ^ g)
+                ("Expecting a list of length 2 or 3, but got a length of list "
+               ^ g)
                 j)
         o
   | Some "WhileStmt" ->
@@ -678,8 +664,8 @@ and parse_stmt (j : json) : c_stmt j_result =
           | _ ->
               let g = List.length l |> string_of_int in
               root_cause
-                ("Expecting a list of length 2 or 3, but got a length of \
-                  list " ^ g)
+                ("Expecting a list of length 2 or 3, but got a length of list "
+               ^ g)
                 j)
         o
   | Some "DeclStmt" -> (
@@ -739,9 +725,7 @@ and parse_stmt (j : json) : c_stmt j_result =
       let* c = with_field "inner" (cast_list_1 parse_stmt) o in
       Ok (DefaultStmt c)
   | Some "CaseStmt" ->
-      let* c, b =
-        with_field "inner" (cast_list_2 parse_expr parse_stmt) o
-      in
+      let* c, b = with_field "inner" (cast_list_2 parse_expr parse_stmt) o in
       Ok (CaseStmt { case = c; body = b })
   | Some "SwitchStmt" ->
       let* cond, body =
@@ -788,17 +772,13 @@ and parse_stmt (j : json) : c_stmt j_result =
       in
       Ok (DoStmt { cond = c; body = b })
   | Some "AttributedStmt" ->
-      let* _, stmt =
-        with_field "inner" (cast_list_2 Result.ok parse_stmt) o
-      in
+      let* _, stmt = with_field "inner" (cast_list_2 Result.ok parse_stmt) o in
       Ok stmt
   | Some "ForStmt" ->
       with_field "inner"
         (fun j ->
           let* l = cast_list j in
-          let wrap handle_ok (m : string) =
-            wrap handle_ok (fun _ -> (m, j))
-          in
+          let wrap handle_ok (m : string) = wrap handle_ok (fun _ -> (m, j)) in
           let wrap_opt handle_ok (m : string) (j : Yojson.Basic.t) =
             match j with
             | `Assoc [] -> Ok None
@@ -848,8 +828,7 @@ and parse_stmt (j : json) : c_stmt j_result =
             int_of_string_opt (String.sub qual_type (i + 1) (j - i - 1))
         | _ -> None
       in
-      let parse_range_stmt (range_j : json) :
-          (c_expr * int * J_type.t) option =
+      let parse_range_stmt (range_j : json) : (c_expr * int * J_type.t) option =
         let extract =
           let* ro = cast_object range_j in
           let* var_decls = with_field "inner" cast_list ro in
@@ -877,9 +856,7 @@ and parse_stmt (j : json) : c_stmt j_result =
           let* ro = cast_object range_j in
           let* var_decls = with_field "inner" cast_list ro in
           let* var_j =
-            match var_decls with
-            | x :: _ -> Ok x
-            | [] -> root_cause "" range_j
+            match var_decls with x :: _ -> Ok x | [] -> root_cause "" range_j
           in
           let* vo = cast_object var_j in
           with_field "name" cast_string vo
@@ -915,7 +892,7 @@ and parse_stmt (j : json) : c_stmt j_result =
           if n < 7 then
             root_cause
               ("CXXForRangeStmt: expected at least 7 inner elements, got "
-              ^ string_of_int n)
+             ^ string_of_int n)
               j
           else
             let body_j = List.nth l (n - 1) in
@@ -923,18 +900,16 @@ and parse_stmt (j : json) : c_stmt j_result =
             let range_stmt_j = List.nth l (n - 7) in
             let* body = parse_stmt body_j in
             match
-              ( parse_range_stmt range_stmt_j,
-                parse_loop_var loop_var_j )
+              (parse_range_stmt range_stmt_j, parse_loop_var loop_var_j)
             with
-            | Some (arr_expr, bound, _arr_ty), Some (loop_var, loop_var_ty)
-              ->
+            | Some (arr_expr, bound, _arr_ty), Some (loop_var, loop_var_ty) ->
                 let idx_var =
                   Variable.from_name (synth_index_name range_stmt_j)
                 in
                 let idx_ref : c_expr =
                   Ident
-                    (Decl_expr.from_name ~ty:J_type.int
-                       ~kind:Decl_expr.Kind.Var idx_var)
+                    (Decl_expr.from_name ~ty:J_type.int ~kind:Decl_expr.Kind.Var
+                       idx_var)
                 in
                 let arr_subscript : c_expr =
                   ArraySubscriptExpr

@@ -39,20 +39,19 @@ let conv_int_list =
   Arg.conv (parse, print)
 
 (* [--assume "BEXP"] or [--assume "KERNEL:BEXP"]. The optional prefix
-   targets a single kernel by name; without it, the clause applies to
-   every kernel whose declared params plus the launch-config dims
-   cover the clause's free variables. The prefix must look like a C
-   identifier (letters / digits / underscore); a [:] inside the BEXP
-   itself never matches because the bexp grammar uses no [:] tokens. *)
+   targets either a source kernel or an exact synthesised [name@site] variant;
+   without it, the clause applies to every kernel whose declared params plus
+   the launch-config dims cover the clause's free variables. A [:] inside the
+   BEXP itself never matches because the bexp grammar uses no [:] tokens. *)
 let conv_assume =
-  let looks_like_ident s =
+  let looks_like_kernel_name s =
     s <> ""
     && String.for_all
          (fun c ->
            (c >= 'a' && c <= 'z')
            || (c >= 'A' && c <= 'Z')
            || (c >= '0' && c <= '9')
-           || c = '_')
+           || c = '_' || c = '@')
          s
   in
   let parse_bexp s =
@@ -67,7 +66,7 @@ let conv_assume =
     | Some i -> (
         let prefix = String.sub s 0 i |> String.trim in
         let rest = String.sub s (i + 1) (String.length s - i - 1) in
-        if looks_like_ident prefix then
+        if looks_like_kernel_name prefix then
           match parse_bexp rest with
           | Ok b -> Ok (Some prefix, b)
           | Error e -> Error e
@@ -421,8 +420,7 @@ let main =
              prefix, the clause is applied to every kernel whose declared \
              params (plus the launch-config dims) cover the clause's free \
              variables. With a [KERNEL:] prefix the clause is scoped to a \
-             specific kernel by name; the prefix is treated as an identifier \
-             match only when [KERNEL] is a valid C identifier. Names not \
+             source kernel or exact synthesised [name@site] variant. Names not \
              matching any kernel in the file are silently ignored. May be \
              repeated. Examples: --assume \"blockDim.x == 32 && N > 0\" or \
              --assume \"ckMedian:blockDim.x == 16\"")

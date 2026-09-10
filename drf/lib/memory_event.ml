@@ -438,7 +438,6 @@ module Subgroup_obligation = struct
 
   type error =
     | Subgroup_config_error of SM.Target_config.error
-    | Missing_block_dim_for_subgroup_ordering
     | Invalid_block_dim of Dim3.t
     | Invalid_symbolic_checked_block_dim of string
     | Incomplete_launch_checked_block_dim of string list
@@ -456,8 +455,6 @@ module Subgroup_obligation = struct
 
   let error_to_string : error -> string = function
     | Subgroup_config_error error -> SM.Target_config.error_to_string error
-    | Missing_block_dim_for_subgroup_ordering ->
-        "missing checked block dimensions for subgroup memory ordering"
     | Invalid_block_dim block_dim ->
         Printf.sprintf
           "invalid checked block dimensions %s: dimensions must be positive"
@@ -728,10 +725,6 @@ module Subgroup_obligation = struct
       Ok (Exp.Bool true)
     else same_subgroup_condition config |> Result.map Exp.b_not
 
-  let subgroup_ordering_needs_identity (left : conditional_access)
-      (right : conditional_access) : bool =
-    not (Subgroup_phase_key.equal left.subgroup_phase right.subgroup_phase)
-
   let ordinary_memory_kind_to_origin = Subgroup_event.ordinary_memory_origin
 
   let ordinary_memory_site_to_string (site : SS.ordinary_memory_site) : string =
@@ -937,6 +930,31 @@ module Subgroup_obligation = struct
          ((checked_precondition :: task_bounds Task.Task1)
          @ task_bounds Task.Task2))
 
+  let symbolic_invocation_domain_condition : Exp.bexp =
+    let dimensions =
+      [
+        (Variable.tid_x, Variable.bdim_x);
+        (Variable.tid_y, Variable.bdim_y);
+        (Variable.tid_z, Variable.bdim_z);
+      ]
+    in
+    let positive_dimensions =
+      List.map
+        (fun (_, block_dim) -> Exp.n_gt (Exp.Var block_dim) (Exp.Num 0))
+        dimensions
+    in
+    let task_bounds task =
+      List.map
+        (fun (thread_idx, block_dim) ->
+          let projected = Exp.Var (project_var task thread_idx) in
+          Exp.b_and
+            (Exp.n_ge projected (Exp.Num 0))
+            (Exp.n_lt projected (Exp.Var block_dim)))
+        dimensions
+    in
+    Exp.b_and_ex
+      (positive_dimensions @ task_bounds Task.Task1 @ task_bounds Task.Task2)
+
   let checked_block_dim_precondition (checked_block_dim : checked_block_dim) :
       Exp.bexp =
     checked_block_dim_dimensions checked_block_dim
@@ -946,8 +964,7 @@ module Subgroup_obligation = struct
         :: Option.to_list dimension.checked_dimension_positive_guard)
     |> Exp.b_and_ex
 
-  let invocation_domain_condition ?checked_block_dim ?block_dim
-      (left : conditional_access) (right : conditional_access) :
+  let invocation_domain_condition ?checked_block_dim ?block_dim () :
       (Exp.bexp, error) result =
     match (checked_block_dim, block_dim) with
     | Some _, Some _ -> Error Conflicting_checked_block_dim_inputs
@@ -957,10 +974,7 @@ module Subgroup_obligation = struct
         let ( let* ) = Result.bind in
         let* checked_block_dim = checked_block_dim_of_dim3 block_dim in
         checked_invocation_domain_condition checked_block_dim
-    | None, None ->
-        if subgroup_ordering_needs_identity left right then
-          Error Missing_block_dim_for_subgroup_ordering
-        else Ok (Exp.Bool true)
+    | None, None -> Ok symbolic_invocation_domain_condition
 
   let index_match_condition (left : Access.t) (right : Access.t) : Exp.bexp =
     let clauses =
@@ -1005,7 +1019,7 @@ module Subgroup_obligation = struct
     let right_precondition = project_bexp globals Task.Task2 precondition in
     let ( let* ) = Result.bind in
     let* invocation_domain =
-      invocation_domain_condition ?checked_block_dim ?block_dim left right
+      invocation_domain_condition ?checked_block_dim ?block_dim ()
     in
     let* subgroup_condition =
       not_ordered_by_subgroup_condition config left right

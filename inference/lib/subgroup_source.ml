@@ -7,6 +7,7 @@ module IntMap = Stage0.Common.IntMap
 type error =
   | Missing_subgroup_config of { kernel : string }
   | Unsupported_expression of { context : string; expr : string }
+  | Unsupported_participation_control of { kernel : string; control : string }
   | Unsupported_matrix_call of { op : string; reason : string; expr : string }
   | Subgroup_callee_requires_inlining of { kernel : string; callee : string }
   | Launch_wrapper_inlining_error of {
@@ -73,6 +74,9 @@ let error_to_string : error -> string = function
         kernel
   | Unsupported_expression { context; expr } ->
       Printf.sprintf "unsupported expression in %s: %s" context expr
+  | Unsupported_participation_control { kernel; control } ->
+      Printf.sprintf "kernel '%s' uses unsupported participation control: %s"
+        kernel control
   | Unsupported_matrix_call { op; reason; expr } ->
       Printf.sprintf "unsupported matrix call '%s': %s in %s" op reason expr
   | Subgroup_callee_requires_inlining { kernel; callee } ->
@@ -94,7 +98,8 @@ let error_to_string : error -> string = function
         dimension (Exp.n_to_string previous) (Exp.n_to_string next)
 
 let call_name : D_lang.Expr.t -> string option = function
-  | Ident { name; kind = Function; _ } | UnresolvedLookupExpr { name; _ } ->
+  | Ident { name; kind = Function | CXXMethod; _ }
+  | UnresolvedLookupExpr { name; _ } ->
       Some (Variable.name name)
   | _ -> None
 
@@ -158,6 +163,13 @@ let rec nexp_of_expr ~(context : string) (expr : D_lang.Expr.t) :
   | CXXBoolLiteralExpr value -> Ok (Exp.Num (if value then 1 else 0))
   | IntegerLiteral n | CharacterLiteral n -> Ok (Exp.Num n)
   | FloatingLiteral n -> Ok (Exp.Num (Float.to_int n))
+  | SizeOfExpr ty -> (
+      match
+        J_type.to_c_type_res ty |> Result.to_option |> fun ty ->
+        Option.bind ty C_type.sizeof
+      with
+      | Some size -> Ok (Exp.Num size)
+      | None -> unsupported_expr ~context expr)
   | MemberExpr _ -> Ok (Exp.Var (Variable.from_name (expr_to_string expr)))
   | BinaryOperator { opcode = "+"; lhs; rhs; _ } ->
       binary (Plus Signedness.Signed) lhs rhs
@@ -232,7 +244,11 @@ and bexp_of_expr ~(context : string) (expr : D_lang.Expr.t) :
       let* expr = nexp_of_expr ~context expr in
       Ok (Exp.cast_bool expr)
 
-type pointer_alias = { source : Variable.t; offset : Exp.nexp }
+type pointer_alias = {
+  source : Variable.t;
+  offset : Exp.nexp;
+  required_controls : Exp.bexp list;
+}
 
 type aggregate_alias = {
   aggregate_array : Variable.t;
@@ -240,7 +256,9 @@ type aggregate_alias = {
 }
 
 let pointer_alias_equal (lhs : pointer_alias) (rhs : pointer_alias) : bool =
-  Variable.equal lhs.source rhs.source && lhs.offset = rhs.offset
+  Variable.equal lhs.source rhs.source
+  && lhs.offset = rhs.offset
+  && lhs.required_controls = rhs.required_controls
 
 type collect_state = {
   kernel_name : string;
@@ -268,6 +286,11 @@ type collect_state = {
   launch_preconditions_rev : Exp.bexp list;
   launch_dimensions : Exp.nexp Variable.Map.t;
   type_aliases : C_type.t StringMap.t;
+  helper_kernels : D_lang.Kernel.t list StringMap.t;
+  subgroup_helpers : StringSet.t;
+  active_helpers : StringSet.t;
+  current_template_args : C_lang.TemplateArgument.t list;
+  call_result : Variable.t option;
 }
 
 type scalar_facts = {
@@ -323,23 +346,24 @@ let join_pointer_facts (states : collect_state list) :
   let aliases, candidates =
     match states with
     | [] -> failwith "join_pointer_facts requires at least one state"
-    | first :: rest ->
+    | _ :: _ ->
         let candidates = pointer_fact_candidates states in
         let aliases =
           Variable.Set.fold
             (fun var aliases ->
-              match Variable.Map.find_opt var first.pointer_aliases with
-              | Some alias
-                when List.for_all
-                       (fun (state : collect_state) ->
-                         match
-                           Variable.Map.find_opt var state.pointer_aliases
-                         with
-                         | Some other -> pointer_alias_equal alias other
-                         | None -> false)
-                       rest ->
+              let present =
+                List.filter_map
+                  (fun (state : collect_state) ->
+                    Variable.Map.find_opt var state.pointer_aliases)
+                  states
+              in
+              match present with
+              | alias :: others
+                when List.for_all (pointer_alias_equal alias) others
+                     && (List.length present = List.length states
+                        || alias.required_controls <> []) ->
                   Variable.Map.add var alias aliases
-              | Some _ | None -> aliases)
+              | _ -> aliases)
             candidates Variable.Map.empty
         in
         (aliases, candidates)
@@ -420,6 +444,60 @@ let join_scalar_facts (states : collect_state list) : scalar_facts =
         fact_invalid_pointer_aliases = invalid_pointer_aliases;
       }
 
+let join_if_pointer_facts (guard : Exp.bexp) (then_state : collect_state)
+    (else_state : collect_state) :
+    pointer_alias Variable.Map.t * Variable.Set.t =
+  let candidates = pointer_fact_candidates [ then_state; else_state ] in
+  let else_guard = Exp.b_not guard in
+  let alias_requires condition alias =
+    List.mem condition alias.required_controls
+  in
+  let aliases =
+    Variable.Set.fold
+      (fun var aliases ->
+        let then_alias =
+          Variable.Map.find_opt var then_state.pointer_aliases
+        in
+        let else_alias =
+          Variable.Map.find_opt var else_state.pointer_aliases
+        in
+        match (then_alias, else_alias) with
+        | Some lhs, Some rhs when pointer_alias_equal lhs rhs ->
+            Variable.Map.add var lhs aliases
+        | Some lhs, rhs
+          when alias_requires guard lhs
+               && Option.fold ~none:true
+                    ~some:(alias_requires guard)
+                    rhs ->
+            Variable.Map.add var lhs aliases
+        | lhs, Some rhs
+          when alias_requires else_guard rhs
+               && Option.fold ~none:true
+                    ~some:(alias_requires else_guard)
+                    lhs ->
+            Variable.Map.add var rhs aliases
+        | _ -> aliases)
+      candidates Variable.Map.empty
+  in
+  let invalid =
+    Variable.Set.filter
+      (fun var -> not (Variable.Map.mem var aliases))
+      candidates
+  in
+  (aliases, invalid)
+
+let join_if_scalar_facts (guard : Exp.bexp) (then_state : collect_state)
+    (else_state : collect_state) : scalar_facts =
+  let facts = join_scalar_facts [ then_state; else_state ] in
+  let pointer_aliases, invalid_pointer_aliases =
+    join_if_pointer_facts guard then_state else_state
+  in
+  {
+    facts with
+    fact_pointer_aliases = pointer_aliases;
+    fact_invalid_pointer_aliases = invalid_pointer_aliases;
+  }
+
 let ordinary_memory_kind_to_string : ordinary_memory_kind -> string = function
   | Ordinary_read -> "read"
   | Ordinary_write -> "write"
@@ -490,9 +568,19 @@ let target_subgroup_size_value (state : collect_state) : int option =
 let rec int_constant_of_expr (state : collect_state) :
     D_lang.Expr.t -> int option = function
   | CharacterLiteral n | IntegerLiteral n -> Some n
+  | CXXBoolLiteralExpr value -> Some (if value then 1 else 0)
   | Ident decl -> Variable.Map.find_opt decl.name state.constant_values
+  | CallExpr { func; args = []; _ }
+    when Option.equal String.equal (call_name func)
+           (Some "ggml_cuda_get_physical_warp_size") ->
+      target_subgroup_size_value state
   | UnaryOperator { opcode = "-"; child; _ } ->
       int_constant_of_expr state child |> Option.map Int.neg
+  | UnaryOperator { opcode = "!"; child; _ } ->
+      int_constant_of_expr state child
+      |> Option.map (fun value -> if value = 0 then 1 else 0)
+  | UnaryOperator { opcode = "~"; child; _ } ->
+      int_constant_of_expr state child |> Option.map lnot
   | BinaryOperator { opcode; lhs; rhs; _ } ->
       let binary f =
         match
@@ -509,12 +597,25 @@ let rec int_constant_of_expr (state : collect_state) :
           binary (fun lhs rhs -> if rhs = 0 then None else Some (lhs / rhs))
       | "%" ->
           binary (fun lhs rhs -> if rhs = 0 then None else Some (lhs mod rhs))
+      | "==" -> binary (fun lhs rhs -> Some (if lhs = rhs then 1 else 0))
+      | "!=" -> binary (fun lhs rhs -> Some (if lhs <> rhs then 1 else 0))
+      | "<" -> binary (fun lhs rhs -> Some (if lhs < rhs then 1 else 0))
+      | "<=" -> binary (fun lhs rhs -> Some (if lhs <= rhs then 1 else 0))
+      | ">" -> binary (fun lhs rhs -> Some (if lhs > rhs then 1 else 0))
+      | ">=" -> binary (fun lhs rhs -> Some (if lhs >= rhs then 1 else 0))
+      | "&&" ->
+          binary (fun lhs rhs -> Some (if lhs <> 0 && rhs <> 0 then 1 else 0))
+      | "||" ->
+          binary (fun lhs rhs -> Some (if lhs <> 0 || rhs <> 0 then 1 else 0))
+      | "&" -> binary (fun lhs rhs -> Some (lhs land rhs))
+      | "|" -> binary (fun lhs rhs -> Some (lhs lor rhs))
+      | "^" -> binary (fun lhs rhs -> Some (lhs lxor rhs))
       | _ -> None
       end
   | SizeOfExpr _ | CXXNewExpr _ | CXXDeleteExpr _ | RecoveryExpr _
   | FloatingLiteral _ | MemberExpr _ | CallExpr _ | ConditionalOperator _
-  | CXXConstructExpr _ | CXXBoolLiteralExpr _ | CXXOperatorCallExpr _
-  | UnaryOperator _ | UnresolvedLookupExpr _ ->
+  | CXXConstructExpr _ | CXXOperatorCallExpr _ | UnaryOperator _
+  | UnresolvedLookupExpr _ ->
       None
 
 let variable_of_ident_or_member : D_lang.Expr.t -> Variable.t option = function
@@ -577,6 +678,16 @@ let call_is_uniform_preserving (state : collect_state) (func : D_lang.Expr.t) :
       || Functions.supported name || Predicates.supported name
   | None -> false
 
+let call_returns_subgroup_uniform_value (func : D_lang.Expr.t)
+    (args : D_lang.Expr.t list) : bool =
+  match (call_name func, args) with
+  | ( Some
+        ( "warp_sum" | "warp_max" | "warp_reduce_sum" | "warp_reduce_max"
+        | "warp_reduce_all" | "warp_reduce_any" ),
+      [ _ ] ) ->
+      true
+  | _ -> false
+
 let rec expr_is_source_uniform (state : collect_state) : D_lang.Expr.t -> bool =
   function
   | CharacterLiteral _ | CXXBoolLiteralExpr _ | FloatingLiteral _
@@ -606,6 +717,9 @@ let rec expr_is_source_uniform (state : collect_state) : D_lang.Expr.t -> bool =
       expr_is_source_uniform state child
   | CXXConstructExpr { args; _ } ->
       List.for_all (expr_is_source_uniform state) args
+  | CallExpr { func; args; _ }
+    when call_returns_subgroup_uniform_value func args ->
+      true
   | CallExpr { func; args; _ } when call_is_uniform_preserving state func ->
       List.for_all (expr_is_source_uniform state) args
   | CallExpr _ | CXXOperatorCallExpr _ | RecoveryExpr _ | UnresolvedLookupExpr _
@@ -713,6 +827,26 @@ let add_thread_x_coordinate_var (var : Variable.t) (state : collect_state) :
       Variable.Set.add var state.thread_x_coordinate_vars;
   }
 
+let add_template_argument_facts (state : collect_state)
+    (type_params : D_lang.Ty_param.t list)
+    (template_args : C_lang.TemplateArgument.t list) : collect_state =
+  let rec add (state : collect_state) params args =
+    match (params, args) with
+    | ( D_lang.Ty_param.NonTypeTemplate { name; _ } :: params,
+        C_lang.TemplateArgument.TArgIntegral value :: args ) ->
+        add
+          {
+            state with
+            uniform_vars = Variable.Set.add name state.uniform_vars;
+            memory_globals = Variable.Set.add name state.memory_globals;
+            constant_values = Variable.Map.add name value state.constant_values;
+          }
+          params args
+    | _ :: params, _ :: args -> add state params args
+    | [], _ | _, [] -> state
+  in
+  add state type_params template_args
+
 let add_constant_value (var : Variable.t) (value : int) (state : collect_state)
     : collect_state =
   {
@@ -727,16 +861,37 @@ let add_numeric_alias (var : Variable.t) (expr : Exp.nexp)
     numeric_aliases = Variable.Map.add var expr state.numeric_aliases;
   }
 
-let pointer_alias_depends_on (vars : Variable.Set.t) (alias : pointer_alias) :
-    bool =
-  Exp.n_free_names alias.offset Variable.Set.empty
-  |> Variable.Set.exists (fun var -> Variable.Set.mem var vars)
+let names_intersect (lhs : Variable.Set.t) (rhs : Variable.Set.t) : bool =
+  Variable.Set.exists (fun var -> Variable.Set.mem var rhs) lhs
 
-let pointer_aliases_depending_on (vars : Variable.Set.t)
+let pointer_alias_depends_on ~(active_controls : Exp.bexp list)
+    (vars : Variable.Set.t) (alias : pointer_alias) : bool =
+  let offset_depends =
+    Exp.n_free_names alias.offset Variable.Set.empty |> names_intersect vars
+  in
+  let unprotected_control_depends =
+    List.exists
+      (fun control ->
+        let depends =
+          Exp.b_free_names control Variable.Set.empty |> names_intersect vars
+        in
+        depends && not (List.mem control active_controls))
+      alias.required_controls
+  in
+  offset_depends || unprotected_control_depends
+
+let pointer_alias_is_available (state : collect_state) (alias : pointer_alias) :
+    bool =
+  List.for_all
+    (fun required -> List.mem required state.control_stack)
+    alias.required_controls
+
+let pointer_aliases_depending_on ~(active_controls : Exp.bexp list)
+    (vars : Variable.Set.t)
     (aliases : pointer_alias Variable.Map.t) : Variable.Set.t =
   Variable.Map.fold
     (fun target alias invalidated ->
-      if pointer_alias_depends_on vars alias then
+      if pointer_alias_depends_on ~active_controls vars alias then
         Variable.Set.add target invalidated
       else invalidated)
     aliases Variable.Set.empty
@@ -778,7 +933,8 @@ let remove_dependent_numeric_aliases (var : Variable.t) (state : collect_state)
     : collect_state =
   let invalidated = numeric_aliases_depending_on var state.numeric_aliases in
   let invalidated_pointer_aliases =
-    pointer_aliases_depending_on invalidated state.pointer_aliases
+    pointer_aliases_depending_on ~active_controls:state.control_stack
+      invalidated state.pointer_aliases
   in
   {
     state with
@@ -822,7 +978,11 @@ let update_scalar_facts_from_expr (state : collect_state) (var : Variable.t)
   let constant_value = int_constant_of_expr state rhs in
   let is_uniform = expr_is_source_uniform state rhs in
   let is_memory_global = expr_is_memory_global state rhs in
-  let numeric_alias = numeric_alias_from_expr var rhs in
+  let numeric_alias =
+    match numeric_alias_from_expr var rhs with
+    | Some expr -> Some expr
+    | None -> Option.map (fun value -> Exp.Num value) constant_value
+  in
   let state = remove_scalar_facts var state in
   let state =
     match numeric_alias with
@@ -952,19 +1112,33 @@ let add_aggregate_member_alias_from_decl (state : collect_state)
 let rec pointer_base_offset (state : collect_state) ~(context : string)
     (expr : D_lang.Expr.t) : (Variable.t * Exp.nexp, error) result =
   let ( let* ) = Result.bind in
+  let pointer_variable var =
+    if Variable.Set.mem var state.invalid_pointer_aliases then
+      Error
+        (Unsupported_expression
+           {
+             context = context ^ " invalidated pointer alias";
+             expr = expr_to_string expr;
+           })
+    else
+      match Variable.Map.find_opt var state.pointer_aliases with
+      | Some alias when pointer_alias_is_available state alias ->
+          Ok (alias.source, alias.offset)
+      | Some _ ->
+          Error
+            (Unsupported_expression
+               {
+                 context = context ^ " invalidated pointer alias";
+                 expr = expr_to_string expr;
+               })
+      | None -> Ok (var, Exp.Num 0)
+  in
   match expr with
-  | Ident decl -> (
-      if Variable.Set.mem decl.name state.invalid_pointer_aliases then
-        Error
-          (Unsupported_expression
-             {
-               context = context ^ " invalidated pointer alias";
-               expr = expr_to_string expr;
-             })
-      else
-        match Variable.Map.find_opt decl.name state.pointer_aliases with
-        | Some alias -> Ok (alias.source, alias.offset)
-        | None -> Ok (decl.name, Exp.Num 0))
+  | Ident decl -> pointer_variable decl.name
+  | MemberExpr _ -> (
+      match variable_of_ident_or_member expr with
+      | Some var -> pointer_variable var
+      | None -> unsupported_expr ~context expr)
   | UnaryOperator { opcode = "&"; child = Ident decl; _ } ->
       Ok (decl.name, Exp.Num 0)
   | BinaryOperator { opcode = "+"; lhs; rhs; _ } ->
@@ -1104,6 +1278,9 @@ let matrix_footprint (state : collect_state) ~(site : SM.Site.t)
 let empty_collect_state ~(kernel_name : string)
     ~(target_config : SM.Target_config.t) ~(uniform_vars : Variable.Set.t)
     ~(uniform_preserving_calls : StringSet.t)
+    ~(helper_kernels : D_lang.Kernel.t list StringMap.t)
+    ~(subgroup_helpers : StringSet.t)
+    ~(template_args : C_lang.TemplateArgument.t list)
     (type_aliases : C_type.t StringMap.t) : collect_state =
   {
     kernel_name;
@@ -1131,6 +1308,11 @@ let empty_collect_state ~(kernel_name : string)
     launch_preconditions_rev = [];
     launch_dimensions = Variable.Map.empty;
     type_aliases;
+    helper_kernels;
+    subgroup_helpers;
+    active_helpers = StringSet.empty;
+    current_template_args = template_args;
+    call_result = None;
   }
 
 let make_site (state : collect_state) ?location ~(label : string) () :
@@ -1321,6 +1503,15 @@ let access_of_subscript (state : collect_state) ~(mode : Access.Mode.t)
       else
         match Variable.Map.find_opt subscript.name state.pointer_aliases with
         | None -> Ok { Access.array = subscript.name; index; mode }
+        | Some alias when not (pointer_alias_is_available state alias) ->
+            Error
+              (Unsupported_expression
+                 {
+                   context;
+                   expr =
+                     D_lang.subscript_to_s subscript
+                     ^ " (pointer alias is path-dependent or invalidated)";
+                 })
         | Some alias -> (
             match (alias.offset, index) with
             | Exp.Num 0, _ -> Ok { Access.array = alias.source; index; mode }
@@ -1427,15 +1618,24 @@ let relevant_numeric_alias_conditions (state : collect_state)
   |> dedup_conditions
 
 let record_ordinary_memory_effect ~(kind : ordinary_memory_kind)
-    ~(mode : Access.Mode.t) ~(context : string) (subscript : D_lang.d_subscript)
-    (state : collect_state) : (collect_state, error) result =
+    ~(mode : Access.Mode.t) ~(context : string) ?guard
+    (subscript : D_lang.d_subscript) (state : collect_state) :
+    (collect_state, error) result =
   let ( let* ) = Result.bind in
   let* access = access_of_subscript state ~mode ~context subscript in
+  let* access_guard =
+    match guard with
+    | None -> Ok []
+    | Some guard ->
+        let* guard = bexp_of_expr ~context:(context ^ " guard") guard in
+        Ok [ normalize_solver_bexp state guard ]
+  in
   if access_array_is_private state access.array then Ok state
   else
     let memory_conditions =
-      List.rev state.launch_preconditions_rev @ List.rev state.control_stack
-      |> List.map (normalize_solver_bexp state)
+      access_guard
+      @ (List.rev state.launch_preconditions_rev @ List.rev state.control_stack
+        |> List.map (normalize_solver_bexp state))
     in
     let alias_conditions =
       relevant_numeric_alias_conditions state access memory_conditions
@@ -1593,11 +1793,18 @@ let wmma_stmt (state : collect_state) (kind : D_lang.Wmma_call.kind)
     |> add_stmt (SM.Stmt.Matrix_collective collective)
     |> enter_subgroup_phase site)
 
+let full_subgroup_mask (state : collect_state) (expr : D_lang.Expr.t) : bool =
+  match (target_subgroup_size_value state, int_constant_of_expr state expr) with
+  | Some size, Some mask when size < Sys.int_size - 1 ->
+      Int.equal mask (-1) || Int.equal mask ((1 lsl size) - 1)
+  | Some _, Some -1 -> true
+  | Some _, Some _ | Some _, None | None, _ -> false
+
 let subgroup_barrier_stmt (state : collect_state) (func : D_lang.Expr.t)
     (args : D_lang.Expr.t list) : (collect_state, error) result =
   let expr = D_lang.Expr.CallExpr { func; args; ty = J_type.void } in
   match args with
-  | [] | [ _ ] ->
+  | [] ->
       let site, state =
         make_site state ?location:(call_location func) ~label:"__syncwarp" ()
       in
@@ -1606,6 +1813,24 @@ let subgroup_barrier_stmt (state : collect_state) (func : D_lang.Expr.t)
         (state
         |> add_stmt (SM.Stmt.subgroup_barrier site)
         |> enter_subgroup_phase site)
+  | [ mask ] when full_subgroup_mask state mask ->
+      let site, state =
+        make_site state ?location:(call_location func) ~label:"__syncwarp" ()
+      in
+      let state = record_site_control site state in
+      Ok
+        (state
+        |> add_stmt (SM.Stmt.subgroup_barrier site)
+        |> enter_subgroup_phase site)
+  | [ _ ] ->
+      Error
+        (Unsupported_matrix_call
+           {
+             op = "__syncwarp";
+             reason =
+               "subgroup ordering requires a statically full participation mask";
+             expr = expr_to_string expr;
+           })
   | _ ->
       Error
         (Unsupported_matrix_call
@@ -1667,13 +1892,6 @@ let subgroup_collective_operand ~(context : string) (expr : D_lang.Expr.t) :
 let subgroup_collective_predicate_operand ~(context : string)
     (expr : D_lang.Expr.t) : (SM.Collective.operand, error) result =
   bexp_of_expr ~context expr |> Result.map (fun expr -> SM.Collective.Bool expr)
-
-let full_subgroup_mask (state : collect_state) (expr : D_lang.Expr.t) : bool =
-  match (target_subgroup_size_value state, int_constant_of_expr state expr) with
-  | Some size, Some mask when size < Sys.int_size - 1 ->
-      Int.equal mask (-1) || Int.equal mask ((1 lsl size) - 1)
-  | Some _, Some -1 -> true
-  | Some _, Some _ | Some _, None | None, _ -> false
 
 let shuffle_operands (state : collect_state) ~(label : string)
     ~(rendered_expr : string) (args : D_lang.Expr.t list) :
@@ -1798,10 +2016,19 @@ let subgroup_collective_stmt ?result (state : collect_state)
     | _ -> unexpected_shape ()
   in
   let state = record_site_control site state in
-  Ok
-    (state
+  let state =
+    state
     |> add_stmt (SM.Stmt.Subgroup_collective (SM.Collective.make site payload))
-    |> enter_subgroup_phase site)
+    |> enter_subgroup_phase site
+  in
+  let state =
+    match op with
+    | Warp_sum | Warp_max | Warp_reduce_sum | Warp_reduce_max
+    | Warp_reduce_all | Warp_reduce_any ->
+        add_uniform_var result state
+    | Shfl_sync | Shfl_down_sync | Shfl_up_sync | Shfl_xor_sync -> state
+  in
+  Ok state
 
 let workgroup_barrier_stmt (state : collect_state) (func : D_lang.Expr.t) :
     collect_state =
@@ -1961,103 +2188,6 @@ let rec first_map (f : 'a -> 'b option) : 'a list -> 'b option = function
 let first_some (left : 'a option) (right : 'a option) : 'a option =
   match left with Some _ -> left | None -> right
 
-let rec expr_subgroup_callee (subgroup_kernels : StringSet.t) :
-    D_lang.Expr.t -> string option = function
-  | CallExpr { func; args; _ } | CXXOperatorCallExpr { func; args; _ } -> (
-      match call_name func with
-      | Some callee when StringSet.mem callee subgroup_kernels -> Some callee
-      | Some _ | None ->
-          first_some
-            (expr_subgroup_callee subgroup_kernels func)
-            (first_map (expr_subgroup_callee subgroup_kernels) args))
-  | BinaryOperator { lhs; rhs; _ } ->
-      first_some
-        (expr_subgroup_callee subgroup_kernels lhs)
-        (expr_subgroup_callee subgroup_kernels rhs)
-  | ConditionalOperator { cond; then_expr; else_expr; _ } ->
-      first_some
-        (expr_subgroup_callee subgroup_kernels cond)
-        (first_some
-           (expr_subgroup_callee subgroup_kernels then_expr)
-           (expr_subgroup_callee subgroup_kernels else_expr))
-  | UnaryOperator { child; _ }
-  | MemberExpr { base = child; _ }
-  | CXXNewExpr { arg = child; _ }
-  | CXXDeleteExpr { arg = child; _ } ->
-      expr_subgroup_callee subgroup_kernels child
-  | CXXConstructExpr { args; _ } ->
-      first_map (expr_subgroup_callee subgroup_kernels) args
-  | SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _ | CXXBoolLiteralExpr _
-  | FloatingLiteral _ | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _ ->
-      None
-
-let decl_subgroup_callee (subgroup_kernels : StringSet.t) (decl : D_lang.Decl.t)
-    : string option =
-  match decl.init with
-  | Some init ->
-      first_map
-        (expr_subgroup_callee subgroup_kernels)
-        (D_lang.Init.to_exp init)
-  | None -> None
-
-let rec stmt_subgroup_callee (subgroup_kernels : StringSet.t) :
-    D_lang.Stmt.t -> string option = function
-  | SExpr expr | ReturnStmt (Some expr) ->
-      expr_subgroup_callee subgroup_kernels expr
-  | DeclStmt decls -> first_map (decl_subgroup_callee subgroup_kernels) decls
-  | Seq (left, right) ->
-      first_some
-        (stmt_subgroup_callee subgroup_kernels left)
-        (stmt_subgroup_callee subgroup_kernels right)
-  | IfStmt { cond; then_stmt; else_stmt } ->
-      first_some
-        (expr_subgroup_callee subgroup_kernels cond)
-        (first_some
-           (stmt_subgroup_callee subgroup_kernels then_stmt)
-           (stmt_subgroup_callee subgroup_kernels else_stmt))
-  | ForStmt { init; cond; inc; body } ->
-      let init_callee =
-        match init with
-        | Some (D_lang.ForInit.Decls decls) ->
-            first_map (decl_subgroup_callee subgroup_kernels) decls
-        | Some (Expr expr) -> expr_subgroup_callee subgroup_kernels expr
-        | None -> None
-      in
-      first_some init_callee
-        (first_some
-           (Option.bind cond (expr_subgroup_callee subgroup_kernels))
-           (first_some
-              (stmt_subgroup_callee subgroup_kernels inc)
-              (stmt_subgroup_callee subgroup_kernels body)))
-  | WhileStmt { cond; body } | DoStmt { cond; body } | SwitchStmt { cond; body }
-    ->
-      first_some
-        (expr_subgroup_callee subgroup_kernels cond)
-        (stmt_subgroup_callee subgroup_kernels body)
-  | CaseStmt { case; body } ->
-      first_some
-        (expr_subgroup_callee subgroup_kernels case)
-        (stmt_subgroup_callee subgroup_kernels body)
-  | DefaultStmt body -> stmt_subgroup_callee subgroup_kernels body
-  | WriteAccessStmt write ->
-      first_map
-        (expr_subgroup_callee subgroup_kernels)
-        (write.source :: write.target.index)
-  | ReadAccessStmt read ->
-      first_map (expr_subgroup_callee subgroup_kernels) read.source.index
-  | AtomicAccessStmt atomic ->
-      first_map (expr_subgroup_callee subgroup_kernels) atomic.source.index
-  | LambdaDecl { captures; body; _ } ->
-      first_some
-        (first_map
-           (fun (_, expr) -> expr_subgroup_callee subgroup_kernels expr)
-           captures)
-        (stmt_subgroup_callee subgroup_kernels body)
-  | Skip | BreakStmt | GotoStmt
-  | ReturnStmt None
-  | ContinueStmt | AsmStmt _ | BarrierOp _ ->
-      None
-
 let rec stmt_records_ordinary_memory_effect : D_lang.Stmt.t -> bool = function
   | WriteAccessStmt _ | ReadAccessStmt _ | AtomicAccessStmt _ -> true
   | Seq (left, right) ->
@@ -2159,10 +2289,34 @@ let rec stmt_updates_pointer_facts : D_lang.Stmt.t -> bool = function
 let stmt_updates_source_facts (stmt : D_lang.Stmt.t) : bool =
   stmt_updates_scalar_facts stmt || stmt_updates_pointer_facts stmt
 
+let rec stmt_has_participation_control_transfer : D_lang.Stmt.t -> bool =
+  function
+  | BreakStmt | ContinueStmt | GotoStmt -> true
+  | Seq (left, right) ->
+      stmt_has_participation_control_transfer left
+      || stmt_has_participation_control_transfer right
+  | IfStmt { then_stmt; else_stmt; _ } ->
+      stmt_has_participation_control_transfer then_stmt
+      || stmt_has_participation_control_transfer else_stmt
+  | ForStmt { inc; body; _ } ->
+      stmt_has_participation_control_transfer inc
+      || stmt_has_participation_control_transfer body
+  | WhileStmt { body; _ }
+  | DoStmt { body; _ }
+  | SwitchStmt { body; _ }
+  | CaseStmt { body; _ }
+  | DefaultStmt body ->
+      stmt_has_participation_control_transfer body
+  | DeclStmt _ | SExpr _ | WriteAccessStmt _ | ReadAccessStmt _
+  | AtomicAccessStmt _ | Skip | ReturnStmt _ | AsmStmt _ | BarrierOp _
+  | LambdaDecl _ ->
+      false
+
 let stmt_requires_source_effect_metadata (stmt : D_lang.Stmt.t) : bool =
   stmt_requires_subgroup stmt
   || stmt_records_ordinary_memory_effect stmt
   || stmt_updates_source_facts stmt
+  || stmt_has_participation_control_transfer stmt
 
 let assignment_expr : D_lang.Expr.t -> (Variable.t * D_lang.Expr.t) option =
   function
@@ -2239,6 +2393,117 @@ let loop_numeric_alias_state (state : collect_state)
       remove_numeric_alias var state
   | Some _ | None -> state
 
+let template_context_score (context : C_lang.TemplateArgument.t list)
+    (candidate : D_lang.Kernel.t) : int =
+  List.fold_left
+    (fun score argument ->
+      if List.mem argument context then score + 1 else score)
+    0 candidate.template_args
+
+let helper_identity (kernel : D_lang.Kernel.t) : string =
+  String.concat "\000"
+    [
+      kernel.name;
+      kernel.ty;
+      String.concat ","
+        (List.map C_lang.TemplateArgument.to_string kernel.template_args);
+    ]
+
+let uniquely_best_template_match (context : C_lang.TemplateArgument.t list)
+    (candidates : D_lang.Kernel.t list) : D_lang.Kernel.t option =
+  let scored =
+    List.map
+      (fun kernel -> (template_context_score context kernel, kernel))
+      candidates
+  in
+  let best = List.fold_left (fun best (score, _) -> max best score) 0 scored in
+  match List.filter (fun (score, _) -> score = best && score > 0) scored with
+  | [ (_, kernel) ] -> Some kernel
+  | _ -> None
+
+let helper_candidates (helper_kernels : D_lang.Kernel.t list StringMap.t)
+    (func : D_lang.Expr.t) (args : D_lang.Expr.t list) :
+    D_lang.Kernel.t list * D_lang.Kernel.t list =
+  match call_name func with
+  | None -> ([], [])
+  | Some name ->
+      let candidates =
+        StringMap.find_opt name helper_kernels
+        |> Option.value ~default:[]
+        |> List.filter (fun (kernel : D_lang.Kernel.t) ->
+            List.length kernel.params = List.length args)
+      in
+      let call_ty = J_type.to_string (D_lang.Expr.to_type func) in
+      let exact =
+        List.filter
+          (fun (kernel : D_lang.Kernel.t) -> String.equal kernel.ty call_ty)
+          candidates
+      in
+      (candidates, exact)
+
+let select_helper_kernel ~(template_args : C_lang.TemplateArgument.t list)
+    (helper_kernels : D_lang.Kernel.t list StringMap.t) (func : D_lang.Expr.t)
+    (args : D_lang.Expr.t list) : D_lang.Kernel.t option =
+  let candidates, exact = helper_candidates helper_kernels func args in
+  match uniquely_best_template_match template_args exact with
+  | Some kernel -> Some kernel
+  | None -> (
+      match (exact, candidates) with
+      | [ kernel ], _ | [], [ kernel ] -> Some kernel
+      | _ -> None)
+
+let resolve_subgroup_helper (state : collect_state) (func : D_lang.Expr.t)
+    (args : D_lang.Expr.t list) : (D_lang.Kernel.t option, error) result =
+  match call_name func with
+  | None -> Ok None
+  | Some name ->
+      let candidates, exact =
+        helper_candidates state.helper_kernels func args
+      in
+      let selected =
+        select_helper_kernel ~template_args:state.current_template_args
+          state.helper_kernels func args
+      in
+      begin match selected with
+      | Some kernel
+        when StringSet.mem (helper_identity kernel) state.subgroup_helpers ->
+          Ok (Some kernel)
+      | Some _ -> Ok None
+      | None ->
+          if
+            List.exists
+              (fun kernel ->
+                StringSet.mem (helper_identity kernel) state.subgroup_helpers)
+              candidates
+          then
+            Error
+              (Launch_wrapper_inlining_error
+                 {
+                   kernel = state.kernel_name;
+                   callee = Some name;
+                   reason =
+                     Printf.sprintf
+                       "subgroup helper resolution is %s (%d arity matches, %d \
+                        type matches, %d template-context matches)"
+                       (if candidates = [] then "missing" else "ambiguous")
+                       (List.length candidates) (List.length exact)
+                       (List.length
+                          (List.filter
+                             (fun kernel ->
+                               template_context_score
+                                 state.current_template_args kernel
+                               > 0)
+                             exact));
+                 })
+          else Ok None
+      end
+
+let call_is_directly_handled (func : D_lang.Expr.t) (args : D_lang.Expr.t list)
+    : bool =
+  is_assert_call func
+  || call_requires_subgroup func args
+  || Option.equal String.equal (call_name func) (Some "__syncthreads")
+
 let rec collect_expr ?result (state : collect_state) (expr : D_lang.Expr.t) :
     (collect_state, error) result =
   let ( let* ) = Result.bind in
@@ -2249,7 +2514,11 @@ let rec collect_expr ?result (state : collect_state) (expr : D_lang.Expr.t) :
       let state = update_scalar_facts_from_expr state target rhs in
       collect_expr ~result:target state rhs
   | CallExpr { func; args; _ } ->
-      let* state = classify_call ?result state func args in
+      let* state =
+        if call_is_directly_handled func args then
+          classify_call ?result state func args
+        else collect_subgroup_helper ?result state func args
+      in
       List.fold_left
         (fun state expr ->
           let* state = state in
@@ -2271,21 +2540,85 @@ let rec collect_expr ?result (state : collect_state) (expr : D_lang.Expr.t) :
           let* state = state in
           collect_expr state expr)
         (Ok state) args
+  | Ident decl when not (Decl_expr.is_runtime_value decl) ->
+      Ok
+        (state |> add_uniform_var decl.name |> add_memory_global_var decl.name)
   | SizeOfExpr _ | CXXNewExpr _ | CXXDeleteExpr _ | RecoveryExpr _
   | CharacterLiteral _ | CXXBoolLiteralExpr _ | FloatingLiteral _
   | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _ | CXXOperatorCallExpr _
     ->
       Ok state
 
-let collect_decl (state : collect_state) (decl : D_lang.Decl.t) :
+and collect_subgroup_helper ?result (state : collect_state)
+    (func : D_lang.Expr.t) (args : D_lang.Expr.t list) :
+    (collect_state, error) result =
+  let ( let* ) = Result.bind in
+  let* callee = resolve_subgroup_helper state func args in
+  match callee with
+  | None -> Ok state
+  | Some callee when StringSet.mem callee.name state.active_helpers ->
+      Error
+        (Launch_wrapper_inlining_error
+           {
+             kernel = state.kernel_name;
+             callee = Some callee.name;
+             reason = "recursive subgroup helper calls are unsupported";
+           })
+  | Some callee ->
+      let caller_active_helpers = state.active_helpers in
+      let caller_template_args = state.current_template_args in
+      let caller_result = state.call_result in
+      let state =
+        {
+          state with
+          active_helpers = StringSet.add callee.name state.active_helpers;
+          current_template_args = callee.template_args;
+          call_result = result;
+        }
+        |> fun state ->
+        add_template_argument_facts state callee.type_params
+          callee.template_args
+      in
+      let* state =
+        List.fold_left2
+          (fun state param actual ->
+            let* state = state in
+            let decl =
+              D_lang.Decl.from_expr (D_lang.Param.ty_var param) actual
+            in
+            let* state = collect_decl state decl in
+            Ok (add_local_decl_facts state decl))
+          (Ok state) callee.params args
+      in
+      let* state = collect_stmt state callee.code in
+      Ok
+        {
+          state with
+          active_helpers = caller_active_helpers;
+          current_template_args = caller_template_args;
+          call_result = caller_result;
+        }
+
+and collect_decl (state : collect_state) (decl : D_lang.Decl.t) :
     (collect_state, error) result =
   match decl.init with
   | Some (IExpr rhs) when j_type_is_pointer_decl decl.ty ->
-      let ( let* ) = Result.bind in
-      let* source, offset =
+      (* A pointer expression that this source collector cannot resolve must not
+         prevent analysis of unrelated warp operations.  Keep it invalid so a
+         later access still fails explicitly instead of inventing an alias. *)
+      begin match
         pointer_base_offset state ~context:"pointer alias initializer" rhs
-      in
-      Ok (add_pointer_alias decl.var { source; offset } state)
+      with
+      | Ok (source, offset) ->
+          Ok
+            (add_pointer_alias decl.var
+               { source; offset; required_controls = [] }
+               state)
+      | Error _ ->
+          Ok
+            (invalidate_pointer_aliases (Variable.Set.singleton decl.var)
+               state)
+      end
   | None when j_type_is_pointer_decl decl.ty ->
       Ok (invalidate_pointer_aliases (Variable.Set.singleton decl.var) state)
   | Some (IExpr rhs) -> collect_expr ~result:decl.var state rhs
@@ -2298,7 +2631,7 @@ let collect_decl (state : collect_state) (decl : D_lang.Decl.t) :
         (Ok state) (D_lang.Init.to_exp init)
   | None -> Ok state
 
-let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
+and collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
     (collect_state, error) result =
   let ( let* ) = Result.bind in
   let rec unconditionally_returns : D_lang.Stmt.t -> bool = function
@@ -2354,11 +2687,18 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
   | SExpr
       (BinaryOperator
          { opcode = "="; lhs = Ident { name = target; ty; _ }; rhs; _ })
-    when j_type_is_pointer_like ty ->
-      let* source, offset =
+    when j_type_is_pointer_like ty -> begin
+      match
         pointer_base_offset state ~context:"pointer alias assignment" rhs
-      in
-      Ok (add_pointer_alias target { source; offset } state)
+      with
+      | Ok (source, offset) ->
+          Ok
+            (add_pointer_alias target
+               { source; offset; required_controls = state.control_stack }
+               state)
+      | Error _ ->
+          Ok (invalidate_pointer_aliases (Variable.Set.singleton target) state)
+    end
   | SExpr
       (BinaryOperator
          { opcode = "="; lhs = Ident { name = target; ty; _ }; rhs; _ })
@@ -2384,29 +2724,41 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
       end
   | IfStmt { cond; then_stmt; else_stmt } ->
       let* state = collect_expr state cond in
-      let* guard =
-        if
-          stmt_requires_source_effect_metadata then_stmt
-          || stmt_requires_source_effect_metadata else_stmt
-        then
-          bexp_of_expr ~context:"subgroup if control condition" cond
-          |> Result.map (fun condition -> Some condition)
-        else Ok None
-      in
-      let collect_branch state guard stmt =
-        match guard with
-        | Some guard when stmt_requires_source_effect_metadata stmt ->
-            collect_with_control state guard stmt
-        | _ -> collect_stmt state stmt
-      in
-      let* then_exit = collect_branch state guard then_stmt in
-      let else_guard = Option.map Exp.b_not guard in
-      let* else_exit_for_join = collect_branch state else_guard else_stmt in
-      let else_entry = restore_scalar_facts then_exit (scalar_facts_of state) in
-      let* state = collect_branch else_entry else_guard else_stmt in
-      Ok
-        (restore_scalar_facts state
-           (join_scalar_facts [ then_exit; else_exit_for_join ]))
+      begin match int_constant_of_expr state cond with
+      | Some 0 -> collect_stmt state else_stmt
+      | Some _ -> collect_stmt state then_stmt
+      | None ->
+          let* guard =
+            if
+              stmt_requires_source_effect_metadata then_stmt
+              || stmt_requires_source_effect_metadata else_stmt
+            then
+              bexp_of_expr ~context:"subgroup if control condition" cond
+              |> Result.map (fun condition -> Some condition)
+            else Ok None
+          in
+          let collect_branch state guard stmt =
+            match guard with
+            | Some guard when stmt_requires_source_effect_metadata stmt ->
+                collect_with_control state guard stmt
+            | _ -> collect_stmt state stmt
+          in
+          let* then_exit = collect_branch state guard then_stmt in
+          let else_guard = Option.map Exp.b_not guard in
+          let* else_exit_for_join = collect_branch state else_guard else_stmt in
+          let else_entry =
+            restore_scalar_facts then_exit (scalar_facts_of state)
+          in
+          let* state = collect_branch else_entry else_guard else_stmt in
+          let joined_facts =
+            match guard with
+            | Some guard ->
+                join_if_scalar_facts guard then_exit else_exit_for_join
+            | None -> join_scalar_facts [ then_exit; else_exit_for_join ]
+          in
+          Ok
+            (restore_scalar_facts state joined_facts)
+      end
   | ForStmt { init; cond; inc; body } ->
       let* state =
         match init with
@@ -2471,7 +2823,7 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
       let* state =
         record_ordinary_memory_effect ~kind:Ordinary_write
           ~mode:(Write write.payload) ~context:"ordinary write access index"
-          write.target state
+          ?guard:write.guard write.target state
       in
       List.fold_left
         (fun state expr ->
@@ -2486,7 +2838,8 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
       in
       let* state =
         record_ordinary_memory_effect ~kind:Ordinary_read ~mode:Read
-          ~context:"ordinary read access index" read.source state
+          ~context:"ordinary read access index" ?guard:read.guard read.source
+          state
       in
       let state =
         add_aggregate_alias read.target
@@ -2509,18 +2862,52 @@ let rec collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
       let* state =
         record_ordinary_memory_effect ~kind:Ordinary_atomic
           ~mode:(Atomic atomic_op) ~context:"ordinary atomic access index"
-          atomic.source state
+          ?guard:atomic.guard atomic.source state
       in
       List.fold_left
         (fun state expr ->
           let* state = state in
           collect_expr state expr)
         (Ok state) atomic.source.index
-  | Skip | BreakStmt | GotoStmt
-  | ReturnStmt None
-  | ContinueStmt | AsmStmt _ | BarrierOp _ | LambdaDecl _ ->
+  | BreakStmt ->
+      if control_stack_is_source_uniform state then Ok state
+      else
+        let control =
+          state.control_stack |> List.map Exp.b_to_string
+          |> String.concat " && "
+        in
+        Error
+          (Unsupported_participation_control
+             {
+               kernel = state.kernel_name;
+               control = "non-uniform break under " ^ control;
+             })
+  | ContinueStmt ->
+      if control_stack_is_source_uniform state then Ok state
+      else
+        let control =
+          state.control_stack |> List.map Exp.b_to_string
+          |> String.concat " && "
+        in
+        Error
+          (Unsupported_participation_control
+             {
+               kernel = state.kernel_name;
+               control = "non-uniform continue under " ^ control;
+             })
+  | GotoStmt ->
+      Error
+        (Unsupported_participation_control
+           { kernel = state.kernel_name; control = "goto" })
+  | Skip | ReturnStmt None | AsmStmt _ | BarrierOp _ | LambdaDecl _ ->
       Ok state
-  | ReturnStmt (Some expr) -> collect_expr state expr
+  | ReturnStmt (Some expr) ->
+      let state =
+        match state.call_result with
+        | Some result -> update_scalar_facts_from_expr state result expr
+        | None -> state
+      in
+      collect_expr ?result:state.call_result state expr
 
 let type_aliases_of_defs (context_defs : D_lang.Def.t list) :
     C_type.t StringMap.t =
@@ -2534,9 +2921,16 @@ let type_aliases_of_defs (context_defs : D_lang.Def.t list) :
     StringMap.empty context_defs
 
 let uniform_vars_of_kernel_params (kernel : D_lang.Kernel.t) : Variable.Set.t =
+  let vars =
+    List.fold_left
+      (fun vars param -> Variable.Set.add (D_lang.Param.name param) vars)
+      Variable.Set.empty kernel.params
+  in
   List.fold_left
-    (fun vars param -> Variable.Set.add (D_lang.Param.name param) vars)
-    Variable.Set.empty kernel.params
+    (fun vars -> function
+      | D_lang.Ty_param.NonTypeTemplate { name; _ } -> Variable.Set.add name vars
+      | D_lang.Ty_param.TemplateType _ -> vars)
+    vars kernel.type_params
 
 let seed_context_declaration_facts (state : collect_state)
     (context_defs : D_lang.Def.t list) : collect_state =
@@ -2546,10 +2940,173 @@ let seed_context_declaration_facts (state : collect_state)
       | Typedef _ | Enum _ | Kernel _ | LaunchParam _ -> state)
     state context_defs
 
+let helper_kernel_table (defs : D_lang.Def.t list) :
+    D_lang.Kernel.t list StringMap.t =
+  List.fold_left
+    (fun table -> function
+      | D_lang.Def.Kernel kernel
+        when D_lang.KernelAttr.is_device kernel.attribute ->
+          let kernels =
+            StringMap.find_opt kernel.name table |> Option.value ~default:[]
+          in
+          StringMap.add kernel.name (kernels @ [ kernel ]) table
+      | D_lang.Def.Kernel _ | Declaration _ | Typedef _ | Enum _ | LaunchParam _
+        ->
+          table)
+    StringMap.empty defs
+
+let rec resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+    template_args : D_lang.Expr.t -> string option = function
+  | CallExpr { func; args; _ } | CXXOperatorCallExpr { func; args; _ } -> (
+      match select_helper_kernel ~template_args helper_kernels func args with
+      | Some helper when StringSet.mem (helper_identity helper) subgroup_helpers
+        ->
+          Some helper.name
+      | Some _ | None ->
+          first_some
+            (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+               template_args func)
+            (first_map
+               (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+                  template_args)
+               args))
+  | BinaryOperator { lhs; rhs; _ } ->
+      first_some
+        (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+           template_args lhs)
+        (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+           template_args rhs)
+  | ConditionalOperator { cond; then_expr; else_expr; _ } ->
+      first_some
+        (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+           template_args cond)
+        (first_some
+           (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+              template_args then_expr)
+           (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+              template_args else_expr))
+  | UnaryOperator { child; _ }
+  | MemberExpr { base = child; _ }
+  | CXXNewExpr { arg = child; _ }
+  | CXXDeleteExpr { arg = child; _ } ->
+      resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+        template_args child
+  | CXXConstructExpr { args; _ } ->
+      first_map
+        (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+           template_args)
+        args
+  | SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _ | CXXBoolLiteralExpr _
+  | FloatingLiteral _ | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _ ->
+      None
+
+let resolved_decl_subgroup_callee helper_kernels subgroup_helpers template_args
+    (decl : D_lang.Decl.t) : string option =
+  match decl.init with
+  | Some init ->
+      first_map
+        (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+           template_args)
+        (D_lang.Init.to_exp init)
+  | None -> None
+
+let rec resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+    template_args : D_lang.Stmt.t -> string option = function
+  | SExpr expr | ReturnStmt (Some expr) ->
+      resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+        template_args expr
+  | DeclStmt decls ->
+      first_map
+        (resolved_decl_subgroup_callee helper_kernels subgroup_helpers
+           template_args)
+        decls
+  | Seq (left, right) ->
+      first_some
+        (resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+           template_args left)
+        (resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+           template_args right)
+  | IfStmt { cond; then_stmt; else_stmt } ->
+      first_some
+        (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+           template_args cond)
+        (first_some
+           (resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+              template_args then_stmt)
+           (resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+              template_args else_stmt))
+  | ForStmt { init; cond; inc; body } ->
+      let init_callee =
+        match init with
+        | Some (D_lang.ForInit.Decls decls) ->
+            first_map
+              (resolved_decl_subgroup_callee helper_kernels subgroup_helpers
+                 template_args)
+              decls
+        | Some (Expr expr) ->
+            resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+              template_args expr
+        | None -> None
+      in
+      first_some init_callee
+        (first_some
+           (Option.bind cond
+              (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+                 template_args))
+           (first_some
+              (resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+                 template_args inc)
+              (resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+                 template_args body)))
+  | WhileStmt { cond; body } | DoStmt { cond; body } | SwitchStmt { cond; body }
+    ->
+      first_some
+        (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+           template_args cond)
+        (resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+           template_args body)
+  | CaseStmt { case; body } ->
+      first_some
+        (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+           template_args case)
+        (resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+           template_args body)
+  | DefaultStmt body ->
+      resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+        template_args body
+  | WriteAccessStmt write ->
+      first_map
+        (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+           template_args)
+        (write.source :: write.target.index)
+  | ReadAccessStmt read ->
+      first_map
+        (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+           template_args)
+        read.source.index
+  | AtomicAccessStmt atomic ->
+      first_map
+        (resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+           template_args)
+        atomic.source.index
+  | LambdaDecl { captures; body; _ } ->
+      first_some
+        (first_map
+           (fun (_, expr) ->
+             resolved_expr_subgroup_callee helper_kernels subgroup_helpers
+               template_args expr)
+           captures)
+        (resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+           template_args body)
+  | Skip | BreakStmt | GotoStmt
+  | ReturnStmt None
+  | ContinueStmt | AsmStmt _ | BarrierOp _ ->
+      None
+
 let subgroup_kernel_of_kernel (context_defs : D_lang.Def.t list)
     (target_config : SM.Target_config.t)
-    ~(uniform_preserving_calls : StringSet.t) (kernel : D_lang.Kernel.t) :
-    (subgroup_kernel, error) result =
+    ~(uniform_preserving_calls : StringSet.t) ~(subgroup_helpers : StringSet.t)
+    (kernel : D_lang.Kernel.t) : (subgroup_kernel, error) result =
   let ( let* ) = Result.bind in
   match SM.Target_config.cuda_x_contiguous_subgroup_size target_config with
   | None -> Error (Missing_subgroup_config { kernel = kernel.name })
@@ -2558,8 +3115,13 @@ let subgroup_kernel_of_kernel (context_defs : D_lang.Def.t list)
         empty_collect_state ~kernel_name:kernel.name ~target_config
           ~uniform_vars:(uniform_vars_of_kernel_params kernel)
           ~uniform_preserving_calls
+          ~helper_kernels:(helper_kernel_table context_defs)
+          ~subgroup_helpers ~template_args:kernel.template_args
           (type_aliases_of_defs context_defs)
         |> fun state -> seed_context_declaration_facts state context_defs
+        |> fun state ->
+        add_template_argument_facts state kernel.type_params
+          kernel.template_args
       in
       let* state = collect_stmt state kernel.code in
       let launch_precondition =
@@ -3244,11 +3806,21 @@ let uniform_preserving_device_calls (program : D_lang.Program.t) : StringSet.t =
 
 let route_kernel_with_uniform_calls
     ?(target_config = SM.Target_config.missing_cuda) ?(context_defs = [])
-    ?(uniform_preserving_calls = StringSet.empty) (kernel : D_lang.Kernel.t) :
+    ?(uniform_preserving_calls = StringSet.empty)
+    ?(subgroup_helpers = StringSet.empty) (kernel : D_lang.Kernel.t) :
     (routed_kernel, error) result =
-  if stmt_requires_subgroup kernel.code then
+  let helper_kernels = helper_kernel_table context_defs in
+  let subgroup_callee =
+    resolved_stmt_subgroup_callee helper_kernels subgroup_helpers
+      kernel.template_args kernel.code
+  in
+  let has_direct_subgroup = stmt_requires_subgroup kernel.code in
+  if has_direct_subgroup || Option.is_some subgroup_callee then
+    let subgroup_helpers =
+      if has_direct_subgroup then StringSet.empty else subgroup_helpers
+    in
     subgroup_kernel_of_kernel context_defs target_config
-      ~uniform_preserving_calls kernel
+      ~uniform_preserving_calls ~subgroup_helpers kernel
     |> Result.map (fun kernel -> Subgroup_matrix kernel)
   else Ok (Ordinary_source kernel)
 
@@ -3272,12 +3844,12 @@ let route_program ?target_config ?only_kernel
     | None -> launch_wrappers
   in
   let* program = Launch_wrapper_link.rewrite_program ~launch_wrappers program in
-  let uniform_preserving_calls = uniform_preserving_device_calls program in
+  let helper_kernels = helper_kernel_table program in
   let direct_subgroup_kernels =
     List.fold_left
       (fun names -> function
         | D_lang.Def.Kernel kernel when stmt_requires_subgroup kernel.code ->
-            StringSet.add kernel.name names
+            StringSet.add (helper_identity kernel) names
         | D_lang.Def.Kernel _ | Declaration _ | Typedef _ | Enum _
         | LaunchParam _ ->
             names)
@@ -3288,8 +3860,10 @@ let route_program ?target_config ?only_kernel
       List.fold_left
         (fun names -> function
           | D_lang.Def.Kernel kernel
-            when Option.is_some (stmt_subgroup_callee names kernel.code) ->
-              StringSet.add kernel.name names
+            when Option.is_some
+                   (resolved_stmt_subgroup_callee helper_kernels names
+                      kernel.template_args kernel.code) ->
+              StringSet.add (helper_identity kernel) names
           | D_lang.Def.Kernel _ | Declaration _ | Typedef _ | Enum _
           | LaunchParam _ ->
               names)
@@ -3299,13 +3873,28 @@ let route_program ?target_config ?only_kernel
     else close_subgroup_dependencies expanded
   in
   let subgroup_kernels = close_subgroup_dependencies direct_subgroup_kernels in
-  let context_defs =
-    List.filter
+  let routes_to_subgroup (kernel : D_lang.Kernel.t) : bool =
+    stmt_requires_subgroup kernel.code
+    || Option.is_some
+         (resolved_stmt_subgroup_callee helper_kernels subgroup_kernels
+            kernel.template_args kernel.code)
+  in
+  let selected_subgroup_kernel =
+    List.exists
       (function
-        | D_lang.Def.Kernel _ -> false
-        | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> true)
+        | D_lang.Def.Kernel kernel ->
+            D_lang.Kernel.is_global kernel
+            && Option.fold ~none:true ~some:(String.equal kernel.name)
+                 only_kernel
+            && routes_to_subgroup kernel
+        | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> false)
       program
   in
+  let uniform_preserving_calls =
+    if selected_subgroup_kernel then uniform_preserving_device_calls program
+    else StringSet.empty
+  in
+  let context_defs = program in
   program
   |> List.fold_left
        (fun routed def ->
@@ -3315,15 +3904,32 @@ let route_program ?target_config ?only_kernel
            when D_lang.Kernel.is_global kernel
                 && Option.fold ~none:true ~some:(String.equal kernel.name)
                      only_kernel -> (
-             match stmt_subgroup_callee subgroup_kernels kernel.code with
-             | Some callee when not (stmt_requires_subgroup kernel.code) ->
-                 Error
-                   (Subgroup_callee_requires_inlining
-                      { kernel = kernel.name; callee })
+             match
+               resolved_stmt_subgroup_callee helper_kernels subgroup_kernels
+                 kernel.template_args kernel.code
+             with
+             | Some callee
+               when StringSet.mem kernel.name launch_wrappers
+                    && not (stmt_requires_subgroup kernel.code) ->
+                 if
+                   Option.is_some
+                     (Launch_wrapper_link.terminal_call_of_kernel kernel)
+                 then
+                   Error
+                     (Subgroup_callee_requires_inlining
+                        { kernel = kernel.name; callee })
+                 else
+                   let* kernel =
+                     route_kernel_with_uniform_calls ?target_config
+                       ~context_defs ~uniform_preserving_calls
+                       ~subgroup_helpers:subgroup_kernels kernel
+                   in
+                   Ok (kernel :: routed)
              | Some _ | None ->
                  let* kernel =
                    route_kernel_with_uniform_calls ?target_config ~context_defs
-                     ~uniform_preserving_calls kernel
+                     ~uniform_preserving_calls
+                     ~subgroup_helpers:subgroup_kernels kernel
                  in
                  Ok (kernel :: routed))
          | D_lang.Def.Kernel _ -> Ok routed

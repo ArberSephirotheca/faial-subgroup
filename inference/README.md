@@ -74,11 +74,13 @@ explicitly rather than falling back to guessed workgroup-only semantics.
 ### CUDA Dependency Preservation
 
 Ordinary `D_lang` to `Imp` lowering is the upstream Faial implementation. The
-subgroup route does not add helper summaries, source rejection, or pointer
-rules to that shared lowering. Instead, `Subgroup_source` directly records the
-scalar aliases, loop facts, warp helpers, shuffles, and matrix operations that
-its event and uniformity models need. This keeps extension precision from
-changing ordinary MAP obligations.
+subgroup route does not add source rejection or pointer rules to that shared
+lowering. Instead, `Subgroup_source` directly records the scalar aliases, loop
+facts, warp helpers, shuffles, and matrix operations that its event and
+uniformity models need. It follows selected device-helper chains when they lead
+to a supported subgroup operation; ordinary kernels continue through the
+upstream full-program lowering. This keeps extension precision from changing
+ordinary MAP obligations.
 
 Subgroup routing is only a source-level classification decision. When a kernel
 does not require subgroup/matrix semantics, the route retains its
@@ -163,6 +165,11 @@ carrier:
   focused WMMA calls route to `Subgroup_matrix` and require an explicit target
   configuration, currently CUDA x-contiguous
   `threadIdx.x / subgroup_size`;
+- subgroup routing follows transitive device-helper calls. Helper overloads are
+  matched by arity, function type, and template-specialization context rather
+  than by name alone. The current C++ member-helper surface includes
+  `block_reduce_policy::reduce`, allowing calls through `block_reduce` to reach
+  the underlying `warp_reduce_sum` or `warp_reduce_max` operation;
 - wrappers synthesized by `--assume-launch` are linked to their terminal
   kernel call before ordinary/subgroup routing. Linking keeps the wrapper's
   grid/block/path assertions, alpha-renames callee binders, binds formal
@@ -205,8 +212,11 @@ carrier:
   in the same workgroup phase but can be ordered later only for same-subgroup
   invocations. The `warp_reduce_*` names are helper summaries used by
   ggml-cuda-style source slices; they do not infer subgroup size from
-  `WARP_SIZE`. Direct shuffle calls require a statically full participation
-  mask for the configured subgroup; partial or symbolic masks fail closed;
+  `WARP_SIZE`. Direct shuffle and `__syncwarp` calls require a statically full
+  participation mask for the configured subgroup; partial or symbolic masks
+  fail closed. Full-warp reductions and votes produce one group result, so that
+  result is tracked as subgroup-uniform when the call itself is reached under
+  subgroup-uniform control;
 - subgroup and WMMA sites collected from source control constructs carry the
   enclosing branch, loop, switch, case, or default condition as adjacent
   site-control metadata for the DRF uniformity checker; unsupported control
@@ -259,7 +269,10 @@ carrier:
   those snapshots from the scalar facts valid at the branch entry, so a fact
   introduced by the `then` branch is not visible to subgroup or WMMA sites
   emitted by the `else` branch. This keeps source-local loop controls
-  checkable without making one-path facts globally true after the construct;
+  checkable without making one-path facts globally true after the construct.
+  A `break` or `continue` is accepted only when its controlling conditions are
+  subgroup-uniform, and `goto` fails closed because the source collector does
+  not resolve its target control flow;
 - ordinary source memory effects collected from a kernel that routes to the
   subgroup/matrix path are recorded beside the matrix carrier as structured
   source effects. Each record preserves the access mode, base/index access,

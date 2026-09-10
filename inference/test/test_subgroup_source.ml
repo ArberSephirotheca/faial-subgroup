@@ -160,13 +160,14 @@ let subscript ?(ty = J_type.int) (name : string) (index : D_lang.Expr.t list) :
   D_lang.make_subscript ~name:(var name) ~index ~ty
     ~location:Stage0.Location.empty
 
-let read_stmt ?(target = "tmp") (source : D_lang.d_subscript) : D_lang.Stmt.t =
+let read_stmt ?(target = "tmp") ?guard (source : D_lang.d_subscript) :
+    D_lang.Stmt.t =
   D_lang.Stmt.ReadAccessStmt
-    { target = var target; source; ty = C_type.int; guard = None }
+    { target = var target; source; ty = C_type.int; guard }
 
-let write_stmt ?payload (target : D_lang.d_subscript) : D_lang.Stmt.t =
+let write_stmt ?payload ?guard (target : D_lang.d_subscript) : D_lang.Stmt.t =
   D_lang.Stmt.WriteAccessStmt
-    { target; source = ident "value"; payload; guard = None }
+    { target; source = ident "value"; payload; guard }
 
 let atomic_add () : D_lang.Expr.t Atomic.t =
   match Atomic.from_name (var "atomicAdd") with
@@ -243,7 +244,7 @@ let test_missing_config_fails_only_on_subgroup_path () : unit =
   | Ok _ -> Alcotest.fail "subgroup path unexpectedly accepted missing config"
   | Error error -> Alcotest.fail (Source.error_to_string error)
 
-let test_launch_wrapper_for_subgroup_kernel_fails_explicitly () : unit =
+let test_unmarked_wrapper_follows_subgroup_helper () : unit =
   let callee =
     kernel ~attribute:D_lang.KernelAttr.Auxiliary "warp_body"
       (D_lang.Stmt.SExpr (call_expr "__syncwarp" []))
@@ -254,14 +255,79 @@ let test_launch_wrapper_for_subgroup_kernel_fails_explicitly () : unit =
   match
     Source.route_program ~target_config:(subgroup_config ())
       [ D_lang.Def.Kernel callee; D_lang.Def.Kernel wrapper ]
+    |> expect_route_ok
   with
-  | Error
-      (Source.Subgroup_callee_requires_inlining
-         { kernel = actual_kernel; callee = actual_callee }) ->
-      Alcotest.(check string) "wrapper name" "warp_body@launch" actual_kernel;
-      Alcotest.(check string) "callee name" "warp_body" actual_callee
-  | Error error -> Alcotest.fail (Source.error_to_string error)
-  | Ok _ -> Alcotest.fail "subgroup launch wrapper was analyzed in isolation"
+  | [ Source.Subgroup_matrix subgroup ] ->
+      Alcotest.(check int)
+        "helper subgroup site count" 1
+        (List.length subgroup.matrix_kernel.body)
+  | _ -> Alcotest.fail "subgroup helper call did not use subgroup routing"
+
+let test_templated_member_helper_chain_routes_to_subgroup () : unit =
+  let float_function = ty "float (float)" in
+  let call ?(kind = Decl_expr.Kind.Function) name argument =
+    D_lang.Expr.CallExpr
+      {
+        func = ident ~kind ~ty:float_function name;
+        args = [ argument ];
+        ty = J_type.float;
+      }
+  in
+  let sum = C_lang.TemplateArgument.TArgIntegral 1 in
+  let max = C_lang.TemplateArgument.TArgIntegral 0 in
+  let width value = C_lang.TemplateArgument.TArgIntegral value in
+  let float_arg = C_lang.TemplateArgument.TArgType J_type.float in
+  let reduce template_method helper =
+    kernel ~attribute:D_lang.KernelAttr.Auxiliary
+      ~params:[ kernel_param ~ty:J_type.float "value" ]
+      ~template_args:[ template_method; float_arg ]
+      ~ty:"float (float)" "reduce"
+      (D_lang.Stmt.ReturnStmt
+         (Some (call helper (ident ~ty:J_type.float "value"))))
+  in
+  let block template_args code =
+    kernel ~attribute:D_lang.KernelAttr.Auxiliary
+      ~params:[ kernel_param ~ty:J_type.float "value" ]
+      ~template_args ~ty:"float (float)" "block_reduce" code
+  in
+  let block_32 = block [ sum; width 32; float_arg ] D_lang.Stmt.Skip in
+  let block_1024 =
+    block
+      [ sum; width 1024; float_arg ]
+      (D_lang.Stmt.ReturnStmt
+         (Some
+            (call ~kind:Decl_expr.Kind.CXXMethod "reduce"
+               (ident ~ty:J_type.float "value"))))
+  in
+  let caller =
+    kernel
+      ~template_args:[ width 1024 ]
+      "group_norm"
+      (D_lang.Stmt.DeclStmt
+         [
+           decl ~ty:J_type.float "result"
+             (call "block_reduce" (ident ~ty:J_type.float "input"));
+         ])
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [
+        D_lang.Def.Kernel (reduce sum "warp_reduce_sum");
+        D_lang.Def.Kernel (reduce max "warp_reduce_max");
+        D_lang.Def.Kernel block_32;
+        D_lang.Def.Kernel block_1024;
+        D_lang.Def.Kernel caller;
+      ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] -> (
+      match subgroup.matrix_kernel.body with
+      | [ SM.Stmt.Subgroup_collective collective ] ->
+          Alcotest.(check string)
+            "resolved operation" "warp_reduce_sum"
+            (SM.Site.label_opt collective.site |> Option.value ~default:"")
+      | _ -> Alcotest.fail "templated helper chain did not yield one site")
+  | _ -> Alcotest.fail "templated member helper chain stayed ordinary"
 
 let launch_dim_assert (dimension : string) (value : int) : D_lang.Stmt.t =
   D_lang.Stmt.assert_stmt
@@ -953,6 +1019,97 @@ let test_subgroup_shuffle_rejects_partial_mask () : unit =
   expect_unsupported_matrix_call ~op:"__shfl_xor_sync"
     ~reason:"statically full participation mask" code
 
+let test_syncwarp_rejects_partial_mask () : unit =
+  let code =
+    D_lang.Stmt.SExpr
+      (call_expr "__syncwarp" [ D_lang.Expr.IntegerLiteral 0xFFFF ])
+  in
+  expect_unsupported_matrix_call ~op:"__syncwarp"
+    ~reason:"statically full participation mask" code
+
+let expect_unsupported_participation_control (control : D_lang.Stmt.t) : unit =
+  let guarded =
+    D_lang.Stmt.IfStmt
+      {
+        cond = thread_x_ne_0 ();
+        then_stmt = control;
+        else_stmt = D_lang.Stmt.Skip;
+      }
+  in
+  let code = D_lang.Stmt.from_list [ guarded; syncwarp_stmt ] in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "unsupported_control" code) ]
+  with
+  | Error error ->
+      Alcotest.(check bool)
+        "control transfer fails closed" true
+        (Stage0.Common.contains ~substring:"unsupported participation control"
+           (Source.error_to_string error))
+  | Ok _ -> Alcotest.fail "unsupported participation control was accepted"
+
+let test_unsupported_participation_controls_fail_closed () : unit =
+  List.iter expect_unsupported_participation_control
+    [ D_lang.Stmt.BreakStmt; ContinueStmt; GotoStmt ]
+
+let test_uniform_reduction_result_allows_break () : unit =
+  let code =
+    D_lang.Stmt.WhileStmt
+      {
+        cond = D_lang.Expr.CXXBoolLiteralExpr true;
+        body =
+          D_lang.Stmt.from_list
+            [
+              assign "all"
+                (call_expr "warp_reduce_all" [ thread_x_ne_0 () ]);
+              IfStmt
+                {
+                  cond = ident "all";
+                  then_stmt = BreakStmt;
+                  else_stmt = Skip;
+                };
+            ];
+      }
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "uniform_reduction_break" code) ]
+  with
+  | Ok [ Source.Subgroup_matrix _ ] -> ()
+  | Ok _ -> Alcotest.fail "uniform reduction kernel routed unexpectedly"
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+
+let test_synthetic_reduction_result_allows_break () : unit =
+  let code =
+    D_lang.Stmt.WhileStmt
+      {
+        cond = D_lang.Expr.CXXBoolLiteralExpr true;
+        body =
+          D_lang.Stmt.from_list
+            [
+              DeclStmt
+                [
+                  decl "@AccessState0"
+                    (call_expr "warp_reduce_all" [ thread_x_ne_0 () ]);
+                ];
+              assign "all" (ident "@AccessState0");
+              IfStmt
+                {
+                  cond = ident "all";
+                  then_stmt = BreakStmt;
+                  else_stmt = Skip;
+                };
+            ];
+      }
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "synthetic_reduction_break" code) ]
+  with
+  | Ok [ Source.Subgroup_matrix _ ] -> ()
+  | Ok _ -> Alcotest.fail "synthetic reduction kernel routed unexpectedly"
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+
 let test_warp_reduce_helper_requires_explicit_subgroup_config () : unit =
   let code =
     D_lang.Stmt.SExpr
@@ -1165,6 +1322,39 @@ let test_ordinary_memory_effects_preserve_varying_local_aliases () : unit =
                (List.length effects))
     end
   | _ -> Alcotest.fail "ordinary varying alias kernel did not route to subgroup"
+
+let test_ordinary_memory_effects_preserve_access_guards () : unit =
+  let guard =
+    bin ~ty:J_type.bool (member_expr "threadIdx" "x") "<"
+      (D_lang.Expr.IntegerLiteral 4)
+  in
+  let code =
+    D_lang.Stmt.from_list
+      [
+        read_stmt ~guard (subscript "src" [ member_expr "threadIdx" "x" ]);
+        write_stmt ~guard (subscript "dst" [ member_expr "threadIdx" "x" ]);
+        syncwarp_stmt;
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "guarded_memory" code) ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] ->
+      Alcotest.(check int)
+        "two guarded effects" 2 (List.length subgroup.ordinary_memory_effects);
+      List.iter
+        (fun (memory_effect : Source.ordinary_memory_effect) ->
+          let conditions =
+            memory_effect.source_conditions |> List.map Exp.b_to_string
+            |> String.concat "\n"
+          in
+          Alcotest.(check bool)
+            "access guard is retained" true
+            (Stage0.Common.contains ~substring:"threadIdx.x < 4" conditions))
+        subgroup.ordinary_memory_effects
+  | _ -> Alcotest.fail "guarded memory kernel did not route to subgroup"
 
 let test_ordinary_memory_drops_aliases_depending_on_reassigned_scalar () : unit
     =
@@ -1610,6 +1800,265 @@ let test_one_path_pointer_alias_does_not_escape_if () : unit =
   | Error error -> Alcotest.fail (Source.error_to_string error)
   | Ok _ -> Alcotest.fail "one-path pointer alias escaped if join"
 
+let test_guarded_pointer_alias_is_available_under_same_guard () : unit =
+  let guarded_read =
+    D_lang.Stmt.IfStmt
+      {
+        cond = block_x_eq_0 ();
+        then_stmt =
+          read_stmt (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]);
+        else_stmt = Skip;
+      }
+  in
+  let code =
+    D_lang.Stmt.from_list
+      [
+        DeclStmt [ undef_decl ~ty:pointer_ty "tile_ptr" ];
+        IfStmt
+          {
+            cond = block_x_eq_0 ();
+            then_stmt =
+              pointer_assign "tile_ptr" (ident ~ty:pointer_ty "tile");
+            else_stmt = Skip;
+          };
+        guarded_read;
+        syncwarp_stmt;
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "guarded_pointer_alias" code) ]
+  with
+  | Ok [ Source.Subgroup_matrix subgroup ] -> (
+      match subgroup.ordinary_memory_effects with
+      | [ read ] ->
+          Alcotest.(check string)
+            "same guard makes alias available" "tile"
+            (Variable.name read.access.array)
+      | _ -> Alcotest.fail "expected one guarded ordinary memory effect")
+  | Ok _ -> Alcotest.fail "guarded pointer kernel routed unexpectedly"
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+
+let test_guarded_pointer_reassignment_replaces_guarded_alias () : unit =
+  let guarded stmt =
+    D_lang.Stmt.IfStmt
+      { cond = block_x_eq_0 (); then_stmt = stmt; else_stmt = Skip }
+  in
+  let code =
+    D_lang.Stmt.from_list
+      [
+        DeclStmt [ undef_decl ~ty:pointer_ty "tile_ptr" ];
+        guarded
+          (pointer_assign "tile_ptr" (ident ~ty:pointer_ty "tile"));
+        guarded
+          (pointer_assign "tile_ptr" (pointer_offset "tile_ptr" "idx"));
+        guarded
+          (read_stmt
+             (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]));
+        syncwarp_stmt;
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "guarded_pointer_reassignment" code) ]
+  with
+  | Ok [ Source.Subgroup_matrix subgroup ] -> (
+      match subgroup.ordinary_memory_effects with
+      | [ read ] ->
+          Alcotest.(check string)
+            "guarded reassignment retains base" "tile"
+            (Variable.name read.access.array);
+          Alcotest.(check string)
+            "guarded reassignment retains offset" "[idx]"
+            (Access.index_to_string read.access.index)
+      | _ -> Alcotest.fail "expected one guarded ordinary memory effect")
+  | Ok _ -> Alcotest.fail "guarded pointer kernel routed unexpectedly"
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+
+let test_guarded_pointer_survives_guard_reassignment () : unit =
+  let enabled = ident ~ty:J_type.bool "enabled" in
+  let code =
+    D_lang.Stmt.from_list
+      [
+        DeclStmt [ undef_decl ~ty:pointer_ty "tile_ptr" ];
+        IfStmt
+          {
+            cond = enabled;
+            then_stmt =
+              D_lang.Stmt.from_list
+                [
+                  pointer_assign "tile_ptr"
+                    (ident ~ty:pointer_ty "tile");
+                  assign "enabled" (ident ~ty:J_type.bool "other");
+                ];
+            else_stmt = assign "enabled" (D_lang.Expr.CXXBoolLiteralExpr false);
+          };
+        IfStmt
+          {
+            cond = enabled;
+            then_stmt =
+              read_stmt
+                (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]);
+            else_stmt = Skip;
+          };
+        syncwarp_stmt;
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [
+        D_lang.Def.Kernel
+          (kernel
+             ~params:
+               [
+                 kernel_param ~ty:J_type.bool "enabled";
+                 kernel_param ~ty:J_type.bool "other";
+               ]
+             "guarded_pointer_guard_reassignment" code);
+      ]
+  with
+  | Ok [ Source.Subgroup_matrix subgroup ] -> (
+      match subgroup.ordinary_memory_effects with
+      | [ read ] ->
+          Alcotest.(check string)
+            "updated guard still implies initialization" "tile"
+            (Variable.name read.access.array)
+      | _ -> Alcotest.fail "expected one guarded ordinary memory effect")
+  | Ok _ -> Alcotest.fail "guarded pointer kernel routed unexpectedly"
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+
+let test_constant_true_pointer_alias_escapes_if () : unit =
+  let code =
+    D_lang.Stmt.from_list
+      [
+        DeclStmt [ undef_decl ~ty:pointer_ty "tile_ptr" ];
+        IfStmt
+          {
+            cond = D_lang.Expr.CXXBoolLiteralExpr true;
+            then_stmt = pointer_assign "tile_ptr" (ident ~ty:pointer_ty "tile");
+            else_stmt = Skip;
+          };
+        read_stmt (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]);
+        syncwarp_stmt;
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "constant_pointer_alias" code) ]
+  with
+  | Ok [ Source.Subgroup_matrix subgroup ] ->
+      Alcotest.(check int)
+        "constant branch retains pointer alias" 1
+        (List.length subgroup.ordinary_memory_effects)
+  | Ok _ -> Alcotest.fail "constant pointer kernel routed unexpectedly"
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+
+let test_integral_template_argument_resolves_constexpr_pointer_branch () :
+    unit =
+  let has_fusion = var "has_fusion" in
+  let code =
+    D_lang.Stmt.from_list
+      [
+        DeclStmt [ undef_decl ~ty:pointer_ty "gate_ptr" ];
+        IfStmt
+          {
+            cond =
+              ident ~kind:Decl_expr.Kind.NonTypeTemplateParm "has_fusion";
+            then_stmt =
+              pointer_assign "gate_ptr" (ident ~ty:pointer_ty "gate");
+            else_stmt = Skip;
+          };
+        read_stmt (subscript "gate_ptr" [ D_lang.Expr.IntegerLiteral 0 ]);
+        syncwarp_stmt;
+      ]
+  in
+  let type_params =
+    [ D_lang.Ty_param.NonTypeTemplate { name = has_fusion; ty = J_type.bool } ]
+  in
+  let template_args = [ C_lang.TemplateArgument.TArgIntegral 1 ] in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [
+        D_lang.Def.Kernel
+          (kernel ~type_params ~template_args "constexpr_pointer_alias" code);
+      ]
+  with
+  | Ok [ Source.Subgroup_matrix subgroup ] -> (
+      match subgroup.ordinary_memory_effects with
+      | [ read ] ->
+          Alcotest.(check string)
+            "constexpr branch retains pointer alias" "gate"
+            (Variable.name read.access.array)
+      | _ -> Alcotest.fail "expected one ordinary memory effect")
+  | Ok _ -> Alcotest.fail "constexpr pointer kernel routed unexpectedly"
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+
+let test_constant_comparison_avoids_impossible_pointer_branch () : unit =
+  let physical_warp_size =
+    typed_call_expr ~ty:J_type.int "ggml_cuda_get_physical_warp_size" []
+  in
+  let code =
+    D_lang.Stmt.from_list
+      [
+        DeclStmt
+          [ decl ~ty:pointer_ty "tile_ptr" (ident ~ty:pointer_ty "tile") ];
+        IfStmt
+          {
+            cond =
+              bin ~ty:J_type.bool (D_lang.Expr.IntegerLiteral 32) ">"
+                physical_warp_size;
+            then_stmt =
+              pointer_assign "tile_ptr" (ident ~ty:pointer_ty "other_tile");
+            else_stmt = Skip;
+          };
+        read_stmt (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]);
+        syncwarp_stmt;
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "constant_comparison_pointer_alias" code) ]
+  with
+  | Ok [ Source.Subgroup_matrix subgroup ] -> (
+      match subgroup.ordinary_memory_effects with
+      | [ read ] ->
+          Alcotest.(check string)
+            "impossible branch leaves pointer unchanged" "tile"
+            (Variable.name read.access.array)
+      | _ -> Alcotest.fail "expected one ordinary memory effect")
+  | Ok _ -> Alcotest.fail "constant comparison kernel routed unexpectedly"
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+
+let test_pointer_alias_accepts_aggregate_member () : unit =
+  let code =
+    D_lang.Stmt.from_list
+      [
+        DeclStmt
+          [
+            decl ~ty:pointer_ty "tile_ptr"
+              (member_expr ~ty:pointer_ty "fusion" "tile");
+          ];
+        read_stmt (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]);
+        syncwarp_stmt;
+      ]
+  in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      [ D_lang.Def.Kernel (kernel "aggregate_pointer_alias" code) ]
+  with
+  | Ok [ Source.Subgroup_matrix subgroup ] -> (
+      match subgroup.ordinary_memory_effects with
+      | [ read ] ->
+          Alcotest.(check string)
+            "aggregate field remains the memory root" "fusion.tile"
+            (Variable.name read.access.array)
+      | effects ->
+          Alcotest.fail
+            (Printf.sprintf "expected one aggregate read, got %d"
+               (List.length effects)))
+  | Ok _ -> Alcotest.fail "aggregate pointer kernel routed unexpectedly"
+  | Error error -> Alcotest.fail (Source.error_to_string error)
+
 let test_unsupported_ordinary_memory_index_fails_explicitly () : unit =
   let code =
     D_lang.Stmt.from_list
@@ -1660,6 +2109,28 @@ let test_thread_x_guard_records_site_control () : unit =
             (Printf.sprintf "expected one site control, got %d"
                (List.length controls)))
   | _ -> Alcotest.fail "guarded subgroup op did not route to subgroup carrier"
+
+let test_compile_time_guard_records_uniform_vars () : unit =
+  let code =
+    D_lang.Stmt.IfStmt
+      {
+        cond =
+          bin ~ty:J_type.bool
+            (ident ~kind:Decl_expr.Kind.NonTypeTemplateParm "ds_layout")
+            "!="
+            (ident ~kind:Decl_expr.Kind.EnumConstant
+               "MMQ_Q8_1_DS_LAYOUT_D4");
+        then_stmt = syncwarp_stmt;
+        else_stmt = D_lang.Stmt.Skip;
+      }
+  in
+  let control = expect_single_site_control "compile_time_guard" code in
+  Alcotest.(check bool)
+    "template parameter is uniform" true
+    (site_control_has_uniform_var "ds_layout" control);
+  Alcotest.(check bool)
+    "enum constant is uniform" true
+    (site_control_has_uniform_var "MMQ_Q8_1_DS_LAYOUT_D4" control)
 
 let test_subgroup_id_alias_records_uniform_vars () : unit =
   let code =
@@ -2468,9 +2939,12 @@ let tests : unit Alcotest.test_case list =
     ( "missing config fails only on subgroup path",
       `Quick,
       test_missing_config_fails_only_on_subgroup_path );
-    ( "subgroup launch wrapper fails before isolated routing",
+    ( "unmarked wrapper follows subgroup helper",
       `Quick,
-      test_launch_wrapper_for_subgroup_kernel_fails_explicitly );
+      test_unmarked_wrapper_follows_subgroup_helper );
+    ( "templated member helper chain routes to subgroup",
+      `Quick,
+      test_templated_member_helper_chain_routes_to_subgroup );
     ( "marked launch wrapper inlines subgroup callee",
       `Quick,
       test_marked_launch_wrapper_inlines_subgroup_callee );
@@ -2522,6 +2996,18 @@ let tests : unit Alcotest.test_case list =
     ( "subgroup shuffle rejects partial mask",
       `Quick,
       test_subgroup_shuffle_rejects_partial_mask );
+    ( "syncwarp rejects partial mask",
+      `Quick,
+      test_syncwarp_rejects_partial_mask );
+    ( "unsupported participation controls fail closed",
+      `Quick,
+      test_unsupported_participation_controls_fail_closed );
+    ( "uniform reduction result allows break",
+      `Quick,
+      test_uniform_reduction_result_allows_break );
+    ( "synthetic reduction result allows break",
+      `Quick,
+      test_synthetic_reduction_result_allows_break );
     ( "warp reduce helper requires explicit subgroup config",
       `Quick,
       test_warp_reduce_helper_requires_explicit_subgroup_config );
@@ -2537,6 +3023,9 @@ let tests : unit Alcotest.test_case list =
     ( "ordinary memory effects preserve varying local aliases",
       `Quick,
       test_ordinary_memory_effects_preserve_varying_local_aliases );
+    ( "ordinary memory effects preserve access guards",
+      `Quick,
+      test_ordinary_memory_effects_preserve_access_guards );
     ( "ordinary memory drops aliases depending on reassigned scalar",
       `Quick,
       test_ordinary_memory_drops_aliases_depending_on_reassigned_scalar );
@@ -2562,12 +3051,36 @@ let tests : unit Alcotest.test_case list =
     ( "one-path pointer alias does not escape if",
       `Quick,
       test_one_path_pointer_alias_does_not_escape_if );
+    ( "guarded pointer alias is available under the same guard",
+      `Quick,
+      test_guarded_pointer_alias_is_available_under_same_guard );
+    ( "guarded pointer reassignment replaces guarded alias",
+      `Quick,
+      test_guarded_pointer_reassignment_replaces_guarded_alias );
+    ( "guarded pointer survives guard reassignment",
+      `Quick,
+      test_guarded_pointer_survives_guard_reassignment );
+    ( "constant true pointer alias escapes if",
+      `Quick,
+      test_constant_true_pointer_alias_escapes_if );
+    ( "integral template argument resolves constexpr pointer branch",
+      `Quick,
+      test_integral_template_argument_resolves_constexpr_pointer_branch );
+    ( "constant comparison avoids impossible pointer branch",
+      `Quick,
+      test_constant_comparison_avoids_impossible_pointer_branch );
+    ( "pointer alias accepts aggregate member",
+      `Quick,
+      test_pointer_alias_accepts_aggregate_member );
     ( "unsupported ordinary memory index fails explicitly",
       `Quick,
       test_unsupported_ordinary_memory_index_fails_explicitly );
     ( "threadIdx.x guard records site control",
       `Quick,
       test_thread_x_guard_records_site_control );
+    ( "compile-time guard records uniform vars",
+      `Quick,
+      test_compile_time_guard_records_uniform_vars );
     ( "subgroup-id alias records uniform vars",
       `Quick,
       test_subgroup_id_alias_records_uniform_vars );

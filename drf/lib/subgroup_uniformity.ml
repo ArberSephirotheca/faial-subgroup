@@ -160,7 +160,11 @@ let subgroup_result_variables (kernel : SM.Kernel.t) : Variable.Set.t =
   List.fold_left
     (fun vars -> function
       | SM.Stmt.Subgroup_collective collective ->
-          Variable.Set.add (SM.Collective.result collective) vars
+          begin match SM.Collective.kind collective with
+          | SM.Collective.Gather _ ->
+              Variable.Set.add (SM.Collective.result collective) vars
+          | Ballot | Operation _ -> vars
+          end
       | Workgroup_barrier _ | Subgroup_barrier _ | Matrix_collective _ -> vars)
     Variable.Set.empty kernel.body
 

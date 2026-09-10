@@ -130,6 +130,22 @@ let test_integer_literal_parses_uint64_sentinel () : unit =
     (-4265267296055464877)
     (parse_int_literal "14181476777654086739")
 
+let test_nullptr_parses_as_uniform_zero () : unit =
+  let json : Yojson.Basic.t =
+    `Assoc
+      [
+        ("kind", `String "CXXNullPtrLiteralExpr");
+        ("type", `Assoc [ ("qualType", `String "std::nullptr_t") ]);
+      ]
+  in
+  match C_lang.parse_expr json with
+  | Ok (IntegerLiteral value) -> Alcotest.(check int) "null value" 0 value
+  | Ok expr ->
+      Alcotest.failf "parse_expr: expected zero for nullptr, got %s"
+        (C_lang.Expr.to_string expr)
+  | Error error ->
+      Alcotest.failf "parse_expr failed: %s" (Rjson.error_to_string error)
+
 (* c-to-json's path_condition can carry a synthetic for-init-bound
    conjunct: a [BinaryOperator] with opcode [>=]/[<=] whose LHS is a
    bare [DeclRefExpr] (no [ImplicitCastExpr] wrap) and whose neither the
@@ -759,6 +775,7 @@ let tests : unit Alcotest.test_case list =
     ( "IntegerLiteral: uint64 sentinel",
       `Quick,
       test_integer_literal_parses_uint64_sentinel );
+    ( "nullptr is uniform zero", `Quick, test_nullptr_parses_as_uniform_zero );
     ( "path_condition: synthetic for-init bound",
       `Quick,
       test_synthetic_for_init_bound_parses );
