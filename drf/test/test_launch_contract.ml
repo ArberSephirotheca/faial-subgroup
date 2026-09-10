@@ -1347,7 +1347,7 @@ let test_solve_tri_family_contract_guards () : unit =
     "generated selected rows follow family lookup rows" [ "L117"; "L118" ]
     (Launch_contract_generator.selected_rows
     |> List.map (fun row -> row.Launch_contract_generator.selected_row_id));
-  let guard = LC.solve_tri_symbolic_k_guard in
+  let guard = LCG.solve_tri_symbolic_k_guard in
   Alcotest.(check string)
     "symbolic K parameter" "K"
     guard.Launch_contract_generator.symbolic_guard_k_parameter;
@@ -1365,7 +1365,9 @@ let test_solve_tri_family_contract_guards () : unit =
     "symbolic excluded rows" [ "L116"; "L127"; "L128" ]
     guard.Launch_contract_generator.symbolic_guard_excluded_row_ids;
   let blocker_dump =
-    String.concat "\n" (LC.solve_tri_symbolic_k_obligation_blocker_lines ())
+    String.concat "\n"
+      (LCG.symbolic_obligation_blocker_lines
+         LCG.solve_tri_symbolic_k_obligation_blocker)
   in
   Alcotest.(check bool)
     "blocker names symbolic K" true
@@ -1448,7 +1450,7 @@ let test_solve_tri_symbolic_dimension_carrier () : unit =
     carrier.Launch_contract_generator.carrier_excluded_row_ids
 
 let test_host_template_candidate_carrier_is_non_admission () : unit =
-  let carrier = LC.host_template_specialization_candidate_carrier in
+  let carrier = LCG.host_template_specialization_candidate_carrier in
   Alcotest.(check string)
     "carrier id" "s447_host_template_specialization"
     carrier.Launch_contract_generator.candidate_carrier_id;
@@ -1479,7 +1481,11 @@ let test_host_template_candidate_carrier_is_non_admission () : unit =
   | Error (LC.Unknown_row "L003") -> ()
   | Ok _ -> Alcotest.fail "S447 carrier unexpectedly admitted L003 lookup row"
   | Error error -> Alcotest.fail (LC.error_to_string error));
-  let rendered = String.concat "\n" (LC.guarded_candidate_carrier_lines ()) in
+  let rendered =
+    String.concat "\n"
+      (LCG.guarded_candidate_carrier_lines
+         LCG.host_template_specialization_candidate_carrier)
+  in
   Alcotest.(check bool)
     "rendered carrier records task-local route" true
     (string_contains rendered
@@ -1489,7 +1495,7 @@ let test_host_template_candidate_carrier_is_non_admission () : unit =
     (string_contains rendered "solver_policy: not_solver_input")
 
 let test_template_argument_resolution_carrier_is_non_admission () : unit =
-  let carrier = LC.template_argument_resolution_carrier in
+  let carrier = LCG.template_argument_resolution_carrier in
   Alcotest.(check string)
     "carrier id" "s475_template_argument_resolution"
     carrier.Launch_contract_generator.template_resolution_carrier_id;
@@ -1573,14 +1579,16 @@ let test_template_argument_resolution_carrier_is_non_admission () : unit =
            host template domains for S475-blocked families";
     }
   in
-  (match LC.validate_template_argument_resolution_carrier carrier facts with
+  (match LCG.validate_template_argument_resolution_carrier carrier facts with
   | Ok () -> ()
   | Error error ->
       Alcotest.fail (Launch_contract_generator.validation_error_to_string error));
   let bad_facts =
     { facts with template_resolution_fact_families_known = Some 34 }
   in
-  (match LC.validate_template_argument_resolution_carrier carrier bad_facts with
+  (match
+     LCG.validate_template_argument_resolution_carrier carrier bad_facts
+   with
   | Error
       (Launch_contract_generator.Field_mismatch
          { field = "families_known"; expected = "33"; actual = "34"; _ }) ->
@@ -1589,7 +1597,9 @@ let test_template_argument_resolution_carrier_is_non_admission () : unit =
   | Error error ->
       Alcotest.fail (Launch_contract_generator.validation_error_to_string error));
   let rendered =
-    String.concat "\n" (LC.template_argument_resolution_carrier_lines ())
+    String.concat "\n"
+      (LCG.template_argument_resolution_carrier_lines
+         LCG.template_argument_resolution_carrier)
   in
   Alcotest.(check bool)
     "rendered carrier records S475 id" true
@@ -1599,7 +1609,7 @@ let test_template_argument_resolution_carrier_is_non_admission () : unit =
     (string_contains rendered "solver_policy: not_solver_input")
 
 let test_launch_branch_frontier_carrier_is_non_admission () : unit =
-  let carrier = LC.launch_branch_frontier_carrier in
+  let carrier = LCG.launch_branch_frontier_carrier in
   Alcotest.(check string)
     "carrier id" "s477_launch_branch_frontier"
     carrier.Launch_contract_generator.launch_branch_carrier_id;
@@ -1683,12 +1693,12 @@ let test_launch_branch_frontier_carrier_is_non_admission () : unit =
            helper";
     }
   in
-  (match LC.validate_launch_branch_frontier_carrier carrier facts with
+  (match LCG.validate_launch_branch_frontier_carrier carrier facts with
   | Ok () -> ()
   | Error error ->
       Alcotest.fail (Launch_contract_generator.validation_error_to_string error));
   let bad_facts = { facts with launch_branch_fact_rows_known = Some 46 } in
-  (match LC.validate_launch_branch_frontier_carrier carrier bad_facts with
+  (match LCG.validate_launch_branch_frontier_carrier carrier bad_facts with
   | Error
       (Launch_contract_generator.Field_mismatch
          { field = "rows_known"; expected = "45"; actual = "46"; _ }) ->
@@ -1697,7 +1707,9 @@ let test_launch_branch_frontier_carrier_is_non_admission () : unit =
   | Error error ->
       Alcotest.fail (Launch_contract_generator.validation_error_to_string error));
   let rendered =
-    String.concat "\n" (LC.launch_branch_frontier_carrier_lines ())
+    String.concat "\n"
+      (LCG.launch_branch_frontier_carrier_lines
+         LCG.launch_branch_frontier_carrier)
   in
   Alcotest.(check bool)
     "rendered carrier records S477 id" true
@@ -1710,7 +1722,7 @@ let test_launch_branch_frontier_carrier_is_non_admission () : unit =
     (string_contains rendered "solver_policy: not_solver_input")
 
 let test_positive_shape_guard_carrier_is_non_admission () : unit =
-  let carrier = LC.positive_shape_guard_carrier in
+  let carrier = LCG.positive_shape_guard_carrier in
   Alcotest.(check string)
     "carrier id" "s478_positive_shape_guard_frontier"
     carrier.Launch_contract_generator.positive_shape_carrier_id;
@@ -1801,12 +1813,12 @@ let test_positive_shape_guard_carrier_is_non_admission () : unit =
            construction";
     }
   in
-  (match LC.validate_positive_shape_guard_carrier carrier facts with
+  (match LCG.validate_positive_shape_guard_carrier carrier facts with
   | Ok () -> ()
   | Error error ->
       Alcotest.fail (Launch_contract_generator.validation_error_to_string error));
   let bad_facts = { facts with positive_shape_fact_rows_attempted = Some 56 } in
-  (match LC.validate_positive_shape_guard_carrier carrier bad_facts with
+  (match LCG.validate_positive_shape_guard_carrier carrier bad_facts with
   | Error
       (Launch_contract_generator.Field_mismatch
          { field = "rows_attempted"; expected = "57"; actual = "56"; _ }) ->
@@ -1815,7 +1827,8 @@ let test_positive_shape_guard_carrier_is_non_admission () : unit =
   | Error error ->
       Alcotest.fail (Launch_contract_generator.validation_error_to_string error));
   let rendered =
-    String.concat "\n" (LC.positive_shape_guard_carrier_lines ())
+    String.concat "\n"
+      (LCG.positive_shape_guard_carrier_lines LCG.positive_shape_guard_carrier)
   in
   Alcotest.(check bool)
     "rendered carrier records S478 id" true
@@ -1828,7 +1841,7 @@ let test_positive_shape_guard_carrier_is_non_admission () : unit =
     (string_contains rendered "solver_policy: not_solver_input")
 
 let test_positive_shape_verification_carrier_records_s479 () : unit =
-  let carrier = LC.positive_shape_verification_carrier in
+  let carrier = LCG.positive_shape_verification_carrier in
   Alcotest.(check string)
     "carrier id" "s479_positive_shape_verification"
     carrier.Launch_contract_generator.positive_shape_verification_carrier_id;
@@ -1962,14 +1975,14 @@ let test_positive_shape_verification_carrier_records_s479 () : unit =
            profiles or exact launch-contract rows before manifest promotion";
     }
   in
-  (match LC.validate_positive_shape_verification_carrier carrier facts with
+  (match LCG.validate_positive_shape_verification_carrier carrier facts with
   | Ok () -> ()
   | Error error ->
       Alcotest.fail (Launch_contract_generator.validation_error_to_string error));
   let bad_facts =
     { facts with positive_shape_verification_fact_blocked_families = Some 1 }
   in
-  (match LC.validate_positive_shape_verification_carrier carrier bad_facts with
+  (match LCG.validate_positive_shape_verification_carrier carrier bad_facts with
   | Error
       (Launch_contract_generator.Field_mismatch
          { field = "blocked_families"; expected = "0"; actual = "1"; _ }) ->
@@ -1979,7 +1992,9 @@ let test_positive_shape_verification_carrier_records_s479 () : unit =
   | Error error ->
       Alcotest.fail (Launch_contract_generator.validation_error_to_string error));
   let rendered =
-    String.concat "\n" (LC.positive_shape_verification_carrier_lines ())
+    String.concat "\n"
+      (LCG.positive_shape_verification_carrier_lines
+         LCG.positive_shape_verification_carrier)
   in
   Alcotest.(check bool)
     "rendered carrier records S479 id" true
@@ -1992,7 +2007,7 @@ let test_positive_shape_verification_carrier_records_s479 () : unit =
     (string_contains rendered "exact_production_promotions: 0")
 
 let test_positive_shape_production_promotion_carrier_records_s481 () : unit =
-  let carrier = LC.positive_shape_production_promotion_carrier in
+  let carrier = LCG.positive_shape_production_promotion_carrier in
   Alcotest.(check string)
     "carrier id" "s481_positive_shape_production_profile"
     carrier.Launch_contract_generator.positive_shape_production_carrier_id;
@@ -2129,7 +2144,7 @@ let test_positive_shape_production_promotion_carrier_records_s481 () : unit =
     }
   in
   (match
-     LC.validate_positive_shape_production_promotion_carrier carrier facts
+     LCG.validate_positive_shape_production_promotion_carrier carrier facts
    with
   | Ok () -> ()
   | Error error ->
@@ -2141,7 +2156,7 @@ let test_positive_shape_production_promotion_carrier_records_s481 () : unit =
     }
   in
   (match
-     LC.validate_positive_shape_production_promotion_carrier carrier bad_facts
+     LCG.validate_positive_shape_production_promotion_carrier carrier bad_facts
    with
   | Error
       (Launch_contract_generator.Field_mismatch
@@ -2156,7 +2171,9 @@ let test_positive_shape_production_promotion_carrier_records_s481 () : unit =
   | Error error ->
       Alcotest.fail (Launch_contract_generator.validation_error_to_string error));
   let rendered =
-    String.concat "\n" (LC.positive_shape_production_promotion_carrier_lines ())
+    String.concat "\n"
+      (LCG.positive_shape_production_promotion_carrier_lines
+         LCG.positive_shape_production_promotion_carrier)
   in
   Alcotest.(check bool)
     "rendered carrier records S481 id" true
@@ -2168,7 +2185,7 @@ let test_positive_shape_production_promotion_carrier_records_s481 () : unit =
 
 let test_exact_evidence_manifest_promotion_policy_carrier_records_s487 () : unit
     =
-  let carrier = LC.exact_evidence_manifest_promotion_policy_carrier in
+  let carrier = LCG.exact_evidence_manifest_promotion_policy_carrier in
   Alcotest.(check string)
     "carrier id" "s487_exact_evidence_manifest_promotion_policy"
     carrier.Launch_contract_generator.exact_policy_carrier_id;
@@ -2299,14 +2316,14 @@ let test_exact_evidence_manifest_promotion_policy_carrier_records_s487 () : unit
     }
   in
   (match
-     LC.validate_exact_evidence_manifest_promotion_policy_carrier carrier facts
+     LCG.validate_exact_evidence_manifest_promotion_policy_carrier carrier facts
    with
   | Ok () -> ()
   | Error error ->
       Alcotest.fail (Launch_contract_generator.validation_error_to_string error));
   let bad_facts = { facts with exact_policy_fact_exact_row_count = Some 54 } in
   (match
-     LC.validate_exact_evidence_manifest_promotion_policy_carrier carrier
+     LCG.validate_exact_evidence_manifest_promotion_policy_carrier carrier
        bad_facts
    with
   | Error
@@ -2318,7 +2335,8 @@ let test_exact_evidence_manifest_promotion_policy_carrier_records_s487 () : unit
       Alcotest.fail (Launch_contract_generator.validation_error_to_string error));
   let rendered =
     String.concat "\n"
-      (LC.exact_evidence_manifest_promotion_policy_carrier_lines ())
+      (LCG.exact_evidence_manifest_promotion_policy_carrier_lines
+         LCG.exact_evidence_manifest_promotion_policy_carrier)
   in
   Alcotest.(check bool)
     "rendered S487 policy records drf_exact_row" true

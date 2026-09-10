@@ -3,8 +3,24 @@
    test_memory_event
    test_subgroup_delinearize
    test_launch_contract
-   test_launch_contract_manifest
    test_subgroup_obligation
    test_subgroup_uniformity
    test_subgroup_solver)
   (libraries stage0 protocols inference drf alcotest yojson))
+
+; These integration tests also need the external agent_results archive.
+(executable
+ (name test_launch_contract_manifest)
+ (modules test_launch_contract_manifest)
+ (libraries stage0 protocols inference drf alcotest yojson))
+
+(rule
+ (alias runtest)
+ (action (run ./test_launch_contract_manifest.exe test launch_contract_guards)))
+
+(rule
+ (alias runtest-launch-manifest)
+ (deps (universe))
+ (action
+  (setenv FAIAL_LAUNCH_ARTIFACT_ROOT %{env:FAIAL_LAUNCH_ARTIFACT_ROOT=}
+   (run ./test_launch_contract_manifest.exe test launch_contract_manifest))))

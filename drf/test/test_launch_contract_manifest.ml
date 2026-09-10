@@ -21,10 +21,15 @@ let rec find_repo_root dir =
   else
     let parent = Filename.dirname dir in
     if String.equal parent dir then
-      failf "could not find repo root from %s" (Sys.getcwd ())
+      failf
+        "missing agent_results/rewrite/cuda_launch_manifest.json; set \
+         FAIAL_LAUNCH_ARTIFACT_ROOT to the evaluation archive root"
     else find_repo_root parent
 
-let repo_root () = find_repo_root (Sys.getcwd ())
+let repo_root () =
+  match Sys.getenv_opt "FAIAL_LAUNCH_ARTIFACT_ROOT" with
+  | Some root when root <> "" -> find_repo_root root
+  | _ -> find_repo_root (Sys.getcwd ())
 
 let repo_path root rel =
   let path =
@@ -1101,7 +1106,7 @@ let s453_l012_boundary_input root =
 
 let expect_l012_boundary root =
   let carrier =
-    Launch_contract.host_template_specialization_candidate_carrier
+    Launch_contract_generator.host_template_specialization_candidate_carrier
   in
   match
     Symbolic_launch_evidence.guarded_candidate_boundary ~carrier
@@ -1521,9 +1526,11 @@ let test_solve_tri_family_contract_manifest_boundaries () =
 let test_solve_tri_symbolic_k_guard_consumption_and_blocker () =
   let root = repo_root () in
   let rows = load_manifest root |> manifest_rows in
-  let guard = Launch_contract.solve_tri_symbolic_k_guard in
+  let guard = Launch_contract_generator.solve_tri_symbolic_k_guard in
   let facts = symbolic_k_guard_facts guard in
-  (match Launch_contract.validate_solve_tri_symbolic_k_guard guard facts with
+  (match
+     Launch_contract_generator.validate_solve_tri_symbolic_k_guard guard facts
+   with
   | Ok () -> ()
   | Error error ->
       failf "symbolic K guard rejected valid facts: %s"
@@ -1537,11 +1544,13 @@ let test_solve_tri_symbolic_k_guard_consumption_and_blocker () =
   Alcotest.(check string)
     "symbolic block relation" "blockDim = [32, K, 1]"
     guard.Launch_contract_generator.symbolic_guard_block_dim_relation;
-  let carrier = Launch_contract.solve_tri_symbolic_dimension_carrier in
+  let carrier =
+    Launch_contract_generator.solve_tri_symbolic_dimension_carrier
+  in
   let carrier_facts = symbolic_dimension_carrier_facts carrier in
   (match
-     Launch_contract.validate_solve_tri_symbolic_dimension_carrier carrier
-       carrier_facts
+     Launch_contract_generator.validate_solve_tri_symbolic_dimension_carrier
+       carrier carrier_facts
    with
   | Ok () -> ()
   | Error error ->
@@ -1602,7 +1611,8 @@ let test_solve_tri_symbolic_k_guard_consumption_and_blocker () =
     guard.Launch_contract_generator.symbolic_guard_excluded_row_ids;
   let dump =
     String.concat "\n"
-      (Launch_contract.solve_tri_symbolic_k_obligation_blocker_lines ())
+      (Launch_contract_generator.symbolic_obligation_blocker_lines
+         Launch_contract_generator.solve_tri_symbolic_k_obligation_blocker)
   in
   Alcotest.(check bool)
     "blocker dump contains K" true
@@ -1617,10 +1627,12 @@ let test_solve_tri_symbolic_k_guard_consumption_and_blocker () =
 let test_host_template_candidate_carrier_matches_s445_blocker () =
   let root = repo_root () in
   let carrier =
-    Launch_contract.host_template_specialization_candidate_carrier
+    Launch_contract_generator.host_template_specialization_candidate_carrier
   in
   let facts = guarded_candidate_carrier_facts carrier in
-  (match Launch_contract.validate_guarded_candidate_carrier carrier facts with
+  (match
+     Launch_contract_generator.validate_guarded_candidate_carrier carrier facts
+   with
   | Ok () -> ()
   | Error error ->
       failf "candidate carrier rejected valid facts: %s"
@@ -1657,7 +1669,9 @@ let test_host_template_candidate_carrier_matches_s445_blocker () =
   | Error error -> failf "%s" (Launch_contract.error_to_string error)
 
 let check_symbolic_k_missing_validation_field label field guard facts =
-  match Launch_contract.validate_solve_tri_symbolic_k_guard guard facts with
+  match
+    Launch_contract_generator.validate_solve_tri_symbolic_k_guard guard facts
+  with
   | Ok () -> failf "%s: expected validation failure" label
   | Error (Launch_contract_generator.Missing_field { field = actual; _ }) ->
       Alcotest.(check string) label field actual
@@ -1666,7 +1680,9 @@ let check_symbolic_k_missing_validation_field label field guard facts =
         (Launch_contract_generator.validation_error_to_string error)
 
 let check_symbolic_k_field_mismatch label field guard facts =
-  match Launch_contract.validate_solve_tri_symbolic_k_guard guard facts with
+  match
+    Launch_contract_generator.validate_solve_tri_symbolic_k_guard guard facts
+  with
   | Ok () -> failf "%s: expected validation failure" label
   | Error (Launch_contract_generator.Field_mismatch { field = actual; _ }) ->
       Alcotest.(check string) label field actual
@@ -1676,7 +1692,8 @@ let check_symbolic_k_field_mismatch label field guard facts =
 
 let check_carrier_missing_validation_field label field carrier facts =
   match
-    Launch_contract.validate_solve_tri_symbolic_dimension_carrier carrier facts
+    Launch_contract_generator.validate_solve_tri_symbolic_dimension_carrier
+      carrier facts
   with
   | Ok () -> failf "%s: expected validation failure" label
   | Error (Launch_contract_generator.Missing_field { field = actual; _ }) ->
@@ -1687,7 +1704,8 @@ let check_carrier_missing_validation_field label field carrier facts =
 
 let check_carrier_field_mismatch label field carrier facts =
   match
-    Launch_contract.validate_solve_tri_symbolic_dimension_carrier carrier facts
+    Launch_contract_generator.validate_solve_tri_symbolic_dimension_carrier
+      carrier facts
   with
   | Ok () -> failf "%s: expected validation failure" label
   | Error (Launch_contract_generator.Field_mismatch { field = actual; _ }) ->
@@ -1697,7 +1715,9 @@ let check_carrier_field_mismatch label field carrier facts =
         (Launch_contract_generator.validation_error_to_string error)
 
 let check_candidate_missing_validation_field label field carrier facts =
-  match Launch_contract.validate_guarded_candidate_carrier carrier facts with
+  match
+    Launch_contract_generator.validate_guarded_candidate_carrier carrier facts
+  with
   | Ok () -> failf "%s: expected validation failure" label
   | Error (Launch_contract_generator.Missing_field { field = actual; _ }) ->
       Alcotest.(check string) label field actual
@@ -1706,7 +1726,9 @@ let check_candidate_missing_validation_field label field carrier facts =
         (Launch_contract_generator.validation_error_to_string error)
 
 let check_candidate_field_mismatch label field carrier facts =
-  match Launch_contract.validate_guarded_candidate_carrier carrier facts with
+  match
+    Launch_contract_generator.validate_guarded_candidate_carrier carrier facts
+  with
   | Ok () -> failf "%s: expected validation failure" label
   | Error (Launch_contract_generator.Field_mismatch { field = actual; _ }) ->
       Alcotest.(check string) label field actual
@@ -1715,7 +1737,9 @@ let check_candidate_field_mismatch label field carrier facts =
         (Launch_contract_generator.validation_error_to_string error)
 
 let check_candidate_row_missing_validation_field label field carrier facts =
-  match Launch_contract.validate_guarded_candidate_row_facts carrier facts with
+  match
+    Launch_contract_generator.validate_guarded_candidate_row_facts carrier facts
+  with
   | Ok () -> failf "%s: expected validation failure" label
   | Error (Launch_contract_generator.Missing_field { field = actual; _ }) ->
       Alcotest.(check string) label field actual
@@ -1724,7 +1748,9 @@ let check_candidate_row_missing_validation_field label field carrier facts =
         (Launch_contract_generator.validation_error_to_string error)
 
 let check_candidate_row_field_mismatch label field carrier facts =
-  match Launch_contract.validate_guarded_candidate_row_facts carrier facts with
+  match
+    Launch_contract_generator.validate_guarded_candidate_row_facts carrier facts
+  with
   | Ok () -> failf "%s: expected validation failure" label
   | Error (Launch_contract_generator.Field_mismatch { field = actual; _ }) ->
       Alcotest.(check string) label field actual
@@ -1733,7 +1759,7 @@ let check_candidate_row_field_mismatch label field carrier facts =
         (Launch_contract_generator.validation_error_to_string error)
 
 let test_solve_tri_symbolic_k_guard_fails_closed_on_missing_facts () =
-  let guard = Launch_contract.solve_tri_symbolic_k_guard in
+  let guard = Launch_contract_generator.solve_tri_symbolic_k_guard in
   let facts = symbolic_k_guard_facts guard in
   check_symbolic_k_missing_validation_field "missing symbolic K parameter"
     "k_parameter" guard
@@ -1766,7 +1792,9 @@ let test_solve_tri_symbolic_k_guard_fails_closed_on_missing_facts () =
     { facts with symbolic_fact_route_owner = Some "task-local-report" }
 
 let test_solve_tri_symbolic_dimension_carrier_fails_closed_on_missing_facts () =
-  let carrier = Launch_contract.solve_tri_symbolic_dimension_carrier in
+  let carrier =
+    Launch_contract_generator.solve_tri_symbolic_dimension_carrier
+  in
   let facts = symbolic_dimension_carrier_facts carrier in
   check_carrier_missing_validation_field "missing carrier K parameter"
     "symbolic_parameter" carrier
@@ -1810,7 +1838,7 @@ let test_solve_tri_symbolic_dimension_carrier_fails_closed_on_missing_facts () =
 
 let test_host_template_candidate_carrier_fails_closed_on_missing_facts () =
   let carrier =
-    Launch_contract.host_template_specialization_candidate_carrier
+    Launch_contract_generator.host_template_specialization_candidate_carrier
   in
   let facts = guarded_candidate_carrier_facts carrier in
   check_candidate_missing_validation_field "missing candidate first blocker"
@@ -1838,10 +1866,13 @@ let test_host_template_candidate_carrier_fails_closed_on_missing_facts () =
 let test_s453_l012_carrier_row_facts_validate_fail_closed () =
   let root = repo_root () in
   let carrier =
-    Launch_contract.host_template_specialization_candidate_carrier
+    Launch_contract_generator.host_template_specialization_candidate_carrier
   in
   let facts = s453_l012_candidate_row_facts root in
-  (match Launch_contract.validate_guarded_candidate_row_facts carrier facts with
+  (match
+     Launch_contract_generator.validate_guarded_candidate_row_facts carrier
+       facts
+   with
   | Ok () -> ()
   | Error error ->
       failf "S453 L012 row-owned facts rejected: %s"
@@ -1873,7 +1904,7 @@ let test_s453_l012_carrier_row_facts_validate_fail_closed () =
 let test_s453_l012_carrier_row_facts_fail_closed_on_schema_mismatch () =
   let root = repo_root () in
   let carrier =
-    Launch_contract.host_template_specialization_candidate_carrier
+    Launch_contract_generator.host_template_specialization_candidate_carrier
   in
   let facts = s453_l012_candidate_row_facts root in
   let without_preprocessing_profile =
@@ -2019,7 +2050,7 @@ let test_s455_l012_boundary_records_lower_blocker () =
 let test_s455_l012_boundary_fails_closed_on_bad_inputs () =
   let root = repo_root () in
   let carrier =
-    Launch_contract.host_template_specialization_candidate_carrier
+    Launch_contract_generator.host_template_specialization_candidate_carrier
   in
   let input = s453_l012_boundary_input root in
   check_boundary_missing_field "missing memory effect status"
@@ -2739,187 +2770,18 @@ let test_s483_profile_exact_launch_contract_ledger () =
         (string_field "artifact_status" row))
     expected_rows
 
-let test_readme_lists_current_launch_contract_rows () =
-  let root = repo_root () in
-  let readme = read_file (repo_path root "faial/drf/README.md") in
-  List.iter
-    (fun row_id ->
-      Alcotest.(check bool)
-        ("README lists " ^ row_id) true
-        (string_contains readme ("`" ^ row_id ^ "`")))
-    [
-      "L012";
-      "L018";
-      "L019";
-      "L020";
-      "L021";
-      "L024";
-      "L025";
-      "L026";
-      "L027";
-      "L028";
-      "L029";
-      "L030";
-      "L031";
-      "L032";
-      "L033";
-      "L034";
-      "L035";
-      "L036";
-      "L037";
-      "L038";
-      "L039";
-      "L040";
-      "L041";
-      "L042";
-      "L043";
-      "L046";
-      "L047";
-      "L048";
-      "L049";
-      "L050";
-      "L051";
-      "L052";
-      "L053";
-      "L054";
-      "L055";
-      "L056";
-      "L067";
-      "L068";
-      "L074";
-      "L075";
-      "L076";
-      "L072";
-      "L073";
-      "L117";
-      "L118";
-      "L135";
-      "L136";
-      "L137";
-      "L138";
-      "L143";
-      "L144";
-      "L145";
-      "L146";
-    ];
-  Alcotest.(check bool)
-    "README documents WKV campaign guard" true
-    (string_contains readme "exact WKV row set");
-  Alcotest.(check bool)
-    "README documents data-driven shape contracts" true
-    (string_contains readme "Launch_contract_generator.shape_contract"
-    && string_contains readme "does not branch on a row family");
-  Alcotest.(check bool)
-    "README documents profile launch context" true
-    (string_contains readme "Launch_contract_generator.profile_launch_context"
-    && string_contains readme "Profile_bounded"
-    && string_contains readme "Unknown_blocker");
-  Alcotest.(check bool)
-    "README documents L117 subgroup promotion" true
-    (string_contains readme "S404 promotes only canonical `L117`");
-  Alcotest.(check bool)
-    "README documents explicit L117 subgroup size" true
-    (string_contains readme "`--subgroup-size 32`");
-  Alcotest.(check bool)
-    "README documents no ordinary L117 fallback" true
-    (string_contains readme "same-named ordinary kernel");
-  Alcotest.(check bool)
-    "README documents L118 subgroup promotion" true
-    (string_contains readme "S409 promotes only canonical `L118`");
-  Alcotest.(check bool)
-    "README documents L118 non-claim" true
-    (string_contains readme "This does not promote");
-  Alcotest.(check bool)
-    "README documents L118 neighbor boundary" true
-    (string_contains readme "solve-tri neighbors `L116` or `L119`-`L128`");
-  Alcotest.(check bool)
-    "README documents S430 symbolic K guard" true
-    (string_contains readme "S430 adds a typed symbolic `K` guard");
-  Alcotest.(check bool)
-    "README documents S430 blocker" true
-    (string_contains readme "Memory_event.Subgroup_obligation` blocker");
-  Alcotest.(check bool)
-    "README documents S433 carrier" true
-    (string_contains readme "S433 adds a typed symbolic dimension carrier");
-  Alcotest.(check bool)
-    "README documents S437 symbolic checked dimensions" true
-    (string_contains readme "S437 extends `Memory_event.Subgroup_obligation`");
-  Alcotest.(check bool)
-    "README documents S447 candidate carrier" true
-    (string_contains readme
-       "S447 adds a non-admission generic candidate carrier");
-  Alcotest.(check bool)
-    "README documents S454 row-owned fact validation" true
-    (string_contains readme "S454 validates populated row-owned carrier facts");
-  Alcotest.(check bool)
-    "README documents S478 positive-shape carrier" true
-    (string_contains readme "S478 adds the typed positive-shape guard frontier");
-  Alcotest.(check bool)
-    "README documents S479 positive-shape verification" true
-    (string_contains readme
-       "S479 records the verification sweep over those 33 positive-shape \
-        families");
-  Alcotest.(check bool)
-    "README documents S479 non-promotion boundary" true
-    (string_contains readme "zero exact production"
-    && string_contains readme "row promotions");
-  Alcotest.(check bool)
-    "README documents S480 production-backed carrier" true
-    (string_contains readme
-       "Launch_contract.positive_shape_production_promotion_carrier");
-  Alcotest.(check bool)
-    "README documents S480 L012 boundary" true
-    (string_contains readme "full ggml host translation unit"
-    && string_contains readme "change manifest verdict fields");
-  Alcotest.(check bool)
-    "README documents S481 production profiles" true
-    (string_contains readme "S481 consumes the remaining S479"
-    && string_contains readme "31 production-profile");
-  Alcotest.(check bool)
-    "README documents S482 exact fill consumption" true
-    (string_contains readme "S482 consumes the first S481 profile family"
-    && string_contains readme "`L067` and `L068`");
-  Alcotest.(check bool)
-    "README documents S483 exact profile consumption" true
-    (string_contains readme "S483 consumes five more S481"
-    && string_contains readme "`F057/L076 divide_by_count<float>`"
-    && string_contains readme "`F089/L138 leaky_relu_kernel`");
-  Alcotest.(check bool)
-    "README documents S485 dequantize consumption" true
-    (string_contains readme "S485 consumes the regular S481 dequantize"
-    && string_contains readme "`L026`-`L043`"
-    && string_contains readme "does not change manifest verdict fields");
-  Alcotest.(check bool)
-    "README documents S486-A q8 need_check consumption" true
-    (string_contains readme
-       "S486-A consumes the S481 `F020` q8 dequantize profile"
-    && string_contains readme "`L024` and `L025`"
-    && string_contains readme "`need_check=false`"
-    && string_contains readme "`need_check=true`"
-    && string_contains readme "does not change manifest verdict fields");
-  Alcotest.(check bool)
-    "README documents S486-B conv/cpy consumption" true
-    (string_contains readme "S486-B consumes the S481 conv/cpy profile blockers"
-    && string_contains readme "`L018`-`L021`"
-    && string_contains readme "`L046`-`L056`"
-    && string_contains readme "does not change manifest verdict fields");
-  Alcotest.(check bool)
-    "README documents S486-C im2col symbolic block consumption" true
-    (string_contains readme "S486-C consumes the S481 im2col profile blockers"
-    && string_contains readme "`L074` and `L075`"
-    && string_contains readme "`--all-dims`"
-    && string_contains readme "bounded symbolic `blockDim.x`");
-  Alcotest.(check bool)
-    "README documents S487 exact-evidence manifest policy" true
-    (string_contains readme
-       "S487 defines the exact-evidence manifest promotion policy"
-    && string_contains readme
-         "Launch_contract.exact_evidence_manifest_promotion_policy_carrier"
-    && string_contains readme "`drf_exact_row`"
-    && string_contains readme "`guarded_symbolic_family_proof`"
-    && string_contains readme "source-slice-only DRF"
-    && string_contains readme "production-profile evidence without"
-    && string_contains readme "53 exact row-local DRF rows")
+let guard_tests =
+  [
+    ( "solve-tri symbolic K guard fails closed on missing facts",
+      `Quick,
+      test_solve_tri_symbolic_k_guard_fails_closed_on_missing_facts );
+    ( "solve-tri symbolic dimension carrier fails closed on missing facts",
+      `Quick,
+      test_solve_tri_symbolic_dimension_carrier_fails_closed_on_missing_facts );
+    ( "host/template candidate carrier fails closed on missing facts",
+      `Quick,
+      test_host_template_candidate_carrier_fails_closed_on_missing_facts );
+  ]
 
 let tests =
   [
@@ -2956,15 +2818,6 @@ let tests =
     ( "host/template candidate carrier matches S445 blocker",
       `Quick,
       test_host_template_candidate_carrier_matches_s445_blocker );
-    ( "solve-tri symbolic K guard fails closed on missing facts",
-      `Quick,
-      test_solve_tri_symbolic_k_guard_fails_closed_on_missing_facts );
-    ( "solve-tri symbolic dimension carrier fails closed on missing facts",
-      `Quick,
-      test_solve_tri_symbolic_dimension_carrier_fails_closed_on_missing_facts );
-    ( "host/template candidate carrier fails closed on missing facts",
-      `Quick,
-      test_host_template_candidate_carrier_fails_closed_on_missing_facts );
     ( "S453 L012 carrier row facts validate fail-closed",
       `Quick,
       test_s453_l012_carrier_row_facts_validate_fail_closed );
@@ -2999,11 +2852,11 @@ let tests =
     ( "S483 profile exact launch-contract ledger",
       `Quick,
       test_s483_profile_exact_launch_contract_ledger );
-    ( "README lists current launch-contract rows",
-      `Quick,
-      test_readme_lists_current_launch_contract_rows );
   ]
 
 let () =
   Alcotest.run "Launch_contract_manifest"
-    [ ("launch_contract_manifest", tests) ]
+    [
+      ("launch_contract_guards", guard_tests);
+      ("launch_contract_manifest", tests);
+    ]

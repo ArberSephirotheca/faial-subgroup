@@ -1,102 +1,7 @@
-(*
-  DRF-local memory-event boundary.
-
-  The ordinary adapter is intentionally parallel to Symbexp.translate:
-  it consumes Flatacc.Kernel.t values, builds explicit ordinary memory events
-  for one workgroup phase/location, and can re-emit the ordinary Symbexp.Proof.t
-  shape for parity tests. Ordinary production routing enters through this
-  module before downstream Symbexp decoration and solving.
-*)
-open Stage0
+(* Memory events and race obligations for the subgroup route. Ordinary MAP
+   kernels use Symbexp.Proof directly. *)
 open Protocols
 open Exp
-
-module Ordinary_event = struct
-  type origin = Ordinary
-
-  type t = {
-    id : int;
-    phase_id : int;
-    origin : origin;
-    access : Access.t;
-    guard : bexp;
-    runtime : bexp;
-  }
-
-  let origin_to_string : origin -> string = function Ordinary -> "ordinary"
-  let condition (event : t) : bexp = b_and event.runtime event.guard
-  let dim (event : t) : int = List.length event.access.index
-  let location (event : t) : Location.t = Access.location event.access
-
-  let from_cond_access ~(phase_id : int) ~(runtime : bexp) (id : int)
-      (ca : Flatacc.CondAccess.t) : t =
-    {
-      id;
-      phase_id;
-      origin = Ordinary;
-      access = ca.access;
-      guard = ca.cond;
-      runtime;
-    }
-
-  let to_cond_access (event : t) : Flatacc.CondAccess.t =
-    { access = event.access; cond = condition event }
-end
-
-module Ordinary_phase = struct
-  type t = {
-    phase_id : int;
-    kernel_name : string;
-    array_name : string;
-    exact_local_variables : Variable.Set.t;
-    approx_local_variables : Variable.Set.t;
-    precondition : bexp;
-    events : Ordinary_event.t list;
-    flat_kernel : Flatacc.Kernel.t;
-  }
-
-  let locals (phase : t) : Variable.Set.t =
-    Variable.Set.union phase.exact_local_variables phase.approx_local_variables
-
-  let dim (phase : t) : int =
-    match phase.events with
-    | event :: _ -> Ordinary_event.dim event
-    | [] -> failwith "Memory_event.Ordinary_phase.dim: empty event phase"
-
-  let from_flat ~(phase_id : int) (kernel : Flatacc.Kernel.t) : t =
-    let events =
-      kernel.code |> Flatacc.Code.to_list
-      |> List.mapi
-           (Ordinary_event.from_cond_access ~phase_id ~runtime:kernel.runtime)
-    in
-    {
-      phase_id;
-      kernel_name = kernel.name;
-      array_name = kernel.array_name;
-      exact_local_variables = kernel.exact_local_variables;
-      approx_local_variables = kernel.approx_local_variables;
-      precondition = kernel.pre;
-      events;
-      flat_kernel = kernel;
-    }
-end
-
-module Ordinary_obligation = struct
-  (* Ordinary events are an ownership/classification boundary only. Keep MAP's
-     canonical proof encoder as the single source of truth so upstream changes
-     to conflict, atomic, or memory-model axioms cannot drift here. *)
-  let to_proof ?(memory_model = Memory_model.default) ?(assign_index = true)
-      (arch : Architecture.t) (phase : Ordinary_phase.t) : Symbexp.Proof.t =
-    Symbexp.Proof.from_flat ~memory_model ~assign_index arch phase.phase_id
-      phase.flat_kernel
-
-  let from_flat ?(memory_model = Memory_model.default) ?(assign_index = true)
-      (arch : Architecture.t) (phase_id : int) (kernel : Flatacc.Kernel.t) :
-      Symbexp.Proof.t =
-    kernel
-    |> Ordinary_phase.from_flat ~phase_id
-    |> to_proof ~memory_model ~assign_index arch
-end
 
 module Subgroup_event = struct
   module SM = Inference.Subgroup_matrix
@@ -500,11 +405,7 @@ module Subgroup_obligation = struct
     let root : t = []
     let push (site : SM.Site.t) (phase : t) : t = phase @ [ SM.Site.id site ]
     let equal : t -> t -> bool = List.equal Int.equal
-
-    let to_string (phase : t) : string =
-      match phase with
-      | [] -> "S[]"
-      | ids -> "S[" ^ (ids |> List.map string_of_int |> String.concat ";") ^ "]"
+    let to_string = Subgroup_event.Phase.subgroup_to_string
   end
 
   type access_origin = Subgroup_event.memory_origin =
@@ -725,21 +626,6 @@ module Subgroup_obligation = struct
       Ok (Exp.Bool true)
     else same_subgroup_condition config |> Result.map Exp.b_not
 
-  let ordinary_memory_kind_to_origin = Subgroup_event.ordinary_memory_origin
-
-  let ordinary_memory_site_to_string (site : SS.ordinary_memory_site) : string =
-    let location =
-      site.location
-      |> Option.map (fun location -> "@" ^ Stage0.Location.to_string location)
-      |> Option.value ~default:""
-    in
-    Printf.sprintf "ordinary#%d[%s]%s" site.id site.label location
-
-  let ordinary_memory_condition (memory_effect : SS.ordinary_memory_effect) :
-      Exp.bexp =
-    let runtime = memory_effect.runtime_condition |> Option.to_list in
-    Exp.b_and_ex (memory_effect.source_conditions @ runtime)
-
   let conditional_access_of_memory (memory : Subgroup_event.memory) :
       conditional_access =
     {
@@ -750,10 +636,6 @@ module Subgroup_obligation = struct
       condition = memory.condition;
       subgroup_phase = memory.phase.subgroup;
     }
-
-  let ordinary_memory_access (memory_effect : SS.ordinary_memory_effect) :
-      conditional_access =
-    Subgroup_event.ordinary_memory memory_effect |> conditional_access_of_memory
 
   module IntMap = Map.Make (Int)
 
@@ -835,10 +717,6 @@ module Subgroup_obligation = struct
         failwith
           ("Memory_event.Subgroup_obligation.phases_with_ordinary_memory_effects: "
          ^ error_to_string error)
-
-  let access_free_names (access : conditional_access) (fns : Variable.Set.t) :
-      Variable.Set.t =
-    Access.free_names access.access fns |> Exp.b_free_names access.condition
 
   let project_nexp (globals : Variable.Set.t) (task : Task.t) (expr : Exp.nexp)
       : Exp.nexp =
@@ -1121,15 +999,3 @@ module Subgroup_obligation = struct
       (Subgroup_phase_key.to_string obligation.right.subgroup_phase)
       (Exp.b_to_string obligation.goal)
 end
-
-let translate ?(memory_model = Memory_model.default) (arch : Architecture.t)
-    (stream : Flatacc.Kernel.t Streamutil.stream) :
-    Symbexp.Proof.t Streamutil.stream =
-  Streamutil.mapi (Ordinary_obligation.from_flat ~memory_model arch) stream
-
-let sanity_check (arch : Architecture.t)
-    (stream : Flatacc.Kernel.t Streamutil.stream) :
-    Symbexp.Proof.t Streamutil.stream =
-  Streamutil.mapi
-    (Ordinary_obligation.from_flat ~assign_index:false arch)
-    stream

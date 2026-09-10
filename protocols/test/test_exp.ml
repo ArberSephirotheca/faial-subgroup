@@ -45,7 +45,38 @@ let precedence_tests =
     ("simple serialization", `Quick, test_simple_serialization);
   ]
 
-let all_tests = [ ("precedence", precedence_tests) ]
+let test_definedness_conditions () =
+  let x = var "x" and y = var "y" and z = var "z" in
+  let divide a b = Binary (N_binary.Div Signedness.Signed, a, b) in
+  let modulo a b = Binary (N_binary.Mod Signedness.Unsigned, a, b) in
+  let condition = n_gt (modulo x y) (Num 0) in
+  let expr = NIf (condition, divide x z, NCall ("f", [ divide y x ])) in
+  Alcotest.(check (list string))
+    "nested conditions, branches, and call arguments"
+    (List.map b_to_string [ n_neq y (Num 0); n_neq z (Num 0); n_neq x (Num 0) ])
+    (List.map b_to_string (n_definedness_conditions expr));
+  Alcotest.(check (list string))
+    "boolean expression"
+    [ b_to_string (n_neq y (Num 0)) ]
+    (List.map b_to_string (b_definedness_conditions condition))
+
+let test_dedup_conditions_preserves_order () =
+  let first = n_gt (var "x") (Num 0) in
+  let second = n_lt (var "y") (Num 32) in
+  Alcotest.(check (list string))
+    "first occurrence order"
+    (List.map b_to_string [ first; second ])
+    (List.map b_to_string (dedup_conditions [ first; second; first; second ]))
+
+let all_tests =
+  [
+    ("precedence", precedence_tests);
+    ( "source assumptions",
+      [
+        ("nonzero divisors", `Quick, test_definedness_conditions);
+        ("condition order", `Quick, test_dedup_conditions_preserves_order);
+      ] );
+  ]
 
 (* Run the tests *)
 let () = Alcotest.run "Expression" all_tests

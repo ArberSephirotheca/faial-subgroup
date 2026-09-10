@@ -973,7 +973,7 @@ let test_solve_tri_carrier_emits_symbolic_checked_obligation () : unit =
 let test_symbolic_checked_block_dim_requires_subgroup_size () : unit =
   let carrier =
     {
-      LC.solve_tri_symbolic_dimension_carrier with
+      LCG.solve_tri_symbolic_dimension_carrier with
       LCG.carrier_subgroup_size = 0;
     }
   in
@@ -1005,7 +1005,7 @@ let test_symbolic_launch_evidence_rewrites_source_width () : unit =
   in
   let rewrite =
     Symbolic_launch_evidence.rewrite_ordinary_memory_effects
-      LC.solve_tri_symbolic_dimension_carrier [ memory_effect ]
+      LCG.solve_tri_symbolic_dimension_carrier [ memory_effect ]
     |> expect_ok
   in
   Alcotest.(check int)
@@ -1045,7 +1045,7 @@ let test_symbolic_launch_evidence_rewrites_source_width_unguarded () : unit =
   let rewrite =
     Symbolic_launch_evidence.rewrite_ordinary_memory_effects
       ~domain_mode:Symbolic_launch_evidence.Unguarded_family_domain
-      LC.solve_tri_symbolic_dimension_carrier [ memory_effect ]
+      LCG.solve_tri_symbolic_dimension_carrier [ memory_effect ]
     |> expect_ok
   in
   Alcotest.(check int)
@@ -1085,7 +1085,7 @@ let test_symbolic_launch_evidence_requires_source_width_fact () : unit =
   in
   match
     Symbolic_launch_evidence.rewrite_ordinary_memory_effects
-      LC.solve_tri_symbolic_dimension_carrier [ memory_effect ]
+      LCG.solve_tri_symbolic_dimension_carrier [ memory_effect ]
   with
   | Ok _ -> Alcotest.fail "missing source-width fact unexpectedly worked"
   | Error reason ->

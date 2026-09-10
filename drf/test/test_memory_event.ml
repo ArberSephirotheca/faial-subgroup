@@ -1,7 +1,6 @@
 open Stage0
 open Protocols
 module Flatacc = Drf.Flatacc
-module Memory_event = Drf.Memory_event
 module Ordinary_solver = Drf.Ordinary_solver
 module Subgroup_event = Drf.Memory_event.Subgroup_event
 module Subgroup_obligation = Drf.Memory_event.Subgroup_obligation
@@ -11,13 +10,6 @@ module SS = Inference.Subgroup_source
 
 let var (name : string) : Variable.t = Variable.from_name name
 let nvar (name : string) : Exp.nexp = Exp.Var (var name)
-
-let located_var ~(line : int) (name : string) : Variable.t =
-  let location =
-    Location.make ~filename:"test_memory_event.cu" ~line:(Index.from_base1 line)
-      ~interval:(Interval.from_range ~start:(Index.from_base1 1) ~length:1)
-  in
-  Variable.make ~name ~location
 
 let cond_access ~(access : Access.t) ~(cond : Exp.bexp) : Flatacc.CondAccess.t =
   { access; cond }
@@ -83,50 +75,6 @@ let owned_range_kernel ?(array = var "dst") ?(owner = var "t")
     pre = Exp.Bool true;
     runtime = Exp.Bool true;
   }
-
-let proof_accesses (proof : Symbexp.Proof.t) : string list =
-  List.map Symbexp.AccessSummary.to_string proof.accesses
-
-let labels_to_strings (labels : (string * string) list) : string list =
-  List.map (fun (name, label) -> name ^ "=" ^ label) labels
-
-let check_proof_equal (label : string) (expected : Symbexp.Proof.t)
-    (actual : Symbexp.Proof.t) : unit =
-  Alcotest.(check int) (label ^ " id") expected.id actual.id;
-  Alcotest.(check string)
-    (label ^ " kernel") expected.kernel_name actual.kernel_name;
-  Alcotest.(check string)
-    (label ^ " array") expected.array_name actual.array_name;
-  Alcotest.(check string)
-    (label ^ " goal")
-    (Exp.b_to_string expected.goal)
-    (Exp.b_to_string actual.goal);
-  Alcotest.(check (list string)) (label ^ " decls") expected.decls actual.decls;
-  Alcotest.(check (list string))
-    (label ^ " labels")
-    (labels_to_strings expected.labels)
-    (labels_to_strings actual.labels);
-  Alcotest.(check (list string))
-    (label ^ " accesses") (proof_accesses expected) (proof_accesses actual)
-
-let check_proof_stream_equal (label : string)
-    (expected : Symbexp.Proof.t Streamutil.stream)
-    (actual : Symbexp.Proof.t Streamutil.stream) : unit =
-  let expected = Streamutil.to_list expected in
-  let actual = Streamutil.to_list actual in
-  Alcotest.(check int)
-    (label ^ " proof count") (List.length expected) (List.length actual);
-  let rec compare_proofs idx expected actual =
-    match (expected, actual) with
-    | [], [] -> ()
-    | expected_proof :: expected_tail, actual_proof :: actual_tail ->
-        check_proof_equal
-          (Printf.sprintf "%s proof[%d]" label idx)
-          expected_proof actual_proof;
-        compare_proofs (idx + 1) expected_tail actual_tail
-    | _ -> Alcotest.fail (label ^ " proof count mismatch")
-  in
-  compare_proofs 0 expected actual
 
 let expect_substring ~(label : string) ~(needle : string) (haystack : string) :
     unit =
@@ -235,68 +183,9 @@ let subgroup_kernel ?(target_config = subgroup_config ()) ?(body = [])
     launch_dimensions = Variable.Map.empty;
   }
 
-let test_ordinary_obligation_matches_symbexp_proof () : unit =
-  let kernel = sample_kernel () in
-  let actual =
-    Memory_event.Ordinary_obligation.from_flat Architecture.Block 5 kernel
-  in
-  let expected = Symbexp.Proof.from_flat Architecture.Block 5 kernel in
-  check_proof_equal "ordinary obligation" expected actual
-
-let test_ordinary_sanity_check_matches_symbexp_without_index_assignment () :
-    unit =
-  let kernel = sample_kernel () in
-  let actual =
-    Memory_event.Ordinary_obligation.from_flat ~assign_index:false
-      Architecture.Block 6 kernel
-  in
-  let expected =
-    Symbexp.Proof.from_flat ~assign_index:false Architecture.Block 6 kernel
-  in
-  check_proof_equal "ordinary sanity check" expected actual
-
-let sample_kernel_stream () : Flatacc.Kernel.t Streamutil.stream =
-  Streamutil.from_list
-    [
-      sample_kernel ~name:"ordinary_stream_a" ();
-      sample_kernel ~name:"ordinary_stream_b" ~array:(var "other_buf")
-        ~pre:(Exp.n_ge (nvar "limit") (Exp.Num 2))
-        ();
-    ]
-
-let test_memory_event_translate_stream_matches_symbexp_translate () : unit =
-  check_proof_stream_equal "memory event translate"
-    (Symbexp.translate Architecture.Block (sample_kernel_stream ()))
-    (Memory_event.translate Architecture.Block (sample_kernel_stream ()))
-
-let test_memory_event_sanity_stream_matches_symbexp_sanity_check () : unit =
-  check_proof_stream_equal "memory event sanity"
-    (Symbexp.sanity_check Architecture.Block (sample_kernel_stream ()))
-    (Memory_event.sanity_check Architecture.Block (sample_kernel_stream ()))
-
-let test_ordinary_events_preserve_phase_location_and_origin () : unit =
-  let array = located_var ~line:42 "located_buf" in
-  let kernel = sample_kernel ~array () in
-  let phase = Memory_event.Ordinary_phase.from_flat ~phase_id:7 kernel in
-  Alcotest.(check int) "phase id" 7 phase.phase_id;
-  Alcotest.(check string) "array name" "located_buf" phase.array_name;
-  match phase.events with
-  | first :: _ ->
-      Alcotest.(check int) "event phase id" 7 first.phase_id;
-      Alcotest.(check string)
-        "event origin" "ordinary"
-        (Memory_event.Ordinary_event.origin_to_string first.origin);
-      Alcotest.(check int)
-        "event source line" 42
-        (Memory_event.Ordinary_event.location first
-        |> Location.line |> Index.to_base1)
-  | [] -> Alcotest.fail "expected ordinary events"
-
 let test_ordinary_goal_covers_projection_and_ordering_constraints () : unit =
   let kernel = sample_kernel () in
-  let proof =
-    Memory_event.Ordinary_obligation.from_flat Architecture.Block 8 kernel
-  in
+  let proof = Symbexp.Proof.from_flat Architecture.Block 8 kernel in
   let goal = Exp.b_to_string proof.goal in
   List.iter
     (fun (label, needle) -> expect_substring ~label ~needle goal)
@@ -331,8 +220,7 @@ let expect_ordinary_pre_solver_none (label : string)
 let test_ordinary_pre_solver_discharges_direct_strided_owner () : unit =
   let block_dim = Dim3.make ~x:64 () in
   let proof =
-    owned_range_kernel ()
-    |> Memory_event.Ordinary_obligation.from_flat Architecture.Block 11
+    owned_range_kernel () |> Symbexp.Proof.from_flat Architecture.Block 11
   in
   Ordinary_solver.pre_solver_classification ~block_dim proof
   |> expect_ordinary_pre_solver_discharge
@@ -344,7 +232,7 @@ let test_ordinary_pre_solver_discharges_affine_global_offset_owner () : unit =
   let t = var "t" in
   let proof =
     owned_range_kernel ~index:(Exp.n_minus (Exp.Var t) (Exp.Var c)) ()
-    |> Memory_event.Ordinary_obligation.from_flat Architecture.Block 12
+    |> Symbexp.Proof.from_flat Architecture.Block 12
   in
   Ordinary_solver.pre_solver_classification ~block_dim proof
   |> expect_ordinary_pre_solver_discharge
@@ -358,7 +246,7 @@ let test_ordinary_pre_solver_keeps_affine_local_offset_visible () : unit =
     owned_range_kernel
       ~index:(Exp.n_minus (Exp.Var t) (Exp.Var c))
       ~extra_exact:(Variable.Set.singleton c) ()
-    |> Memory_event.Ordinary_obligation.from_flat Architecture.Block 13
+    |> Symbexp.Proof.from_flat Architecture.Block 13
   in
   Ordinary_solver.pre_solver_classification ~block_dim proof
   |> expect_ordinary_pre_solver_none "ordinary affine local offset"
@@ -367,7 +255,7 @@ let test_ordinary_pre_solver_keeps_changed_owner_shape_visible () : unit =
   let block_dim = Dim3.make ~x:64 () in
   let proof =
     owned_range_kernel ~index:(Exp.Var (var "other_t")) ()
-    |> Memory_event.Ordinary_obligation.from_flat Architecture.Block 14
+    |> Symbexp.Proof.from_flat Architecture.Block 14
   in
   Ordinary_solver.pre_solver_classification ~block_dim proof
   |> expect_ordinary_pre_solver_none "ordinary changed owner shape"
@@ -375,8 +263,7 @@ let test_ordinary_pre_solver_keeps_changed_owner_shape_visible () : unit =
 let test_ordinary_pre_solver_rejects_multidimensional_block () : unit =
   let block_dim = Dim3.make ~x:64 ~y:2 () in
   let proof =
-    owned_range_kernel ()
-    |> Memory_event.Ordinary_obligation.from_flat Architecture.Block 15
+    owned_range_kernel () |> Symbexp.Proof.from_flat Architecture.Block 15
   in
   Ordinary_solver.pre_solver_classification ~block_dim proof
   |> expect_ordinary_pre_solver_none "ordinary multidimensional block"
@@ -394,11 +281,7 @@ let test_read_read_ordinary_mode_conflict_remains_unsat_shape () : unit =
         ];
     }
   in
-  let actual =
-    Memory_event.Ordinary_obligation.from_flat Architecture.Block 9 kernel
-  in
-  let expected = Symbexp.Proof.from_flat Architecture.Block 9 kernel in
-  check_proof_equal "read/read mode conflict" expected actual;
+  let actual = Symbexp.Proof.from_flat Architecture.Block 9 kernel in
   let goal = Exp.b_to_string actual.goal in
   expect_substring ~label:"read event assigns read mode" ~needle:"$T1$mode == 0"
     goal;
@@ -642,21 +525,6 @@ let test_subgroup_obligations_match_direct_owner_api () : unit =
 
 let tests : unit Alcotest.test_case list =
   [
-    ( "ordinary obligation matches symbexp",
-      `Quick,
-      test_ordinary_obligation_matches_symbexp_proof );
-    ( "ordinary sanity check matches symbexp",
-      `Quick,
-      test_ordinary_sanity_check_matches_symbexp_without_index_assignment );
-    ( "memory event translate stream matches symbexp",
-      `Quick,
-      test_memory_event_translate_stream_matches_symbexp_translate );
-    ( "memory event sanity stream matches symbexp",
-      `Quick,
-      test_memory_event_sanity_stream_matches_symbexp_sanity_check );
-    ( "ordinary events preserve phase and location",
-      `Quick,
-      test_ordinary_events_preserve_phase_location_and_origin );
     ( "ordinary goal constraints",
       `Quick,
       test_ordinary_goal_covers_projection_and_ordering_constraints );

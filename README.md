@@ -31,62 +31,43 @@ $ faial-drf example.cu
 
 Next, feel free to access the [`tutorial/`](tutorial/) directory!
 
-# Focused subgroup/matrix DRF extension
+# WarpDRF subgroup extension
 
-The subgroup route keeps original Faial's loop alignment for repeated block
-barriers while retaining source locations for the accesses in each memory
-check. Subgroup participation is checked separately. A detector-only
-`--find-true-dr` request never filters the loop-aligned memory protocol used
-for the final subgroup DRF judgment.
+This fork adds explicit subgroup memory and participation checks. The Docker
+images and downloads above are upstream Faial; build this checkout to use the
+extension.
 
-The subgroup path is enabled explicitly:
+With `cu-to-json` on `PATH`, a small checked-in example can be run as follows:
 
 ```bash
-opam exec -- dune exec drf/bin/main.exe -- \
-  --cu-to-json=./bin/cu-to-json \
-  --ignore-asserts \
-  -t 10000 \
-  --kernel flash_attn_ext_f16_ggml_wmma_d64_ncols16 \
-  --block-dim 128 \
-  --subgroup-size 32 \
-  ../fattn.cu
+opam exec --switch=. -- dune exec drf/bin/main.exe -- \
+  --subgroup-size 32 --block-dim 32 \
+  examples/drf/drf-subgroup-repeated-barrier.cu
 ```
 
-The extracted kernel currently reports one ordinary-memory race while passing
-the participation check:
+Use `--cu-to-json=/path/to/cu-to-json` to select the CUDA translator explicitly.
+The example contains a repeated warp barrier and exercises the loop-protocol
+fallback.
 
-```text
-mem_drf: not_drf
-memory_checks: 10 total, 1 racy, 0 unknown, 0 timeout, 0 unsupported
-subgroup_uniformity: drf
-drf_full: not_drf
-```
+Without `--subgroup-size`, the CLI uses upstream lowering. With the option,
+kernels that contain supported subgroup operations use the extension; ordinary
+kernels still use the original full-program pipeline, including device helpers.
+A result without the option is not a subgroup-participation proof.
 
-The witness is the read of `KQ_max[j]` at line 191 and the lane-zero write at
-line 215. The intervening warp reductions exchange register values but do not
-order shared-memory accesses.
+The subgroup report separates `mem_drf`, `subgroup_uniformity`, and
+`drf_full`. The full verdict passes only when both checks pass. Source launch
+facts, unsupported forms, and solver failures remain explicit in the report.
 
-Ordinary shared/global source memory effects in subgroup/matrix kernels are
-now modeled as subgroup-aware memory obligations owned by
-`drf/lib/memory_event.ml`. Existing non-WMMA examples remain on the ordinary
-`Imp` path, preserve original DRF/racy verdicts, and do not require
-`--subgroup-size`. CUDA source that contains subgroup or WMMA operations must
-provide `--subgroup-size`; otherwise it is rejected before ordinary `Imp`
-lowering rather than analyzed with guessed workgroup-only semantics. The
-regression gate for this boundary is
-`opam exec -- make`, `PATH="$(pwd)/bin:$PATH" opam exec -- dune runtest`, and
-no-`--subgroup-size` smokes for both DRF and racy examples under
-`examples/drf/`.
-
-See [`inference/README.md`](inference/README.md) for source-to-subgroup
-dispatch and [`drf/README.md`](drf/README.md) for the DRF verdict boundary.
+See [the DRF maintainer guide](drf/README.md) for the implementation map, tests,
+and current limitations, and [the inference guide](inference/README.md) for
+source extraction.
 
 # Build from source
 
 ## Dependencies
 
 * [opam `>= 2.0`](https://opam.ocaml.org/)
-* [ocamlc `>= 5.1`](https://ocaml.org/)
+* [ocamlc `>= 5.3`](https://ocaml.org/)
 
 ### 1. Setup
 

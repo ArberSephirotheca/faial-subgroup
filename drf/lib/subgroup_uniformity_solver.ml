@@ -3,51 +3,6 @@ module Memory = Memory_event.Subgroup_obligation
 module SM = Inference.Subgroup_matrix
 module Uniformity = Subgroup_uniformity
 
-let dedup_conditions (conditions : Exp.bexp list) : Exp.bexp list =
-  let rec loop seen kept = function
-    | [] -> List.rev kept
-    | condition :: rest ->
-        if List.exists (fun existing -> existing = condition) seen then
-          loop seen kept rest
-        else loop (condition :: seen) (condition :: kept) rest
-  in
-  loop [] [] conditions
-
-let rec nexp_definedness_conditions (expr : Exp.nexp) : Exp.bexp list =
-  match expr with
-  | Num _ | Var _ -> []
-  | Binary ((Div _ | Mod _), lhs, rhs) ->
-      nexp_definedness_conditions lhs
-      @ nexp_definedness_conditions rhs
-      @ [ Exp.n_neq rhs (Exp.Num 0) ]
-  | Binary (_, lhs, rhs) ->
-      nexp_definedness_conditions lhs @ nexp_definedness_conditions rhs
-  | Unary (_, expr) -> nexp_definedness_conditions expr
-  | NIf (cond, then_expr, else_expr) ->
-      bexp_definedness_conditions cond
-      @ nexp_definedness_conditions then_expr
-      @ nexp_definedness_conditions else_expr
-  | NCall (_, exprs) -> List.concat_map nexp_definedness_conditions exprs
-  | CastInt cond -> bexp_definedness_conditions cond
-
-and bexp_definedness_conditions (condition : Exp.bexp) : Exp.bexp list =
-  match condition with
-  | Bool _ -> []
-  | NRel (_, lhs, rhs) ->
-      nexp_definedness_conditions lhs @ nexp_definedness_conditions rhs
-  | BRel (_, lhs, rhs) ->
-      bexp_definedness_conditions lhs @ bexp_definedness_conditions rhs
-  | BNot condition -> bexp_definedness_conditions condition
-  | Pred (_, exprs) -> List.concat_map nexp_definedness_conditions exprs
-  | CastBool expr -> nexp_definedness_conditions expr
-  | Distinct exprs -> List.concat_map nexp_definedness_conditions exprs
-  | AtomicResult { index; operation; _ } ->
-      List.concat_map nexp_definedness_conditions index
-      @ Atomic.Operation.fold
-          (fun expr accum -> nexp_definedness_conditions expr @ accum)
-          operation []
-  | ThreadUnif expr -> nexp_definedness_conditions expr
-
 let condition_free_names (conditions : Exp.bexp list) : Variable.Set.t =
   List.fold_left
     (fun names condition -> Exp.b_free_names condition names)
@@ -68,7 +23,7 @@ let relevant_numeric_alias_conditions (control : Uniformity.control) :
               Exp.n_free_names expr Variable.Set.empty |> Variable.Set.elements
             in
             let alias_facts =
-              Exp.n_eq (Exp.Var var) expr :: nexp_definedness_conditions expr
+              Exp.n_eq (Exp.Var var) expr :: Exp.n_definedness_conditions expr
             in
             collect seen (dependencies @ rest)
               (List.rev_append alias_facts facts))
@@ -76,7 +31,7 @@ let relevant_numeric_alias_conditions (control : Uniformity.control) :
   collect Variable.Set.empty
     (condition_free_names control.conditions |> Variable.Set.elements)
     []
-  |> dedup_conditions
+  |> Exp.dedup_conditions
 
 let projection_globals ~(globals : Variable.Set.t)
     (control : Uniformity.control) : Variable.Set.t =
@@ -153,8 +108,8 @@ let proves_control_uniform ?checked_block_dim ?block_dim
   | Ok invocation_domain, Ok same_subgroup -> (
       let alias_facts =
         relevant_numeric_alias_conditions control
-        @ List.concat_map bexp_definedness_conditions control.conditions
-        |> dedup_conditions |> Exp.b_and_ex
+        @ List.concat_map Exp.b_definedness_conditions control.conditions
+        |> Exp.dedup_conditions |> Exp.b_and_ex
       in
       let project task condition = Memory.project_bexp globals task condition in
       let goal =

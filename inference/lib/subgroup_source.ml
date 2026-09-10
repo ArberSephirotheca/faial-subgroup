@@ -1538,57 +1538,12 @@ let condition_free_names (conditions : Exp.bexp list) : Variable.Set.t =
     (fun names condition -> Exp.b_free_names condition names)
     Variable.Set.empty conditions
 
-let rec nexp_definedness_conditions (expr : Exp.nexp) : Exp.bexp list =
-  match expr with
-  | Num _ | Var _ -> []
-  | Binary ((Div _ | Mod _), lhs, rhs) ->
-      nexp_definedness_conditions lhs
-      @ nexp_definedness_conditions rhs
-      @ [ Exp.n_neq rhs (Exp.Num 0) ]
-  | Binary (_, lhs, rhs) ->
-      nexp_definedness_conditions lhs @ nexp_definedness_conditions rhs
-  | Unary (_, expr) -> nexp_definedness_conditions expr
-  | NIf (cond, then_expr, else_expr) ->
-      bexp_definedness_conditions cond
-      @ nexp_definedness_conditions then_expr
-      @ nexp_definedness_conditions else_expr
-  | NCall (_, exprs) -> List.concat_map nexp_definedness_conditions exprs
-  | CastInt cond -> bexp_definedness_conditions cond
-
-and bexp_definedness_conditions (condition : Exp.bexp) : Exp.bexp list =
-  match condition with
-  | Bool _ -> []
-  | NRel (_, lhs, rhs) ->
-      nexp_definedness_conditions lhs @ nexp_definedness_conditions rhs
-  | BRel (_, lhs, rhs) ->
-      bexp_definedness_conditions lhs @ bexp_definedness_conditions rhs
-  | BNot condition -> bexp_definedness_conditions condition
-  | Pred (_, exprs) -> List.concat_map nexp_definedness_conditions exprs
-  | CastBool expr -> nexp_definedness_conditions expr
-  | Distinct exprs -> List.concat_map nexp_definedness_conditions exprs
-  | AtomicResult { index; operation; _ } ->
-      List.concat_map nexp_definedness_conditions index
-      @ Atomic.Operation.fold
-          (fun expr acc -> nexp_definedness_conditions expr @ acc)
-          operation []
-  | ThreadUnif expr -> nexp_definedness_conditions expr
-
 let access_definedness_conditions (access : Access.t) : Exp.bexp list =
-  List.concat_map nexp_definedness_conditions access.index
+  List.concat_map Exp.n_definedness_conditions access.index
 
 let conditions_definedness_conditions (conditions : Exp.bexp list) :
     Exp.bexp list =
-  List.concat_map bexp_definedness_conditions conditions
-
-let dedup_conditions (conditions : Exp.bexp list) : Exp.bexp list =
-  let rec loop seen kept = function
-    | [] -> List.rev kept
-    | condition :: rest ->
-        if List.exists (fun existing -> existing = condition) seen then
-          loop seen kept rest
-        else loop (condition :: seen) (condition :: kept) rest
-  in
-  loop [] [] conditions
+  List.concat_map Exp.b_definedness_conditions conditions
 
 let relevant_numeric_alias_conditions (state : collect_state)
     (access : Access.t) (conditions : Exp.bexp list) : Exp.bexp list =
@@ -1609,13 +1564,13 @@ let relevant_numeric_alias_conditions (state : collect_state)
               Exp.n_free_names expr Variable.Set.empty |> Variable.Set.elements
             in
             let facts =
-              Exp.n_eq (Exp.Var var) expr :: nexp_definedness_conditions expr
+              Exp.n_eq (Exp.Var var) expr :: Exp.n_definedness_conditions expr
             in
             collect seen (dependencies @ rest)
               (List.rev_append facts conditions))
   in
   collect Variable.Set.empty (Variable.Set.elements initial_names) []
-  |> dedup_conditions
+  |> Exp.dedup_conditions
 
 let record_ordinary_memory_effect ~(kind : ordinary_memory_kind)
     ~(mode : Access.Mode.t) ~(context : string) ?guard
@@ -1654,7 +1609,7 @@ let record_ordinary_memory_effect ~(kind : ordinary_memory_kind)
         site;
         access;
         source_conditions =
-          dedup_conditions
+          Exp.dedup_conditions
             (alias_conditions @ definedness_conditions @ memory_conditions);
         runtime_condition = None;
         phase =
@@ -1783,7 +1738,7 @@ let wmma_stmt (state : collect_state) (kind : D_lang.Wmma_call.kind)
           @ conditions_definedness_conditions memory_conditions
         in
         Some
-          (dedup_conditions
+          (Exp.dedup_conditions
              (relevant_numeric_alias_conditions state access memory_conditions
              @ definedness_conditions @ memory_conditions))
   in
@@ -2092,7 +2047,7 @@ let record_assertion (state : collect_state) (args : D_lang.Expr.t list) :
         bexp_of_expr ~context:"launch/assert precondition" condition
       in
       let* state = record_launch_dimension_from_condition state condition in
-      let conditions = condition :: bexp_definedness_conditions condition in
+      let conditions = condition :: Exp.b_definedness_conditions condition in
       Ok
         {
           state with
@@ -3125,7 +3080,7 @@ let subgroup_kernel_of_kernel (context_defs : D_lang.Def.t list)
       in
       let* state = collect_stmt state kernel.code in
       let launch_precondition =
-        state.launch_preconditions_rev |> List.rev |> dedup_conditions
+        state.launch_preconditions_rev |> List.rev |> Exp.dedup_conditions
         |> Exp.b_and_ex
       in
       let memory_globals =

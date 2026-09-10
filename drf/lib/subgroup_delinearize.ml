@@ -8,14 +8,6 @@ let error_to_string : error -> string = function
       "subgroup ordinary-memory delinearization does not yet support "
       ^ "--delin-avoid-vacuous"
 
-let dedup_conditions (conditions : Exp.bexp list) : Exp.bexp list =
-  List.fold_left
-    (fun kept condition ->
-      if List.exists (fun existing -> existing = condition) kept then kept
-      else condition :: kept)
-    [] conditions
-  |> List.rev
-
 let group_effects_by_array (effects : SS.ordinary_memory_effect list) :
     SS.ordinary_memory_effect list Variable.Map.t =
   List.fold_left
@@ -83,7 +75,7 @@ let rewrite_with_algorithm (module A : Algorithm.S) ~(rewrite_access : bool)
                 memory_effect with
                 access;
                 source_conditions =
-                  dedup_conditions
+                  Exp.dedup_conditions
                     (delinearized.conditions @ memory_effect.source_conditions);
               })
       | _ -> memory_effect)
@@ -123,7 +115,7 @@ let rewrite_weak ~(rewrite_access : bool) ~(in_range : bool)
             memory_effect with
             access;
             source_conditions =
-              dedup_conditions (bound :: memory_effect.source_conditions);
+              Exp.dedup_conditions (bound :: memory_effect.source_conditions);
           }
       | _ -> memory_effect)
     effects

@@ -403,6 +403,51 @@ let rec b_or_split : bexp -> bexp list = function
   | BRel (BOr, b1, b2) -> b_or_split b1 @ b_or_split b2
   | b -> [ b ]
 
+(* Collect nonzero-divisor assumptions for the expressions retained by the
+   source and participation analyses. *)
+let rec n_definedness_conditions (expr : nexp) : bexp list =
+  match expr with
+  | Num _ | Var _ -> []
+  | Binary ((Div _ | Mod _), lhs, rhs) ->
+      n_definedness_conditions lhs
+      @ n_definedness_conditions rhs
+      @ [ n_neq rhs (Num 0) ]
+  | Binary (_, lhs, rhs) ->
+      n_definedness_conditions lhs @ n_definedness_conditions rhs
+  | Unary (_, expr) -> n_definedness_conditions expr
+  | NIf (cond, then_expr, else_expr) ->
+      b_definedness_conditions cond
+      @ n_definedness_conditions then_expr
+      @ n_definedness_conditions else_expr
+  | NCall (_, exprs) -> List.concat_map n_definedness_conditions exprs
+  | CastInt cond -> b_definedness_conditions cond
+
+and b_definedness_conditions (condition : bexp) : bexp list =
+  match condition with
+  | Bool _ -> []
+  | NRel (_, lhs, rhs) ->
+      n_definedness_conditions lhs @ n_definedness_conditions rhs
+  | BRel (_, lhs, rhs) ->
+      b_definedness_conditions lhs @ b_definedness_conditions rhs
+  | BNot condition -> b_definedness_conditions condition
+  | Pred (_, exprs) -> List.concat_map n_definedness_conditions exprs
+  | CastBool expr -> n_definedness_conditions expr
+  | Distinct exprs -> List.concat_map n_definedness_conditions exprs
+  | AtomicResult { index; operation; _ } ->
+      List.concat_map n_definedness_conditions index
+      @ Atomic.Operation.fold
+          (fun expr acc -> n_definedness_conditions expr @ acc)
+          operation []
+  | ThreadUnif expr -> n_definedness_conditions expr
+
+(* Preserve source order: it is also the order used in solver diagnostics. *)
+let dedup_conditions (conditions : bexp list) : bexp list =
+  List.fold_left
+    (fun kept condition ->
+      if List.mem condition kept then kept else condition :: kept)
+    [] conditions
+  |> List.rev
+
 let rec n_fold f e a =
   match e with
   | CastInt e -> b_fold f e a
