@@ -5,6 +5,7 @@
    test_launch_contract
    test_subgroup_obligation
    test_subgroup_uniformity
+   test_subgroup_memory_ordering
    test_subgroup_solver)
   (libraries stage0 protocols inference drf alcotest yojson))
 

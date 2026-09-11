@@ -84,10 +84,9 @@ Loop backedges, exits, and repeated helper calls preserve control metadata and
 mark sites that may repeat. The memory checker decides how to handle repeated
 barriers and align their iterations.
 
-The collector currently advances ordinary-memory phase tags at collectives as
-well as barriers. The DRF event builder does not give collective boundaries
-that ordering. See [the DRF guide](../drf/README.md#current-boundaries-to-review)
-for this known representation mismatch.
+Only memory-ordering barriers advance ordinary-memory phase tags. Warp and
+matrix collectives retain participation sites and control metadata but do not
+order ordinary memory accesses.
 
 ## Scalar and pointer facts
 

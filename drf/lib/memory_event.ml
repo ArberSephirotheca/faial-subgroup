@@ -186,21 +186,6 @@ module Subgroup_event = struct
       target_config = memory_effect.target_config;
     }
 
-  let boundary ~(target_config : SM.Target_config.t)
-      ~(site_controls : SS.site_control list) ~(kind : boundary_kind)
-      ~(site : SM.Site.t) ~(phase_before : Phase.t) ~(phase_after : Phase.t) :
-      boundary =
-    {
-      kind;
-      site;
-      source_order = site_source_order site_controls site;
-      control_conditions = site_control_conditions site_controls site;
-      uniform_vars = site_uniform_vars site_controls site;
-      phase_before;
-      phase_after;
-      target_config;
-    }
-
   type builder = {
     target_config : SM.Target_config.t;
     site_controls : SS.site_control list;
@@ -208,18 +193,22 @@ module Subgroup_event = struct
     events_rev : event list;
   }
 
-  let add_event (event : event) (builder : builder) : builder =
-    { builder with events_rev = event :: builder.events_rev }
-
   let add_boundary ~(kind : boundary_kind) ~(site : SM.Site.t)
       ~(phase_after : Phase.t) (builder : builder) : builder =
     let event =
-      boundary ~target_config:builder.target_config
-        ~site_controls:builder.site_controls ~kind ~site
-        ~phase_before:builder.phase ~phase_after
-      |> fun boundary -> Boundary boundary
+      Boundary
+        {
+          kind;
+          site;
+          source_order = site_source_order builder.site_controls site;
+          control_conditions = site_control_conditions builder.site_controls site;
+          uniform_vars = site_uniform_vars builder.site_controls site;
+          phase_before = builder.phase;
+          phase_after;
+          target_config = builder.target_config;
+        }
     in
-    { (add_event event builder) with phase = phase_after }
+    { builder with phase = phase_after; events_rev = event :: builder.events_rev }
 
   let add_stmt (builder : builder) (stmt : SM.Stmt.t) : builder =
     match stmt with

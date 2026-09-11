@@ -1743,10 +1743,7 @@ let wmma_stmt (state : collect_state) (kind : D_lang.Wmma_call.kind)
              @ definedness_conditions @ memory_conditions))
   in
   let state = record_site_control ?memory_conditions site state in
-  Ok
-    (state
-    |> add_stmt (SM.Stmt.Matrix_collective collective)
-    |> enter_subgroup_phase site)
+  Ok (add_stmt (SM.Stmt.Matrix_collective collective) state)
 
 let full_subgroup_mask (state : collect_state) (expr : D_lang.Expr.t) : bool =
   match (target_subgroup_size_value state, int_constant_of_expr state expr) with
@@ -1972,9 +1969,7 @@ let subgroup_collective_stmt ?result (state : collect_state)
   in
   let state = record_site_control site state in
   let state =
-    state
-    |> add_stmt (SM.Stmt.Subgroup_collective (SM.Collective.make site payload))
-    |> enter_subgroup_phase site
+    add_stmt (SM.Stmt.Subgroup_collective (SM.Collective.make site payload)) state
   in
   let state =
     match op with

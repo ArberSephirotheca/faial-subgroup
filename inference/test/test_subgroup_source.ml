@@ -849,7 +849,7 @@ let test_ordinary_memory_effects_preserve_control_and_phases () : unit =
     end
   | _ -> Alcotest.fail "ordinary metadata kernel did not route to subgroup"
 
-let test_warp_helpers_advance_ordinary_memory_subgroup_phase () : unit =
+let test_warp_helpers_preserve_ordinary_memory_subgroup_phase () : unit =
   let code =
     D_lang.Stmt.from_list
       [
@@ -890,7 +890,7 @@ let test_warp_helpers_advance_ordinary_memory_subgroup_phase () : unit =
           Alcotest.(check int)
             "write source order after helpers" 3 write.site.source_order;
           Alcotest.(check (list int))
-            "write sees both helper subgroup boundaries" [ 0; 1 ]
+            "helpers do not order memory" []
             write.phase.subgroup
       | effects ->
           Alcotest.fail
@@ -899,7 +899,7 @@ let test_warp_helpers_advance_ordinary_memory_subgroup_phase () : unit =
     end
   | _ -> Alcotest.fail "warp helper kernel did not route to subgroup"
 
-let test_warp_reduce_helpers_advance_ordinary_memory_subgroup_phase () : unit =
+let test_warp_reduce_helpers_preserve_ordinary_memory_subgroup_phase () : unit =
   let code =
     D_lang.Stmt.from_list
       [
@@ -936,7 +936,7 @@ let test_warp_reduce_helpers_advance_ordinary_memory_subgroup_phase () : unit =
           Alcotest.(check (list int))
             "read sees pre-helper subgroup phase" [] read.phase.subgroup;
           Alcotest.(check (list int))
-            "write sees both helper subgroup boundaries" [ 0; 1 ]
+            "helpers do not order memory" []
             write.phase.subgroup
       | effects ->
           Alcotest.fail
@@ -945,7 +945,7 @@ let test_warp_reduce_helpers_advance_ordinary_memory_subgroup_phase () : unit =
     end
   | _ -> Alcotest.fail "warp reduce helper kernel did not route to subgroup"
 
-let test_extended_subgroup_collectives_advance_memory_phase () : unit =
+let test_extended_subgroup_collectives_preserve_memory_phase () : unit =
   let full_mask = D_lang.Expr.IntegerLiteral 0xFFFFFFFF in
   let width = D_lang.Expr.IntegerLiteral 32 in
   let code =
@@ -996,7 +996,7 @@ let test_extended_subgroup_collectives_advance_memory_phase () : unit =
           Alcotest.(check (list int))
             "read starts before collectives" [] read.phase.subgroup;
           Alcotest.(check (list int))
-            "write follows every collective" [ 0; 1; 2; 3; 4; 5 ]
+            "collectives do not order memory" []
             write.phase.subgroup
       | effects ->
           Alcotest.fail
@@ -2984,15 +2984,15 @@ let tests : unit Alcotest.test_case list =
     ( "ordinary memory effects preserve control and phases",
       `Quick,
       test_ordinary_memory_effects_preserve_control_and_phases );
-    ( "warp helpers advance ordinary memory subgroup phase",
+    ( "warp helpers preserve ordinary memory subgroup phase",
       `Quick,
-      test_warp_helpers_advance_ordinary_memory_subgroup_phase );
-    ( "warp reduce helpers advance ordinary memory subgroup phase",
+      test_warp_helpers_preserve_ordinary_memory_subgroup_phase );
+    ( "warp reduce helpers preserve ordinary memory subgroup phase",
       `Quick,
-      test_warp_reduce_helpers_advance_ordinary_memory_subgroup_phase );
-    ( "extended subgroup collectives advance memory phase",
+      test_warp_reduce_helpers_preserve_ordinary_memory_subgroup_phase );
+    ( "extended subgroup collectives preserve memory phase",
       `Quick,
-      test_extended_subgroup_collectives_advance_memory_phase );
+      test_extended_subgroup_collectives_preserve_memory_phase );
     ( "subgroup shuffle rejects partial mask",
       `Quick,
       test_subgroup_shuffle_rejects_partial_mask );

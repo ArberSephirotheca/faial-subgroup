@@ -105,16 +105,6 @@ external evaluation archive and are not needed for normal analysis.
 
 ## Current boundaries to review
 
-- The source collector currently advances its ordinary-memory subgroup phase
-  at warp collectives and matrix operations. In contrast,
-  `Memory_event.Subgroup_event.add_stmt` leaves phases unchanged at those
-  operations. Ordinary events retain the source collector's phase tags, so the
-  two representations disagree about which operations order memory. This
-  existing behavior needs a separate semantic fix. An AST-level probe with
-  32 threads reports `not_drf` for a write by thread 0 followed by reads of the
-  same shared element, but reports `drf` if a full-mask `__shfl_sync` is placed
-  between them. Both the pre-cleanup commit and the cleaned tree give these
-  results.
 - WMMA load/store footprints remain in the source representation, but the
   current memory checker builds obligations only for ordinary source effects.
   Matrix participation is checked; matrix-tile memory coverage is not implied.
@@ -131,6 +121,13 @@ opam exec --switch=. -- dune build @all
 opam exec --switch=. -- dune runtest drf/test inference/test protocols/test
 opam exec --switch=. -- dune runtest
 ```
+
+`test_subgroup_memory_ordering` checks the source-to-solver path: a shuffle,
+reduction, or matrix collective must not hide an ordinary-memory race, while
+warp and block barriers retain their respective ordering scopes. The CUDA
+fixtures `examples/drf/racy-subgroup-shuffle.cu` and
+`examples/drf/drf-subgroup-shuffle-syncwarp.cu` exercise the same distinction
+through the CLI with `--subgroup-size 32 --block-dim 32`.
 
 The focused suites exercise source routing, phase and obligation construction,
 solver verdicts, uniformity, delinearization, and launch-contract validation.

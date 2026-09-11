@@ -101,6 +101,13 @@ let tests =
        --assume-warp-synch, since the implicit same-warp barrier does
        not order threads in different warps. *)
     ("racy-cross-warp.cu", [ "--block-dim=64"; "--assume-warp-synch" ], 1);
+    (* A shuffle does not order shared memory; an explicit warp barrier does. *)
+    ( "racy-subgroup-shuffle.cu",
+      [ "--subgroup-size=32"; "--block-dim=32" ],
+      1 );
+    ( "drf-subgroup-shuffle-syncwarp.cu",
+      [ "--subgroup-size=32"; "--block-dim=32" ],
+      0 );
     (* Subgroup kernels retain Faial's structured loop protocol for memory
        analysis, so repeated workgroup barriers are matched by iteration. *)
     ( "drf-subgroup-repeated-barrier.cu",
@@ -109,6 +116,9 @@ let tests =
     ( "drf-subgroup-repeated-syncwarp.cu",
       [ "--subgroup-size=32"; "--block-dim=32" ],
       0 );
+    ( "racy-subgroup-repeated-barrier-sites.cu",
+      [ "--subgroup-size=32"; "--block-dim=32" ],
+      1 );
     (* The subgroup contract must retain the complete, loop-aligned memory
        protocol even when the detector-only access filter is requested. *)
     ( "racy-subgroup-repeated-barrier-sites.cu",

@@ -59,10 +59,6 @@ let control ~(conditions : Exp.bexp list) : control =
     numeric_aliases = Variable.Map.empty;
   }
 
-let control_with_uniform_vars ~(conditions : Exp.bexp list)
-    ~(uniform_vars : Variable.Set.t) : control =
-  { conditions; uniform_vars; numeric_aliases = Variable.Map.empty }
-
 let control_with_facts ~(conditions : Exp.bexp list)
     ~(uniform_vars : Variable.Set.t)
     ~(numeric_aliases : Exp.nexp Variable.Map.t) : control =
