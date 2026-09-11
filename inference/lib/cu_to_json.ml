@@ -14,6 +14,29 @@ let read_all (ic : in_channel) : string =
   loop ();
   Buffer.contents buf
 
+let default_include_dirs () : string list =
+  let include_dirs =
+    [ "inference/cuda_include"; "faial/inference/cuda_include" ]
+  in
+  let find_include dir =
+    List.find_map
+      (fun include_dir ->
+        let candidate =
+          Filename.concat dir (Filename.concat include_dir "mma.h")
+        in
+        if Sys.file_exists candidate then Some (Filename.concat dir include_dir)
+        else None)
+      include_dirs
+  in
+  let rec search dir =
+    match find_include dir with
+    | Some dir -> Some dir
+    | None ->
+        let parent = Filename.dirname dir in
+        if String.equal parent dir then None else search parent
+  in
+  match search (Sys.getcwd ()) with Some dir -> [ dir ] | None -> []
+
 let cu_to_json_res ?(exe = "cu-to-json") ?(ignore_fail = false) ?(includes = [])
     ?(macros = []) ?(launch_params = false) ?(cbor = false)
     (fnames : string list) : (Yojson.Basic.t, int * string) Result.t =

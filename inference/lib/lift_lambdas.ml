@@ -188,6 +188,7 @@ let rewrite_stmt (st : Stmt.t) : Stmt.t state =
               decl_id = None;
               code = body;
               type_params = [];
+              template_args = [];
               params = cap_params @ params;
               attribute = KernelAttr.Auxiliary;
               returns_location = false;

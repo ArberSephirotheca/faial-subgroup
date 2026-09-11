@@ -1,3 +1,22 @@
 (tests
- (names test_norm_range test_access_id test_goal_predicates)
- (libraries stage0 protocols drf alcotest))
+ (names test_norm_range test_access_id test_goal_predicates
+  test_memory_event test_subgroup_delinearize test_launch_contract
+  test_subgroup_obligation test_subgroup_uniformity
+  test_subgroup_memory_ordering test_subgroup_solver)
+ (libraries stage0 protocols inference drf alcotest yojson))
+
+(executable
+ (name test_launch_contract_manifest)
+ (modules test_launch_contract_manifest)
+ (libraries stage0 protocols inference drf alcotest yojson))
+
+(rule
+ (alias runtest)
+ (action (run ./test_launch_contract_manifest.exe test launch_contract_guards)))
+
+(rule
+ (alias runtest-launch-manifest)
+ (deps (universe))
+ (action
+  (setenv FAIAL_LAUNCH_ARTIFACT_ROOT %{env:FAIAL_LAUNCH_ARTIFACT_ROOT=}
+   (run ./test_launch_contract_manifest.exe test launch_contract_manifest))))

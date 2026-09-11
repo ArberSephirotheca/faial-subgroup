@@ -156,6 +156,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     decl_id = None;
     code = body;
     type_params = [];
+    template_args = lp.template_args;
     params;
     attribute = C_lang.KernelAttr.Default;
     returns_location = false;

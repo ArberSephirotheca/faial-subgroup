@@ -1,3 +1,4 @@
+module App_analysis = Analysis
 open Drf
 open Protocols
 open Stage0
@@ -181,8 +182,23 @@ end
 
 let print_box : PrintBox.t -> unit = PrintBox_text.output stdout
 
+let render_subgroup (solution : App_analysis.subgroup) : int =
+  match solution.vacuous with
+  | Some precondition ->
+      T.print_string [ T.Bold; T.Foreground T.Yellow ]
+        ("Kernel '" ^ solution.kernel.name
+         ^ "' is vacuous (subgroup launch precondition is unsatisfiable).\n");
+      T.print_string [ T.Bold ] "Precondition:\n";
+      print_string (Indent.to_string (Exp.b_to_s precondition));
+      print_endline "";
+      1
+  | None ->
+      Drf.Subgroup_solver.summary_lines ~uniformity:solution.uniformity
+        solution.memory |> List.iter print_endline;
+      if App_analysis.subgroup_is_safe solution then 0 else 1
+
 let render ~(rejected : Imp.Rejected_kernel.t list)
-    (output : Analysis.t list) : unit =
+    (output : App_analysis.t list) : unit =
   let render_one (solution : Analysis.t) : int =
       let kernel_name =
         let open Analysis in
@@ -310,7 +326,10 @@ let render ~(rejected : Imp.Rejected_kernel.t list)
           else ();
           1
   in
-  let total = List.fold_left (fun acc s -> acc + render_one s) 0 output in
+  let total = List.fold_left (fun acc -> function
+    | App_analysis.Ordinary s ->
+        acc + render_one s
+    | App_analysis.Subgroup s -> acc + render_subgroup s) 0 output in
   let total =
     List.fold_left
       (fun acc (r : Imp.Rejected_kernel.t) ->

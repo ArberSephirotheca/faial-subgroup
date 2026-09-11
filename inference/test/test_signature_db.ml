@@ -20,6 +20,7 @@ let kernel ?(qualifier = []) ?(template_args = []) ?decl_id ~(name : string)
     decl_id;
     code = (if body then Stmt.BreakStmt else Stmt.Skip);
     type_params = [];
+    template_args = [];
     params;
     attribute = C_lang.KernelAttr.Auxiliary;
     returns_location = false;

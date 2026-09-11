@@ -1,142 +1,144 @@
 # Inference
 
-The *inference* stage (module `infer`) is a translation between a source language AST (eg, C/CUDA, WGSL) and the intermediate `Imp` representation used by Faial.
+Inference translates source ASTs into Faial's memory-access representation.
+C/CUDA and WGSL ASTs are read from JSON:
 
-Our inference stage supports 2 ASTs: C/CUDA and WGSL. In both languages the AST is read from a JSON file, then inference takes the AST and generates an equivalent Imp, depicted as follows:
-
-```
-JSON → Source Language AST → Imp → Memory Access Protocol
-```
-
-For C/CUDA, this involves a two-stage transformation:
-```
-JSON (c-to-json) → C_lang → D_lang → Imp → Memory Access Protocol
+```text
+CUDA JSON -> C_lang -> D_lang -> Imp -> memory-access protocol
+WGSL JSON -> W_lang -> Imp -> memory-access protocol
 ```
 
-For WGSL, this involves a single-stage transformation:
+`D_lang` makes expression-embedded memory accesses explicit statements.
+`D_to_imp` and `W_to_imp` perform the ordinary lowering. The subgroup
+extension branches from normalized CUDA `D_lang`, before ordinary lowering
+loses warp-operation details.
+
+## CUDA entry points and helpers
+
+`__global__` entry points and `__device__` helpers keep their visibility
+through the pipeline. `C_lang` and `D_lang` use `KernelAttr.Default` and
+`KernelAttr.Auxiliary`; `Imp` uses `Visibility.Global` and
+`Visibility.Device`. Helpers remain available for inlining but are not
+independent entry points. The `c-ast --only-global` option filters entry points.
+
+`Subgroup_source.route_program` classifies kernels. With explicit subgroup
+configuration, supported warp operations or WMMA calls select the subgroup
+route, including operations reached through device helpers. Ordinary kernels
+retain their `D_lang.Kernel` identity and are resolved against
+`Protocol_parser.d_program_to_proto` for the complete program. Do not lower an
+ordinary entry without its helper definitions.
+
+Helper resolution uses arity, function type, and template specialization
+metadata. It supports selected member-helper chains such as
+`block_reduce_policy::reduce`. Unsupported forms are reported explicitly;
+they must not become empty helper bodies.
+
+Kernel names receive source-order suffixes before selection. `--kernel`
+selects an entry without dropping its helper context. Unsupported unselected
+entries do not reject the selected route.
+
+Without `--subgroup-size`, the CLI deliberately uses upstream lowering.
+That compatibility route does not prove subgroup participation. Parser-only
+CUDA shims in `cuda_include/` are added by subgroup-aware entry points, not by
+ordinary `Cu_to_json` calls.
+
+## Launch wrappers
+
+`--assume-launch` wrappers are linked to their terminal kernel call before
+routing. Linking preserves grid/block/path assertions, binds arguments and
+integral template parameters, and alpha-renames callee locals.
+
+Template metadata distinguishes specializations with the same name or
+signature. Declaration-valued arguments are accepted only when the specialized
+body no longer contains their unresolved template parameter. Missing,
+ambiguous, or unresolved targets are errors, not empty kernels.
+
+Exact block-dimension equalities are stored separately from general launch
+preconditions. The DRF layer validates the dimension tuple and checks
+precondition satisfiability when requested.
+
+## Subgroup representation
+
+`Subgroup_matrix` holds target configuration and statements for block
+barriers, warp barriers, warp collectives, and matrix operations.
+`Subgroup_source.subgroup_kernel` adds ordinary memory effects and source
+facts:
+
+- Static site identifiers, source order, labels, and locations.
+- Enclosing branch, loop, switch, and exit conditions for participation.
+- Numeric aliases and source-uniform variables at each operation site.
+- Ordinary reads, writes, and atomics with array indices, guards, and phases.
+- Memory-global variables, launch preconditions, and launch dimensions.
+
+The configured CUDA mapping is x-contiguous and requires an explicit subgroup
+width. Do not infer that width from a source variable named `WARP_SIZE`.
+
+Recognized collectives include `warp_sum`, `warp_max`,
+`warp_reduce_sum`, `warp_reduce_max`, `warp_reduce_all`,
+`warp_reduce_any`, and the supported `__shfl*_sync` forms.
+Direct masked calls and `__syncwarp` require a statically full mask.
+Recognized reduction/vote helpers return a subgroup-uniform value when their
+control is subgroup-uniform. A shuffle's result is not generally uniform.
+
+Loop backedges, exits, and repeated helper calls preserve control metadata and
+mark sites that may repeat. The memory checker decides how to handle repeated
+barriers and align their iterations.
+
+Only memory-ordering barriers advance ordinary-memory phase tags. Warp and
+matrix collectives retain participation sites and control metadata but do not
+order ordinary memory accesses.
+
+## Scalar and pointer facts
+
+Kernel parameters and expressions derived from uniform inputs can establish
+participation uniformity. Memory-global facts are narrower: a value shared
+within one warp must still be projected separately for two threads in different
+warps.
+
+Aliases carry dependency information. Reassignment invalidates dependent facts,
+and control-flow joins keep only facts preserved on every outgoing path.
+Memory-free helper summaries may preserve scalar facts when all applicable
+overloads satisfy the summary. Unsupported memory-reading calls do not create
+uniformity facts.
+
+`Protocols.Exp` supplies the shared nonzero-divisor conditions used by source
+extraction and participation proofs. Conditions retain their source order for
+stable diagnostics.
+
+Pointer aliases with a known base and offset are resolved before recording
+accesses. Array declarations remain storage declarations, including Clang's
+empty-constructor representation of implicit initialization. They must not be
+reinterpreted as aliases. Unresolved aliases required by subgroup extraction
+are errors; these strict checks do not alter ordinary `D_to_imp` lowering.
+Recognizing a `__restrict__` pointer type does not itself add a no-alias proof.
+
+## WMMA
+
+The supported source forms are:
+
+```text
+fill_fragment(fragment, value)
+load_matrix_sync(fragment, pointer, leading_dimension)
+mma_sync(d, a, b, c)
+store_matrix_sync(pointer, fragment, leading_dimension, layout)
 ```
-JSON (WGSL AST) → W_lang → Imp → Memory Access Protocol
+
+The representation records fragment shape and matrix load/store footprints.
+Pointer aliases and leading dimensions remain symbolic where supported.
+Unsupported forms fail explicitly. The `mma.h` shim supplies declarations
+for parsing, not memory semantics. Current DRF obligations cover ordinary
+source memory effects; retaining a matrix footprint does not mean that the
+checker verifies its memory accesses.
+
+## Tests
+
+From the repository root:
+
+```bash
+opam exec --switch=. -- dune runtest inference/test
 ```
 
-**Module structure:**
-
-- **`c_lang.ml`** - C/CUDA AST definitions and JSON parsing from c-to-json; mirrors LLVM's AST
-- **`d_lang.ml`** - C/CUDA AST where memory-accesses are made into statements (not expressions); extracted from C_lang
-- **`d_to_imp.ml`** - C/CUDA to Imp translation (via D_lang intermediate)
-- **`w_lang.ml`** - WGSL AST definitions
-- **`w_to_imp.ml`** - WGSL to Imp translation
-
-## Kernel Attributes: `__global__` vs `__device__`
-
-CUDA kernels have two visibility modifiers that are preserved throughout the translation pipeline:
-
-- **`__global__`**: Entry point kernels callable from host code
-- **`__device__`**: Auxiliary functions callable only from GPU code
-
-**Representation across pipeline stages:**
-
-| Stage | Field | Type | `__global__` | `__device__` | Helper Function |
-|-------|-------|------|--------------|--------------|-----------------|
-| **C_lang** | `kernel.attribute` | `KernelAttr.t` | `Default` | `Auxiliary` | `KernelAttr.is_global` |
-| **D_lang** | `kernel.attribute` | `KernelAttr.t` | `Default` | `Auxiliary` | `Kernel.is_global` |
-| **Imp** | `kernel.visibility` | `Visibility.t` | `Global` | `Device` | `Kernel.is_global` |
-
-Each stage provides an `is_global` helper function for consistent filtering and analysis. The `c-ast` tool supports `--only-global` flag to display only `__global__` kernels across all three stages.
-
-
-## C/CUDA Pipeline: `c_lang → d_lang → d_to_imp → Imp`
-
-**Modules**: `c_lang.ml`, `d_lang.ml`, `d_to_imp.ml`
-
-**Key characteristics**:
-- **Two-stage translation** required due to expression-embedded memory operations
-- **JSON input** from c-to-json tool (LLVM AST dump)
-- **Memory extraction** via state monad in `d_lang.ml`
-
-The C/CUDA translation pipeline uses a unique two-stage approach that separates parsing concerns from analysis preparation:
-
-#### Stage 1: C_lang (JSON Parser and Raw AST)
-**Purpose**: Handle the complexity of parsing LLVM/Clang JSON output
-- **Input**: JSON from c-to-json tool (LLVM AST dump)
-- **Output**: Raw C/CUDA AST that faithfully mirrors LLVM's structure
-- **Responsibilities**:
-  - JSON parsing with comprehensive error handling
-  - Direct mapping to LLVM AST node types (100+ expression variants)
-  - Graceful handling of invalid/recovery expressions
-  - Preservation of all source language constructs
-  - Type system integration (`J_type.t` from JSON)
-
-#### Stage 2: D_lang (Analysis-Ready Transformation)
-**Purpose**: Extract memory operations from expressions into statements (required by Imp)
-- **Input**: `C_lang.Program.t`
-- **Output**: AST where all memory accesses are explicit statements
-- **Core Challenge**: C allows memory operations within expressions, but Imp requires memory accesses to be statements
-- **Transformations**:
-  - **Memory Access Extraction**: Convert array subscripts and pointer dereferences from expressions to explicit read/write statements
-  - **Expression Decomposition**: Split complex expressions containing memory operations into statement sequences
-  - **Side Effect Isolation**: Use state monad to track and extract memory accesses during expression evaluation
-  - **Statement Generation**: Generate explicit `ReadAccessStmt` and `WriteAccessStmt` for analysis
-
-**Example transformation**:
-```c
-// C source: memory access within expression
-int result = array[i] + array[j];
-
-// C_lang: represents as nested expressions
-BinaryOperator {
-  opcode = "+";
-  lhs = ArraySubscriptExpr {lhs=array; rhs=i};
-  rhs = ArraySubscriptExpr {lhs=array; rhs=j}
-}
-
-// D_lang: extracts memory accesses as statements
-ReadAccessStmt {target=temp1; source=array[i]; ty=int}
-ReadAccessStmt {target=temp2; source=array[j]; ty=int}
-AssignStmt {var=result; data=temp1 + temp2}
-```
-
-#### Why Two-Stage Architecture is Required
-
-1. **What Imp Needs**:
-   - All memory accesses must be explicit statements for analysis
-   - Memory access patterns must be extractable for protocol generation
-   - Temporal ordering of reads/writes must be preserved
-
-2. **What C Provides**:
-   - Memory operations embedded within expressions: `a[i] + b[j]`
-   - Nested array subscripts: `arr[i][j][k]`
-   - Pointer arithmetic mixed with computation: `*(ptr + offset) * 2`
-
-3. **How We Bridge The Gap**:
-   - **Two-stage translation**: C_lang → D_lang → Imp
-   - **State monad transformation**: Extract memory operations from nested expressions
-   - **Temporary variables**: Store results of extracted memory statements
-   - **D_lang intermediate**: Isolates the complexity of memory operation extraction
-
-## WGSL Pipeline: `w_lang → w_to_imp → Imp`
-
-**Modules**: `w_lang.ml`, `w_to_imp.ml`
-
-**Key characteristics**:
-- **Single-stage translation** sufficient due to structured memory model
-- **Direct AST input** (no complex JSON parsing needed)
-- **Address space annotations** explicitly map to memory hierarchy
-- **Structured types** enable straightforward field access flattening
-
-## Future work
-
-### Parsing C/CUDA with FrontC
-
-We considered implementing a C/CUDA parser based on [FrontC](https://github.com/BinaryAnalysisPlatform/FrontC/).
-
-Motivation:
-
-- *simplifies building Faial:* would make parsing C/CUDA self-contained (no external dependencies)
-- *gives a fallback alternative to c-to-json,* which is infamously difficult to build
-- *faster parsing times:* obviates the need for spawning a process for parsing, and marshaling JSON
-- *enables Faial running in browser:* allows JS and have it run browser-side
-- *significant overlap with `c_lang.ml`*, as both LLVM and FrontC are parsing C, we would expect a significant overlap of both ASTs
-
-Current limitations:
-- *AST has no typing information,* which means that we would need to type-check it, introducing a stage before `c_lang.ml`; incorrect typing information would need to conservatively assume that types are integers (thus reducing the efficacy of our code slicing) and introduce false alarms (as larger ranges for integers would be incorrectly assumed)
-- *AST has no provenance information,* so we would lose the ability to pin-point errors, thus breaking the UI
+The AST-level tests cover routing, launch linking, helper and template
+resolution, pointer/scalar facts, source conditions, repeated sites, and matrix
+representation without requiring a CUDA translator. End-to-end CUDA examples
+also require a working `cu-to-json`; see the [DRF guide](../drf/README.md#build-and-test).

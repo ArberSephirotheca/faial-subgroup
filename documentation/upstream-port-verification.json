@@ -1,0 +1,220 @@
+{
+  "date": "2026-09-11",
+  "upstream": "24a363fce97f87176d6353469e6df0baf1496f06",
+  "subgroup_parent": "fc82f8609a7730560484f0ef87b1d7c98662f0a9",
+  "build": "pass",
+  "unit": {
+    "passed": 1034,
+    "suites": 65,
+    "skipped_optional_archive_tests": 23
+  },
+  "cli": {
+    "total": 443,
+    "passed": 427,
+    "failures_reproduced_upstream": [
+      {
+        "file": "drf-inherited-method.cu",
+        "args": [],
+        "expected": 0,
+        "port": 1,
+        "upstream": 1
+      },
+      {
+        "file": "drf-inherited-method-deep.cu",
+        "args": [],
+        "expected": 0,
+        "port": 1,
+        "upstream": 1
+      },
+      {
+        "file": "racy-call-result-quiet.cu",
+        "args": [],
+        "expected": 1,
+        "port": 0,
+        "upstream": 0
+      },
+      {
+        "file": "drf-call-result-member.cu",
+        "args": [],
+        "expected": 0,
+        "port": 1,
+        "upstream": 1
+      },
+      {
+        "file": "drf-std-forward.cu",
+        "args": [],
+        "expected": 0,
+        "port": 1,
+        "upstream": 1
+      },
+      {
+        "file": "drf-member-template.cu",
+        "args": [],
+        "expected": 0,
+        "port": 1,
+        "upstream": 1
+      },
+      {
+        "file": "drf-anon-template-parm.cu",
+        "args": [],
+        "expected": 0,
+        "port": 1,
+        "upstream": 1
+      },
+      {
+        "file": "drf-memcpy-extent.cu",
+        "args": [],
+        "expected": 0,
+        "port": 1,
+        "upstream": 1
+      },
+      {
+        "file": "racy-funcion-call-unknowns.cu",
+        "args": [],
+        "expected": 1,
+        "port": 2,
+        "upstream": 2
+      },
+      {
+        "file": "undefined-call.cu",
+        "args": [
+          "--opaque-calls=skip-all",
+          "undefined-call-sibling-racy.cu"
+        ],
+        "expected": 1,
+        "port": 0,
+        "upstream": 0
+      },
+      {
+        "file": "drf-record-out-of-line.cu",
+        "args": [],
+        "expected": 0,
+        "port": 1,
+        "upstream": 1
+      },
+      {
+        "file": "drf-record-template-scope.cu",
+        "args": [],
+        "expected": 0,
+        "port": 1,
+        "upstream": 1
+      },
+      {
+        "file": "racy-member-call.cu",
+        "args": [],
+        "expected": 1,
+        "port": 0,
+        "upstream": 0
+      },
+      {
+        "file": "racy-template-accessor.cu",
+        "args": [],
+        "expected": 1,
+        "port": 0,
+        "upstream": 0
+      },
+      {
+        "file": "drf-write-through-call.cu",
+        "args": [],
+        "expected": 0,
+        "port": 1,
+        "upstream": 1
+      },
+      {
+        "file": "racy-launch-site-lambda.cu",
+        "args": [
+          "--all-dims",
+          "--assume-launch"
+        ],
+        "expected": 1,
+        "port": 2,
+        "upstream": 2
+      }
+    ]
+  },
+  "warp_comparison": {
+    "conclusive": 60,
+    "matching_component_verdicts": 60
+  },
+  "runs": {
+    "run5": {
+      "directory": "verification/upstream-port-2026-09-11-run5",
+      "entries": 479,
+      "outcomes": {
+        "error/2": 10,
+        "invalid-assumption": 1,
+        "missing-kernel": 131,
+        "ordinary/drf": 69,
+        "ordinary/racy": 35,
+        "ordinary/vacuous": 1,
+        "ordinary/zero-accesses": 27,
+        "rejected/undefined-kernel": 4,
+        "rejected/unnamed-region": 39,
+        "timeout": 102,
+        "warp/drf/drf/drf": 45,
+        "warp/not_drf/drf/not_drf": 15
+      },
+      "provenance_file": "verification/upstream-port-2026-09-11-run5/provenance.json",
+      "binary_sha256": "eb9c8030dfa15b4a7cb62aff6585ecb26ba2ccb40510c7b9bc3870447c168c9c",
+      "workers": 8,
+      "timeout_s": 60
+    },
+    "warp-final": {
+      "directory": "verification/upstream-port-2026-09-11-warp-final",
+      "entries": 98,
+      "outcomes": {
+        "invalid-assumption": 1,
+        "rejected/undefined-kernel": 2,
+        "rejected/unnamed-region": 17,
+        "timeout": 18,
+        "warp/drf/drf/drf": 45,
+        "warp/not_drf/drf/not_drf": 15
+      },
+      "provenance_file": "verification/upstream-port-2026-09-11-warp-final/provenance.json",
+      "binary_sha256": "f87b4194f91c22ba10b807852ad15273b0cc0701740a34aaacf842ca146b3153",
+      "workers": 8,
+      "timeout_s": 60
+    },
+    "upstream": {
+      "directory": "verification/upstream-port-2026-09-11-upstream",
+      "entries": 479,
+      "outcomes": {
+        "invalid-assumption": 1,
+        "missing-kernel": 128,
+        "ordinary/drf": 117,
+        "ordinary/racy": 52,
+        "ordinary/vacuous": 1,
+        "ordinary/zero-accesses": 37,
+        "rejected/undefined-kernel": 6,
+        "rejected/unnamed-region": 46,
+        "timeout": 91
+      },
+      "provenance_file": "verification/upstream-port-2026-09-11-upstream/provenance.json",
+      "binary_sha256": "f3cfb44d1f129a8201f2d0190633f5b38ca962693d5e4655806be66206fd93cd",
+      "workers": 8,
+      "timeout_s": 60
+    },
+    "final-targeted": {
+      "directory": "verification/upstream-port-2026-09-11-final-targeted",
+      "entries": 21,
+      "outcomes": {
+        "error/2": 10,
+        "missing-kernel": 3,
+        "ordinary/drf": 1,
+        "ordinary/racy": 1,
+        "ordinary/zero-accesses": 4,
+        "warp/drf/drf/drf": 1,
+        "warp/not_drf/drf/not_drf": 1
+      },
+      "provenance_file": "verification/upstream-port-2026-09-11-final-targeted/provenance.json",
+      "binary_sha256": "2f4d435394bb96bb7e4d13dd50a208d32963128d280ee9a68a617eab51700e53",
+      "workers": 4,
+      "timeout_s": 60
+    }
+  },
+  "test_artifacts": {
+    "verification/upstream-port-2026-09-11-test-logs/faial-port-examples-final.json": "e87442e1e29101c6a3f1e4d8b8a52436f53dd9ed40183ecd754c39d9b916dbb6",
+    "verification/upstream-port-2026-09-11-test-logs/faial-port-examples-final.log": "12d08bd3d745285c25e93aa768c2ec87f189e3e5f0b40702f73b8c65abc595c2",
+    "verification/upstream-port-2026-09-11-test-logs/faial-port-unit-final.log": "6e170136795f1a59389deda0c52ec26077966baeaf165b1caef54fbce82ff194"
+  }
+}

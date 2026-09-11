@@ -408,6 +408,7 @@ module Solution = struct
   let solve ?(timeout = None) ?(show_proofs = false) ?(logic = None)
       ?(solve_tactic : Gen_z3.Tactic.t option = None)
       ?(extras : (int * bexp) list = []) ?(deterministic = false)
+      ?(pre_solver = false) ?block_dim
       (ps : Symbexp.Proof.t Streamutil.stream) : t Streamutil.stream =
     (* User-requested BV logic warning fires once, not once per proof. *)
     (match logic with
@@ -417,6 +418,10 @@ module Solution = struct
     Streamutil.map
       (fun (p : Symbexp.Proof.t) ->
         Gc.full_major ();
+        match (if pre_solver then Ordinary_solver.pre_solver_classification ?block_dim p else None) with
+        | Some (Ordinary_solver.Pre_solver_unsat _) ->
+            { proof = p; outcome = Outcome.Drf; logic; is_bv = false }
+        | None ->
         let want_core = extras <> [] in
         let options =
           [ ("model", "true"); ("proof", "false") ]

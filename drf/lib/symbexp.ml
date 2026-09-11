@@ -430,6 +430,7 @@ let cond_access_to_bexp (locals : Variable.Set.t) (t : Task.t)
 module AccessSummary = struct
   type t = {
     access : Access.t;
+    condition : bexp;
     variables : Variable.Set.t;
     globals : Variable.Set.t;
     data_approx : Variable.Set.t;
@@ -439,7 +440,7 @@ module AccessSummary = struct
   let to_string (a : t) : string =
     "{access=" ^ Access.to_string a.access ^ ", variables=["
     ^ Variable.set_to_string a.variables
-    ^ "], data=["
+    ^ "], condition=" ^ b_to_string a.condition ^ ", data=["
     ^ Variable.set_to_string a.data_approx
     ^ "], ctrl=["
     ^ Variable.set_to_string a.control_approx
@@ -677,6 +678,7 @@ module Proof = struct
           let all_fns = Variable.Set.union data_fns ctrl_fns in
           {
             access = a.access;
+            condition = a.cond;
             variables = all_fns;
             globals = Variable.Set.diff all_fns locals;
             data_approx = Variable.Set.inter k.approx_local_variables data_fns;
@@ -733,6 +735,7 @@ module Proof = struct
           let all_fns = Variable.Set.union data_fns ctrl_fns in
           {
             access = a.access;
+            condition = a.cond;
             variables = all_fns;
             globals = Variable.Set.diff all_fns locals;
             data_approx = Variable.Set.inter k.approx_local_variables data_fns;
@@ -744,15 +747,15 @@ module Proof = struct
     make ~id:proof_id ~kernel_name:k.name ~array_name:k.array_name ~goal
       ~accesses
 
-  let from_flat ?(memory_model = Memory_model.default) (arch : Architecture.t)
-      (proof_id : int) (k : Flatacc.Kernel.t) : t =
+  let from_flat ?(memory_model = Memory_model.default) ?(assign_index = true)
+      (arch : Architecture.t) (proof_id : int) (k : Flatacc.Kernel.t) : t =
     let locals =
       Variable.Set.union k.exact_local_variables k.approx_local_variables
     in
     let atomic_axioms = AtomicAxioms.axioms_of k locals in
     let memory_model_axiom = MemoryModelAxioms.axiom_of memory_model in
     let goal =
-      from_code arch locals k.runtime k.code
+      from_code ~assign_index arch locals k.runtime k.code
       |> b_and (project_pre locals k.pre)
       |> b_and atomic_axioms
       |> b_and memory_model_axiom
@@ -769,6 +772,7 @@ module Proof = struct
           let all_fns = Variable.Set.union data_fns ctrl_fns in
           {
             access = a.access;
+            condition = b_and k.runtime a.cond;
             variables = all_fns;
             globals = Variable.Set.diff all_fns locals;
             data_approx = Variable.Set.inter k.approx_local_variables data_fns;
@@ -791,6 +795,10 @@ let add ~tid ~bid : Proof.t Streamutil.stream -> Proof.t Streamutil.stream =
 let translate ?(memory_model = Memory_model.default) (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
   Streamutil.mapi (Proof.from_flat ~memory_model arch) stream
+
+let sanity_check (arch : Architecture.t)
+    (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =
+  Streamutil.mapi (Proof.from_flat ~assign_index:false arch) stream
 
 let translate_coreach (arch : Architecture.t)
     (stream : Flatacc.Kernel.t Streamutil.stream) : Proof.t Streamutil.stream =

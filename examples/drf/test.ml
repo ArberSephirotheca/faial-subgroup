@@ -138,14 +138,49 @@ let tests =
        racy under post-Volta independent thread scheduling, DRF under
        --assume-warp-synch. *)
     ("drf-warp-synch-reduce.cu", [ "--block-dim=32" ], 1);
-    ( "drf-warp-synch-reduce.cu",
-      [ "--block-dim=32"; "--assume-warp-synch" ],
-      0 );
+    ("drf-warp-synch-reduce.cu", [ "--block-dim=32"; "--assume-warp-synch" ], 0);
     (* Negative companion: a cross-warp data race that must survive
        --assume-warp-synch, since the implicit same-warp barrier does
        not order threads in different warps. *)
-    ( "racy-cross-warp.cu",
-      [ "--block-dim=64"; "--assume-warp-synch" ],
+    ("racy-cross-warp.cu", [ "--block-dim=64"; "--assume-warp-synch" ], 1);
+    (* A shuffle does not order shared memory; an explicit warp barrier does. *)
+    ( "racy-subgroup-shuffle.cu",
+      [ "--subgroup-size=32"; "--block-dim=32" ],
+      1 );
+    (* Subgroup-enabled ordinary kernels still use the complete upstream
+       pipeline, including helper bodies and binder-scoped assumptions. *)
+    ("racy-shared-mem-2.cu", ["--subgroup-size=32"], 1);
+    ("racy-loop-assume.cu",
+      ["--subgroup-size=32"; "--assume"; "binder=i: i == threadIdx.x"], 0);
+    (* Kernel-scoped assumptions retain the new upstream syntax. A typo
+       must not silently drop a fact, and binder facts must not be lifted
+       into global subgroup preconditions. *)
+    ("drf-subgroup-shuffle-syncwarp.cu",
+      ["--subgroup-size=32"; "--block-dim=32"; "--assume"; "blockDim.x == 32"], 0);
+    ("racy-subgroup-shuffle.cu",
+      ["--subgroup-size=32"; "--block-dim=32"; "--assume"; "unknown_fact == 0"], 123);
+    ("drf-subgroup-repeated-barrier.cu",
+      ["--subgroup-size=32"; "--block-dim=32"; "--assume"; "binder=iteration: iteration >= 0"], 123);
+    ("drf-subgroup-shuffle-syncwarp.cu",
+      ["--subgroup-size=32"; "--block-dim=32"; "--stop-at=map"], 123);
+    ( "drf-subgroup-shuffle-syncwarp.cu",
+      [ "--subgroup-size=32"; "--block-dim=32" ],
+      0 );
+    (* Subgroup kernels retain Faial's structured loop protocol for memory
+       analysis, so repeated workgroup barriers are matched by iteration. *)
+    ( "drf-subgroup-repeated-barrier.cu",
+      [ "--subgroup-size=32"; "--block-dim=32" ],
+      0 );
+    ( "drf-subgroup-repeated-syncwarp.cu",
+      [ "--subgroup-size=32"; "--block-dim=32" ],
+      0 );
+    ( "racy-subgroup-repeated-barrier-sites.cu",
+      [ "--subgroup-size=32"; "--block-dim=32" ],
+      1 );
+    (* The subgroup contract must retain the complete, loop-aligned memory
+       protocol even when the detector-only access filter is requested. *)
+    ( "racy-subgroup-repeated-barrier-sites.cu",
+      [ "--subgroup-size=32"; "--block-dim=32"; "--find-true-dr" ],
       1 );
     (* A data-race free example as long as the analysis understands typedefs. *)
     ("drf-typedef.cu", [], 0);
@@ -676,13 +711,15 @@ let tests =
      racy when blockDim/gridDim's [y]/[z] axes are free: synthesising
      the launch's [dim3((n+255)/256)] / [dim3(256)] pins the unused
      axes to 1 via [assert(...)] in the pseudo-kernel body. *)
-    ("drf-launch-rescue.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-rescue.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Two distinct launches of the same templated kernel must each
      produce their own pseudo-kernel and analyze independently with
      the launch's concrete dims. *)
-    ("drf-launch-multi.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-multi.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Negative control: a kernel that races regardless of launch
      dims (every thread writes [out[0]]) stays racy under
      [--assume-launch] — pinning blockDim doesn't suppress real
@@ -702,8 +739,9 @@ let tests =
      the formal stays block-uniform; analyzes DRF. Without the
      resolver, this would false-positive racy because the launch
      arg surfaces as a per-thread @AccessState. *)
-    ("drf-launch-complex-arg.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-complex-arg.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* A scalar kernel arg fed by a [const int N = 256] host
      variable that c-to-json const-folds to its literal value at
      the launch site. The resolver passes literals through as
@@ -778,8 +816,9 @@ let tests =
      into a fresh uniform), Z3 has no link between [gridDim.x]
      and [imageW], witnesses [imageW < 128], and false-positive
      reports racy. *)
-    ("drf-launch-grid-arith.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-grid-arith.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Host-side guard ([if (n >= 256)]) enclosing the launch
      reaches the analyzer via c-to-json's [path_condition] slot;
      the synth kernel lifts it into [assert(n >= 256)] alongside
@@ -787,8 +826,9 @@ let tests =
      stride pattern: two threads in different blocks collide
      when [n < blockDim.x]); with the lifted path condition Z3
      rules out small [n] and the kernel verifies DRF. *)
-    ("drf-launch-path-cond.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-path-cond.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Host-side const-binding ([const int inum = N * 1024]) used
      nested in the grid axis ([dim3(inum / 256)]) reaches the
      analyzer via c-to-json's [const_bindings] slot. The synth
@@ -800,8 +840,9 @@ let tests =
      binding lift, [inum] is a free uniform with no tie to [N],
      Z3 picks [N == 0], and the kernel false-positive reports
      racy. *)
-    ("drf-launch-const-binding.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-const-binding.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Opaque-block launch: the launch supplies a struct field of
      type [dim3] as the block dim, which cu-to-json wraps in a
      copy-ctor [CXXConstructExpr] whose first arg is itself
@@ -811,8 +852,9 @@ let tests =
      writes via [atomicInc], DRF regardless of contention. Pins
      that the "no constraint" output for opaque axes doesn't lose
      legitimate DRF cases. *)
-    ("drf-launch-opaque-block.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-launch-opaque-block.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* Opaque-block launch on a kernel whose index uses only
      [threadIdx.x] and thus races when [blockDim.y]/[.z] can exceed
      1. With the resolver emitting no constraint on the opaque
@@ -879,9 +921,16 @@ let tests =
      promotes it to an array dimension and drops it from the subscript,
      so every thread appears to write the same cell and faial reports a
      false race. *)
-    ("drf-delin-gridstride.cu",
-     [ "--all-dims"; "--assume-dims"; "--assume-launch";
-       "--assume-delin"; "--delin-algo"; "cramer" ], 0);
+    ( "drf-delin-gridstride.cu",
+      [
+        "--all-dims";
+        "--assume-dims";
+        "--assume-launch";
+        "--assume-delin";
+        "--delin-algo";
+        "cramer";
+      ],
+      0 );
     (* Each thread writes to a unique cell of [arr]. The callee
      [f] has a local [int i;] whose name collides with the
      caller's [i]; faial-drf's parameter-substitution path under
@@ -896,8 +945,9 @@ let tests =
      to a fresh name that collided with a deeper binder, and the
      resulting capture landed the access on the wrong local, reporting
      a false race. *)
-    ("drf-inline-rename-capture.cu",
-     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ( "drf-inline-rename-capture.cu",
+      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
+      0 );
     (* ensure that an aligned protocol remains aligned *)
     ("drf-loop-aligned-1.cu", [], 0);
     (* End-to-end smoke test for IntegerLiteral parsing of uint64
