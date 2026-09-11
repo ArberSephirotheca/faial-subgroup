@@ -84,6 +84,9 @@ let from_encode_assigns : Encode_assigns.t -> Code.t =
   let rec from : Encode_assigns.t -> Code.t * AssertionTree.t = function
     | Skip -> (Skip, AssertionTree.true_)
     | Access a -> (Access a, AssertionTree.true_)
+    (* Idiom rewrites can prepend bounds to a local guard. Normalize the
+       sequence so the guard still applies to the following accesses. *)
+    | Seq (Seq (p, q), r) -> from (Seq (p, Seq (q, r)))
     | Seq (Assert { cond = e; visibility = Local }, p) ->
         let p, a = from p in
         let a = AssertionTree.implies e a in

@@ -19,6 +19,37 @@ type kernel =
   | Ordinary_kernel of Protocols.Kernel.t
   | Subgroup_kernel of subgroup_kernel
 
+let needs_complete_memory_check (subgroup : Subgroup_source.subgroup_kernel)
+    (protocol : Protocols.Kernel.t) : bool =
+  let storage = ref Variable.Map.empty in
+  Code.exists
+    (function
+      | Code.Access access ->
+          let matching =
+            List.filter
+              (fun (memory : Subgroup_source.ordinary_memory_effect) ->
+                Option.map Location.to_string memory.site.location
+                  = Some (Location.to_string (Access.location access))
+                && Access.Mode.is_write memory.access.mode
+                   = Access.Mode.is_write access.mode)
+              subgroup.ordinary_memory_effects
+          in
+          begin match matching with
+          | [] -> true
+          | memory :: rest ->
+              let array = memory.access.array in
+              let previous = Variable.Map.find_opt access.array !storage in
+              storage := Variable.Map.add access.array array !storage;
+              List.exists
+                (fun (other : Subgroup_source.ordinary_memory_effect) ->
+                  not (Variable.equal array other.access.array)) rest
+              ||
+              Option.fold ~none:false
+                ~some:(fun prior -> not (Variable.equal prior array)) previous
+          end
+      | _ -> false)
+    protocol.code
+
 let kernel_name : kernel -> string = function
   | Ordinary_kernel kernel -> Protocols.Kernel.name kernel
   | Subgroup_kernel kernel -> kernel.subgroup.matrix_kernel.name
@@ -41,35 +72,6 @@ let with_kernel_name (name : string) : kernel -> kernel = function
       let subgroup = { kernel.subgroup with matrix_kernel } in
       let loop_protocol = { kernel.loop_protocol with name } in
       Subgroup_kernel { subgroup; loop_protocol }
-
-(* Kernel enumeration and [--kernel] selection must use one identifier space.
-   Apply the same collision policy to ordinary and subgroup kernels in source
-   order so a token printed by [--list-kernels] always replays exactly. *)
-let uniquify_kernel_names (kernels : kernel list) : kernel list =
-  let module SS = Common.StringSet in
-  let initial =
-    List.fold_left
-      (fun names kernel -> SS.add (kernel_name kernel) names)
-      SS.empty kernels
-  in
-  let used = ref SS.empty in
-  List.map
-    (fun kernel ->
-      let name = kernel_name kernel in
-      if not (SS.mem name !used) then (
-        used := SS.add name !used;
-        kernel)
-      else
-        let rec fresh suffix =
-          let candidate = Printf.sprintf "%s_%d" name suffix in
-          if SS.mem candidate !used || SS.mem candidate initial then
-            fresh (suffix + 1)
-          else candidate
-        in
-        let name = fresh 2 in
-        used := SS.add name !used;
-        with_kernel_name name kernel)
-    kernels
 
 (* The pipeline stages [--stop-at] can target. Mirrors the order in
    [translate]: each stage prints what's left after its own
@@ -435,27 +437,9 @@ let subgroup_target_config (subgroup_size : int) : SM.Target_config.t =
       Logger.Colors.error (fun () -> SM.Target_config.error_to_string error);
       exit 2
 
-let compile_original_ordinary_program ~opaque_calls ~infer_cond_bound
-    ~(ignore_asserts : bool) ~(rules : Exp_match.rule list)
-    (options : Gv_parser.t) (program : D_lang.Program.t) :
-    kernel StringMap.t * Imp.Rejected_kernel.t list =
-  let parsed =
-    Protocol_parser.Silent.d_program_to_proto ~opaque_calls ~infer_cond_bound
-      ~ignore_asserts ~rules options program
-  in
-  let kernels =
-    parsed.kernels
-    |> List.map (fun kernel -> Ordinary_kernel kernel)
-    |> uniquify_kernel_names
-    |> List.fold_left
-         (fun kernels kernel ->
-           StringMap.add (kernel_name kernel) kernel kernels)
-         StringMap.empty
-  in
-  (kernels, parsed.rejected)
-
-let kernels_of_routed ~rejected ~(ordinary_kernels : kernel StringMap.t)
-    (kernel : Subgroup_source.routed_kernel) : kernel list =
+let kernel_of_routed ~rejected
+    ~(ordinary_kernels : Protocols.Kernel.t StringMap.t)
+    (kernel : Subgroup_source.routed_kernel) : kernel option =
   let rejected_name name =
     List.exists (fun (r : Imp.Rejected_kernel.t) -> r.kernel = name) rejected
   in
@@ -464,8 +448,8 @@ let kernels_of_routed ~rejected ~(ordinary_kernels : kernel StringMap.t)
       match
         StringMap.find_opt (D_lang.Kernel.label source) ordinary_kernels
       with
-      | Some kernel -> [ kernel ]
-      | None when rejected_name (D_lang.Kernel.label source) -> []
+      | Some kernel -> Some (Ordinary_kernel kernel)
+      | None when rejected_name (D_lang.Kernel.label source) -> None
       | None ->
           Logger.Colors.error (fun () ->
               Printf.sprintf
@@ -475,10 +459,9 @@ let kernels_of_routed ~rejected ~(ordinary_kernels : kernel StringMap.t)
           exit 2)
   | Subgroup_source.Subgroup_matrix subgroup -> (
       match StringMap.find_opt subgroup.matrix_kernel.name ordinary_kernels with
-      | Some (Ordinary_kernel loop_protocol) ->
-          [ Subgroup_kernel { subgroup; loop_protocol } ]
-      | None when rejected_name subgroup.matrix_kernel.name -> []
-      | Some (Subgroup_kernel _) | None ->
+      | Some loop_protocol -> Some (Subgroup_kernel { subgroup; loop_protocol })
+      | None when rejected_name subgroup.matrix_kernel.name -> None
+      | None ->
           Logger.Colors.error (fun () ->
               Printf.sprintf
                 "subgroup route '%s' is missing its loop-aware Faial protocol"
@@ -509,17 +492,23 @@ let parse_with_subgroup_config ~filename ~block_dim ~grid_dim ~includes
       Logger.Colors.error (fun () -> Subgroup_source.error_to_string error);
       exit 2
   | Ok routed ->
-      let ordinary_kernels, rejected =
-        compile_original_ordinary_program ~opaque_calls ~infer_cond_bound
-          ~ignore_asserts ~rules options program
+      let ordinary =
+        Protocol_parser.Silent.d_program_to_proto ~opaque_calls ~infer_cond_bound
+          ?only_kernel ~ignore_asserts ~rules options program
+      in
+      let ordinary_kernels =
+        ordinary.kernels
+        |> Protocols.Kernel.uniquify_names
+        |> List.map (fun k -> (Protocols.Kernel.name k, k))
+        |> StringMap.of_list
       in
       {
         options;
-        rejected;
+        rejected = ordinary.rejected;
         kernels =
           routed
-          |> List.map (kernels_of_routed ~rejected ~ordinary_kernels)
-          |> List.concat;
+          |> List.filter_map
+               (kernel_of_routed ~rejected:ordinary.rejected ~ordinary_kernels);
       }
 
 let parse_without_subgroup_config ~filename ~block_dim ~grid_dim ~includes
@@ -627,7 +616,11 @@ let parse ~extra_files ~filename ~timeout ~show_proofs ~show_proto ~show_wf
                   (Launch_contract.Subgroup_kernel_unsupported
                      kernel.subgroup.matrix_kernel.name))
   in
-  let kernels = uniquify_kernel_names kernels in
+  let kernels =
+    Common.uniquify ~name:kernel_name
+      ~rename:(fun kernel name -> with_kernel_name name kernel)
+      ~taken:Common.StringSet.empty kernels
+  in
   let block_dim = if all_dims then None else Some parsed.options.block_dim in
   let block_dim =
     match launch_contract with
@@ -1085,6 +1078,13 @@ let run (a : t) : App_analysis.t list =
         in
         Subgroup_solver.resolve_repeated_site_with_loop_protocol ~protocol
           primary_memory
+      else if Subgroup_solver.memory_verdict primary_memory = Subgroup_solver.Memory_drf
+              && needs_complete_memory_check subgroup routed.loop_protocol then
+        (* The source collector can omit memory-only helpers or name overlapping
+           views separately. Retain its event checks and also require the complete
+           byte-aware protocol; it may conservatively lose warp-only ordering. *)
+        let protocol = loop_protocol_memory_outcome ~config routed.loop_protocol in
+        Subgroup_solver.supplement_with_protocol ~protocol primary_memory
       else primary_memory
     in
     let uniformity =

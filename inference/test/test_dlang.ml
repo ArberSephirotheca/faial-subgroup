@@ -845,6 +845,98 @@ module Subgroup = struct
       "alias offset scales float elements to bytes" "0 + base * 4 + tile"
       (Imp.Pointer.to_nexp pointer |> Option.get |> Exp.n_to_string)
 
+  let test_default_member_initializer_preserves_expression () : unit =
+    let value : Yojson.Basic.t =
+      `Assoc [ "kind", `String "IntegerLiteral"; "type", `String "int";
+               "value", `String "7" ]
+    in
+    let json : Yojson.Basic.t =
+      `Assoc [ "kind", `String "CXXDefaultInitExpr"; "type", `String "int";
+               "inner", `List [ value ] ]
+    in
+    match C_lang.parse_expr json with
+    | Ok (IntegerLiteral 7) -> ()
+    | Ok _ -> Alcotest.fail "default member initializer was lost"
+    | Error error -> Alcotest.fail (Rjson.error_to_string error)
+
+  let test_record_pointer_cast_preserves_field_bytes () : unit =
+    let record : Record.t =
+      { name = Ty.segment "Entry"; qualifier = []; bases = [];
+        fields = [ Record.Field.make ~name:"data" ~ty:J_type.int ~offset:0 () ];
+        size = Some 4; align = Some 4; location = Location.empty }
+    in
+    let k =
+      kernel "cast_probe" ~params:[kernel_param ~ty:(ty "char *") "bytes"]
+        (Stmt.DeclStmt
+          [decl ~ty:(ty "Entry *") "entries" (ident ~ty:(ty "char *") "bytes")])
+    in
+    let ctx = D_to_imp.Silent.Context.from_signature_db D_lang.SignatureDB.empty
+      |> D_to_imp.Silent.Context.add_record record in
+    Alcotest.(check (option int)) "expanded named record retains size" (Some 4)
+      (D_to_imp.Silent.Context.record_size (Record.to_ty record) ctx);
+    let offsets =
+      D_to_imp.Silent.Context.lookup_fields (Record.to_ty record) ctx
+      |> Option.value ~default:[] |> List.map (fun (f : Record.Field.t) -> f.offset)
+    in
+    Alcotest.(check (list (option int))) "expanded record retains field offsets"
+      [Some 0] offsets;
+    let aliases =
+      parse_single_kernel [ Def.Record record; Def.Kernel k ]
+      |> fun k -> location_aliases k.code
+    in
+    let pointer =
+      match List.find_opt (fun (v, _) -> Variable.name v = "entries.data") aliases with
+      | Some (_, pointer) -> pointer
+      | None -> Alcotest.fail "cast field has no backing-memory view"
+    in
+    match Imp.Pointer.addresses ~index:[Exp.Num 2] pointer with
+    | [ { array; index = [ index ]; _ } ] ->
+        Alcotest.(check string) "backing array" "bytes" (Variable.name array);
+        Alcotest.(check string) "first byte" "8"
+          (Imp.Pointer.Index.first index |> Constfold.n_opt |> Exp.n_to_string);
+        Alcotest.(check string) "last byte" "11"
+          (Imp.Pointer.Index.last index |> Constfold.n_opt |> Exp.n_to_string)
+    | _ -> Alcotest.fail "expected one byte-span access"
+
+  let test_selected_kernel_keeps_helpers () : unit =
+    let program =
+      [ Def.Kernel (kernel "selected" (Stmt.SExpr (call_expr "helper" [])));
+        Def.Kernel (kernel ~attribute:D_lang.KernelAttr.Auxiliary "helper"
+          (Stmt.SExpr (call_expr "leaf" [])));
+        Def.Kernel (kernel ~attribute:D_lang.KernelAttr.Auxiliary "leaf" Stmt.Skip);
+        Def.Kernel (kernel "unrelated" (Stmt.SExpr (call_expr "missing" []))) ]
+    in
+    let program = D_to_imp.Silent.parse_program program in
+    let call name =
+      let id =
+        match List.find_opt (fun k -> Imp.Kernel.name k = name) program with
+        | Some k -> k.id
+        | None -> Imp.Function_id.make ~name ~ty:"void ()" ()
+      in
+      Imp.Stmt.Call { id; args = []; result = None }
+    in
+    let program =
+      List.map (fun (k : Imp.Kernel.t) ->
+        match Imp.Kernel.name k with
+        | "selected" -> { k with code = call "helper" }
+        | "helper" -> { k with code = call "leaf" }
+        | "unrelated" -> { k with code = call "missing" }
+        | _ -> k) program
+    in
+    let compiled, rejected =
+      Imp.Compiler.compile_all ~only_kernel:"selected" program
+    in
+    Alcotest.(check (list string)) "reachable helpers are compiled"
+      [ "helper"; "leaf"; "selected" ]
+      (List.map Protocols.Kernel.name compiled |> List.sort String.compare);
+    Alcotest.(check int) "unrelated rejection is excluded" 0 (List.length rejected);
+    let _, rejected =
+      Imp.Compiler.compile_all ~only_kernel:"unrelated" program
+    in
+    Alcotest.(check (list string)) "selected missing helper still rejects"
+      [ "unrelated" ]
+      (List.map (fun (r : Imp.Rejected_kernel.t) -> r.kernel) rejected)
+
   let test_pointer_alias_assignment_preserves_base_plus_offset () : unit =
     let code =
       Stmt.SExpr
@@ -893,6 +985,33 @@ module Subgroup = struct
         Alcotest.failf "expected one array parameter, got %s"
           (Imp.Kernel.ParameterList.to_string params)
 
+  let test_private_scalar_memcpy () : unit =
+    let address name = Expr.UnaryOperator
+      { opcode = "&"; child = ident name; ty = ty "void *" } in
+    let memcpy = kernel ~attribute:KernelAttr.Auxiliary
+      ~params:[kernel_param ~ty:(ty "void *") "dst";
+               kernel_param ~ty:(ty "const void *") "src";
+               kernel_param "size"] "memcpy" Stmt.Skip in
+    let memcpy = { memcpy with decl_id = Some "memcpy-decl" } in
+    let func = Expr.Ident
+      { (Decl_expr.from_name ~kind:Decl_expr.Kind.Function (var "memcpy"))
+        with decl_id = Some "memcpy-decl" } in
+    let check attrs bytes expected_calls =
+      let dst = { (decl "dst" (IntegerLiteral 0)) with attrs } in
+      let code = Stmt.from_list
+        [ DeclStmt [dst; decl "src" (IntegerLiteral 17)];
+          SExpr (CallExpr { func; ty = J_type.void;
+            args = [address "dst"; address "src"; IntegerLiteral bytes] }) ] in
+      let parsed = D_to_imp.Silent.parse_program
+        [Def.Kernel memcpy; Def.Kernel (kernel "copy_probe" code)] in
+      let k = List.find (fun (k : Imp.Kernel.t) -> k.id.name = "copy_probe") parsed in
+      Alcotest.(check int) "only private, bounded copies are lowered"
+        expected_calls (Imp.Function_id.Set.cardinal (Imp.Kernel.calls k))
+    in
+    check [] 4 0;
+    check [C_lang.c_attr_shared] 4 1;
+    check [] 8 1
+
   let tests =
     [
       ( "test_nullptr_parses_as_uniform_zero",
@@ -914,6 +1033,14 @@ module Subgroup = struct
       ( "test_pointer_alias_declaration_preserves_base_plus_offset",
         `Quick,
         test_pointer_alias_declaration_preserves_base_plus_offset );
+      ( "selected kernel retains reachable helpers", `Quick,
+        test_selected_kernel_keeps_helpers );
+      ( "only private scalar memcpy is lowered", `Quick,
+        test_private_scalar_memcpy );
+      ( "record pointer cast retains field bytes", `Quick,
+        test_record_pointer_cast_preserves_field_bytes );
+      ( "default member initializer retains expression", `Quick,
+        test_default_member_initializer_preserves_expression );
       ( "test_pointer_alias_assignment_preserves_base_plus_offset",
         `Quick,
         test_pointer_alias_assignment_preserves_base_plus_offset );

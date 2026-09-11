@@ -1029,6 +1029,18 @@ let memory_evidence_lines : memory_outcome -> string list = function
   | Memory_unsupported boundary ->
       [ "unsupported(reason=" ^ normalize_reason boundary.reason ^ ")" ]
 
+let supplement_with_protocol ~(protocol : memory_outcome)
+    (primary : memory_outcome) : memory_outcome =
+  match primary, protocol with
+  | Memory_report primary, Memory_loop_protocol protocol ->
+      Memory_loop_protocol { protocol with
+        classifications =
+          List.map (fun e -> e.classification) primary.obligations
+          @ protocol.classifications;
+        evidence = List.map obligation_evidence_to_string primary.obligations
+          @ protocol.evidence }
+  | _ -> primary
+
 let summary_lines ?uniformity (outcome : memory_outcome) : string list =
   let memory_verdict = memory_verdict outcome in
   let base =

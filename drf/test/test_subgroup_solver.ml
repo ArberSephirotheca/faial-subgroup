@@ -866,6 +866,20 @@ let test_loop_protocol_preserves_racy_verdict () : unit =
     "loop protocol retains potential race" "not_drf"
     (Solver.memory_verdict_to_string (Solver.memory_verdict resolved))
 
+let test_protocol_supplement_keeps_both_reports () : unit =
+  let primary = Solver.solve_obligation_result ~kernel_name:"supplement"
+    (Ok [obligation ~goal:(Exp.Bool true) ()]) in
+  let protocol = Solver.loop_protocol_outcome ~kernel_name:"supplement"
+    ~classifications:[Solver.Solver_unsat_drf]
+    ~evidence:["complete protocol proof"] () in
+  let combined = Solver.supplement_with_protocol ~protocol primary in
+  Alcotest.(check string) "protocol pass cannot clear a per-site alarm"
+    "not_drf" (Solver.memory_verdict_to_string (Solver.memory_verdict combined));
+  Alcotest.(check int) "both checks remain visible" 2
+    (Solver.memory_counts combined).total;
+  Alcotest.(check int) "both evidence records remain visible" 2
+    (List.length (Solver.memory_evidence_lines combined))
+
 let test_symbolic_obligation_evidence_is_deterministic () : unit =
   let left =
     {
@@ -1251,6 +1265,8 @@ let tests : unit Alcotest.test_case list =
     ( "loop protocol racy verdict",
       `Quick,
       test_loop_protocol_preserves_racy_verdict );
+    ( "complete protocol supplements per-site checks", `Quick,
+      test_protocol_supplement_keeps_both_reports );
     ( "symbolic obligation evidence",
       `Quick,
       test_symbolic_obligation_evidence_is_deterministic );

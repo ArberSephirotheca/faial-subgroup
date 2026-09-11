@@ -27,10 +27,10 @@ module Make (L : Logger.Logger) = struct
     { options; kernels; rejected = [] }
 
   let proto_of_imp ?(only_globals = true) ?(rules = Imp.Idiom_rewrite.all)
-      ?infer_cond_bound (parsed : imp_kernel t) : proto_kernel t =
+      ?infer_cond_bound ?only_kernel (parsed : imp_kernel t) : proto_kernel t =
     let compiled, rejected =
       Phase_timer.measure "inference/imp-to-proto" (fun () ->
-          Imp.Compiler.compile_all ~rules ?infer_cond_bound parsed.kernels)
+          Imp.Compiler.compile_all ~rules ?infer_cond_bound ?only_kernel parsed.kernels)
     in
     let global_names =
       parsed.kernels
@@ -51,10 +51,10 @@ module Make (L : Logger.Logger) = struct
 
   let d_program_to_proto ?(ignore_asserts = false)
       ?(opaque_calls = Opaque_call_policy.default) ?(only_globals = true)
-      ?(rules = Imp.Idiom_rewrite.all) ?infer_cond_bound (options : Gv_parser.t)
+      ?(rules = Imp.Idiom_rewrite.all) ?infer_cond_bound ?only_kernel (options : Gv_parser.t)
       (program : D_lang.Program.t) : proto_kernel t =
     imp_of_d_program ~ignore_asserts ~opaque_calls options program
-    |> proto_of_imp ~only_globals ~rules ?infer_cond_bound
+    |> proto_of_imp ~only_globals ~rules ?infer_cond_bound ?only_kernel
 
   (* Shared JSON-to-Imp pipeline used by both [cu_to_imp] (live cu-to-json
      subprocess) and [cjson_to_imp] (cached cu-to-json output on disk). *)

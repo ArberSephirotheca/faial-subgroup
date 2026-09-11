@@ -62,8 +62,34 @@ let to_arrays ~(hierarchy : Mem_hierarchy.t) (x : t) :
 let to_region ~(hierarchy : Mem_hierarchy.t) (x : t) :
     ((Variable.t * Memory.t) * (Variable.t * Pointer.t) list) option =
   let ( let* ) = Option.bind in
+  let anonymous = List.exists (fun (l : Leaf.t) ->
+    Field_path.members l.path
+    |> List.exists (fun name -> name = "" || String.contains name '.')) x.leaves in
+  if anonymous then (
+    let* first = List.nth_opt x.leaves 0 in
+    let root = Field_path.base first.path in
+    let view (l : Leaf.t) =
+      let* layout = l.layout in
+      let* width = Ty.width l.ty in
+      if width <= 0 || Field_path.is_deref l.path
+         || not (Variable.equal (Field_path.base l.path) root)
+         || not (List.for_all (fun stride -> stride mod width = 0) layout.strides)
+      then None
+      else Some (Leaf.name l,
+        Pointer.from_array root
+        |> Pointer.shift ~offset:(Pointer.Offset.bytes ~amount:(Exp.Num layout.offset)
+             ~step:(Pointer.Step.make ~view:width ~elem:1))
+        |> Pointer.linear ~scale:(List.map (fun stride -> stride / width) layout.strides)
+             ~shift:(Exp.Num 0))
+    in
+    let views = List.filter_map view x.leaves in
+    if List.length views <> List.length x.leaves then None
+    else Some ((root, to_memory ~hierarchy [None] Ty.char), views))
+  else
   match x.leaves with
-  | [] | [ _ ] -> None
+  | [] -> None
+  | [ l ] when Variable.equal (Leaf.name l) (Field_path.base l.path)
+               || List.length l.dims <> 1 || Field_path.is_deref l.path -> None
   | first :: rest ->
       let root = Field_path.base first.path in
       let* layout = first.layout in
@@ -84,7 +110,7 @@ let to_region ~(hierarchy : Mem_hierarchy.t) (x : t) :
         if m.offset mod width = 0 then Some (m.offset / width) else None
       in
       let* lanes =
-        if width > 0 && stride mod width = 0 && stride / width > 1 then
+        if width > 0 && stride mod width = 0 && stride / width >= 1 then
           Some (stride / width)
         else None
       in

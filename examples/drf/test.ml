@@ -4,6 +4,11 @@ open Stage0
 
 let tests =
   [
+    ("racy-subgroup-template-helper.cu", ["--subgroup-size=32"; "--block-dim=32"], 1);
+    ("racy-subgroup-anonymous-union.cu", ["--subgroup-size=32"; "--block-dim=32"], 1);
+    ("drf-subgroup-record-cast.cu", ["--subgroup-size=32"; "--block-dim=32"], 0);
+    ("drf-subgroup-private-memcpy.cu", ["--subgroup-size=32"; "--block-dim=32"], 0);
+    ("drf-subgroup-guarded-fastdiv.cu", ["--block-dim=64"; "--grid-dim=1"], 0);
     (* The example should be DRF *)
     ("parse-gv.cu", [], 0);
     (* Unless we override the parameters with something other than

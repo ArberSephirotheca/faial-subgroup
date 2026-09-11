@@ -1,5 +1,8 @@
 # Subgroup Port Verification
 
+Historical report: the later [parity recovery](upstream-parity-recovery.md)
+restores all 98 archived warp entries and documents the remaining differences.
+
 Verified on 2026-09-11. This ports `integration/subgroup-upstream-20260713`
 (`fc82f860`) onto upstream `main` (`24a363fc`) in the separate worktree
 `artifact/faial-subgroup-upstream-port`, on

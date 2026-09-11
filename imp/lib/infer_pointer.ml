@@ -10,6 +10,7 @@ type t =
   | Base of { source : Variable.t }
   | Row of { base : t; index : Infer_exp.t }
   | Shift of { base : t; offset : Infer_exp.t; step : Pointer.Step.t option }
+  | Linear of { base : t; scale : int list; shift : Infer_exp.t }
   | Select of { cond : Infer_exp.t; if_true : t; if_false : t }
 
 let from_array (source : Variable.t) : t = Base { source }
@@ -22,11 +23,15 @@ let shift ~(offset : Infer_exp.t) ~(step : Pointer.Step.t option) (base : t) : t
 let select ~(cond : Infer_exp.t) ~(if_true : t) ~(if_false : t) : t =
   Select { cond; if_true; if_false }
 
+let linear ~scale ~shift base = Linear { base; scale; shift }
+
 let rec map (f : Infer_exp.t -> Infer_exp.t) : t -> t = function
   | Base b -> Base b
   | Row { base; index } -> Row { base = map f base; index = f index }
   | Shift { base; offset; step } ->
       Shift { base = map f base; offset = f offset; step }
+  | Linear { base; scale; shift } ->
+      Linear { base = map f base; scale; shift = f shift }
   | Select { cond; if_true; if_false } ->
       Select
         { cond = f cond; if_true = map f if_true; if_false = map f if_false }
@@ -53,6 +58,10 @@ let rec to_pointer : t -> Pointer.t Infer_exp.state = function
       let* if_true = to_pointer if_true in
       let* if_false = to_pointer if_false in
       return (Pointer.select ~cond ~if_true ~if_false)
+  | Linear { base; scale; shift } ->
+      let* base = to_pointer base in
+      let* shift = Infer_exp.to_nexp shift in
+      return (Pointer.linear ~scale ~shift base)
 
 let rec to_string : t -> string = function
   | Base { source } -> Variable.name source
@@ -64,3 +73,7 @@ let rec to_string : t -> string = function
   | Select { cond; if_true; if_false } ->
       "(" ^ Infer_exp.to_string cond ^ " ? " ^ to_string if_true ^ " : "
       ^ to_string if_false ^ ")"
+  | Linear { base; scale; shift } ->
+      to_string base ^ "[linear "
+      ^ String.concat "," (List.map string_of_int scale)
+      ^ "; " ^ Infer_exp.to_string shift ^ "]"

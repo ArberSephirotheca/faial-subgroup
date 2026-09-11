@@ -291,7 +291,42 @@ let rec closures (j : Yojson.Basic.t) : t list =
           |> Result.value ~default:[]
           |> List.concat_map closures)
 
-and parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
+let rec parse_record_fields (inner : Yojson.Basic.t list) : Record.Field.t list =
+  let open Rjson in
+  let rec walk anonymous = function
+    | [] -> []
+    | j :: rest ->
+        match cast_object j with
+        | Error _ -> walk [] rest
+        | Ok o ->
+            match get_kind o with
+            | Ok "CXXRecordDecl" when not (List.mem_assoc "name" o) ->
+                let fields = with_field_or "inner" cast_list [] o
+                  |> Result.value ~default:[] |> parse_record_fields in
+                walk fields rest
+            | Ok "FieldDecl" ->
+                let offset = with_field "offsetBits" cast_int o |> Result.to_option in
+                let fields =
+                  match with_field "name" cast_string o, get_field "type" o with
+                  | Ok name, Ok ty ->
+                      [Record.Field.make ?offset ~name ~ty:(J_type.parse ty) ()]
+                  | Error _, _ ->
+                      (* Clang puts an anonymous record immediately before
+                         its unnamed storage field. Keep that empty path
+                         component and add its offset to the nested fields. *)
+                      List.map (fun (f : Record.Field.t) ->
+                           let offset = match offset, f.offset with
+                             | Some a, Some b -> Some (a + b) | _ -> None in
+                           { f with name = "." ^ f.name; offset })
+                        anonymous
+                  | _ -> []
+                in
+                fields @ walk [] rest
+            | _ -> walk [] rest
+  in
+  walk [] inner
+
+let rec parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
   let open Rjson in
   let* o = cast_object j in
   let* k = get_kind o in
@@ -386,21 +421,7 @@ and parse ?(qualifier = []) (j : Yojson.Basic.t) : t list j_result =
       in
       match self with
       | Some name ->
-          let fields =
-            inner
-            |> List.filter (j_filter_kind (fun k -> k = "FieldDecl"))
-            |> List.filter_map (fun j ->
-                let field =
-                  let* o = cast_object j in
-                  let* name = with_field "name" cast_string o in
-                  let* ty = get_field "type" o in
-                  let offset =
-                    with_field "offsetBits" cast_int o |> Result.to_option
-                  in
-                  Ok (Record.Field.make ?offset ~name ~ty:(J_type.parse ty) ())
-                in
-                Result.to_option field)
-          in
+          let fields = parse_record_fields inner in
           let layout (field : string) : int option =
             with_field field cast_int o |> Result.to_option
           in

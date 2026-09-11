@@ -257,8 +257,8 @@ type aggregate_alias = {
 
 let pointer_alias_equal (lhs : pointer_alias) (rhs : pointer_alias) : bool =
   Variable.equal lhs.source rhs.source
-  && lhs.offset = rhs.offset
-  && lhs.required_controls = rhs.required_controls
+  && Exp.n_equal lhs.offset rhs.offset
+  && List.equal Exp.b_equal lhs.required_controls rhs.required_controls
 
 type collect_state = {
   kernel_name : string;
@@ -450,7 +450,7 @@ let join_if_pointer_facts (guard : Exp.bexp) (then_state : collect_state)
   let candidates = pointer_fact_candidates [ then_state; else_state ] in
   let else_guard = Exp.b_not guard in
   let alias_requires condition alias =
-    List.mem condition alias.required_controls
+    List.exists (Exp.b_equal condition) alias.required_controls
   in
   let aliases =
     Variable.Set.fold
@@ -875,7 +875,7 @@ let pointer_alias_depends_on ~(active_controls : Exp.bexp list)
         let depends =
           Exp.b_free_names control Variable.Set.empty |> names_intersect vars
         in
-        depends && not (List.mem control active_controls))
+        depends && not (List.exists (Exp.b_equal control) active_controls))
       alias.required_controls
   in
   offset_depends || unprotected_control_depends
@@ -883,7 +883,7 @@ let pointer_alias_depends_on ~(active_controls : Exp.bexp list)
 let pointer_alias_is_available (state : collect_state) (alias : pointer_alias) :
     bool =
   List.for_all
-    (fun required -> List.mem required state.control_stack)
+    (fun required -> List.exists (Exp.b_equal required) state.control_stack)
     alias.required_controls
 
 let pointer_aliases_depending_on ~(active_controls : Exp.bexp list)
@@ -2414,18 +2414,18 @@ let helper_candidates (helper_kernels : D_lang.Kernel.t list StringMap.t)
         |> List.filter (fun (kernel : D_lang.Kernel.t) ->
             List.length kernel.params = List.length args)
       in
-      let candidates =
+      let resolved =
         match func with
         | D_lang.Expr.Ident { decl_id = Some id; _ } ->
-            let resolved =
               List.filter
                 (fun (k : D_lang.Kernel.t) -> k.decl_id = Some id)
                 candidates
-            in
-            if resolved <> [] then resolved else candidates
-        | _ -> candidates
+        | _ -> []
       in
       let candidates =
+        (* Declaration identity survives differences in qualifier spelling,
+           such as an enum template argument versus its integer value. *)
+        if resolved <> [] then resolved else
         match func with
         | D_lang.Expr.Ident { qualifier = _ :: _ as qualifier; _ } ->
             List.filter
@@ -2820,6 +2820,14 @@ and collect_stmt (state : collect_state) (stmt : D_lang.Stmt.t) :
       collect_stmt_guarded state ~context:"subgroup case control condition" case
         body
   | DefaultStmt body -> collect_stmt state body
+  | WriteAccessStmt ({ guard = Some guard; _ } as write) ->
+      let* guard = bexp_of_expr ~context:"ordinary write guard" guard in
+      collect_with_control state guard
+        (WriteAccessStmt { write with guard = None })
+  | ReadAccessStmt ({ guard = Some guard; _ } as read) ->
+      let* guard = bexp_of_expr ~context:"ordinary read guard" guard in
+      collect_with_control state guard
+        (ReadAccessStmt { read with guard = None })
   | WriteAccessStmt write ->
       let* state =
         record_ordinary_memory_effect ~kind:Ordinary_write

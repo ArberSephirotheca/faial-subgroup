@@ -371,15 +371,17 @@ module Make (L : Logger) = struct
           r.bases
         @ r.fields
       in
-      match ty.inner with
-      | Ty.Struct { members = _ :: _ as members } ->
+      let declared =
+        Record.type_path ty
+        |> Fun.flip Option.bind (fun path -> find_record path b)
+      in
+      match declared, ty.inner with
+      | Some r, _ -> Some (fields r)
+      | None, Ty.Struct { members = _ :: _ as members } ->
           Some
             (members
             |> List.map (fun (name, ty) -> Record.Field.make ~name ~ty ()))
-      | _ ->
-          Record.type_path ty
-          |> Fun.flip Option.bind (fun path -> find_record path b)
-          |> Option.map fields
+      | None, _ -> None
 
     let lookup_record (ty : Ty.t) (b : t) : (string * Ty.t) list option =
       lookup_fields ty b
@@ -609,6 +611,21 @@ module Make (L : Logger) = struct
         then None
         else Some (leaves |> List.map leaf |> Infer_stmt.from_list)
 
+  let parameter_tree (ctx : Context.t) ~(root : Variable.t) (ty : Ty.t) :
+      Imp.Type_tree.t =
+    let module T = Imp.Type_tree.Make (struct
+      let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
+        Context.lookup_fields (Context.resolve ty ctx) ctx
+        |> Option.map
+             (List.map (fun (f : Record.Field.t) ->
+                  Imp.Type_tree.Field.make ?offset:f.offset ~name:f.name
+                    ~ty:f.ty ()))
+
+      let size (ty : Ty.t) : int option =
+        Context.record_size (Context.resolve ty ctx) ctx
+    end) in
+    T.of_parameter ~root ty
+
   (* The parameters a declaration contributes, and the lane views of one
      that came back as a single region rather than an array per field. *)
   let parse_param ~(expand_vectors : bool) (ctx : Context.t) (p : Param.t) :
@@ -649,20 +666,7 @@ module Make (L : Logger) = struct
       ([ Kernel.Parameter.enum x (Context.get_enum ty ctx) ], [])
     else if Context.is_int ty ctx then ([ Kernel.Parameter.scalar x ty ], [])
     else if Ty.is_array_or_pointer ty then
-      let leaves =
-        let module T = Imp.Type_tree.Make (struct
-          let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
-            Context.lookup_fields (Context.resolve ty ctx) ctx
-            |> Option.map
-                 (List.map (fun (f : Record.Field.t) ->
-                      Imp.Type_tree.Field.make ?offset:f.offset ~name:f.name
-                        ~ty:f.ty ()))
-
-          let size (ty : Ty.t) : int option =
-            Context.record_size (Context.resolve ty ctx) ctx
-        end) in
-        T.of_parameter ~root:x ty
-      in
+      let leaves = parameter_tree ctx ~root:x ty in
       match Imp.Type_tree.to_region ~hierarchy:h leaves with
       | Some ((_, region), views) ->
           ([ Kernel.Parameter.array x region ], views)
@@ -712,21 +716,20 @@ module Make (L : Logger) = struct
   let ref_result (x : Variable.t) : Variable.t =
     Variable.update_name (fun n -> "@ref_" ^ n) x
 
-  let infer_stmt ~(decomposed : Variable.Set.t)
+  let infer_stmt ~(private_scalars : Ty.t option Variable.Map.t)
+      ~(decomposed : Variable.Set.t)
       ~(regions : Memory.t Variable.Map.t) (ctx : Context.t) :
       D_lang.Stmt.t -> Imp.Infer_stmt.t =
-    let resolve ty = Context.resolve ty ctx in
-
-    let infer_type (ty : Ty.t) : Ty.t = Context.resolve ty ctx in
+    let resolve (ty : Ty.t) : Ty.t = Context.resolve ty ctx in
 
     let view_step_of (e : D_lang.Expr.t) : int option =
-      e |> D_lang.Expr.to_type |> infer_type |> Ty.pointee_size
+      e |> D_lang.Expr.to_type |> resolve |> Ty.pointee_size
     in
 
     let elem_step_of (e : D_lang.Expr.t) : int option =
       match Variable.Map.find_opt (parse_var e) regions with
       | Some m -> Memory.step m
-      | None -> e |> D_lang.Expr.to_type |> infer_type |> Ty.cell_width
+      | None -> e |> D_lang.Expr.to_type |> resolve |> Ty.cell_width
     in
 
     (* The view is the step of the pointer being declared, so it is settled
@@ -745,7 +748,7 @@ module Make (L : Logger) = struct
               let ( let* ) = Option.bind in
               let* view = view in
               let* elem = elem_step_of source in
-              let* offset = to_byte_offset infer_type offset in
+              let* offset = to_byte_offset resolve offset in
               Some (Some (Imp.Pointer.Step.make ~view ~elem), offset)
             in
             let step, offset = Option.value scaled ~default:(None, offset) in
@@ -760,8 +763,49 @@ module Make (L : Logger) = struct
 
     let infer_location_alias (target : D_lang.Expr.t) (p : d_pointer) :
         Imp.Infer_stmt.t =
-      Infer_stmt.LocationAlias
-        { target = parse_var target; pointer = infer_pointer target p }
+      let root = parse_var target in
+      (* A cast changes the field layout, not the backing allocation. Bind
+         each known field to its byte range; unknown layouts still reject. *)
+      let field_view (field : Imp.Type_tree.Leaf.t) =
+        let ( let* ) = Option.bind in
+        let* layout = field.layout in
+        let* width = Ty.width field.ty in
+        if width <= 0 || Field_path.is_deref field.path
+           || Variable.equal (Imp.Type_tree.Leaf.name field) root
+           || not (List.for_all (fun stride -> stride mod width = 0) layout.strides)
+        then None
+        else
+          let rec view = function
+            | Leaf { source; offset } ->
+                let* elem = elem_step_of source in
+                let* offset = to_byte_offset resolve offset in
+                let offset : D_lang.Expr.t =
+                  BinaryOperator { opcode = "+"; lhs = offset;
+                    rhs = IntegerLiteral layout.offset; ty = J_type.int }
+                in
+                Some (Imp.Infer_pointer.from_array (parse_var source)
+                  |> Imp.Infer_pointer.shift ~offset:(infer_expr offset)
+                       ~step:(Some (Imp.Pointer.Step.make ~view:width ~elem))
+                  |> Imp.Infer_pointer.linear
+                       ~scale:(List.map (fun stride -> stride / width) layout.strides)
+                       ~shift:(Imp.Infer_exp.num 0))
+            | Choice { cond; if_true; if_false } ->
+                let* if_true = view if_true in
+                let* if_false = view if_false in
+                Some (Imp.Infer_pointer.select ~cond:(infer_expr cond)
+                  ~if_true ~if_false)
+          in
+          let* pointer = view p in
+          Some (Infer_stmt.LocationAlias
+            { target = Imp.Type_tree.Leaf.name field; pointer })
+      in
+      let fields =
+        parameter_tree ctx ~root (D_lang.Expr.to_type target |> resolve)
+        |> fun tree -> List.filter_map field_view tree.leaves
+      in
+      Infer_stmt.from_list
+        (Infer_stmt.LocationAlias { target = root; pointer = infer_pointer target p }
+         :: fields)
     in
 
     let infer_decl (d : D_lang.Decl.t) : Infer_stmt.t =
@@ -793,8 +837,8 @@ module Make (L : Logger) = struct
     in
 
     let byte_arg (a : D_lang.Expr.t) : D_lang.Expr.t =
-      if a |> D_lang.Expr.to_type |> infer_type |> Ty.is_array_or_pointer then
-        Option.value (to_byte_offset infer_type a) ~default:a
+      if a |> D_lang.Expr.to_type |> resolve |> Ty.is_array_or_pointer then
+        Option.value (to_byte_offset resolve a) ~default:a
       else a
     in
 
@@ -819,20 +863,9 @@ module Make (L : Logger) = struct
       (* The argument list is built by the same descent as the parameter
          list, so the two cannot drift out of step and slide the positional
          binding along. *)
-      let module T = Imp.Type_tree.Make (struct
-        let members (ty : Ty.t) : Imp.Type_tree.Field.t list option =
-          Context.lookup_fields (Context.resolve ty ctx) ctx
-          |> Option.map
-               (List.map (fun (f : Record.Field.t) ->
-                    Imp.Type_tree.Field.make ?offset:f.offset ~name:f.name
-                      ~ty:f.ty ()))
-
-        let size (ty : Ty.t) : int option =
-          Context.record_size (Context.resolve ty ctx) ctx
-      end) in
       let leaves ?(ty = ty) (root : Variable.t) :
           (Variable.t * Memory.t) list =
-        let tree = T.of_parameter ~root ty in
+        let tree = parameter_tree ctx ~root ty in
         match
           Imp.Type_tree.to_region ~hierarchy:Mem_hierarchy.GlobalMemory tree
         with
@@ -913,12 +946,45 @@ module Make (L : Logger) = struct
     in
     let infer_call ?(result = None) (func : D_lang.Expr.t)
         (args : D_lang.Expr.t list) : Infer_stmt.t =
+      let private_scalar = function
+        | D_lang.Expr.UnaryOperator { opcode = "&"; child = Ident d; _ } ->
+            Variable.Map.find_opt d.name private_scalars |> Option.join
+            |> Option.map (fun ty -> (d.name, ty))
+        | _ -> None
+      in
+      let scalar_copy =
+        match func, args with
+        | Ident f, [dst; src; size]
+          when Variable.name f.name = "memcpy" ->
+            let ( let* ) = Option.bind in
+            let* dst, dst_ty = private_scalar dst in
+            let* _, src_ty = private_scalar src in
+            let* width = Ty.width dst_ty in
+            let size = match size with
+              | IntegerLiteral n -> Some n
+              | SizeOfExpr ty -> Ty.width (resolve ty)
+              | _ -> None
+            in
+            if size = Some width && Ty.width src_ty = Some width then
+              (* Private scalar bit copies have no cross-thread memory effect.
+                 Forget the value, rather than equating bits with a numeric cast. *)
+              Some (Infer_stmt.from_list
+                (Infer_stmt.Assign { var = dst; ty = dst_ty;
+                   data = Infer_exp.Unknown "private memcpy" }
+                 :: (match result with
+                     | None -> []
+                     | Some (var, ty) -> [Infer_stmt.Assign { var; ty;
+                         data = Infer_exp.Unknown "private memcpy address" }])))
+            else None
+        | _ -> None
+      in
       let arg_count = List.length args in
-      match (func, result) with
+      match scalar_copy, func, result with
+      | Some stmt, _, _ -> stmt
       (* Model [v = make_uintN(a, ...)] as per-component assignments
          [v.x := a; ...] so downstream member reads [v.x] resolve,
          instead of leaving [v] an opaque call result. *)
-      | Ident { name = f; _ }, Some (var, _)
+      | None, Ident { name = f; _ }, Some (var, _)
         when (match vector_ctor_fields (Variable.name f) with
               | Some fields -> List.length fields = arg_count
               | None -> false) ->
@@ -1105,7 +1171,7 @@ module Make (L : Logger) = struct
                    to pure functions (e.g. [log2]) fall through to
                    [infer_decl], which lifts them via the [Functions]
                    registry into an [NCall]-init decl. *)
-                let ty = infer_type d.ty in
+                let ty = resolve d.ty in
                 let sigma = Context.lookup_sig func (List.length args) ctx in
                 if returns_location sigma then
                   Some
@@ -1486,7 +1552,27 @@ module Make (L : Logger) = struct
         ctx.arrays parameters
     in
     let code, return =
-      infer_stmt ~decomposed ~regions ctx k.code
+      let add_decl locals (d : D_lang.Decl.t) =
+        let ty = Context.resolve d.ty ctx in
+        let value =
+          if Variable.Map.mem d.var locals || Params.mem d.var ctx.globals
+             || Variable.Map.mem d.var regions || d.attrs <> []
+             || Ty.to_scalar ty = None then None else Some ty
+        in
+        Variable.Map.add d.var value locals
+      in
+      let initial = List.fold_left
+        (fun locals (p : Param.t) -> Variable.Map.add p.ty_var.name None locals)
+        Variable.Map.empty k.params in
+      let private_scalars, _ = D_lang.Stmt.st_map
+        (fun stmt locals ->
+          let decls = match stmt with
+            | DeclStmt ds | ForStmt { init = Some (Decls ds); _ } -> ds
+            | _ -> []
+          in
+          List.fold_left add_decl locals decls, stmt)
+        k.code initial in
+      infer_stmt ~private_scalars ~decomposed ~regions ctx k.code
       |> Imp.Atomic_seed_read.rewrite
       |> Infer_stmt.infer
     in

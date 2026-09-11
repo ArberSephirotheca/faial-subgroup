@@ -19,6 +19,8 @@ module Records = struct
     [
       ("Atom", (24, [ ("f", 0, array_of ~size:3 double) ]));
       ("Cell", (8, [ ("key", 0, Ty.int); ("val", 32, Ty.int) ]));
+      ("Overlay", (8, [ (".word", 0, Ty.int); (".bytes", 0, array_of ~size:4 Ty.char);
+                         ("tail", 32, Ty.int) ]));
       ("V", (8, [ ("p", 0, ptr_to Ty.int) ]));
       ("Inner", (40, [ ("a", 0, array_of ~size:4 double); ("b", 256, double) ]));
       ("Outer", (328, [ ("x", 0, array_of ~size:8 inner); ("y", 320, double) ]));
@@ -101,6 +103,27 @@ let all_tests =
     ("descent", descent_tests);
     ("pointer members", pointer_member_tests);
     ("declarations", declaration_tests);
+    ("anonymous storage", ["union views overlap in one allocation", `Quick, (fun () ->
+      let tree = parameter "p" (ptr_to (Ty.opaque "Overlay")) in
+      match Type_tree.to_region ~hierarchy:Mem_hierarchy.GlobalMemory tree with
+      | None -> Alcotest.fail "missing byte region"
+      | Some ((root, _), views) ->
+          Alcotest.(check string) "one allocation" "p" (Variable.name root);
+          let address field indices =
+            let pointer = List.assoc (var field) views in
+            match Pointer.addresses ~index:(List.map (fun n -> Exp.Num n) indices) pointer with
+            | [a] -> a
+            | _ -> Alcotest.fail "expected one address"
+          in
+          let word = address "p..word" [1] and byte = address "p..bytes" [1;2] in
+          Alcotest.(check bool) "same backing region" true (Variable.equal word.array byte.array);
+          let bounds a = match a.Pointer.Address.index with
+            | [i] -> (Pointer.Index.first i |> Constfold.n_opt |> Exp.n_to_string,
+                      Pointer.Index.last i |> Constfold.n_opt |> Exp.n_to_string)
+            | _ -> Alcotest.fail "expected a byte index" in
+          Alcotest.(check (pair string string)) "word byte span" ("8", "11") (bounds word);
+          Alcotest.(check (pair string string)) "overlapping byte" ("10", "10") (bounds byte)
+    )]);
   ]
 
 let () = Alcotest.run "Type_tree" all_tests

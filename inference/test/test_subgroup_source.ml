@@ -1810,10 +1810,19 @@ let test_one_path_pointer_alias_does_not_escape_if () : unit =
   | Ok _ -> Alcotest.fail "one-path pointer alias escaped if join"
 
 let test_guarded_pointer_alias_is_available_under_same_guard () : unit =
+  let check predicated =
+  let read_guard =
+    let name = Variable.set_location Stage0.Location.empty (var "enabled") in
+    D_lang.Expr.Ident (Decl_expr.from_name ~ty:J_type.bool name)
+  in
   let guarded_read =
+    if predicated then
+      read_stmt ~guard:read_guard
+        (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ])
+    else
     D_lang.Stmt.IfStmt
       {
-        cond = block_x_eq_0 ();
+        cond = read_guard;
         then_stmt =
           read_stmt (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]);
         else_stmt = Skip;
@@ -1825,7 +1834,7 @@ let test_guarded_pointer_alias_is_available_under_same_guard () : unit =
         DeclStmt [ undef_decl ~ty:pointer_ty "tile_ptr" ];
         IfStmt
           {
-            cond = block_x_eq_0 ();
+            cond = ident ~ty:J_type.bool "enabled";
             then_stmt = pointer_assign "tile_ptr" (ident ~ty:pointer_ty "tile");
             else_stmt = Skip;
           };
@@ -1846,6 +1855,9 @@ let test_guarded_pointer_alias_is_available_under_same_guard () : unit =
       | _ -> Alcotest.fail "expected one guarded ordinary memory effect")
   | Ok _ -> Alcotest.fail "guarded pointer kernel routed unexpectedly"
   | Error error -> Alcotest.fail (Source.error_to_string error)
+  in
+  check false;
+  check true
 
 let test_guarded_pointer_reassignment_replaces_guarded_alias () : unit =
   let guarded stmt =
@@ -2966,6 +2978,7 @@ let test_helper_identity () : unit =
   in
   check ~decl_id:"b-id" 2;
   check ~decl_id:"a-id" 1;
+  check ~decl_id:"a-id" ~qualifier:["alternate-spelling"] 1;
   check ~qualifier:[ "b" ] 2;
   check ~qualifier:[ "a" ] 1
 

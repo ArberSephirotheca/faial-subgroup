@@ -91,6 +91,20 @@ let driver_tests =
 
 let fastdiv_tests =
   [
+    ( "emitted bounds preserve a local guard on following accesses",
+      `Quick,
+      fun () ->
+        let guard = gt fastdiv_expr (num 0) in
+        let prog = Encode_assigns.Seq
+          (Encode_assigns.Assert (Assert.make guard Assert.Visibility.Local),
+           access [ num 0 ]) in
+        let code = Idiom_rewrite.rewrite Idiom_rewrite.all prog
+          |> Encode_asserts.from_encode_assigns in
+        let expected = gt (udiv (var "n") (var "fdv.z")) (num 0) in
+        Alcotest.(check bool) "local guard is retained" true
+          (Code.exists (function
+             | Code.If (b, _, Code.Skip) -> Exp.b_equal b expected
+             | _ -> false) code) );
     ( "fastdiv rewrites to unsigned division by the packed divisor",
       `Quick,
       fun () ->

@@ -70,7 +70,29 @@ let compile ?(rules = Idiom_rewrite.all) ?infer_cond_bound
     })
 
 let compile_all ?(rules = Idiom_rewrite.all) ?infer_cond_bound
+    ?only_kernel
     (l : K.t list) : Kernel.t list * Rejected_kernel.t list =
+  let l =
+    match only_kernel with
+    | None -> l
+    | Some name ->
+        let module M = Function_id.Map in
+        let module S = Function_id.Set in
+        let by_id = List.map (fun k -> (K.unique_id k, k)) l |> M.of_list in
+        let rec visit seen id =
+          if S.mem id seen then seen
+          else
+            let seen = S.add id seen in
+            match M.find_opt id by_id with
+            | None -> seen
+            | Some k -> S.fold (fun id seen -> visit seen id) (K.calls k) seen
+        in
+        let reachable =
+          l |> List.filter (fun k -> K.name k = name)
+          |> List.fold_left (fun seen k -> visit seen (K.unique_id k)) S.empty
+        in
+        List.filter (fun k -> S.mem (K.unique_id k) reachable) l
+  in
   let l, rejected =
     l |> List.map Scoped.Kernel.from_imp |> Inline_calls.inline_calls
   in

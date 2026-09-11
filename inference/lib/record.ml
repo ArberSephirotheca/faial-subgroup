@@ -54,7 +54,7 @@ let type_path (ty : Ty.t) : Ty.segment list option =
   in
   match ty.inner with
   | Ty.Named path -> Some path
-  | Ty.Struct { members = [] } -> Option.map (fun n -> scopes (strip n)) ty.name
+  | Ty.Struct _ -> Option.map (fun n -> scopes (strip n)) ty.name
   | Ty.Opaque s -> Some (scopes (strip s))
   | _ -> None
 

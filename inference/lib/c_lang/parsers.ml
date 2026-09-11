@@ -106,7 +106,7 @@ let rec parse_expr (j : json) : c_expr j_result =
             | Error _ -> arg))
   | "CXXConstCastExpr" | "CXXReinterpretCastExpr" | "ImplicitCastExpr"
   | "CXXStaticCastExpr" | "ParenExpr" | "ExprWithCleanups" | "CStyleCastExpr"
-  | "CXXDefaultArgExpr" | "CXXFunctionalCastExpr" ->
+  | "CXXDefaultArgExpr" | "CXXDefaultInitExpr" | "CXXFunctionalCastExpr" ->
       let* arg = with_field "inner" (cast_list_1 parse_expr) o in
       (* The pure wrappers share this arm, and [convert] declines them
          without a special case, since their type equals their operand's. *)
