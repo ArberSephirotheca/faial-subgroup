@@ -104,16 +104,19 @@ let render_subgroup (analysis : App_analysis.subgroup) : Yojson.Basic.t =
              (Uniformity.sites analysis.uniformity)) );
     ]
 
-let render (output : App_analysis.t list) : unit =
+let render ~(rejected : Imp.Rejected_kernel.t list)
+    (output : App_analysis.t list) : unit =
   let kernels =
     output
     |> List.map (function
       | App_analysis.Ordinary analysis -> render_ordinary analysis
       | App_analysis.Subgroup analysis -> render_subgroup analysis)
   in
+  let rejected = List.map Imp.Rejected_kernel.to_json rejected in
   `Assoc
     [
       ("kernels", `List kernels);
+      ("rejected", `List rejected);
       ("phase_times", Phase_timer.to_json ());
       ("stats", Stats.to_json ());
       ( "argv",
@@ -121,5 +124,6 @@ let render (output : App_analysis.t list) : unit =
       ("executable_name", `String Sys.executable_name);
       ("z3_version", `String Z3.Version.to_string);
       ("commit", `String Build_info.commit);
+      ("tree", `String Build_info.tree);
     ]
   |> Yojson.Basic.to_string |> print_endline

@@ -3,11 +3,11 @@ open Protocols
 module Source = Subgroup_source
 module SM = Subgroup_matrix
 
-let ty (name : string) : J_type.t = J_type.from_string name
+let ty (name : string) : Ty.t = Ty.of_c_string name
 
 let ident ?(kind = Decl_expr.Kind.Var) ?(ty = J_type.int) (name : string) :
     D_lang.Expr.t =
-  Ident { name = Variable.from_name name; ty; kind }
+  Ident (Decl_expr.from_name ~ty ~kind (Variable.from_name name))
 
 let member_expr ?(ty = J_type.int) (base : string) (field : string) :
     D_lang.Expr.t =
@@ -21,8 +21,8 @@ let call_expr (name : string) (args : D_lang.Expr.t list) : D_lang.Expr.t =
       ty = J_type.void;
     }
 
-let typed_call_expr ~(ty : J_type.t) (name : string) (args : D_lang.Expr.t list)
-    : D_lang.Expr.t =
+let typed_call_expr ~(ty : Ty.t) (name : string) (args : D_lang.Expr.t list) :
+    D_lang.Expr.t =
   CallExpr { func = ident ~kind:Decl_expr.Kind.Function ~ty name; args; ty }
 
 let var (name : string) : Variable.t = Variable.from_name name
@@ -46,10 +46,24 @@ let undef_decl ?(ty = J_type.int) (name : string) : D_lang.Decl.t =
 let kernel ?(attribute = D_lang.KernelAttr.Default) ?(params = [])
     ?(type_params = []) ?(template_args = []) ?(ty = "void ()") (name : string)
     (code : D_lang.Stmt.t) : D_lang.Kernel.t =
-  { ty; name; code; type_params; template_args; params; attribute }
+  {
+    id =
+      Imp.Function_id.make ~name ~ty
+        ~template_args:
+          (if String.contains name '@' then []
+           else List.map C_lang.TemplateArgument.to_string template_args)
+        ();
+    decl_id = None;
+    code;
+    type_params;
+    template_args;
+    params;
+    attribute;
+    returns_location = false;
+  }
 
-let pointer_ty : J_type.t = ty "float *"
-let half_pointer_ty : J_type.t = ty "half *"
+let pointer_ty : Ty.t = ty "float *"
+let half_pointer_ty : Ty.t = ty "half *"
 
 let subgroup_config () : SM.Target_config.t =
   SM.Target_config.subgroup_size_exn 32 |> SM.Target_config.cuda_x_contiguous
@@ -63,16 +77,16 @@ let pointer_offset (base : string) (offset : string) : D_lang.Expr.t =
       ty = pointer_ty;
     }
 
-let matrix_a_fragment_type : J_type.t =
+let matrix_a_fragment_type : Ty.t =
   ty
     "nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, float, \
      nvcuda::wmma::row_major>"
 
-let accumulator_fragment_type : J_type.t =
+let accumulator_fragment_type : Ty.t =
   ty "nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 8, 16, float>"
 
-let desugared_accumulator_fragment_type : J_type.t =
-  J_type.from_json
+let desugared_accumulator_fragment_type : Ty.t =
+  J_type.parse
     (`Assoc
        [
          ("qualType", `String "acc_frag_t");
@@ -157,17 +171,16 @@ let syncthreads_stmt : D_lang.Stmt.t =
 
 let subscript ?(ty = J_type.int) (name : string) (index : D_lang.Expr.t list) :
     D_lang.d_subscript =
-  D_lang.make_subscript ~name:(var name) ~index ~ty
-    ~location:Stage0.Location.empty
+  D_lang.make_subscript
+    ~path:(Field_path.root (var name))
+    ~index ~ty ~location:Stage0.Location.empty ()
 
 let read_stmt ?(target = "tmp") ?guard (source : D_lang.d_subscript) :
     D_lang.Stmt.t =
-  D_lang.Stmt.ReadAccessStmt
-    { target = var target; source; ty = C_type.int; guard }
+  D_lang.Stmt.ReadAccessStmt { target = var target; source; ty = Ty.int; guard }
 
 let write_stmt ?payload ?guard (target : D_lang.d_subscript) : D_lang.Stmt.t =
-  D_lang.Stmt.WriteAccessStmt
-    { target; source = ident "value"; payload; guard }
+  D_lang.Stmt.WriteAccessStmt { target; source = ident "value"; payload; guard }
 
 let atomic_add () : D_lang.Expr.t Atomic.t =
   match Atomic.from_name (var "atomicAdd") with
@@ -181,7 +194,7 @@ let atomic_stmt ?(target = "old") (source : D_lang.d_subscript) : D_lang.Stmt.t
       target = var target;
       source;
       atomic = atomic_add ();
-      ty = C_type.int;
+      ty = Ty.int;
       guard = None;
     }
 
@@ -220,9 +233,10 @@ let test_non_wmma_routes_to_ordinary_source_without_subgroup_config () : unit =
     D_lang.Stmt.WriteAccessStmt
       {
         target =
-          D_lang.make_subscript ~name:(var "dst")
+          D_lang.make_subscript
+            ~path:(Field_path.root (var "dst"))
             ~index:[ ident "i" ]
-            ~ty:J_type.int ~location:Stage0.Location.empty;
+            ~ty:J_type.int ~location:Stage0.Location.empty ();
         source = ident "tid";
         payload = None;
         guard = None;
@@ -233,7 +247,9 @@ let test_non_wmma_routes_to_ordinary_source_without_subgroup_config () : unit =
     |> expect_route_ok
   with
   | [ Source.Ordinary_source kernel ] ->
-      Alcotest.(check string) "ordinary kernel name" "plain_cuda" kernel.name
+      Alcotest.(check string)
+        "ordinary kernel name" "plain_cuda"
+        (D_lang.Kernel.name kernel)
   | _ -> Alcotest.fail "non-WMMA kernel did not stay on ordinary source route"
 
 let test_missing_config_fails_only_on_subgroup_path () : unit =
@@ -556,7 +572,8 @@ let test_selected_kernel_routes_before_unrelated_subgroup_failure () : unit =
   with
   | [ Source.Ordinary_source kernel ] ->
       Alcotest.(check string)
-        "selected kernel name" "selected_plain" kernel.name
+        "selected kernel name" "selected_plain"
+        (D_lang.Kernel.name kernel)
   | _ -> Alcotest.fail "selected ordinary kernel did not route alone"
 
 let test_selected_kernel_uses_stable_duplicate_suffix () : unit =
@@ -567,7 +584,9 @@ let test_selected_kernel_uses_stable_duplicate_suffix () : unit =
     |> expect_route_ok
   with
   | [ Source.Ordinary_source kernel ] ->
-      Alcotest.(check string) "stable duplicate name" "duplicate_2" kernel.name
+      Alcotest.(check string)
+        "stable duplicate name" "duplicate_2"
+        (D_lang.Kernel.name kernel)
   | _ -> Alcotest.fail "suffixed duplicate kernel was not selected"
 
 let test_linked_wrapper_rejects_conflicting_launch_dimensions () : unit =
@@ -890,8 +909,7 @@ let test_warp_helpers_preserve_ordinary_memory_subgroup_phase () : unit =
           Alcotest.(check int)
             "write source order after helpers" 3 write.site.source_order;
           Alcotest.(check (list int))
-            "helpers do not order memory" []
-            write.phase.subgroup
+            "helpers do not order memory" [] write.phase.subgroup
       | effects ->
           Alcotest.fail
             (Printf.sprintf "expected read/write ordinary effects, got %d"
@@ -936,8 +954,7 @@ let test_warp_reduce_helpers_preserve_ordinary_memory_subgroup_phase () : unit =
           Alcotest.(check (list int))
             "read sees pre-helper subgroup phase" [] read.phase.subgroup;
           Alcotest.(check (list int))
-            "helpers do not order memory" []
-            write.phase.subgroup
+            "helpers do not order memory" [] write.phase.subgroup
       | effects ->
           Alcotest.fail
             (Printf.sprintf "expected read/write ordinary effects, got %d"
@@ -996,8 +1013,7 @@ let test_extended_subgroup_collectives_preserve_memory_phase () : unit =
           Alcotest.(check (list int))
             "read starts before collectives" [] read.phase.subgroup;
           Alcotest.(check (list int))
-            "collectives do not order memory" []
-            write.phase.subgroup
+            "collectives do not order memory" [] write.phase.subgroup
       | effects ->
           Alcotest.fail
             (Printf.sprintf "expected read/write effects, got %d"
@@ -1060,14 +1076,9 @@ let test_uniform_reduction_result_allows_break () : unit =
         body =
           D_lang.Stmt.from_list
             [
-              assign "all"
-                (call_expr "warp_reduce_all" [ thread_x_ne_0 () ]);
+              assign "all" (call_expr "warp_reduce_all" [ thread_x_ne_0 () ]);
               IfStmt
-                {
-                  cond = ident "all";
-                  then_stmt = BreakStmt;
-                  else_stmt = Skip;
-                };
+                { cond = ident "all"; then_stmt = BreakStmt; else_stmt = Skip };
             ];
       }
   in
@@ -1094,11 +1105,7 @@ let test_synthetic_reduction_result_allows_break () : unit =
                 ];
               assign "all" (ident "@AccessState0");
               IfStmt
-                {
-                  cond = ident "all";
-                  then_stmt = BreakStmt;
-                  else_stmt = Skip;
-                };
+                { cond = ident "all"; then_stmt = BreakStmt; else_stmt = Skip };
             ];
       }
   in
@@ -1325,8 +1332,9 @@ let test_ordinary_memory_effects_preserve_varying_local_aliases () : unit =
 
 let test_ordinary_memory_effects_preserve_access_guards () : unit =
   let guard =
-    bin ~ty:J_type.bool (member_expr "threadIdx" "x") "<"
-      (D_lang.Expr.IntegerLiteral 4)
+    bin ~ty:J_type.bool
+      (member_expr "threadIdx" "x")
+      "<" (D_lang.Expr.IntegerLiteral 4)
   in
   let code =
     D_lang.Stmt.from_list
@@ -1343,7 +1351,8 @@ let test_ordinary_memory_effects_preserve_access_guards () : unit =
   with
   | [ Source.Subgroup_matrix subgroup ] ->
       Alcotest.(check int)
-        "two guarded effects" 2 (List.length subgroup.ordinary_memory_effects);
+        "two guarded effects" 2
+        (List.length subgroup.ordinary_memory_effects);
       List.iter
         (fun (memory_effect : Source.ordinary_memory_effect) ->
           let conditions =
@@ -1801,10 +1810,19 @@ let test_one_path_pointer_alias_does_not_escape_if () : unit =
   | Ok _ -> Alcotest.fail "one-path pointer alias escaped if join"
 
 let test_guarded_pointer_alias_is_available_under_same_guard () : unit =
+  let check predicated =
+  let read_guard =
+    let name = Variable.set_location Stage0.Location.empty (var "enabled") in
+    D_lang.Expr.Ident (Decl_expr.from_name ~ty:J_type.bool name)
+  in
   let guarded_read =
+    if predicated then
+      read_stmt ~guard:read_guard
+        (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ])
+    else
     D_lang.Stmt.IfStmt
       {
-        cond = block_x_eq_0 ();
+        cond = read_guard;
         then_stmt =
           read_stmt (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]);
         else_stmt = Skip;
@@ -1816,9 +1834,8 @@ let test_guarded_pointer_alias_is_available_under_same_guard () : unit =
         DeclStmt [ undef_decl ~ty:pointer_ty "tile_ptr" ];
         IfStmt
           {
-            cond = block_x_eq_0 ();
-            then_stmt =
-              pointer_assign "tile_ptr" (ident ~ty:pointer_ty "tile");
+            cond = ident ~ty:J_type.bool "enabled";
+            then_stmt = pointer_assign "tile_ptr" (ident ~ty:pointer_ty "tile");
             else_stmt = Skip;
           };
         guarded_read;
@@ -1838,6 +1855,9 @@ let test_guarded_pointer_alias_is_available_under_same_guard () : unit =
       | _ -> Alcotest.fail "expected one guarded ordinary memory effect")
   | Ok _ -> Alcotest.fail "guarded pointer kernel routed unexpectedly"
   | Error error -> Alcotest.fail (Source.error_to_string error)
+  in
+  check false;
+  check true
 
 let test_guarded_pointer_reassignment_replaces_guarded_alias () : unit =
   let guarded stmt =
@@ -1848,13 +1868,10 @@ let test_guarded_pointer_reassignment_replaces_guarded_alias () : unit =
     D_lang.Stmt.from_list
       [
         DeclStmt [ undef_decl ~ty:pointer_ty "tile_ptr" ];
+        guarded (pointer_assign "tile_ptr" (ident ~ty:pointer_ty "tile"));
+        guarded (pointer_assign "tile_ptr" (pointer_offset "tile_ptr" "idx"));
         guarded
-          (pointer_assign "tile_ptr" (ident ~ty:pointer_ty "tile"));
-        guarded
-          (pointer_assign "tile_ptr" (pointer_offset "tile_ptr" "idx"));
-        guarded
-          (read_stmt
-             (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]));
+          (read_stmt (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]));
         syncwarp_stmt;
       ]
   in
@@ -1887,8 +1904,7 @@ let test_guarded_pointer_survives_guard_reassignment () : unit =
             then_stmt =
               D_lang.Stmt.from_list
                 [
-                  pointer_assign "tile_ptr"
-                    (ident ~ty:pointer_ty "tile");
+                  pointer_assign "tile_ptr" (ident ~ty:pointer_ty "tile");
                   assign "enabled" (ident ~ty:J_type.bool "other");
                 ];
             else_stmt = assign "enabled" (D_lang.Expr.CXXBoolLiteralExpr false);
@@ -1897,8 +1913,7 @@ let test_guarded_pointer_survives_guard_reassignment () : unit =
           {
             cond = enabled;
             then_stmt =
-              read_stmt
-                (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]);
+              read_stmt (subscript "tile_ptr" [ D_lang.Expr.IntegerLiteral 0 ]);
             else_stmt = Skip;
           };
         syncwarp_stmt;
@@ -1953,8 +1968,8 @@ let test_constant_true_pointer_alias_escapes_if () : unit =
   | Ok _ -> Alcotest.fail "constant pointer kernel routed unexpectedly"
   | Error error -> Alcotest.fail (Source.error_to_string error)
 
-let test_integral_template_argument_resolves_constexpr_pointer_branch () :
-    unit =
+let test_integral_template_argument_resolves_constexpr_pointer_branch () : unit
+    =
   let has_fusion = var "has_fusion" in
   let code =
     D_lang.Stmt.from_list
@@ -1962,10 +1977,8 @@ let test_integral_template_argument_resolves_constexpr_pointer_branch () :
         DeclStmt [ undef_decl ~ty:pointer_ty "gate_ptr" ];
         IfStmt
           {
-            cond =
-              ident ~kind:Decl_expr.Kind.NonTypeTemplateParm "has_fusion";
-            then_stmt =
-              pointer_assign "gate_ptr" (ident ~ty:pointer_ty "gate");
+            cond = ident ~kind:Decl_expr.Kind.NonTypeTemplateParm "has_fusion";
+            then_stmt = pointer_assign "gate_ptr" (ident ~ty:pointer_ty "gate");
             else_stmt = Skip;
           };
         read_stmt (subscript "gate_ptr" [ D_lang.Expr.IntegerLiteral 0 ]);
@@ -2118,8 +2131,7 @@ let test_compile_time_guard_records_uniform_vars () : unit =
           bin ~ty:J_type.bool
             (ident ~kind:Decl_expr.Kind.NonTypeTemplateParm "ds_layout")
             "!="
-            (ident ~kind:Decl_expr.Kind.EnumConstant
-               "MMQ_Q8_1_DS_LAYOUT_D4");
+            (ident ~kind:Decl_expr.Kind.EnumConstant "MMQ_Q8_1_DS_LAYOUT_D4");
         then_stmt = syncwarp_stmt;
         else_stmt = D_lang.Stmt.Skip;
       }
@@ -2714,7 +2726,7 @@ let test_subgroup_memory_recovers_nested_aggregate_indices () : unit =
       {
         target = aggregate_value;
         source = subscript "y" [ ident "ib" ];
-        ty = C_type.make "struct block_q8_1";
+        ty = Ty.of_c_string "struct block_q8_1";
         guard = None;
       }
   in
@@ -2734,9 +2746,10 @@ let test_subgroup_memory_recovers_nested_aggregate_indices () : unit =
     D_lang.Stmt.WriteAccessStmt
       {
         target =
-          D_lang.make_subscript ~name:aggregate_field
+          D_lang.make_subscript
+            ~path:(Field_path.root aggregate_field)
             ~index:[ ident "iqs" ]
-            ~ty:J_type.char ~location:Stage0.Location.empty;
+            ~ty:J_type.char ~location:Stage0.Location.empty ();
         source = ident "value";
         payload = None;
         guard = None;
@@ -2931,8 +2944,71 @@ let test_extra_load_store_matrix_arguments_fail () : unit =
             D_lang.Expr.IntegerLiteral 0;
           ]))
 
+let test_helper_identity () : unit =
+  let namespace name = [ { Ty.base = name; args = [] } ] in
+  let helper ns id code =
+    let k = kernel ~attribute:D_lang.KernelAttr.Auxiliary "helper" code in
+    { k with decl_id = Some id; id = { k.id with qualifier = namespace ns } }
+  in
+  let a = helper "a" "a-id" syncwarp_stmt in
+  let b =
+    helper "b" "b-id" (D_lang.Stmt.from_list [ syncwarp_stmt; syncwarp_stmt ])
+  in
+  let check ?decl_id ?(qualifier = []) expected =
+    let reference =
+      Decl_expr.from_name ~kind:Decl_expr.Kind.Function ~ty:(ty "void ()")
+        (var "helper")
+    in
+    let func = D_lang.Expr.Ident { reference with decl_id; qualifier } in
+    let caller =
+      kernel "caller"
+        (D_lang.Stmt.SExpr
+           (D_lang.Expr.CallExpr { func; args = []; ty = J_type.void }))
+    in
+    match
+      Source.route_program ~target_config:(subgroup_config ())
+        (List.map (fun k -> D_lang.Def.Kernel k) [ a; b; caller ])
+      |> expect_route_ok
+    with
+    | [ Source.Subgroup_matrix subgroup ] ->
+        Alcotest.(check int)
+          "selected helper sites" expected
+          (List.length subgroup.matrix_kernel.body)
+    | _ -> Alcotest.fail "resolved helper was not analyzed"
+  in
+  check ~decl_id:"b-id" 2;
+  check ~decl_id:"a-id" 1;
+  check ~decl_id:"a-id" ~qualifier:["alternate-spelling"] 1;
+  check ~qualifier:[ "b" ] 2;
+  check ~qualifier:[ "a" ] 1
+
+let test_qualified_kernel_selection () : unit =
+  let make ns =
+    let k =
+      kernel
+        ~template_args:[ C_lang.TemplateArgument.TArgIntegral 32 ]
+        "warp_kernel" syncwarp_stmt
+    in
+    { k with id = { k.id with qualifier = [ { Ty.base = ns; args = [] } ] } }
+  in
+  let selected = "b::warp_kernel<32>" in
+  match
+    Source.route_program ~target_config:(subgroup_config ())
+      ~only_kernel:selected
+      [ D_lang.Def.Kernel (make "a"); D_lang.Def.Kernel (make "b") ]
+    |> expect_route_ok
+  with
+  | [ Source.Subgroup_matrix subgroup ] ->
+      Alcotest.(check string)
+        "qualified label" selected subgroup.matrix_kernel.name
+  | _ -> Alcotest.fail "qualified kernel selection lost or conflated kernels"
+
 let tests : unit Alcotest.test_case list =
   [
+    ("helper declaration IDs and qualifiers", `Quick, test_helper_identity);
+    ( "qualified template kernel selection",
+      `Quick,
+      test_qualified_kernel_selection );
     ( "non-WMMA routes to ordinary source without subgroup config",
       `Quick,
       test_non_wmma_routes_to_ordinary_source_without_subgroup_config );
@@ -2996,9 +3072,7 @@ let tests : unit Alcotest.test_case list =
     ( "subgroup shuffle rejects partial mask",
       `Quick,
       test_subgroup_shuffle_rejects_partial_mask );
-    ( "syncwarp rejects partial mask",
-      `Quick,
-      test_syncwarp_rejects_partial_mask );
+    ("syncwarp rejects partial mask", `Quick, test_syncwarp_rejects_partial_mask);
     ( "unsupported participation controls fail closed",
       `Quick,
       test_unsupported_participation_controls_fail_closed );

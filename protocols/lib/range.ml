@@ -57,7 +57,7 @@ type direction = Increase | Decrease
 
 type t = {
   var : Variable.t;
-  ty : C_type.t;
+  ty : Scalar.t;
   dir : direction;
   lower_bound : nexp;
   upper_bound : nexp;
@@ -65,7 +65,7 @@ type t = {
 }
 
 let var (r : t) : Variable.t = r.var
-let ty (r : t) : C_type.t = r.ty
+let ty (r : t) : Scalar.t = r.ty
 let lower_bound (r : t) : nexp = r.lower_bound
 let upper_bound (r : t) : nexp = r.upper_bound
 let dir (r : t) : direction = r.dir
@@ -81,7 +81,7 @@ let to_string (r : t) : string =
     | _ -> "; " ^ Variable.name r.var ^ " " ^ Step.to_string r.step
   in
   let d = match r.dir with Increase -> "" | Decrease -> ";↓" in
-  x ^ " ∈ " ^ C_type.to_string r.ty ^ " | " ^ lb ^ " ≤ " ^ x ^ " ≤ " ^ ub ^ s
+  x ^ " ∈ " ^ Scalar.to_string r.ty ^ " | " ^ lb ^ " ≤ " ^ x ^ " ≤ " ^ ub ^ s
   ^ d
 
 (* -------------------- UTILITY CONSTRUCTORS ---------------------- *)
@@ -95,7 +95,7 @@ let map (f : nexp -> nexp) (r : t) : t =
   }
 
 let make ?(lower_bound = Num 0) ?(step : Step.t = Plus (Num 1))
-    ?(dir = Increase) ?(ty = C_type.int) (var : Variable.t) (upper_bound : nexp)
+    ?(dir = Increase) ?(ty = Scalar.int) (var : Variable.t) (upper_bound : nexp)
     : t =
   { var; lower_bound; upper_bound; step; dir; ty }
 
@@ -110,26 +110,11 @@ let pow ~base (n : nexp) : bexp =
   in
   pows 0 |> eq_nums n
 
-let from_decl (var : Variable.t) (ty : C_type.t) : t =
-  let lower_bound, upper_bound =
-    ty |> C_type.to_int_dom
-    |> Option.value ~default:Int_dom.signed_int
-    |> Int_dom.to_range
-  in
-  {
-    var;
-    ty;
-    dir = Increase;
-    step = Plus (Num 1);
-    lower_bound = Num lower_bound;
-    upper_bound = Num upper_bound;
-  }
-
-(* Convert a variable declaration into a range *)
-let decl_to_bexp (var : Variable.t) (ty : C_type.t) : bexp =
-  ty |> C_type.to_int_dom
-  |> Option.value ~default:Int_dom.signed_int
-  |> Int_dom.to_bexp var
+(* The constraint a declared type imposes on the variable it declares. A
+   type with no writable end imposes nothing, which leaves the variable to
+   whatever its enclosing range or condition says about it. *)
+let decl_to_bexp (var : Variable.t) (ty : Scalar.t) : bexp =
+  Exp.scalar_bound (Var var) ty
 
 (* For a [Plus] range whose stride evaluates to a literal [k > 1],
    returns [k]. Detects strided additive loops that can be
@@ -142,7 +127,7 @@ let plus_step_literal (s : Step.t) : int option =
        | _ -> None)
   | _ -> None
 
-let to_cond (r : t) : bexp =
+let to_bexp (r : t) : bexp =
   let x = Var r.var in
   let lb = r.lower_bound in
   let ub = r.upper_bound in

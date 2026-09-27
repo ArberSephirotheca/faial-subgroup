@@ -48,7 +48,7 @@ module Code = struct
           failwith "Internall error: call Unsynced.inline_asserts first!"
       | Access e -> { access = e; cond = b } :: accum
       | Cond (b', p) -> flatten accum (b_and b' b) p
-      | Loop (r, p) -> flatten accum (b_and (Norm_range.to_cond r) b) p
+      | Loop (nr, p) -> flatten accum (b_and (Norm_range.to_bexp nr) b) p
       | Seq (p, q) ->
           let accum = flatten accum b p in
           flatten accum b q
@@ -94,9 +94,20 @@ module Kernel = struct
     let normalized_ranges = List.map Norm_range.normalize k.ranges in
     let subst_pairs =
       List.filter_map
-        (function
+        (fun nr ->
+          match nr with
           | Norm_range.Index ix -> Some (Norm_range.substitution ix)
           | Norm_range.Plain _ -> None)
+        normalized_ranges
+    in
+    (* Reparametrize outer hoisted counters in each range's bounds and
+       restriction; each range's own counter is already reparametrized. *)
+    let normalized_ranges =
+      List.map
+        (fun nr ->
+          List.fold_left
+            (fun nr sp -> Norm_range.map (Subst.ReplacePair.n_subst sp) nr)
+            nr subst_pairs)
         normalized_ranges
     in
     let k_code =
@@ -112,7 +123,7 @@ module Kernel = struct
           | Block -> Variable.Set.empty)
         |> Variable.Set.union Variable.tid_set
       in
-      let approx_local_variables =
+      let approx_old =
         let with_ranges =
           List.fold_left
             (fun acc (r : Norm_range.t) ->
@@ -129,12 +140,37 @@ module Kernel = struct
         in
         Variable.Set.union from_ranges from_code
       in
-      let exact_local_variables =
-        approx_local_variables
-        |> Variable.Set.diff (Unsynced.binders k_code Variable.Set.empty)
+      let all_locals =
+        approx_old
+        |> Variable.Set.union (Unsynced.binders k_code Variable.Set.empty)
         |> Variable.Set.union ids
       in
-      let pre = b_and_ex (List.map Norm_range.to_cond normalized_ranges) in
+      let pre = b_and_ex (List.map Norm_range.to_bexp normalized_ranges) in
+      let constraints =
+        b_and_split pre
+        @ List.concat_map
+            (fun (ca : CondAccess.t) -> b_and_split ca.cond)
+            code
+      in
+      let ground (imprecise : Variable.Set.t) : Variable.Set.t =
+        List.fold_left
+          (fun imprecise c ->
+            let imp =
+              Variable.Set.inter (b_free_names c Variable.Set.empty) imprecise
+            in
+            match Variable.Set.elements imp with
+            | [ v ] -> Variable.Set.remove v imprecise
+            | _ -> imprecise)
+          imprecise constraints
+      in
+      let rec fixpoint (imprecise : Variable.Set.t) : Variable.Set.t =
+        let next = ground imprecise in
+        if Variable.Set.equal next imprecise then imprecise else fixpoint next
+      in
+      let approx_local_variables = fixpoint approx_old in
+      let exact_local_variables =
+        Variable.Set.diff all_locals approx_local_variables
+      in
       Some
         {
           name = k.name;

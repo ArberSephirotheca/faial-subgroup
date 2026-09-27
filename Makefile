@@ -78,9 +78,6 @@ faial-cost-prover: build
 test: build-test
 	$(DUNE) runtest
 
-sys-test:
-	python3 examples/data-dep/run.py
-
 gitlab-test:
 	 gitlab-runner exec docker test --cache-dir=${GITLAB_CACHE} --docker-cache-dir=${GITLAB_CACHE} --docker-volumes=${GITLAB_CACHE}
 
@@ -98,7 +95,6 @@ gitlab: gitlab-test gitlab-bin
 	faial-drf \
 	build-test \
 	test \
-	sys-test \
 	gitlab \
 	gitlab-bin \
 	gitlab-test \

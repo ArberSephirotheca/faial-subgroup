@@ -1,7 +1,8 @@
+open Protocols
 open Ast
 
 type t = c_init =
-  | InitListExpr of { ty : J_type.t; args : Expr.t list }
+  | InitListExpr of { ty : Ty.t; args : Expr.t list }
   | IExpr of Expr.t
 
 let map_expr (f : Expr.t -> Expr.t) : t -> t = function

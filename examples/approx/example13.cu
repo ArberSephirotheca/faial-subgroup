@@ -1,11 +1,13 @@
-//saxpy,ind,ctrl
-//j, k
+//saxpy,ind,ind
+//
 /*
 Example 13: data flows from array to lower bound of loop, source rw.
 
-Like example 3, but `x` is also written by the kernel, so the read
-`j = x[i]` stays as an approx local, and the loop variable `k`
-(whose range depends on `j`) is also approx.
+Like example 3, but `x` is also written by the kernel. The uniform-
+read rewrite binds `j = x[i]` to `NCall($read_x, i)` regardless of
+the array being rw, so `j` is folded away by `Encode_assigns` and
+the loop range becomes a function of `i`; the per-kernel
+data-dependence check reports `ind,ind`.
 
 */
 __global__ void saxpy(int n, float a, float *x, float *y) {

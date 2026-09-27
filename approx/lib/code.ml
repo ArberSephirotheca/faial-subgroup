@@ -15,11 +15,11 @@ let typecheck_r (env : Variable.Set.t) (r : Range.t) : bool =
 
 type t =
   | Cond of Exp.bexp * t
-  | Decl of { var : Variable.t; ty : C_type.t; body : t }
+  | Decl of { var : Variable.t; ty : Ty.t; body : t }
   | Loop of { range : Range.t; body : t }
   | Access of Access.t
 
-let decl ?(ty = C_type.int) (var : Variable.t) (body : t) : t =
+let decl ?(ty = Ty.int) (var : Variable.t) (body : t) : t =
   Decl { ty; var; body }
 
 let rec location : t -> Location.t = function
@@ -33,13 +33,13 @@ let rec from_code : Protocols.Code.t -> t Seq.t = function
       Seq.append
         (from_code p |> Seq.map (fun p -> Cond (b, p)))
         (from_code q |> Seq.map (fun q -> Cond (Exp.b_not b, q)))
-  | Loop { range = r; body = p } ->
+  | Loop { cond_range = { range = r; _ }; body = p } ->
       from_code p |> Seq.map (fun c -> Loop { range = r; body = c })
   | Seq (p, q) -> from_code p |> Seq.append (from_code q)
   (* Approx ignores the Protocols.Code.Decl's [pre] field: this IR
      captures over-approximations of access patterns, not the precise
      hypothesis pool that the race-detector consults. *)
-  | Decl { var; ty; body } ->
+  | Decl { var; ty; body; _ } ->
       from_code body |> Seq.map (fun body -> Decl { var; ty; body })
 
 let from_kernel (k : Protocols.Kernel.t) : t Seq.t =

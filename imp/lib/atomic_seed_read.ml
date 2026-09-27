@@ -90,6 +90,7 @@ let rec collect_aliases (acc : VarSet.t VarMap.t) (s : t) :
   | While (_, p) | DoWhile (_, p) -> collect_aliases acc p
   | For { init; inc; body; cond = _ } ->
       collect_aliases (collect_aliases (collect_aliases acc init) inc) body
+  | Foreach { body; _ } -> collect_aliases acc body
 
 (* [alias[W]] is the set of variables W has ever copied from. Starting
    from the atomic's [expected_vars] (variables that feed the CAS, e.g.
@@ -126,6 +127,7 @@ let rec free_vars_n (acc : VarSet.t) : Infer_exp.n -> VarSet.t = function
   | Binary (_, l, r) -> free_vars (free_vars acc l) r
   | NCall (_, es) -> List.fold_left free_vars acc es
   | NIf (c, l, r) -> free_vars (free_vars (free_vars acc c) l) r
+  | Convert c -> free_vars acc c.arg
 
 and free_vars_b (acc : VarSet.t) : Infer_exp.b -> VarSet.t = function
   | Bool _ -> acc
@@ -133,7 +135,7 @@ and free_vars_b (acc : VarSet.t) : Infer_exp.b -> VarSet.t = function
   | BRel (_, l, r) -> free_vars (free_vars acc l) r
   | BNot e -> free_vars acc e
   | Pred (_, es) -> List.fold_left free_vars acc es
-  | ThreadUnif e -> free_vars acc e
+  | IsThreadUnif e -> free_vars acc e
 
 and free_vars (acc : VarSet.t) : Infer_exp.t -> VarSet.t = function
   | NExp n -> free_vars_n acc n
@@ -142,9 +144,10 @@ and free_vars (acc : VarSet.t) : Infer_exp.t -> VarSet.t = function
 
 (* ----- 3. Address fingerprint -------------------------------------- *)
 
-let address_key (array : Variable.t) (index : Infer_exp.t list) : string =
+let address_key (path : Infer_exp.t Field_path.t) (index : Infer_exp.t list)
+    : string =
   let parts = List.map Infer_exp.to_string index in
-  Variable.name array ^ "[" ^ String.concat ";" parts ^ "]"
+  Infer_stmt.path_to_string path ^ "[" ^ String.concat ";" parts ^ "]"
 
 (* ----- 4. Seed-target index ---------------------------------------- *)
 
@@ -165,10 +168,10 @@ let seed_index ~(alias : VarSet.t VarMap.t) (s : t) :
     | LocationAlias _ | Call _ | Break | Continue | Return _ | Decl _
     | Assign _ ->
         acc
-    | Atomic { atomic; array; index; _ } ->
+    | Atomic { atomic; path; index; _ } ->
         (match atomic.operation with
          | CAS { expected = Some e; _ } ->
-             let key = address_key array index in
+             let key = address_key path index in
              let seeds =
                alias_closure ~alias (free_vars VarSet.empty e)
              in
@@ -184,6 +187,7 @@ let seed_index ~(alias : VarSet.t VarMap.t) (s : t) :
     | While (_, p) | DoWhile (_, p) -> walk acc p
     | For { init; inc; body; cond = _ } ->
         walk (walk (walk acc init) inc) body
+    | Foreach { body; _ } -> walk acc body
   in
   walk SM.empty s
 
@@ -198,11 +202,11 @@ let rec rewrite_with
   | LocationAlias _ | Call _ | Break | Continue | Return _ | Decl _
   | Assign _ ->
       s
-  | Read { target = Some (ty, t); array; index; guard } as r -> (
-      let key = address_key array index in
+  | Read { target = Some (ty, t); path; index; guard } as r -> (
+      let key = address_key path index in
       match Common.StringMap.find_opt key seeds with
       | Some (seed_set, atomic) when VarSet.mem t seed_set ->
-          Atomic { target = t; ty; atomic; array; index; guard }
+          Atomic { target = t; ty; atomic; path; index; guard }
       | _ -> r)
   | Read _ as r -> r (* read with no target — no seed to match *)
   | Seq (a, b) -> Seq (rew a, rew b)
@@ -211,6 +215,7 @@ let rec rewrite_with
   | DoWhile (c, p) -> DoWhile (c, rew p)
   | For { init; cond; inc; body } ->
       For { init = rew init; cond; inc = rew inc; body = rew body }
+  | Foreach f -> Foreach { f with body = rew f.body }
 
 (** Top-level entry. Idempotent: a second call has no effect because
     re-tagged reads are now [Atomic], not [Read], so the index step

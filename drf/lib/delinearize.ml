@@ -2,6 +2,12 @@ open Protocols
 
 module Phase_timer = Stage0.Phase_timer
 module Stats = Stage0.Stats
+module Logger = Stage0.Logger
+
+let log_enabled : bool =
+  match Sys.getenv_opt "FAIAL_DELIN_LOG" with
+  | None | Some "" | Some "0" -> false
+  | _ -> true
 
 let list_to_string (f : 'a -> string) (l : 'a list): string =
   "[" ^ (l |> List.map f |> String.concat "; ") ^ "]"
@@ -200,9 +206,10 @@ end = struct
       | Access _ -> failed
       | Skip | Assert _ -> failed
       | Cond (_, b) -> walk scope loop_scope failed b
-      | Loop (Norm_range.Plain r, b) ->
+      | Loop (Norm_range.Plain cr, b) ->
+        let r = cr.range in
         let scope' = G.add_range ~globals r scope in
-        let loop_scope' = Range.to_cond r :: loop_scope in
+        let loop_scope' = Range.to_bexp r :: loop_scope in
         walk scope' loop_scope' failed b
       | Loop (Norm_range.Index _, b) ->
         (* loops are normalized only after delinearization *)
@@ -268,12 +275,19 @@ end = struct
       | Access ({ array; index = [a]; _ } as acc)
         when Variable.Set.mem array viable ->
         let radix = Variable.Map.find array radix_map in
-        let a = Poly.from_nexp ~globals a in
+        let a_poly = Poly.from_nexp ~globals a in
         (match
            Phase_timer.measure "delin/from-exp" (fun () ->
-             from_exp ~scope ~loop_scope ~check ~radix a)
+             from_exp ~scope ~loop_scope ~check ~radix a_poly)
          with
          | Some t ->
+           (if log_enabled then Logger.Colors.info (fun () ->
+             Printf.sprintf
+               "delinearize: %s\n  before: [%s]\n  after:  %s\n  dims:   %s"
+               (Variable.name array)
+               (Exp.n_to_string a)
+               (list_to_string Exp.n_to_string t.indices)
+               (list_to_string Exp.n_to_string t.dims)));
            (* [rewrite_access] off: keep the original 1D access and emit
               only the recovered per-axis bounds. Isolates the bounds'
               contribution from the multidimensional rewrite. *)
@@ -293,13 +307,14 @@ end = struct
            Access acc)
       | Access _ as code -> code
       | Cond (p, b) -> Cond (p, walk scope loop_scope b)
-      | Loop (Norm_range.Plain r, b) ->
+      | Loop (Norm_range.Plain cr, b) ->
+        let r = cr.range in
         let scope' = G.add_range ~globals r scope in
-        let loop_scope' = Range.to_cond r :: loop_scope in
-        Loop (Norm_range.Plain r, walk scope' loop_scope' b)
-      | Loop ((Norm_range.Index _ as r), b) ->
+        let loop_scope' = Range.to_bexp r :: loop_scope in
+        Loop (Norm_range.Plain cr, walk scope' loop_scope' b)
+      | Loop ((Norm_range.Index _ as nr), b) ->
         (* loops are normalized only after delinearization *)
-        Loop (r, walk scope loop_scope b)
+        Loop (nr, walk scope loop_scope b)
       | Seq (a, b) ->
         Seq (walk scope loop_scope a, walk scope loop_scope b)
       | code -> code
@@ -320,15 +335,16 @@ end = struct
     | Sync c ->
       Sync (rewrite_unsync ~globals ~scope ~loop_scope ~check
               ~rewrite_access ~assume c)
-    | Loop ({ range; body; _ } as loop) ->
+    | Loop { cond_range; body } ->
+      let range = cond_range.range in
       let globals =
         if Variable.Set.subset (Range.free_names range Variable.Set.empty) globals
         then Variable.Set.add range.var globals
         else globals
       in
       let scope = G.add_range ~globals range scope in
-      let loop_scope = Range.to_cond range :: loop_scope in
-      Loop { loop with body =
+      let loop_scope = Range.to_bexp range :: loop_scope in
+      Loop { cond_range; body =
         rewrite_aligned ~globals ~scope
           ~loop_scope ~check ~rewrite_access ~assume body }
     | Seq (a, b) ->
@@ -355,6 +371,7 @@ module Algo = struct
     | Ics15
     | Ics15_opt
     | Cramer
+    | Bs_delin
     | Weak
 
   let default = Ics15_opt
@@ -364,6 +381,7 @@ module Algo = struct
     | Ics15 -> "ics15"
     | Ics15_opt -> "ics15-opt"
     | Cramer -> "cramer"
+    | Bs_delin -> "bs"
     | Weak -> "weak"
 
   (* Name/value pairs for [Cmdliner.Arg.enum]. *)
@@ -373,6 +391,7 @@ module Algo = struct
       ("ics15", Ics15);
       ("ics15-opt", Ics15_opt);
       ("cramer", Cramer);
+      ("bs", Bs_delin);
       ("weak", Weak);
     ]
 
@@ -381,6 +400,7 @@ module Algo = struct
     | Ics15 -> (module Ics15)
     | Ics15_opt -> (module Ics15_opt)
     | Cramer -> (module Cramer)
+    | Bs_delin -> (module Bs_delin)
     | Weak -> failwith "Algo.to_module: weak has no Algorithm.S"
 end
 
@@ -414,10 +434,15 @@ let translate ~(enabled : bool) ~(rewrite : bool) ~(elide : bool)
           Params.to_bexp
             (Params.union_left kernel.global_variables kernel.local_variables)
         in
-        let base = b_and kernel.pre runtime in
+        let base =
+          Formula.make (Bool true)
+          |> Formula.assume kernel.pre
+          |> Formula.assume runtime
+        in
         Gen_z3.CachedSolver.with_assertion base (fun s ->
           let check ~scope ~bound =
-            Gen_z3.CachedSolver.is_possible s (b_and (b_and_ex scope) bound)
+            Gen_z3.CachedSolver.is_possible s
+              (Formula.make (b_and (b_and_ex scope) bound))
           in
           rewrite_kernel ~check kernel)
       else rewrite_kernel ~check:trivially_true_oracle kernel

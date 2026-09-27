@@ -242,12 +242,6 @@ module TacticStrategy = struct
     ]
 end
 
-let time_it (f : unit -> 'a) : float * 'a =
-  let start_time = Unix.gettimeofday () in
-  let result = f () in
-  let end_time = Unix.gettimeofday () in
-  (end_time -. start_time, result)
-
 (* Solver backend selection *)
 module SolverBackend = struct
   type t = IntGen | Bv32Gen | Bv64Gen
@@ -277,7 +271,7 @@ let benchmark_tactic ~(solver_backend : SolverBackend.t)
     ~(strategy : TacticStrategy.t) ~(theorem : Theorem.t) =
   let solver_module = SolverBackend.to_module solver_backend in
   let time, result =
-    time_it (fun () ->
+    Stage0.Phase_timer.time_it (fun () ->
         Theorem.execute ~solver:solver_module ~debug:false
           ~tactic:strategy.tactic theorem)
   in

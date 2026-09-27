@@ -37,39 +37,39 @@ type access_expr = { access_index : nexp list; access_mode : Access.Mode.t }
 *)
 module Parameter = struct
   module Type = struct
-    (* [Unsupported] retains the source [C_type.t] so the IR keeps
+    (* [Unsupported] retains the source [Ty.t] so the IR keeps
        the parameter's declared type even when the C-to-Imp lifting
        has no specialised handling for it (pointer-to-pointer, opaque
        structs, function pointers, etc.). Downstream analyses can
        inspect the type without having to re-read the source. *)
     type t =
-      | Scalar of C_type.t
+      | Scalar of Ty.t
       | Array of Memory.t
       | Enum of Enum.t
-      | Unsupported of C_type.t
+      | Unsupported of Ty.t
 
     let to_string : t -> string = function
-      | Scalar s -> C_type.to_string s
+      | Scalar s -> Ty.to_string s
       | Array m -> Memory.to_string m
       | Enum e -> Enum.name e
-      | Unsupported ty -> C_type.to_string ty
+      | Unsupported ty -> Ty.to_string ty
 
-    let to_c_type : t -> C_type.t = function
+    let to_c_type : t -> Ty.t = function
       | Enum e -> Enum.to_c_type e
-      | Array _ -> C_type.unknown
+      | Array _ -> Ty.unknown
       | Unsupported ty -> ty
       | Scalar ty -> ty
   end
 
   type t = Variable.t * Type.t
 
-  let to_c_type : Variable.t * Type.t -> Variable.t * C_type.t =
+  let to_c_type : Variable.t * Type.t -> Variable.t * Ty.t =
    fun (a, ty) -> (a, Type.to_c_type ty)
 
   let enum (name : Variable.t) (e : Enum.t) : t = (name, Enum e)
   let array (name : Variable.t) (m : Memory.t) : t = (name, Array m)
-  let scalar (name : Variable.t) (ty : C_type.t) : t = (name, Scalar ty)
-  let unsupported (name : Variable.t) (ty : C_type.t) : t =
+  let scalar (name : Variable.t) (ty : Ty.t) : t = (name, Scalar ty)
+  let unsupported (name : Variable.t) (ty : Ty.t) : t =
     (name, Unsupported ty)
 
   let to_array ((name, ty) : t) : (Variable.t * Memory.t) option =
@@ -100,7 +100,7 @@ module ParameterList = struct
         | Unsupported _ | Array _ -> ps)
       Params.empty l
 
-  let to_c_type (x : t) : (Variable.t * C_type.t) list =
+  let to_c_type (x : t) : (Variable.t * Ty.t) list =
     x |> List.map Parameter.to_c_type
 
   let to_list (x : t) : Variable.t list = x |> List.map fst
@@ -108,10 +108,8 @@ module ParameterList = struct
 end
 
 type t = {
-  (* The kernel name *)
-  name : string;
-  (* The type signature of the kernel *)
-  ty : string;
+  (* What makes this function distinct from every other one. *)
+  id : Function_id.t;
   (* Kernel parameters *)
   parameters : ParameterList.t;
   (* Globally-defined arrays that can be accessed by the kernel. *)
@@ -122,6 +120,7 @@ type t = {
   code : Stmt.t;
   (* A kernel may return a value *)
   return : Exp.nexp option;
+  unsupported : Rejected_kernel.Reason.t option;
   (* Visibility *)
   visibility : Visibility.t;
   (* Number of blocks *)
@@ -130,8 +129,8 @@ type t = {
   block_dim : Dim3.t option;
 }
 
-(* Generate a unique id that pairs the name and type. *)
-let unique_id (k : t) : string = Call.kernel_id ~kernel:k.name ~ty:k.ty
+let unique_id (k : t) : Function_id.t = k.id
+let name (k : t) : string = Function_id.label k.id
 
 let to_s (k : t) : Indent.t list =
   [
@@ -139,7 +138,7 @@ let to_s (k : t) : Indent.t list =
     Line
       (Printf.sprintf "%s %s (%s)"
          (Visibility.to_string k.visibility)
-         k.name
+         (name k)
          (ParameterList.to_string k.parameters));
     Line
       (Printf.sprintf "global {arrays: %s} {scalars: %s}"
@@ -162,4 +161,4 @@ let is_global (k : t) : bool = k.visibility = Visibility.Global
 let remove_global_asserts (k : t) : t =
   { k with code = Stmt.filter_asserts Assert.is_local k.code }
 
-let calls (k : t) : StringSet.t = Stmt.calls k.code
+let calls (k : t) : Function_id.Set.t = Stmt.calls k.code

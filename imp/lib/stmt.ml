@@ -12,9 +12,9 @@ type t =
   | Read of Read.t
   | Atomic of Atomic_write.t
   | Write of Write.t
-  | LocationAlias of Alias.t
+  | LocationAlias of { target : Variable.t; pointer : Pointer.t }
   | Decl of Decl.t
-  | Assign of { var : Variable.t; data : Exp.nexp; ty : C_type.t }
+  | Assign of { var : Variable.t; data : Exp.nexp; ty : Ty.t }
   | If of (Exp.bexp * t * t)
   | For of (Range.t * t)
   | Star of t
@@ -49,16 +49,16 @@ let rec has_sync : t -> bool = function
       false
   | For (_, p) | Star p -> has_sync p
 
-let calls : t -> StringSet.t =
-  let rec calls (cs : StringSet.t) : t -> StringSet.t = function
+let calls : t -> Function_id.Set.t =
+  let rec calls (cs : Function_id.Set.t) : t -> Function_id.Set.t = function
     | Skip | Decl _ | LocationAlias _ | Sync _ | Assert _ | Read _ | Write _
     | Atomic _ | Assign _ ->
         cs
     | If (_, s1, s2) | Seq (s1, s2) -> calls (calls cs s1) s2
     | For (_, s) | Star s -> calls cs s
-    | Call c -> StringSet.add (Call.unique_id c) cs
+    | Call c -> Function_id.Set.add (Call.unique_id c) cs
   in
-  calls StringSet.empty
+  calls Function_id.Set.empty
 
 let fold : 'a. (t -> 'a -> 'a) -> t -> 'a -> 'a =
  fun (f : t -> 'a -> 'a) (p : t) (init : 'a) ->
@@ -122,7 +122,7 @@ let to_list ?(rev = true) : t -> t list =
   in
   fun s -> loop [] s |> if rev then List.rev else Fun.id
 
-let assign (ty : C_type.t) (var : Variable.t) (data : Exp.nexp) : t =
+let assign (ty : Ty.t) (var : Variable.t) (data : Exp.nexp) : t =
   Assign { ty; var; data }
 
 let decl_unset (v : Variable.t) : t = Decl (Decl.unset v)
@@ -135,19 +135,19 @@ let to_s : t -> Indent.t list =
     | Atomic r ->
         [
           Line
-            (C_type.to_string r.ty ^ " " ^ Variable.name r.target ^ " = atomic "
-           ^ Variable.name r.array
+            (Ty.to_string r.ty ^ " " ^ Variable.name r.target ^ " = atomic "
+           ^ Field_path.to_string r.path
             ^ Access.index_to_string r.index
             ^ ";");
         ]
     | Read r ->
-        let a = Variable.name r.array in
+        let a = Field_path.to_string r.path in
         let idx = Access.index_to_string r.index in
         let prefix =
           match r.target with
           | Some (ty, target) ->
               let x = Variable.name target in
-              let ty = C_type.to_string ty in
+              let ty = Ty.to_string ty in
               ty ^ " " ^ x ^ " = "
           | None -> ""
         in
@@ -158,14 +158,21 @@ let to_s : t -> Indent.t list =
         in
         [
           Line
-            ("wr " ^ Variable.name w.array
+            ("wr " ^ Field_path.to_string w.path
             ^ Access.index_to_string w.index
             ^ payload ^ ";");
         ]
     | Skip -> [ Line "skip;" ]
     | Assign a ->
         [ Line (Variable.name a.var ^ " = " ^ Exp.n_to_string a.data ^ ";") ]
-    | LocationAlias l -> [ Line ("alias " ^ Alias.to_string l) ]
+    | LocationAlias l ->
+        [
+          Line
+            ("alias " ^ Variable.name l.target ^ " = "
+            ^ Pointer.to_string l.pointer
+            ^ ";"
+            ^ Pointer.step_comment l.pointer);
+        ]
     | Decl d -> [ Line ("decl " ^ Decl.to_string d ^ ";") ]
     | If (b, s1, Skip) ->
         [

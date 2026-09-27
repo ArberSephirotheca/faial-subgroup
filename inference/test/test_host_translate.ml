@@ -2,12 +2,12 @@ open Stage0
 open Protocols
 open Inference
 
-(* "int *" is recognised by [C_type.is_array], so a [J_type.t] built
+(* "int *" is recognised by [Ty.is_array_or_pointer], so a [Ty.t] built
    from it makes [rewrite_arg] take the pointer-shaped path. *)
-let ptr_ty : J_type.t = J_type.from_c_type (C_type.make "int *")
+let ptr_ty : Ty.t = (Ty.of_c_string "int *")
 
 (* Plain scalar type for offset expressions. *)
-let int_ty : J_type.t = J_type.int
+let int_ty : Ty.t = J_type.int
 
 let ident ?(ty = ptr_ty) (name : string) : C_lang.Expr.t =
   Ident (Decl_expr.from_name ~ty (Variable.from_name name))
@@ -26,7 +26,7 @@ let subscript (base : C_lang.Expr.t) (idx : C_lang.Expr.t) : C_lang.Expr.t =
    need integer addition here. *)
 let ( + ) (l : C_lang.Expr.t) (r : C_lang.Expr.t) : C_lang.Expr.t =
   let is_ptr (e : C_lang.Expr.t) : bool =
-    J_type.matches C_type.is_array (C_lang.Expr.to_type e)
+    Ty.is_array_or_pointer (C_lang.Expr.to_type e)
   in
   let ty = if is_ptr l || is_ptr r then ptr_ty else int_ty in
   BinaryOperator { opcode = "+"; lhs = l; rhs = r; ty }

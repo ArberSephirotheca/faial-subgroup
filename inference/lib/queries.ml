@@ -18,13 +18,13 @@ module Params = struct
   open C_lang
 
   let summarize (k : Kernel.t) : json =
-    let filter_params (pred : C_type.t -> bool) : json =
+    let filter_params (pred : Ty.t -> bool) : json =
       k.params
       |> List.filter (Param.matches pred)
       |> List.map Param.name |> var_list_to_json
     in
-    let global_arrays = filter_params C_type.is_array in
-    let global_int = filter_params C_type.is_int in
+    let global_arrays = filter_params Ty.is_array_or_pointer in
+    let global_int = filter_params Ty.is_int in
     `Assoc
       [
         ("global arrays", global_arrays);
@@ -37,7 +37,7 @@ module GlobalDeclArrays = struct
   open C_lang
 
   let summarize (ds : Decl.t list) : json =
-    let ds = List.filter (Decl.matches C_type.is_array) ds in
+    let ds = List.filter (Decl.matches Ty.is_array_or_pointer) ds in
     let ds = List.filter Decl.is_shared ds in
     `Assoc [ ("shared arrays", List.map Decl.var ds |> var_list_to_json) ]
 end
@@ -65,6 +65,7 @@ module Variables = struct
           Seq.empty
       | UnaryOperator { child = e; _ }
       | Member { base = e; _ }
+      | Convert { arg = e; _ }
       | CXXNew { arg = e; _ }
       | CXXDelete { arg = e; _ }
       | PackExpansion e ->
@@ -133,7 +134,7 @@ module Declarations = struct
     let s = to_seq s in
     let all_count = s |> Seq.length in
     let int_count =
-      s |> Seq.filter (Decl.matches C_type.is_int) |> Seq.length
+      s |> Seq.filter (Decl.matches Ty.is_int) |> Seq.length
     in
     let shared_arrays =
       s |> Seq.filter Decl.is_shared |> Seq.map Decl.var |> Variables.to_set
@@ -181,6 +182,7 @@ module Calls = struct
           Seq.empty
       | UnaryOperator { child = e; _ }
       | MemberExpr { base = e; _ }
+      | Convert { arg = e; _ }
       | CXXNewExpr { arg = e; _ }
       | CXXDeleteExpr { arg = e; _ }
       | PackExpansion e ->
@@ -207,7 +209,7 @@ module Calls = struct
     |> Seq.filter (fun c ->
         c.args
         |> List.exists (fun e ->
-            Expr.to_type e |> J_type.matches C_type.is_array))
+            Expr.to_type e |> Ty.is_array_or_pointer))
 
   let count (c : Stmt.t) : int StringMap.t =
     to_seq c
@@ -245,7 +247,7 @@ module Calls = struct
     in
     let uses_global =
       k.params
-      |> List.filter (Param.matches C_type.is_array)
+      |> List.filter (Param.matches Ty.is_array_or_pointer)
       |> List.map (fun x -> Param.ty_var x |> Ty_variable.name)
       |> List.to_seq |> Variables.to_set
       |> VarSet.union (globals |> List.map Decl.var |> VarSet.of_list)
@@ -426,7 +428,7 @@ module MutatedVar = struct
         { lhs = Ident { name = x; kind; _ }; opcode = "="; rhs = s2; ty }
       when kind = ParmVar || kind = Var ->
         let w =
-          if J_type.matches C_type.is_int ty then VarSet.add x writes
+          if Ty.is_int ty then VarSet.add x writes
           else writes
         in
         get_writes s2 w
@@ -439,6 +441,7 @@ module MutatedVar = struct
         writes
     | UnaryOperator { child = e; _ }
     | MemberExpr { base = e; _ }
+    | Convert { arg = e; _ }
     | CXXNewExpr { arg = e; _ }
     | CXXDeleteExpr { arg = e; _ }
     | PackExpansion e ->
@@ -780,9 +783,14 @@ module Kernel = struct
             [
               ("name", `String (Variable.name k));
               ("hierarchy", `String (a.hierarchy |> Mem_hierarchy.to_string));
-              ("size", `List (List.map (fun x -> `Int x) a.size));
+              ( "size",
+                `List
+                  (List.map
+                     (function Some x -> `Int x | None -> `Null)
+                     a.Memory.size) );
               ("data_type", `List (List.map (fun x -> `String x) a.data_type));
             ])
     in
-    `Assoc [ ("name", `String k.name); ("arrays", `List arrays) ]
+    `Assoc
+      [ ("name", `String (Imp.Kernel.name k)); ("arrays", `List arrays) ]
 end

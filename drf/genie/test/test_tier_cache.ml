@@ -6,9 +6,9 @@
    The cache logic is exercised independently of Z3: a counter ref
    stands in for the underlying gate predicate. The properties
    tested are
-   1. identical assumes hit the cache on the second lookup;
-   2. assumes that differ in any clause produce distinct keys (miss);
-   3. assumes that share the same clause set but in a different
+   1. identical assumptions hit the cache on the second lookup;
+   2. assumptions that differ in any clause produce distinct keys (miss);
+   3. assumptions that share the same clause set but in a different
       order share a key (normalisation).
 *)
 
@@ -19,6 +19,10 @@ let var (n : string) : Exp.nexp = Exp.Var (Variable.from_name n)
 let num (n : int) : Exp.nexp = Exp.Num n
 let eq_b (a : Exp.nexp) (b : Exp.nexp) : Exp.bexp = Exp.NRel (Eq, a, b)
 
+(* A precondition clause scoped to kernel [kn]. *)
+let assume (kn : string) (b : Exp.bexp) : Assumption.t =
+  { Assumption.kernel = Assumption.Match.Exact kn; target = Assumption.Target.Pre; bexp = b }
+
 (* Each test wraps a counter around a no-op predicate so we can
    assert how many times the underlying compute fired. *)
 let counted_compute () : (unit -> bool) * (unit -> int) =
@@ -28,9 +32,7 @@ let counted_compute () : (unit -> bool) * (unit -> int) =
 
 let test_hit_on_identical_app () =
   let cache = Tier_cache.create () in
-  let assumes : (string * Exp.bexp list) list =
-    [ ("k", [ eq_b (var "x") (num 0) ]) ]
-  in
+  let assumes = [ assume "k" (eq_b (var "x") (num 0)) ] in
   let compute, get_count = counted_compute () in
   let v1 = Tier_cache.lookup_or_compute cache assumes compute in
   let v2 = Tier_cache.lookup_or_compute cache assumes compute in
@@ -41,12 +43,8 @@ let test_hit_on_identical_app () =
 
 let test_miss_on_different_assumes () =
   let cache = Tier_cache.create () in
-  let a1 : (string * Exp.bexp list) list =
-    [ ("k", [ eq_b (var "x") (num 0) ]) ]
-  in
-  let a2 : (string * Exp.bexp list) list =
-    [ ("k", [ eq_b (var "x") (num 1) ]) ]
-  in
+  let a1 = [ assume "k" (eq_b (var "x") (num 0)) ] in
+  let a2 = [ assume "k" (eq_b (var "x") (num 1)) ] in
   let compute, get_count = counted_compute () in
   let _ = Tier_cache.lookup_or_compute cache a1 compute in
   let _ = Tier_cache.lookup_or_compute cache a2 compute in
@@ -55,10 +53,10 @@ let test_miss_on_different_assumes () =
 
 let test_normalisation_clause_order () =
   let cache = Tier_cache.create () in
-  let c1 = eq_b (var "x") (num 0) in
-  let c2 = eq_b (var "y") (num 1) in
-  let a_forward : (string * Exp.bexp list) list = [ ("k", [ c1; c2 ]) ] in
-  let a_reversed : (string * Exp.bexp list) list = [ ("k", [ c2; c1 ]) ] in
+  let c1 = assume "k" (eq_b (var "x") (num 0)) in
+  let c2 = assume "k" (eq_b (var "y") (num 1)) in
+  let a_forward = [ c1; c2 ] in
+  let a_reversed = [ c2; c1 ] in
   let compute, get_count = counted_compute () in
   let _ = Tier_cache.lookup_or_compute cache a_forward compute in
   let _ = Tier_cache.lookup_or_compute cache a_reversed compute in
@@ -68,13 +66,11 @@ let test_normalisation_clause_order () =
 
 let test_normalisation_kernel_order () =
   let cache = Tier_cache.create () in
-  let assumes_ab : (string * Exp.bexp list) list =
-    [ ("a", [ eq_b (var "x") (num 0) ]);
-      ("b", [ eq_b (var "y") (num 1) ]) ]
+  let assumes_ab =
+    [ assume "a" (eq_b (var "x") (num 0)); assume "b" (eq_b (var "y") (num 1)) ]
   in
-  let assumes_ba : (string * Exp.bexp list) list =
-    [ ("b", [ eq_b (var "y") (num 1) ]);
-      ("a", [ eq_b (var "x") (num 0) ]) ]
+  let assumes_ba =
+    [ assume "b" (eq_b (var "y") (num 1)); assume "a" (eq_b (var "x") (num 0)) ]
   in
   let compute, get_count = counted_compute () in
   let _ = Tier_cache.lookup_or_compute cache assumes_ab compute in
@@ -85,9 +81,7 @@ let test_normalisation_kernel_order () =
 
 let test_find_opt_and_add () =
   let cache = Tier_cache.create () in
-  let assumes : (string * Exp.bexp list) list =
-    [ ("k", [ eq_b (var "x") (num 0) ]) ]
-  in
+  let assumes = [ assume "k" (eq_b (var "x") (num 0)) ] in
   Alcotest.(check (option bool)) "miss before add"
     None (Tier_cache.find_opt cache assumes);
   Tier_cache.add cache assumes false;
@@ -99,11 +93,9 @@ let test_find_opt_and_add () =
 
 let test_empty_assumes_share_key () =
   let cache = Tier_cache.create () in
-  let empty_a : (string * Exp.bexp list) list = [ ("k", []) ] in
-  let empty_b : (string * Exp.bexp list) list = [ ("k", []) ] in
   let compute, get_count = counted_compute () in
-  let _ = Tier_cache.lookup_or_compute cache empty_a compute in
-  let _ = Tier_cache.lookup_or_compute cache empty_b compute in
+  let _ = Tier_cache.lookup_or_compute cache [] compute in
+  let _ = Tier_cache.lookup_or_compute cache [] compute in
   Alcotest.(check int) "empty-assumes hits on second call" 1 (get_count ())
 
 let tier_cache_tests = [

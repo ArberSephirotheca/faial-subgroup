@@ -7,8 +7,9 @@ type t = {
   solver : Z3.Solver.solver;
 }
 
-let preprocess (b : bexp) : bexp =
-  b |> Predicates.b_inline |> Predicates.strip_cross_thread
+(* The slot's hypothesis, carried by every query pushed against it. *)
+let hypothesis (pre : bexp) : Formula.t =
+  Formula.make (Bool true) |> Formula.assume pre
 
 let make ~(timeout : int) (pre : bexp) : t =
   let args =
@@ -16,7 +17,7 @@ let make ~(timeout : int) (pre : bexp) : t =
   in
   let ctx = Z3.mk_context args in
   let solver = Z3.Solver.mk_solver ctx None in
-  Z3.Solver.add solver [ Gen_z3.Bv64Gen.b_to_expr ctx (preprocess pre) ];
+  Z3.Solver.add solver [ Gen_z3.Bv64Gen.b_to_expr ctx (hypothesis pre) ];
   { ctx; solver }
 
 let release (t : t) : unit = Z3.Solver.reset t.solver
@@ -29,12 +30,11 @@ let with_slot ~(timeout : int) (pre : bexp) (f : t -> 'a) : 'a =
 let mod_eq_zero (stride : nexp) (n : int) : bexp =
   n_eq (n_umod stride (Num n)) (Num 0)
 
-(* Push (preprocessed delta), check, pop. UNSAT means [pre]
-   entails [~delta]. *)
+(* Push the delta, check, pop. UNSAT means [pre] entails [~delta]. *)
 let unsat_under_pre (t : t) (delta : bexp) : bool =
-  let delta = preprocess delta in
   Z3.Solver.push t.solver;
-  Z3.Solver.add t.solver [ Gen_z3.Bv64Gen.b_to_expr t.ctx delta ];
+  Z3.Solver.add t.solver
+    [ Gen_z3.Bv64Gen.b_to_expr t.ctx (Formula.make delta) ];
   let result =
     Phase_timer.measure "bc/modular" (fun () ->
       Z3.Solver.check t.solver [])

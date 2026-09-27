@@ -186,7 +186,7 @@ let subgroup_kernel ?(target_config = subgroup_config ()) ?(body = [])
 let test_ordinary_goal_covers_projection_and_ordering_constraints () : unit =
   let kernel = sample_kernel () in
   let proof = Symbexp.Proof.from_flat Architecture.Block 8 kernel in
-  let goal = Exp.b_to_string proof.goal in
+  let goal = Exp.b_to_string (Formula.to_bexp proof.formula) in
   List.iter
     (fun (label, needle) -> expect_substring ~label ~needle goal)
     [
@@ -282,7 +282,7 @@ let test_read_read_ordinary_mode_conflict_remains_unsat_shape () : unit =
     }
   in
   let actual = Symbexp.Proof.from_flat Architecture.Block 9 kernel in
-  let goal = Exp.b_to_string actual.goal in
+  let goal = Exp.b_to_string (Formula.to_bexp actual.formula) in
   expect_substring ~label:"read event assigns read mode" ~needle:"$T1$mode == 0"
     goal;
   expect_substring ~label:"mode conflict excludes read/read"

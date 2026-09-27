@@ -102,9 +102,9 @@ module Pipeline = struct
           let* p = on_code p in
           let* q = on_code q in
           Ok (Code.If (b, p, q))
-      | Loop { range; body } ->
+      | Loop { cond_range; body } ->
           let* body = on_code body in
-          Ok (Code.Loop { range; body })
+          Ok (Code.Loop { cond_range; body })
       | Decl d ->
           let* body = on_code d.body in
           Ok (Code.Decl { d with body })

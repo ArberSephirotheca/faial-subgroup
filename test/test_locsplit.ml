@@ -15,10 +15,10 @@ let r =
       upper_bound = Num 2;
       step = Plus (Num 1);
       dir = Increase;
-      ty = C_type.int;
+      ty = Scalar.int;
     }
 
-let write a = Access.{ array = a; index = []; mode = Mode.Write None }
+let write a = Access.write a [] None
 let x_acc = Unsynced.Access (write x)
 let y_acc = Unsynced.Access (write y)
 
@@ -65,14 +65,14 @@ let tests =
              (Seq (Cond (b, x_acc), Seq (Assert b, y_acc)))
              (Seq (Cond (b, x_acc), Seq (Assert b, Skip)));
            expect_some
-             (Seq (Loop (Norm_range.Plain r, Cond (b, x_acc)), Seq (Assert b, y_acc)))
-             (Seq (Loop (Norm_range.Plain r, Cond (b, x_acc)), Seq (Assert b, Skip)));
+             (Seq (Loop (Norm_range.Plain (Cond_range.of_range r), Cond (b, x_acc)), Seq (Assert b, y_acc)))
+             (Seq (Loop (Norm_range.Plain (Cond_range.of_range r), Cond (b, x_acc)), Seq (Assert b, Skip)));
            expect_some
              (Seq
-                ( Loop (Norm_range.Plain r, Cond (b, x_acc)),
+                ( Loop (Norm_range.Plain (Cond_range.of_range r), Cond (b, x_acc)),
                   Seq (Assert b, Seq (Assert b, Seq (Assert b, y_acc))) ))
              (Seq
-                ( Loop (Norm_range.Plain r, Cond (b, x_acc)),
+                ( Loop (Norm_range.Plain (Cond_range.of_range r), Cond (b, x_acc)),
                   Seq (Assert b, Seq (Assert b, Seq (Assert b, Skip))) )) );
        ]
 

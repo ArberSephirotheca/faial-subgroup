@@ -71,6 +71,17 @@ module UA = struct
             List.fold_left (fun acc (_, t) -> max acc t) Constant args_t
           in
           (NCall (f, List.map fst args_t), r)
+      | ReadResult rd ->
+          let args_t = List.map from_nexp rd.args in
+          let r =
+            List.fold_left (fun acc (_, t) -> max acc t) Constant args_t
+          in
+          (ReadResult { rd with args = List.map fst args_t }, r)
+      (* Erased rather than rebuilt, on the same terms as [Reals.from_nexp]:
+         the cost analyses assume every conversion is the identity, and
+         keeping the node here only blocks the algebraic rewrites that strip
+         a warp-uniform offset. *)
+      | Convert c -> from_nexp c.arg
       | CastInt e ->
           let r = if Exp.b_intersects locals e then AnyAccurate else Uniform in
           (CastInt e, r)
@@ -154,7 +165,7 @@ module Make (L : Logger.Logger) = struct
                 Cost.set_value v cost)
               else cost
           | Error msg ->
-              L.info (fun () ->
+              L.warning (fun () ->
                 "UA: could not simulate cost " ^ Exp.n_to_string index ^ ": "
                ^ msg);
               Vectorized.max_cost UncoalescedAccesses vec)

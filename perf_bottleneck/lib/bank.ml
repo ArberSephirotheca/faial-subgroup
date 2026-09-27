@@ -5,12 +5,17 @@ open Protocols
 open Rel_cost
 open Vectors
 
+(* A declaration is bounded through the value type under it; one that has
+   none is bounded as a signed int, which is what the string table did. *)
+let scalar_of (ty : Ty.t) : Scalar.t =
+  Ty.to_scalar ty |> Option.value ~default:Scalar.int
+
 module Code = struct
   type t =
     | Index of Exp.nexp
     | Loop of { range : Range.t; body : t }
     | Cond of Exp.bexp * t
-    | Decl of { var : Variable.t; ty : C_type.t; body : t }
+    | Decl of { var : Variable.t; ty : Ty.t; body : t }
 
   module SubstMake (S : Subst.SUBST) = struct
     module M = Subst.Make (S)
@@ -73,7 +78,7 @@ module Code = struct
           let result =
             if Variable.Set.mem var locals then
               (* conver decl into cond *)
-              Cond (Range.decl_to_bexp var ty, body)
+              Cond (Range.decl_to_bexp var (scalar_of ty), body)
             else
               (* discard decl altogether *)
               body
@@ -151,8 +156,8 @@ module Code = struct
     | Index _ -> Exp.b_true
     | Cond (b, p) -> Exp.b_and b (to_bexp p)
     | Decl { var; ty; body } ->
-        Exp.b_and (Range.decl_to_bexp var ty) (to_bexp body)
-    | Loop { range; body } -> Exp.b_and (Range.to_cond range) (to_bexp body)
+        Exp.b_and (Range.decl_to_bexp var (scalar_of ty)) (to_bexp body)
+    | Loop { range; body } -> Exp.b_and (Range.to_bexp range) (to_bexp body)
 
   let rec local_binders (locals : Variable.Set.t) : t -> Variable.Set.t =
     function
@@ -288,7 +293,7 @@ module Code = struct
                 | _ -> Seq.empty)
             |> Result.value ~default:Seq.empty
         | Sync _ -> Seq.empty
-        | Decl { body = p; var; ty } ->
+        | Decl { body = p; var; ty; _ } ->
             p
             |> on_p (Variable.Set.add var locals)
             |> Seq.map (fun (x, i) -> (x, Decl { var; body = i; ty }))
@@ -297,7 +302,7 @@ module Code = struct
               (on_p locals p |> Seq.map (fun (x, p) -> (x, Cond (b, p))))
               (on_p locals q
               |> Seq.map (fun (x, q) -> (x, Cond (Exp.b_not b, q))))
-        | Loop { range = r; body = p } ->
+        | Loop { cond_range = { range = r; _ }; body = p } ->
             let locals =
               let r_locals = Range.free_names r Variable.Set.empty in
               if Variable.Set.inter locals r_locals |> Variable.Set.is_empty

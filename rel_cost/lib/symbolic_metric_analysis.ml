@@ -29,6 +29,9 @@ module Proj = struct
     | Binary (o, n1, n2) -> Binary (o, proj_n n1 ctx, proj_n n2 ctx)
     | NIf (b, n1, n2) -> NIf (proj_b b ctx, proj_n n1 ctx, proj_n n2 ctx)
     | NCall (x, ns) -> NCall (x, List.map (fun n -> proj_n n ctx) ns)
+    | ReadResult r ->
+        ReadResult { r with args = List.map (fun n -> proj_n n ctx) r.args }
+    | Convert c -> convert c.ty (proj_n c.arg ctx)
 
   and proj_b (b : bexp) (ctx : t) : bexp =
     match b with
@@ -47,7 +50,7 @@ module Proj = struct
             index = List.map (fun n -> proj_n n ctx) index;
             operation = Atomic.Operation.map (fun n -> proj_n n ctx) operation;
           }
-    | ThreadUnif e -> ThreadUnif (proj_n e ctx)
+    | IsThreadUnif e -> IsThreadUnif (proj_n e ctx)
 
   (*
     General algorithm to replicate an element as a list of elements
@@ -495,15 +498,25 @@ let print_optimize (pre : bexp) (formula : nexp) : unit =
   prerr_endline
     (Printf.sprintf "optimize {\n  pre: %s\n  cost: %s\n}" pre formula)
 
+(* Milliseconds, bounding one optimizer call rather than a whole analysis: a
+   run issuing [n] queries spends up to [n] times this, so it caps a query and
+   not a run. Known limitation: a query that exceeds the bound yields no
+   result, and the metric analyses substitute the warp-wide maximum for the
+   exact cost without saying so on stdout, the substitution showing only in the
+   approximate-index count that [--json] reports. Pass [~timeout:0] to lift the
+   bound and let a query run to completion. *)
+let default_timeout : int = 120_000
+
 (** Optimizes a formula *)
 let optimize ?(verbose = false) ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(default_cost = 0)
-    ?(timeout = 0) (formula : nexp) (st : t) : (int, string) Result.t =
+    ?(timeout = default_timeout) (formula : nexp) (st : t) :
+    (int, string) Result.t =
   let module S = (val solver) in
   let pre = st.assumptions in
   (* pre: the generated runtime constraints (eg, tid is unique) *)
   let solve formula : (int, string) Result.t =
-    S.optimize_expr ~timeout strategy ~pre formula
+    S.optimize_expr ~timeout strategy ~pre:(Formula.make pre) formula
     |> Result.map (fun o -> Option.value ~default:default_cost o)
   in
   if verbose then print_optimize pre formula;
@@ -527,8 +540,8 @@ let prove ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(debug = true)
     (st : t) : (Gen_z3.Solver.t, string) Result.t =
   let module S = (val solver) in
   let pre = st.assumptions in
-  let goal = b_and pre (b_not goal) in
-  if verbose then print_prove pre goal;
+  let goal = Formula.make goal |> Formula.assume pre |> Formula.negate_goal in
+  if verbose then print_prove pre (Formula.to_bexp goal);
   match tactic with
   | Some tactic_strategy -> S.solve_with_tactic ~debug tactic_strategy goal
   | None -> S.solve goal
@@ -557,7 +570,7 @@ let encode_count_active_threads (_index : nexp) (st : t) : nexp =
 let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
     ?(strategy = Gen_z3.Optimizer.Strategy.Maximize)
     ?(generator = Constraints.default)
-    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?(timeout = 0)
+    ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?timeout
     (config : Config.t) (locals : Variable.Set.t) (active_threads : bexp)
     (index : nexp) : int option =
   (* Compute free names from active_threads and index *)
@@ -570,7 +583,7 @@ let optimize_metric (metric : nexp -> t -> nexp) ?(verbose = false)
   State.run_result
     (let* n = cost_of metric index in
      let* st = State.get in
-     return (optimize ~verbose ~strategy ~solver ~default_cost:0 ~timeout n st))
+     return (optimize ~verbose ~strategy ~solver ~default_cost:0 ?timeout n st))
     (make generator config locals globals |> add_active_threads active_threads)
   |> Result.to_option
 
@@ -609,7 +622,9 @@ let sat_count
       (n_le count_expr (Num st.config.threads_per_warp))
   in
   let goal =
-    Exp.b_and (Exp.b_and st.assumptions count_bounds) (predicate count_expr)
+    Formula.make (predicate count_expr)
+    |> Formula.assume st.assumptions
+    |> Formula.assume count_bounds
   in
   match S.solve_with_int_witness ~timeout goal count_expr with
   | Ok (Some k) -> Sat k
@@ -683,7 +698,7 @@ let sat_n_distinct_in_cohort
       Exp.b_and_ex !acc
     in
     let goal =
-      Exp.b_and_ex (pairwise_distinct :: List.init n mk_instance)
+      Formula.make (Exp.b_and_ex (pairwise_distinct :: List.init n mk_instance))
     in
     let witness_exprs =
       List.init n (fun i ->
@@ -745,6 +760,12 @@ let rec n_inline_cost : nexp -> nexp state = function
   | NCall (name, args) ->
       let* args' = State.list_map n_inline_cost args in
       return (NCall (name, args'))
+  | ReadResult r ->
+      let* args' = State.list_map n_inline_cost r.args in
+      return (ReadResult { r with args = args' })
+  | Convert c ->
+      let* arg = n_inline_cost c.arg in
+      return (convert c.ty arg)
   | NIf (b, e1, e2) ->
       let* b' = b_inline_cost b in
       let* e1' = n_inline_cost e1 in
@@ -787,9 +808,9 @@ and b_inline_cost : bexp -> bexp state = function
       let* index = State.list_map n_inline_cost index in
       let* operation = Atomic.Operation.map_state n_inline_cost operation in
       return (AtomicResult { target; array; index; operation })
-  | ThreadUnif e ->
+  | IsThreadUnif e ->
       let* e = n_inline_cost e in
-      return (ThreadUnif e)
+      return (IsThreadUnif e)
 
 module ProofResult = struct
   type t =

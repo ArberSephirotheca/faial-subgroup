@@ -3,29 +3,39 @@ open Protocols
 
 type imp_kernel = Imp.Kernel.t
 type proto_kernel = Protocols.Kernel.t
-type 'a t = { options : Gv_parser.t; kernels : 'a list }
+
+type 'a t = {
+  options : Gv_parser.t;
+  kernels : 'a list;
+  rejected : Imp.Rejected_kernel.t list;
+}
 
 module Make (L : Logger.Logger) = struct
   module D = D_to_imp.Make (L)
 
-  let imp_of_d_program ?(ignore_asserts = false) (options : Gv_parser.t)
+  let imp_of_d_program ?(ignore_asserts = false)
+      ?(opaque_calls = Opaque_call_policy.default) (options : Gv_parser.t)
       (program : D_lang.Program.t) : imp_kernel t =
     let kernels =
       Phase_timer.measure "inference/d-to-imp" (fun () ->
-          D.parse_program program)
+          D.parse_program ~policy:opaque_calls program)
     in
     let kernels =
       if ignore_asserts then List.map Imp.Kernel.remove_global_asserts kernels
       else kernels
     in
-    { options; kernels }
+    { options; kernels; rejected = [] }
 
-  let proto_of_imp ?(inline_calls = true) ?(only_globals = true)
-      ?(rules = Imp.Idiom_rewrite.all) (parsed : imp_kernel t) : proto_kernel t
-      =
-    let compiled =
+  let proto_of_imp ?(only_globals = true) ?(rules = Imp.Idiom_rewrite.all)
+      ?infer_cond_bound ?only_kernel (parsed : imp_kernel t) : proto_kernel t =
+    let compiled, rejected =
       Phase_timer.measure "inference/imp-to-proto" (fun () ->
-          Imp.Compiler.compile_all ~rules ~inline_calls parsed.kernels)
+          Imp.Compiler.compile_all ~rules ?infer_cond_bound ?only_kernel parsed.kernels)
+    in
+    let global_names =
+      parsed.kernels
+      |> List.filter Imp.Kernel.is_global
+      |> List.map Imp.Kernel.name |> Common.StringSet.of_list
     in
     {
       parsed with
@@ -33,19 +43,25 @@ module Make (L : Logger.Logger) = struct
         compiled
         |> List.filter (fun k ->
             (not only_globals) || (only_globals && Protocols.Kernel.is_global k));
+      rejected =
+        parsed.rejected @ rejected
+        |> List.filter (fun (r : Imp.Rejected_kernel.t) ->
+            (not only_globals) || Common.StringSet.mem r.kernel global_names);
     }
 
-  let d_program_to_proto ?(ignore_asserts = false) ?(inline_calls = true)
-      ?(only_globals = true) ?(rules = Imp.Idiom_rewrite.all)
-      (options : Gv_parser.t) (program : D_lang.Program.t) : proto_kernel t =
-    imp_of_d_program ~ignore_asserts options program
-    |> proto_of_imp ~inline_calls ~only_globals ~rules
+  let d_program_to_proto ?(ignore_asserts = false)
+      ?(opaque_calls = Opaque_call_policy.default) ?(only_globals = true)
+      ?(rules = Imp.Idiom_rewrite.all) ?infer_cond_bound ?only_kernel (options : Gv_parser.t)
+      (program : D_lang.Program.t) : proto_kernel t =
+    imp_of_d_program ~ignore_asserts ~opaque_calls options program
+    |> proto_of_imp ~only_globals ~rules ?infer_cond_bound ?only_kernel
 
   (* Shared JSON-to-Imp pipeline used by both [cu_to_imp] (live cu-to-json
      subprocess) and [cjson_to_imp] (cached cu-to-json output on disk). *)
   let imp_of_json ?(block_dim = None) ?(grid_dim = None)
       ?(ignore_asserts = false) ?(assume_launch = false) ?(exit_status = 2)
-      (options : Gv_parser.t) (j : Yojson.Basic.t) : imp_kernel t =
+      ?(opaque_calls = Opaque_call_policy.default) (options : Gv_parser.t)
+      (j : Yojson.Basic.t) : imp_kernel t =
     (* Override block_dim/grid_dim if they user provided *)
     let options =
       {
@@ -67,7 +83,7 @@ module Make (L : Logger.Logger) = struct
           Phase_timer.measure "inference/d-lang" (fun () ->
               k1 |> D_lang.rewrite_program |> synth)
         in
-        imp_of_d_program ~ignore_asserts options d_ast
+        imp_of_d_program ~ignore_asserts ~opaque_calls options d_ast
     | Error e ->
         Rjson.print_error e;
         exit exit_status
@@ -76,6 +92,7 @@ module Make (L : Logger.Logger) = struct
       ?(grid_dim = None) ?(includes = []) ?(macros = []) ?(exit_status = 2)
       ?(cu_to_json = "cu-to-json") ?(ignore_asserts = false)
       ?(assume_launch = false) ?(launch_params = false) ?(cbor = false)
+      ?(opaque_calls = Opaque_call_policy.default) ?(extra_files = [])
       (fname : string) : imp_kernel t =
     (* [Cu_to_json.cu_to_json] internally records "inference/cu-to-json"
        (subprocess + pipe read) and either "inference/yojson-parse" or
@@ -84,7 +101,8 @@ module Make (L : Logger.Logger) = struct
       Cu_to_json.cu_to_json
         ~ignore_fail:(not abort_on_parsing_failure)
         ~on_error:(fun _ -> exit exit_status)
-        ~includes ~macros ~exe:cu_to_json ~launch_params ~cbor fname
+        ~includes ~macros ~exe:cu_to_json ~launch_params ~cbor
+        (fname :: extra_files)
     in
     let options : Gv_parser.t =
       match Gv_parser.parse fname with
@@ -95,14 +113,15 @@ module Make (L : Logger.Logger) = struct
       | None -> Gv_parser.make ()
     in
     imp_of_json ~block_dim ~grid_dim ~ignore_asserts ~assume_launch ~exit_status
-      options j
+      ~opaque_calls options j
 
   (* Loads a cached cu-to-json output (.cjson). [Gv_parser] is intentionally
      skipped — the source file's // args: header isn't reachable from the
      cache path, so block/grid/etc. must come from CLI flags. *)
   let cjson_to_imp ?(block_dim = None) ?(grid_dim = None)
       ?(ignore_asserts = false) ?(assume_launch = false) ?(exit_status = 2)
-      (fname : string) : imp_kernel t =
+      ?(opaque_calls = Opaque_call_policy.default) (fname : string) :
+      imp_kernel t =
     (* Mirror the cu-to-json split: time the read separately from the
        Yojson parse. The "inference/yojson-parse" label is shared with
        the cu-to-json path so dataset sweeps can compare like-for-like. *)
@@ -121,7 +140,7 @@ module Make (L : Logger.Logger) = struct
             exit exit_status)
     in
     imp_of_json ~block_dim ~grid_dim ~ignore_asserts ~assume_launch ~exit_status
-      (Gv_parser.make ()) j
+      ~opaque_calls (Gv_parser.make ()) j
 
   let wgsl_to_imp ?(block_dim = None) ?(grid_dim = None) ?(exit_status = 2)
       ?(wgsl_to_json = "wgsl-to-json") ?(ignore_asserts = false)
@@ -156,7 +175,7 @@ module Make (L : Logger.Logger) = struct
             List.map Imp.Kernel.remove_global_asserts kernels
           else kernels
         in
-        { options; kernels }
+        { options; kernels; rejected = [] }
     | Error e ->
         Rjson.print_error e;
         exit exit_status
@@ -165,30 +184,42 @@ module Make (L : Logger.Logger) = struct
       ?(grid_dim = None) ?(includes = []) ?(macros = []) ?(exit_status = 2)
       ?(cu_to_json = "cu-to-json") ?(wgsl_to_json = "wgsl-to-json")
       ?(ignore_asserts = false) ?(assume_launch = false)
-      ?(launch_params = false) ?(cbor = false) (fname : string) : imp_kernel t =
-    if String.ends_with ~suffix:".wgsl" fname then
+      ?(launch_params = false) ?(cbor = false)
+      ?(opaque_calls = Opaque_call_policy.default) ?(extra_files = [])
+      (fname : string) : imp_kernel t =
+    let single_file (kind : string) : unit =
+      if extra_files <> [] then (
+        prerr_endline
+          ("Several input files are only supported for CUDA sources, not "
+         ^ kind ^ ".");
+        exit exit_status)
+    in
+    if String.ends_with ~suffix:".wgsl" fname then (
+      single_file "WGSL";
       wgsl_to_imp ~block_dim ~grid_dim ~exit_status ~wgsl_to_json
-        ~ignore_asserts fname
-    else if String.ends_with ~suffix:".cjson" fname then
+        ~ignore_asserts fname)
+    else if String.ends_with ~suffix:".cjson" fname then (
+      single_file "cached cu-to-json output";
       cjson_to_imp ~block_dim ~grid_dim ~exit_status ~ignore_asserts
-        ~assume_launch fname
+        ~assume_launch ~opaque_calls fname)
     else
       cu_to_imp ~abort_on_parsing_failure ~block_dim ~grid_dim ~includes ~macros
         ~exit_status ~cu_to_json ~ignore_asserts ~assume_launch ~launch_params
-        ~cbor fname
+        ~cbor ~opaque_calls ~extra_files fname
 
   let to_proto ?(abort_on_parsing_failure = true) ?(block_dim = None)
       ?(grid_dim = None) ?(includes = []) ?(exit_status = 2)
-      ?(inline_calls = true) ?(only_globals = true) ?(macros = [])
-      ?(cu_to_json = "cu-to-json") ?(ignore_asserts = false)
-      ?(assume_launch = false) ?(launch_params = false) ?(cbor = false)
-      ?(rules = Imp.Idiom_rewrite.all) (fname : string) : proto_kernel t =
+      ?(only_globals = true) ?(macros = []) ?(cu_to_json = "cu-to-json")
+      ?(ignore_asserts = false) ?(assume_launch = false)
+      ?(launch_params = false) ?(cbor = false) ?(rules = Imp.Idiom_rewrite.all)
+      ?infer_cond_bound ?(opaque_calls = Opaque_call_policy.default)
+      ?(extra_files = []) (fname : string) : proto_kernel t =
     let parsed =
       to_imp ~cu_to_json ~abort_on_parsing_failure ~block_dim ~grid_dim
         ~includes ~exit_status ~macros ~ignore_asserts ~assume_launch
-        ~launch_params ~cbor fname
+        ~launch_params ~cbor ~opaque_calls ~extra_files fname
     in
-    proto_of_imp ~inline_calls ~only_globals ~rules parsed
+    proto_of_imp ~only_globals ~rules ?infer_cond_bound parsed
 end
 
 module Default = Make (Logger.Colors)

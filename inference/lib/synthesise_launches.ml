@@ -43,11 +43,9 @@ let call_stmt (kernel : Decl_expr.t) (args : C_lang.Expr.t list) :
     args
     |> State.list_map Host_translate.rewrite_expr
   in
-  let func : Expr.t =
-    Ident
-      (Decl_expr.from_name ~ty:kernel.ty ~kind:Decl_expr.Kind.Function
-         kernel.name)
-  in
+  (* Keep the launch site's [decl_id]: it is what resolves the call to
+     the launched instantiation rather than to a same-named sibling. *)
+  let func : Expr.t = Ident { kernel with kind = Decl_expr.Kind.Function } in
   return (Stmt.SExpr (CallExpr { func; args; ty = kernel.ty }))
 
 let synth_name (lp : C_lang.LaunchParam.t) : string =
@@ -64,9 +62,9 @@ let synth_name (lp : C_lang.LaunchParam.t) : string =
 
 (** Converts a free variable into a kernel parameter. *)
 let param_of_free_var (d : Decl_expr.t) : C_lang.Param.t option =
-  if J_type.matches C_type.is_struct d.ty then None
+  if Ty.is_struct d.ty then None
   else
-    let ty_var = Ty_variable.make ~ty:d.ty ~name:d.name in
+    let ty_var = Ty_variable.make ~ty:(Ty.strip_reference d.ty) ~name:d.name in
     Some (C_lang.Param.make ~ty_var ~is_used:true ~is_shared:false)
 
 (** Lifts a path_condition into an assert. *)
@@ -87,9 +85,20 @@ let const_binding_decl (b : C_lang.ConstBinding.t) :
   let d = D_lang.Decl.from_expr ty_var rhs in
   State.return (Stmt.DeclStmt [ d ])
 
+let rec binds_closure (e : C_lang.Expr.t) : bool =
+  match e with
+  | LambdaExpr _ -> true
+  | Convert { arg; _ } -> binds_closure arg
+  | CXXConstructExpr { args = [ arg ]; _ } -> binds_closure arg
+  | _ -> false
+
+let bindable (lp : C_lang.LaunchParam.t) : C_lang.ConstBinding.t list =
+  lp.const_bindings
+  |> List.filter (fun (b : C_lang.ConstBinding.t) -> not (binds_closure b.init))
+
 let const_binding_decls (lp : C_lang.LaunchParam.t) :
     (Host_translate.t, Stmt.t) State.t =
-  let* decls = State.list_map const_binding_decl lp.const_bindings in
+  let* decls = State.list_map const_binding_decl (bindable lp) in
   State.return (Stmt.from_list decls)
 
 (** Names emitted as decls must be filtered out of the parameter list
@@ -97,7 +106,7 @@ let const_binding_decls (lp : C_lang.LaunchParam.t) :
     [rewrite_expr] (which always succeeds), so this is just the names
     of every binding. *)
 let bound_names_emitted (lp : C_lang.LaunchParam.t) : Variable.Set.t =
-  lp.const_bindings
+  bindable lp
   |> List.map (fun (b : C_lang.ConstBinding.t) -> b.name)
   |> Variable.Set.of_list
 
@@ -109,42 +118,7 @@ let dedup_by_name (type a) ~(name_of : a -> Variable.t) (xs : a list) : a list =
   in
   List.fold_left step (Variable.Set.empty, []) xs |> snd |> List.rev
 
-(** Rewrites arg slots whose top-level expression equals a
-    [const_bindings] init back to [Ident <binding-name>], so a host
-    [const] that cu-to-json inlined here re-converges with its named
-    uses elsewhere in the launch instead of being abstracted. *)
-let rebind_args_to_const_names
-    (bindings : C_lang.ConstBinding.t list) (args : C_lang.Expr.t list) :
-    C_lang.Expr.t list * C_lang.ConstBinding.t list =
-  let table : C_lang.ConstBinding.t Common.StringMap.t =
-    List.fold_left
-      (fun m (b : C_lang.ConstBinding.t) ->
-        Common.StringMap.add (C_lang.Expr.to_string b.init) b m)
-      Common.StringMap.empty
-      bindings
-  in
-  let rewrite (used : C_lang.ConstBinding.t list) (a : C_lang.Expr.t)
-      : C_lang.ConstBinding.t list * C_lang.Expr.t =
-    match Common.StringMap.find_opt (C_lang.Expr.to_string a) table with
-    | Some b ->
-        let ident =
-          C_lang.Expr.Ident
-            (Decl_expr.from_name ~ty:b.ty ~kind:Decl_expr.Kind.Var b.name)
-        in
-        (b :: used, ident)
-    | None -> (used, a)
-  in
-  let used, args = List.fold_left_map rewrite [] args in
-  let used =
-    used
-    |> dedup_by_name ~name_of:(fun (b : C_lang.ConstBinding.t) -> b.name)
-  in
-  (args, used)
-
 let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
-  let args, rebound_bindings =
-    rebind_args_to_const_names lp.const_bindings lp.args
-  in
   (* Shared resolver state across const bindings, grid, block,
      path_condition, and args so duplicate expressions across slots
      collapse to one uniform symbol. Const-binding decls are emitted
@@ -157,7 +131,7 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
       let* body_grid = dim_asserts "gridDim" lp.grid in
       let* body_block = dim_asserts "blockDim" lp.block in
       let* body_path_cond = path_cond_asserts lp in
-      let* body_call = call_stmt lp.kernel args in
+      let* body_call = call_stmt lp.kernel lp.args in
       return (Stmt.from_list
         [ body_const_bindings; body_grid; body_block; body_path_cond; body_call ])
     )
@@ -171,43 +145,147 @@ let synth_kernel (lp : C_lang.LaunchParam.t) : Kernel.t =
     |> Decl_expr.Set.elements
     |> List.filter_map param_of_free_var
   in
-  (* Binding names introduced by the arg-slot rebind. Already in
-     [direct_params] when the same binding is also referenced
-     elsewhere (grid / block / path_condition); excluded from [bound]
-     because impure-init bindings emit no [DeclStmt]. The trailing
-     [dedup_by_name] reconciles the overlap. *)
-  let rebound_params =
-    rebound_bindings
-    |> List.filter_map (fun (b : C_lang.ConstBinding.t) ->
-           if Variable.Set.mem b.name bound then None
-           else
-             let d =
-               Decl_expr.from_name ~ty:b.ty ~kind:Decl_expr.Kind.Var b.name
-             in
-             param_of_free_var d)
-  in
   let fresh_params = Host_translate.fresh_params ctx in
   let params =
-    direct_params @ rebound_params @ fresh_params
-    |> dedup_by_name ~name_of:C_lang.Param.name
+    direct_params @ fresh_params |> dedup_by_name ~name_of:C_lang.Param.name
   in
   let name = synth_name lp in
-  let ty = J_type.to_string lp.kernel.ty in
+  let ty = Ty.to_string lp.kernel.ty in
   {
-    Kernel.ty;
-    name;
+    Kernel.id = Imp.Function_id.make ~name ~ty ();
+    decl_id = None;
     code = body;
     type_params = [];
     template_args = lp.template_args;
     params;
     attribute = C_lang.KernelAttr.Default;
+    returns_location = false;
   }
+
+let rec fold_int (e : Expr.t) : int option =
+  match e with
+  | Expr.IntegerLiteral n -> Some n
+  | Expr.Convert { arg; _ } -> fold_int arg
+  | _ -> None
+
+let rec fold_bool (e : Expr.t) : bool option =
+  match e with
+  | Expr.CXXBoolLiteralExpr b -> Some b
+  | Expr.Convert { arg; _ } -> fold_bool arg
+  | Expr.UnaryOperator { opcode = "!"; child; _ } ->
+      fold_bool child |> Option.map not
+  | Expr.BinaryOperator { opcode = "&&"; lhs; rhs; _ } -> (
+      match (fold_bool lhs, fold_bool rhs) with
+      | Some false, _ | _, Some false -> Some false
+      | Some true, Some true -> Some true
+      | _ -> None)
+  | Expr.BinaryOperator { opcode = "||"; lhs; rhs; _ } -> (
+      match (fold_bool lhs, fold_bool rhs) with
+      | Some true, _ | _, Some true -> Some true
+      | Some false, Some false -> Some false
+      | _ -> None)
+  | Expr.BinaryOperator { opcode; lhs; rhs; _ } -> (
+      match (fold_int lhs, fold_int rhs) with
+      | Some l, Some r -> (
+          match opcode with
+          | "==" -> Some (l = r)
+          | "!=" -> Some (l <> r)
+          | "<" -> Some (l < r)
+          | "<=" -> Some (l <= r)
+          | ">" -> Some (l > r)
+          | ">=" -> Some (l >= r)
+          | _ -> None)
+      | _, _ -> None)
+  | _ -> None
+
+(** A path condition that folds to false describes a launch that no run
+    performs, so it gets no pseudo-kernel: one is a kernel reported to have
+    no accesses, which reads as a kernel that touches nothing. An
+    instantiation of an enclosing template is where a constant condition
+    comes from. *)
+let is_dead_launch (lp : C_lang.LaunchParam.t) : bool =
+  match lp.path_condition with
+  | None -> false
+  | Some e -> (
+      Host_translate.empty
+      |> State.run (Host_translate.rewrite_expr e)
+      |> snd
+      |> fold_bool
+      |> function
+      | Some false -> true
+      | Some true | None -> false)
+
+(** The name a pseudo-kernel gets is its callee and its source line, which
+    two records share whenever one line is reached twice: from two
+    instantiations of an enclosing template, or from two launches written
+    side by side. Records that synthesise the same body and call the same
+    declaration are one launch and merge; the rest keep their own identity
+    and are numbered, since a shared name would make the last one written
+    overwrite the others in the kernel map. *)
+let synth_kernels (p : Program.t) : Kernel.t list =
+  let key ((lp, k) : C_lang.LaunchParam.t * Kernel.t) : string =
+    (Kernel.to_s k |> Indent.to_string)
+    ^ "|"
+    ^ Option.value ~default:"" lp.kernel.decl_id
+  in
+  let dedup (seen, acc) (x : C_lang.LaunchParam.t * Kernel.t) =
+    let k = key x in
+    if Common.StringSet.mem k seen then (seen, acc)
+    else (Common.StringSet.add k seen, snd x :: acc)
+  in
+  let number (seen, acc) (k : Kernel.t) =
+    let name = Imp.Function_id.name k.id in
+    let n = Common.StringMap.find_opt name seen |> Option.value ~default:0 in
+    let k =
+      if n = 0 then k
+      else
+        let id =
+          Imp.Function_id.make
+            ~name:(Printf.sprintf "%s#%d" name (n + 1))
+            ~ty:(Imp.Function_id.ty k.id) ()
+        in
+        { k with id }
+    in
+    (Common.StringMap.add name (n + 1) seen, k :: acc)
+  in
+  p
+  |> List.filter_map (function
+      | Def.LaunchParam lp when not (is_dead_launch lp) ->
+          Some (lp, synth_kernel lp)
+      | _ -> None)
+  |> List.fold_left dedup (Common.StringSet.empty, [])
+  |> snd |> List.rev
+  |> List.fold_left number (Common.StringMap.empty, [])
+  |> snd |> List.rev
 
 (** {1 Demote launched kernels} *)
 
-let demote_if_launched (launched : Variable.Set.t) (k : Kernel.t) : Kernel.t =
-  let n = Variable.from_name k.name in
-  if Variable.Set.mem n launched && k.attribute = C_lang.KernelAttr.Default
+(** Resolves every launch target the same way the synthesised call
+    will, so a kernel is demoted exactly when a wrapper stands in for
+    it. Matching on the bare name instead demotes every same-named
+    sibling, which leaves an unlaunched overload or namespace member
+    with neither an entry point nor a wrapper, and therefore no
+    verdict at all. *)
+let launched_ids (p : Program.t) : Imp.Function_id.Set.t =
+  let db = SignatureDB.from_program p in
+  List.fold_left
+    (fun acc def ->
+      match def with
+      | Def.LaunchParam lp when not (is_dead_launch lp) -> (
+          let func : Expr.t =
+            Ident { lp.kernel with kind = Decl_expr.Kind.Function }
+          in
+          match SignatureDB.lookup func (List.length lp.args) db with
+          | Some s -> Imp.Function_id.Set.add s.id acc
+          | None -> acc)
+      | _ -> acc)
+    Imp.Function_id.Set.empty p
+
+let demote_if_launched (launched : Imp.Function_id.Set.t) (k : Kernel.t) :
+    Kernel.t =
+  if
+    Imp.Function_id.Set.mem k.id launched
+    && k.attribute = C_lang.KernelAttr.Default
   then { k with attribute = C_lang.KernelAttr.Auxiliary }
   else k
 
@@ -217,19 +295,13 @@ let demote_if_launched (launched : Variable.Set.t) (k : Kernel.t) : Kernel.t =
 let rewrite_program (p : Program.t) : Program.t =
   (* Synth kernels are emitted before demoted originals so the
      call-inliner sees callees before callers. *)
-  let launched = Program.launched_kernel_names p in
-  let push_synth def = State.update (fun synth -> def :: synth) in
-  let m =
-    State.list_fold_left
-      (fun rest def ->
-        match def with
-        | Def.LaunchParam lp ->
-            let* () = push_synth (Def.Kernel (synth_kernel lp)) in
-            return rest
-        | Def.Kernel k ->
-            return (Def.Kernel (demote_if_launched launched k) :: rest)
-        | other -> return (other :: rest))
-      [] p
+  let launched = launched_ids p in
+  let synth = synth_kernels p |> List.map (fun k -> Def.Kernel k) in
+  let rest =
+    p
+    |> List.filter_map (function
+        | Def.LaunchParam _ -> None
+        | Def.Kernel k -> Some (Def.Kernel (demote_if_launched launched k))
+        | other -> Some other)
   in
-  let synth, rest_rev = State.run m [] in
-  List.rev rest_rev @ List.rev synth
+  rest @ synth

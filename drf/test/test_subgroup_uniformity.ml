@@ -12,7 +12,7 @@ let var (name : string) : Variable.t = Variable.from_name name
 
 let ident ?(kind = Decl_expr.Kind.Var) ?(ty = J_type.int) (name : string) :
     D_lang.Expr.t =
-  Ident { name = Variable.from_name name; ty; kind }
+  Ident (Decl_expr.from_name ~ty ~kind (Variable.from_name name))
 
 let ty_var ?(ty = J_type.int) (name : string) : Ty_variable.t =
   Ty_variable.make ~name:(var name) ~ty
@@ -421,8 +421,9 @@ let test_source_thread_x_guard_reaches_uniformity_checker () : unit =
   let condition = thread_x_lt_32 () in
   let source_kernel : D_lang.Kernel.t =
     {
-      ty = "void ()";
-      name = "guarded_syncwarp";
+      id = Imp.Function_id.make ~name:"guarded_syncwarp" ~ty:"void ()" ();
+      decl_id = None;
+      returns_location = false;
       code =
         IfStmt
           {
@@ -466,8 +467,9 @@ let check_source_guarded_syncwarp_rejects (name : string) (code : D_lang.Stmt.t)
     : unit =
   let source_kernel : D_lang.Kernel.t =
     {
-      ty = "void ()";
-      name;
+      id = Imp.Function_id.make ~name ~ty:"void ()" ();
+      decl_id = None;
+      returns_location = false;
       code;
       type_params = [];
       template_args = [];
@@ -504,8 +506,11 @@ let check_source_guarded_syncwarp_rejects (name : string) (code : D_lang.Stmt.t)
 let test_source_uniform_kernel_param_member_control_accepts () : unit =
   let source_kernel : D_lang.Kernel.t =
     {
-      ty = "void ()";
-      name = "uniform_param_loop_syncwarp";
+      id =
+        Imp.Function_id.make ~name:"uniform_param_loop_syncwarp" ~ty:"void ()"
+          ();
+      decl_id = None;
+      returns_location = false;
       code =
         WhileStmt
           {
@@ -570,8 +575,11 @@ let subgroup_id_alias_program ~(warp_size : int) : D_lang.Program.t =
       (decl "WARP_SIZE" (D_lang.Expr.IntegerLiteral warp_size));
     D_lang.Def.Kernel
       {
-        ty = "void ()";
-        name = "subgroup_id_alias_syncwarp";
+        id =
+          Imp.Function_id.make ~name:"subgroup_id_alias_syncwarp" ~ty:"void ()"
+            ();
+        decl_id = None;
+        returns_location = false;
         code;
         type_params = [];
         template_args = [];
@@ -615,8 +623,11 @@ let physical_warp_size_alias_program () : D_lang.Program.t =
   let helper =
     D_lang.Def.Kernel
       {
-        ty = "int ()";
-        name = "ggml_cuda_get_physical_warp_size";
+        id =
+          Imp.Function_id.make ~name:"ggml_cuda_get_physical_warp_size"
+            ~ty:"int ()" ();
+        decl_id = None;
+        returns_location = false;
         code = ReturnStmt (Some (IntegerLiteral 32));
         type_params = [];
         template_args = [];
@@ -646,8 +657,11 @@ let physical_warp_size_alias_program () : D_lang.Program.t =
     helper;
     D_lang.Def.Kernel
       {
-        ty = "void ()";
-        name = "physical_warp_size_alias_syncwarp";
+        id =
+          Imp.Function_id.make ~name:"physical_warp_size_alias_syncwarp"
+            ~ty:"void ()" ();
+        decl_id = None;
+        returns_location = false;
         code;
         type_params = [];
         template_args = [];
@@ -678,8 +692,11 @@ let test_non_type_template_control_is_uniform () : unit =
     [
       D_lang.Def.Kernel
         {
-          ty = "void ()";
-          name = "template_uniform_control";
+          id =
+            Imp.Function_id.make ~name:"template_uniform_control" ~ty:"void ()"
+              ();
+          decl_id = None;
+          returns_location = false;
           code;
           type_params =
             [
@@ -724,8 +741,11 @@ let stale_subgroup_id_alias_program () : D_lang.Program.t =
     D_lang.Def.Declaration (decl "WARP_SIZE" (D_lang.Expr.IntegerLiteral 32));
     D_lang.Def.Kernel
       {
-        ty = "void ()";
-        name = "stale_subgroup_alias_syncwarp";
+        id =
+          Imp.Function_id.make ~name:"stale_subgroup_alias_syncwarp"
+            ~ty:"void ()" ();
+        decl_id = None;
+        returns_location = false;
         code;
         type_params = [];
         template_args = [];
@@ -766,8 +786,11 @@ let non_uniform_control_assignment_program () : D_lang.Program.t =
     D_lang.Def.Declaration (decl "WARP_SIZE" (D_lang.Expr.IntegerLiteral 32));
     D_lang.Def.Kernel
       {
-        ty = "void ()";
-        name = "divergent_assignment_syncwarp";
+        id =
+          Imp.Function_id.make ~name:"divergent_assignment_syncwarp"
+            ~ty:"void ()" ();
+        decl_id = None;
+        returns_location = false;
         code;
         type_params = [];
         template_args = [];
@@ -809,8 +832,11 @@ let mixed_branch_subgroup_id_alias_program () : D_lang.Program.t =
     D_lang.Def.Declaration (decl "WARP_SIZE" (D_lang.Expr.IntegerLiteral 32));
     D_lang.Def.Kernel
       {
-        ty = "void ()";
-        name = "mixed_branch_subgroup_alias_syncwarp";
+        id =
+          Imp.Function_id.make ~name:"mixed_branch_subgroup_alias_syncwarp"
+            ~ty:"void ()" ();
+        decl_id = None;
+        returns_location = false;
         code;
         type_params = [];
         template_args = [];
@@ -852,8 +878,11 @@ let one_path_branch_introduced_alias_program () : D_lang.Program.t =
     D_lang.Def.Declaration (decl "WARP_SIZE" (D_lang.Expr.IntegerLiteral 32));
     D_lang.Def.Kernel
       {
-        ty = "void ()";
-        name = "one_path_branch_introduced_alias_syncwarp";
+        id =
+          Imp.Function_id.make ~name:"one_path_branch_introduced_alias_syncwarp"
+            ~ty:"void ()" ();
+        decl_id = None;
+        returns_location = false;
         code;
         type_params = [];
         template_args = [];
@@ -895,8 +924,11 @@ let else_branch_site_snapshot_program () : D_lang.Program.t =
     D_lang.Def.Declaration (decl "WARP_SIZE" (D_lang.Expr.IntegerLiteral 32));
     D_lang.Def.Kernel
       {
-        ty = "void ()";
-        name = "else_branch_site_snapshot_syncwarp";
+        id =
+          Imp.Function_id.make ~name:"else_branch_site_snapshot_syncwarp"
+            ~ty:"void ()" ();
+        decl_id = None;
+        returns_location = false;
         code;
         type_params = [];
         template_args = [];
@@ -938,8 +970,11 @@ let loop_readded_subgroup_id_alias_program () : D_lang.Program.t =
     D_lang.Def.Declaration (decl "WARP_SIZE" (D_lang.Expr.IntegerLiteral 32));
     D_lang.Def.Kernel
       {
-        ty = "void ()";
-        name = "loop_readded_subgroup_alias_syncwarp";
+        id =
+          Imp.Function_id.make ~name:"loop_readded_subgroup_alias_syncwarp"
+            ~ty:"void ()" ();
+        decl_id = None;
+        returns_location = false;
         code;
         type_params = [];
         template_args = [];
@@ -977,8 +1012,11 @@ let one_path_loop_introduced_alias_program () : D_lang.Program.t =
     D_lang.Def.Declaration (decl "WARP_SIZE" (D_lang.Expr.IntegerLiteral 32));
     D_lang.Def.Kernel
       {
-        ty = "void ()";
-        name = "one_path_loop_introduced_alias_syncwarp";
+        id =
+          Imp.Function_id.make ~name:"one_path_loop_introduced_alias_syncwarp"
+            ~ty:"void ()" ();
+        decl_id = None;
+        returns_location = false;
         code;
         type_params = [];
         template_args = [];
@@ -1016,8 +1054,11 @@ let one_path_loop_increment_alias_program () : D_lang.Program.t =
     D_lang.Def.Declaration (decl "WARP_SIZE" (D_lang.Expr.IntegerLiteral 32));
     D_lang.Def.Kernel
       {
-        ty = "void ()";
-        name = "one_path_loop_increment_alias_syncwarp";
+        id =
+          Imp.Function_id.make ~name:"one_path_loop_increment_alias_syncwarp"
+            ~ty:"void ()" ();
+        decl_id = None;
+        returns_location = false;
         code;
         type_params = [];
         template_args = [];
@@ -1167,8 +1208,39 @@ let test_summary_uses_rust_oracle_component_names () : unit =
        (Stage0.Common.contains ~substring:"site#30[store_matrix_sync]")
        summary)
 
+let test_upstream_expression_forms () : unit =
+  let check expression expected =
+    let control = Uniformity.control ~conditions:[ Exp.CastBool expression ] in
+    let result =
+      Uniformity.check_kernel
+        ~site_controls:[ (1, control) ]
+        (kernel [ SM.Stmt.subgroup_barrier (site 1) ])
+      |> expect_uniformity_ok
+    in
+    Alcotest.(check string)
+      "expression uniformity" expected
+      (Uniformity.verdict_to_string (Uniformity.function_verdict result))
+  in
+  check (Exp.Convert { ty = Scalar.bool; arg = Exp.Num 1 }) "drf";
+  check
+    (Exp.Convert { ty = Scalar.bool; arg = Exp.Var Variable.tid_x })
+    "undefined_behavior";
+  check
+    (Exp.ReadResult
+       {
+         array = var "input";
+         version = 0;
+         ty = Some Scalar.int;
+         address = false;
+         args = [ Exp.Num 0 ];
+       })
+    "undefined_behavior"
+
 let tests : unit Alcotest.test_case list =
   [
+    ( "upstream conversions and read results",
+      `Quick,
+      test_upstream_expression_forms );
     ( "top-level subgroup and matrix sites",
       `Quick,
       test_top_level_subgroup_and_matrix_sites_are_uniform );

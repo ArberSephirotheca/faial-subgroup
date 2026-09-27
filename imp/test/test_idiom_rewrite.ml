@@ -25,7 +25,7 @@ let bexp_t : bexp Alcotest.testable =
     Exp_match.b_equal
 
 let access (idx : nexp list) : Encode_assigns.t =
-  Encode_assigns.Access { array = v "A"; index = idx; mode = Access.Mode.Read }
+  Encode_assigns.Access (Access.read (v "A") idx)
 
 let rec index_of : Encode_assigns.t -> nexp list = function
   | Encode_assigns.Access a -> a.Access.index
@@ -69,11 +69,9 @@ let driver_tests =
               "global visibility" true
               (a.Assert.visibility = Assert.Visibility.Global);
             Alcotest.check bexp_t "assert is ?k > 0 instantiated"
-              (gt (num 3) (num 0))
-              a.Assert.cond;
+              (gt (num 3) (num 0)) a.Assert.cond;
             Alcotest.check (Alcotest.list nexp_t) "index rewritten to the base"
-              [ var "x" ]
-              (index_of rest)
+              [ var "x" ] (index_of rest)
         | other ->
             Alcotest.failf "unexpected shape: %s"
               (Encode_assigns.to_string other) );
@@ -84,8 +82,7 @@ let driver_tests =
         match Idiom_rewrite.rewrite [ drop_shift ] prog with
         | Encode_assigns.Seq (Encode_assigns.Assert _, rest) ->
             Alcotest.check (Alcotest.list nexp_t)
-              "both indices rewritten, one assert"
-              [ var "x"; var "y" ]
+              "both indices rewritten, one assert" [ var "x"; var "y" ]
               (index_of rest)
         | other ->
             Alcotest.failf "expected a single prepended assert, got: %s"
@@ -94,6 +91,20 @@ let driver_tests =
 
 let fastdiv_tests =
   [
+    ( "emitted bounds preserve a local guard on following accesses",
+      `Quick,
+      fun () ->
+        let guard = gt fastdiv_expr (num 0) in
+        let prog = Encode_assigns.Seq
+          (Encode_assigns.Assert (Assert.make guard Assert.Visibility.Local),
+           access [ num 0 ]) in
+        let code = Idiom_rewrite.rewrite Idiom_rewrite.all prog
+          |> Encode_asserts.from_encode_assigns in
+        let expected = gt (udiv (var "n") (var "fdv.z")) (num 0) in
+        Alcotest.(check bool) "local guard is retained" true
+          (Code.exists (function
+             | Code.If (b, _, Code.Skip) -> Exp.b_equal b expected
+             | _ -> false) code) );
     ( "fastdiv rewrites to unsigned division by the packed divisor",
       `Quick,
       fun () ->
@@ -110,8 +121,7 @@ let fastdiv_tests =
         let prog = access [ fastdiv_expr *@ var "stride" ] in
         match Idiom_rewrite.rewrite Idiom_rewrite.all prog with
         | Encode_assigns.Seq (Encode_assigns.Assert a, _) as res ->
-            Alcotest.check bexp_t "assert"
-              (uge (var "fdv.z") (num 1))
+            Alcotest.check bexp_t "assert" (uge (var "fdv.z") (num 1))
               a.Assert.cond;
             Alcotest.check (Alcotest.list nexp_t) "index"
               [ udiv (var "n") (var "fdv.z") *@ var "stride" ]
@@ -122,9 +132,7 @@ let fastdiv_tests =
       `Quick,
       fun () ->
         let modexpr = var "n" -@ (fastdiv_expr *@ var "fdv.z") in
-        let res =
-          Idiom_rewrite.rewrite Idiom_rewrite.all (access [ modexpr ])
-        in
+        let res = Idiom_rewrite.rewrite Idiom_rewrite.all (access [ modexpr ]) in
         Alcotest.check (Alcotest.list nexp_t) "n - (n/d)*d"
           [ var "n" -@ (udiv (var "n") (var "fdv.z") *@ var "fdv.z") ]
           (index_of res) );

@@ -173,7 +173,8 @@ let rec nexp_to_coq (n : nexp) : (string, error) Result.t =
       let* e1_s = nexp_to_coq e1 in
       let* e2_s = nexp_to_coq e2 in
       Ok (Printf.sprintf "(NBin %s %s %s)" op_s e1_s e2_s)
-  | (Unary _ | NCall _ | NIf _ | CastInt _) as e ->
+  | Convert c -> nexp_to_coq c.arg
+  | (Unary _ | NCall _ | ReadResult _ | NIf _ | CastInt _) as e ->
       Error ("unsupported nexp: " ^ Exp.n_to_string e)
 
 let rec bexp_to_coq (b : bexp) : (string, error) Result.t =
@@ -192,7 +193,7 @@ let rec bexp_to_coq (b : bexp) : (string, error) Result.t =
   | BNot b ->
       let* b_s = bexp_to_coq b in
       Ok (Printf.sprintf "(neg %s)" b_s)
-  | (CastBool _ | Pred _ | Distinct _ | AtomicResult _ | ThreadUnif _) as e ->
+  | (CastBool _ | Pred _ | Distinct _ | AtomicResult _ | IsThreadUnif _) as e ->
       Error ("unsupported bexp: " ^ Exp.b_to_string e)
 
 (** {1 Range classification}
@@ -633,7 +634,7 @@ let rec code_to_s (cfg : config) (c : Code.t) : (Indent.t list, error) Result.t
           let* p_s = code_to_s cfg p in
           let* q_s = code_to_s cfg q in
           Ok (s.ite ~cond:b_s p_s q_s))
-  | Loop { range; body } -> (
+  | Loop { cond_range = { range; _ }; body } -> (
       let* form = classify_range range in
       let* body_s = code_to_s cfg body in
       match form with
@@ -710,7 +711,7 @@ let used_idents (k : Kernel.t) : Variable.t list =
     | Access a -> List.fold_left nexp acc a.index
     | Seq (p, q) -> on_code (on_code acc p) q
     | If (b, p, q) -> on_code (on_code (bexp acc b) p) q
-    | Loop { range; body } ->
+    | Loop { cond_range = { range; _ }; body } ->
         let acc = Variable.Set.add range.var acc in
         let acc = nexp acc range.lower_bound in
         let acc = nexp acc range.upper_bound in

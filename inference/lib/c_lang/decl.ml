@@ -4,7 +4,7 @@ open Ast
 
 type t = c_decl = {
   var : Variable.t;
-  ty : J_type.t;
+  ty : Ty.t;
   init : Init.t option;
   attrs : string list;
 }
@@ -15,9 +15,9 @@ let make ~ty_var ~init ~attrs : t =
 let init (x : t) : Init.t option = x.init
 let attrs (x : t) : string list = x.attrs
 let var (x : t) : Variable.t = x.var
-let ty (x : t) : J_type.t = x.ty
+let ty (x : t) : Ty.t = x.ty
 let location (x : t) : Location.t = Variable.location x.var
-let matches pred (x : t) = J_type.matches pred x.ty
+let matches pred (x : t) = pred x.ty
 let is_shared (x : t) : bool = List.mem c_attr_shared x.attrs
 
 let to_expr_seq (x : t) : Expr.t Seq.t =
@@ -36,7 +36,7 @@ let to_string (d : t) : string =
       let attrs = String.concat " " d.attrs |> String.trim in
       attrs ^ " "
   in
-  attr ^ J_type.to_string d.ty ^ " " ^ Variable.name d.var ^ i
+  attr ^ Ty.to_string d.ty ^ " " ^ Variable.name d.var ^ i
 
 let to_s (d : t) : Indent.t list = [ Indent.Line (to_string d ^ ";") ]
 

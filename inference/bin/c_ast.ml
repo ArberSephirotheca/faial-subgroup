@@ -39,7 +39,8 @@ let is_stdlib (loc : Location.t) : bool =
     | None -> false
     | Some d -> Fpath.is_prefix d (Fpath.v f)
 
-let analyze (verbose : bool) (assume_launch : bool) (j : Yojson.Basic.t) :
+let analyze (verbose : bool) (type_tree : bool) (assume_launch : bool)
+    (j : Yojson.Basic.t) :
     C_lang.Program.t * D_lang.Program.t * Imp.Kernel.t list =
   match C_lang.Program.parse j with
   | Ok k1 ->
@@ -47,9 +48,12 @@ let analyze (verbose : bool) (assume_launch : bool) (j : Yojson.Basic.t) :
         if assume_launch then Synthesise_launches.rewrite_program else Fun.id
       in
       let k2 = k1 |> D_lang.rewrite_program |> synth in
+      let report (f : unit -> string) : unit =
+        if type_tree then print_endline (f ())
+      in
       let k3 =
-        if verbose then D_to_imp.Default.parse_program k2
-        else D_to_imp.Silent.parse_program k2
+        if verbose then D_to_imp.Default.parse_program ~report k2
+        else D_to_imp.Silent.parse_program ~report k2
       in
       (k1, k2, k3)
   | Error e ->
@@ -66,12 +70,15 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
        (let open D_lang in
         let open Def in
         function
-        | Kernel k -> Hashtbl.add k2_ht k.name k
-        | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> ());
+        | Kernel k -> Hashtbl.add k2_ht (Imp.Function_id.to_string k.id) k
+        | Prototype _ | Declaration _ | Typedef _ | Record _ | Enum _
+        | UsingNamespace _
+        | LaunchParam _ ->
+            ());
   k3
   |> List.iter (fun k ->
-      let open Imp.Kernel in
-      Hashtbl.add k3_ht k.name k);
+      Hashtbl.add k3_ht
+        (Imp.Function_id.to_string (Imp.Kernel.unique_id k)) k);
   let l =
     List.fold_left
       (fun ((decls : Decl.t list), js) ->
@@ -81,7 +88,10 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
         | Kernel k -> (
             try
               (*         let k2 = Hashtbl.find k2_ht k.name in *)
-              let k3 = Hashtbl.find k3_ht k.name in
+              let k3 =
+                Hashtbl.find k3_ht
+                  (Imp.Function_id.to_string (C_lang.Kernel.id k))
+              in
               ( decls,
                 `Assoc
                   [
@@ -103,84 +113,127 @@ let print_json_summary (k1 : C_lang.Program.t) (k2 : D_lang.Program.t)
             with Not_found -> (decls, js))
         | Declaration d ->
             let decls =
-              if Decl.matches Protocols.C_type.is_array d then d :: decls
+              if Decl.matches Protocols.Ty.is_array_or_pointer d then d :: decls
               else decls
             in
             (decls, js)
-        | Typedef _ | Enum _ | LaunchParam _ -> (decls, js))
+        | Prototype _ | Typedef _ | Record _ | Enum _ | LaunchParam _
+        | UsingNamespace _ ->
+            (decls, js))
       ([], []) k1
     |> snd
   in
   print_endline (Yojson.Basic.pretty_to_string (`List l))
 
-let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
-    (only_global : bool) (show_stdlib : bool) (assume_launch : bool)
-    (includes : string list) (macros : string list) : unit =
+let main (fnames : string list) (silent : bool) (json : bool) (verbose : bool)
+    (type_tree : bool) (only_global : bool) (show_stdlib : bool)
+    (assume_launch : bool) (includes : string list) (macros : string list) :
+    unit =
   let j =
     Cu_to_json.cu_to_json ~ignore_fail:true ~launch_params:true ~includes
-      ~macros fname
+      ~macros fnames
   in
-  let k1, k2, k3 = analyze verbose assume_launch j in
+  let k1, k2, k3 = analyze verbose type_tree assume_launch j in
   let keep_loc (loc : Location.t) : bool = show_stdlib || not (is_stdlib loc) in
   (* Conservative drop list for the D_lang and Imp stages, which carry
-     no [location] on their [Kernel.t]: the names of every C_lang
-     kernel that the stdlib filter would reject. Anything not on this
-     list — user kernels, but also synth kernels emitted by
-     [Synthesise_launches] under [--assume-launch] — is kept. *)
-  let stdlib_kernel_names : StringSet.t =
+     no [location] on their [Kernel.t]: every C_lang kernel that the
+     stdlib filter would reject. Anything not on this list, user
+     kernels but also synth kernels emitted by [Synthesise_launches]
+     under [--assume-launch], is kept. The key is the [Function_id]
+     that C_lang mints and D_lang and Imp copy verbatim, so a bare
+     name shared by a library function and a user kernel keeps them
+     apart. *)
+  let stdlib_kernel_ids : Imp.Function_id.Set.t =
     k1
     |> List.fold_left
          (fun acc d ->
            match d with
-           | C_lang.Def.Kernel k when not (keep_loc (C_lang.Kernel.location k))
-             ->
-               StringSet.add k.name acc
+           | (C_lang.Def.Kernel k | C_lang.Def.Prototype k)
+             when not (keep_loc (C_lang.Kernel.location k)) ->
+               Imp.Function_id.Set.add (C_lang.Kernel.id k) acc
            | _ -> acc)
-         StringSet.empty
+         Imp.Function_id.Set.empty
+  in
+  let reachable_kernel_ids : Imp.Function_id.Set.t =
+    let by_id =
+      k3
+      |> List.fold_left
+           (fun m k -> Imp.Function_id.Map.add (Imp.Kernel.unique_id k) k m)
+           Imp.Function_id.Map.empty
+    in
+    let rec reach (seen : Imp.Function_id.Set.t)
+        (todo : Imp.Function_id.t list) : Imp.Function_id.Set.t =
+      match todo with
+      | [] -> seen
+      | id :: todo when Imp.Function_id.Set.mem id seen -> reach seen todo
+      | id :: todo ->
+          let callees =
+            match Imp.Function_id.Map.find_opt id by_id with
+            | Some k -> Imp.Kernel.calls k |> Imp.Function_id.Set.elements
+            | None -> []
+          in
+          reach (Imp.Function_id.Set.add id seen) (callees @ todo)
+    in
+    k3
+    |> List.filter Imp.Kernel.is_global
+    |> List.map Imp.Kernel.unique_id
+    |> reach Imp.Function_id.Set.empty
+  in
+  let keep_id (id : Imp.Function_id.t) : bool =
+    ((not only_global) || Imp.Function_id.Set.mem id reachable_kernel_ids)
+    && not (Imp.Function_id.Set.mem id stdlib_kernel_ids)
+  in
+  (* [Protocols.Kernel] is the one stage that keeps a label instead of
+     the [Function_id], so it is filtered on the labels of the same two
+     sets. Two functions sharing a label still collide there. *)
+  let labels_of (s : Imp.Function_id.Set.t) : StringSet.t =
+    s |> Imp.Function_id.Set.elements
+    |> List.map Imp.Function_id.label
+    |> StringSet.of_list
+  in
+  let stdlib_labels = labels_of stdlib_kernel_ids in
+  let reachable_labels = labels_of reachable_kernel_ids in
+  let keep_label (name : string) : bool =
+    ((not only_global) || StringSet.mem name reachable_labels)
+    && not (StringSet.mem name stdlib_labels)
   in
   let c_lang_keep (d : C_lang.Def.t) : bool =
     let open C_lang in
-    (match d with Def.Kernel k -> (not only_global) || Kernel.is_global k
+    (match d with
+     | Def.Kernel k -> keep_id (Kernel.id k)
      | _ -> not only_global)
     && keep_loc (C_lang.Def.location d)
   in
   let d_lang_keep (d : D_lang.Def.t) : bool =
     let open D_lang in
     match d with
-    | Kernel k ->
-        ((not only_global) || Kernel.is_global k)
-        && not (StringSet.mem k.name stdlib_kernel_names)
+    | Kernel k -> keep_id k.Kernel.id
+    | Prototype k ->
+        (not only_global)
+        && not (Imp.Function_id.Set.mem k.Kernel.id stdlib_kernel_ids)
     | Declaration d ->
         (not only_global) && keep_loc (Variable.location (Decl.var d))
     | Typedef d -> (not only_global) && keep_loc (Typedef.location d)
+    | Record r -> (not only_global) && keep_loc (Record.location r)
     | Enum e -> (not only_global) && keep_loc (Imp.Enum.location e)
     | LaunchParam lp -> (not only_global) && keep_loc lp.loc
+    | UsingNamespace _ -> not only_global
   in
   let k1_filtered = C_lang.Program.filter c_lang_keep k1 in
   let k2_filtered = D_lang.Program.filter d_lang_keep k2 in
   let k3_filtered =
-    k3
-    |> List.filter (fun k ->
-        ((not only_global) || Imp.Kernel.is_global k)
-        && not (StringSet.mem k.Imp.Kernel.name stdlib_kernel_names))
+    k3 |> List.filter (fun k -> keep_id (Imp.Kernel.unique_id k))
   in
   let scoped = List.map Imp.Scoped.Kernel.from_imp k3 in
-  let inlined = Imp.Inline_calls.inline_calls scoped in
-  let proto = List.map Imp.Compiler.compile inlined in
-  let keep_named (name : string) (is_global : bool) : bool =
-    ((not only_global) || is_global)
-    && not (StringSet.mem name stdlib_kernel_names)
-  in
+  let inlined, rejected = Imp.Inline_calls.inline_calls scoped in
+  let proto = List.filter_map (fun k -> Imp.Compiler.compile k |> Result.to_option) inlined in
   let scoped_filter =
-    List.filter (fun k ->
-        keep_named k.Imp.Scoped.Kernel.name (Imp.Scoped.Kernel.is_global k))
+    List.filter (fun k -> keep_id (Imp.Scoped.Kernel.unique_id k))
   in
   let scoped_filtered = scoped_filter scoped in
   let inlined_filtered = scoped_filter inlined in
   let proto_filtered =
-    proto
-    |> List.filter (fun k ->
-        keep_named (Protocols.Kernel.name k) (Protocols.Kernel.is_global k))
+    proto |> List.filter (fun k -> keep_label (Protocols.Kernel.name k))
   in
   if silent then ()
   else (
@@ -195,6 +248,9 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
     List.iter Imp.Scoped.Kernel.print scoped_filtered;
     print_endline "==================== STAGE 5: Scoped, calls inlined\n";
     List.iter Imp.Scoped.Kernel.print inlined_filtered;
+    List.iter
+      (fun r -> print_endline (Imp.Rejected_kernel.to_string r))
+      rejected;
     print_endline "==================== STAGE 6: Protocols\n";
     List.iter Protocols.Kernel.print proto_filtered;
     print_endline "==================== STAGE 7: stats\n");
@@ -202,9 +258,14 @@ let main (fname : string) (silent : bool) (json : bool) (verbose : bool)
 
 open Cmdliner
 
-let get_fname =
-  let doc = "The path $(docv) of the GPU program." in
-  Arg.(required & pos 0 (some file) None & info [] ~docv:"FILENAME" ~doc)
+let get_fnames =
+  let doc =
+    "The path $(docv) of the GPU program. May be repeated: every CUDA \
+     source given is parsed together and printed as a single program, so \
+     a kernel in one file resolves its calls against definitions in \
+     another."
+  in
+  Arg.(non_empty & pos_all file [] & info [] ~docv:"FILENAME" ~doc)
 
 let silent =
   let doc = "Silence output" in
@@ -218,15 +279,27 @@ let verbose =
   let doc = "Print warnings emitted by the inference pipeline" in
   Arg.(value & flag & info [ "verbose"; "v" ] ~doc)
 
+let type_tree =
+  let doc =
+    "For each kernel, print the array map derived from the parameter types \
+     beside the one the front end accumulates: [=] in both, [+] derived \
+     only, [-] accumulated only, [~] a pointee the descent cuts at."
+  in
+  Arg.(value & flag & info [ "type-tree" ] ~doc)
+
 let only_global =
-  let doc = "Only print __global__ kernels" in
+  let doc =
+    "Only print __global__ kernels and the functions they call. Under \
+     --assume-launch the launched kernel is demoted to __device__ and \
+     reached through the synthesised wrapper, so it is printed too."
+  in
   Arg.(value & flag & info [ "only-global" ] ~doc)
 
 let show_stdlib =
   let doc =
-    "Include the c-to-json stdlib (cuda.h, stdio.h, iostream, \
-     compiler-builtin typedefs, etc.). By default these are hidden so \
-     only user-authored declarations remain."
+    "Include declarations from the standard and CUDA headers (cuda.h, \
+     stdio.h, iostream, compiler-builtin typedefs, etc.). By default \
+     these are hidden so only user-authored declarations remain."
   in
   Arg.(value & flag & info [ "show-stdlib" ] ~doc)
 
@@ -262,7 +335,8 @@ let macros =
 
 let main_t =
   Term.(
-    const main $ get_fname $ silent $ json $ verbose $ only_global
+    const main $ get_fnames $ silent $ json $ verbose $ type_tree
+    $ only_global
     $ show_stdlib $ assume_launch $ includes $ macros)
 
 let info =

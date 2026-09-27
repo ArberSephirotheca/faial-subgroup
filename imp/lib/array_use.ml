@@ -3,17 +3,24 @@ open Protocols
 type t = { array : Variable.t; offset : Exp.nexp }
 
 let make ?(offset = Exp.Num 0) (array : Variable.t) : t = { array; offset }
-let map (f : Exp.nexp -> Exp.nexp) (a : t) : t = { a with offset = f a.offset }
 
-let loc_subst (alias : Alias.t) (a : t) : t =
-  if Variable.equal a.array alias.target then
-    (* Update the name of the resolved array,
-    but keep the original location *)
-    (* use the inlined variable but with the location of the alias,
-    so that the error message appears in the right place. *)
-    let array = { alias.source with location = a.array.location } in
-    { array; offset = Exp.n_plus alias.offset a.offset }
-  else a
+(* Recover the array an expression addresses, with whatever is added to it as
+   the offset. The caller's array map settles which operand of a [+] is the
+   base; when neither names known memory, keep the left, which is where a
+   pointer conventionally sits. *)
+let rec from_nexp ?(arrays = Variable.Set.empty) (e : Exp.nexp) : t option =
+  let known (x : Variable.t) : bool = Variable.Set.mem x arrays in
+  match e with
+  | Var x -> Some (make x)
+  | Binary (Plus _, Var x, offset) when known x -> Some { array = x; offset }
+  | Binary (Plus _, offset, Var x) when known x -> Some { array = x; offset }
+  | Binary (Plus _, l, r) ->
+      from_nexp ~arrays l
+      |> Option.map (fun a -> { a with offset = Exp.n_plus a.offset r })
+  | _ -> None
+
+let base (e : Exp.nexp) : Variable.t option =
+  from_nexp e |> Option.map (fun a -> a.array)
 
 let to_string (l : t) : string =
   "&" ^ Variable.name l.array ^ "[" ^ Exp.n_to_string l.offset ^ "]"

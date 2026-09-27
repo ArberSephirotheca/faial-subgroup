@@ -1,5 +1,7 @@
-// Companion to drf-builtin-assume.cu with the assumption removed. With D
-// unconstrained the prover may choose D = 1, so every thread writes out[0].
+// Companion to drf-builtin-assume.cu with the __builtin_assume removed. With
+// D unconstrained the prover picks D = 1 and two threads both write out[0],
+// so the kernel races. This pins that the companion's DRF verdict is
+// genuinely due to honouring __builtin_assume, not a vacuous pass.
 __global__
 void k(int *out, int D)
 {

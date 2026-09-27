@@ -12,7 +12,7 @@ open Stage0
                              cardinality).
 
    Tests are tuples [(filename, args, expected_exit)] driving [faial-sync].
-   Exit 0 means the property holds; exit 1 means the analyser flagged a
+   Exit 0 means the property holds; exit 1 means the analyzer flagged a
    counter-model. A small parallel list at the bottom drives [faial-sync-sym]
    on the cases where its symbolic-execution view diverges from the
    syntax-directed VC. *)
@@ -69,7 +69,7 @@ let sync_tests : (string * string list * int) list =
     ("tid-conditional.cu", [ "--check=barrier-div" ], 1);
     ("tid-conditional.cu", [ "--check=missing-participants" ], 1);
     (* tid-conditional under --all-dims: blockDim.x is symbolic, so the
-       analyser can no longer prove every thread reaches the barrier and
+       analyzer can no longer prove every thread reaches the barrier and
        missing-participants flags. With --assume "blockDim.x <= 17"
        injected as a kernel pre-condition, every in-block tid_x satisfies
        the guard and the property holds. Exercises the --assume CLI flag
@@ -109,6 +109,17 @@ let sync_tests : (string * string list * int) list =
     ("decl-under-tid.cu", [ "--check=well-sync" ], 0);
     ("decl-under-tid.cu", [ "--check=barrier-div" ], 1);
     ("decl-under-tid.cu", [ "--check=missing-participants" ], 1);
+    (* clz-range-sync: the barrier's guard is [__clz(t) <= 32], which
+       every thread satisfies because __clz is declared to return a
+       number between 0 and 32. A goal that does not carry the
+       declaration leaves the result an arbitrary integer, lets one
+       thread's exceed 32 while another's does not, and reports the
+       barrier divergent. *)
+    ("clz-range-sync.cu", [ "--check=barrier-div" ], 0);
+    (* clz-range-divergent: the companion at a bound the declared range
+       does not reach, so two threads can straddle it and the
+       divergence is real. *)
+    ("clz-range-divergent.cu", [ "--check=barrier-div" ], 1);
   ]
 
 (* faial-sync-sym is the symbolic-execution variant. On most kernels it
@@ -143,7 +154,7 @@ let sym_tests : (string * string list * int) list =
   ]
 
 (* These are kernels in this directory that are intentionally not
-   exercised by [sync_tests] — typically because the analyser hits a
+   exercised by [sync_tests] — typically because the analyzer hits a
    limitation. *)
 let unsupported : Fpath.t list =
   [
@@ -196,15 +207,18 @@ let bullet_for : int -> string = function
   | 1 -> "FAIL:  "
   | _ -> "?:     "
 
-let run_one ~(label : string) ~(exe : Fpath.t) (filename : string)
-    (args : string list) (expected_status : int) : unit =
+let exec_one ~(exe : Fpath.t) ((filename : string), (args : string list), (_ : int))
+    : float * Subprocess.Completed2.t =
+  Phase_timer.time_it (fun () ->
+      make_subprocess exe ~args (Fpath.v filename) |> Subprocess.run_split)
+
+let report_one ~(label : string) ~(exe : Fpath.t) (filename : string)
+    (args : string list) (expected_status : int) (elapsed : float)
+    (given : Subprocess.Completed2.t) : unit =
   let str_args = if args = [] then "" else String.concat " " args ^ " " in
   print_string (bullet_for expected_status ^ label ^ " " ^ str_args ^ filename);
-  Stdlib.flush_all ();
-  let given =
-    make_subprocess exe ~args (Fpath.v filename) |> Subprocess.run_split
-  in
-  if given.status = Unix.WEXITED expected_status then print_endline " ✔"
+  if given.status = Unix.WEXITED expected_status then
+    Printf.printf " ✔ %.2fs\n" elapsed
   else (
     let exit_code = Subprocess.exit_code given.status |> string_of_int in
     print_endline " ✘";
@@ -237,23 +251,28 @@ let run_one ~(label : string) ~(exe : Fpath.t) (filename : string)
     exit 1);
   Stdlib.flush_all ()
 
+let run_group ~jobs ~label ~exe tests : unit =
+  tests
+  |> Parallel.map ~jobs (exec_one ~exe)
+  |> List.combine tests
+  |> List.iter
+       (fun ((filename, args, expected_status), (elapsed, given)) ->
+         report_one ~label ~exe filename args expected_status elapsed given)
+
 let () =
+  let jobs = Parallel.test_jobs () in
   print_endline "Checking examples for synchronization properties:";
+  print_endline (Parallel.test_jobs_banner ());
   Unix.chdir (Fpath.to_string test_dir);
-  sync_tests
-  |> List.iter (fun (filename, args, expected_status) ->
-         run_one ~label:"faial-sync" ~exe:faial_sync_exe filename args
-           expected_status);
+  run_group ~jobs ~label:"faial-sync" ~exe:faial_sync_exe sync_tests;
   print_endline "";
   print_endline "Checking documented divergences with faial-sync-sym:";
-  sym_tests
-  |> List.iter (fun (filename, args, expected_status) ->
-         run_one ~label:"faial-sync-sym" ~exe:faial_sync_sym_exe filename
-           args expected_status);
+  run_group ~jobs ~label:"faial-sync-sym" ~exe:faial_sync_sym_exe sym_tests;
   unsupported
   |> List.iter (fun f ->
          if not (Files.exists f) then (
-           print_endline ("Missing unsupported file: " ^ Fpath.to_string f);
+           print_endline
+             (" ✘ ERROR: Missing unsupported file: " ^ Fpath.to_string f);
            exit 1)
          else print_endline ("TODO:  " ^ Fpath.to_string f));
   let missed = missed_files (Fpath.v ".") in
@@ -263,6 +282,7 @@ let () =
       |> List.map Fpath.to_string |> String.concat " "
     in
     print_endline "";
-    print_endline ("ERROR: The following files are not being checked: " ^ missed);
+    print_endline
+      (" ✘ ERROR: The following files are not being checked: " ^ missed);
     exit (-1))
   else ()

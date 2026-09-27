@@ -65,14 +65,21 @@ let () =
       (Fpath.to_string faial_drf_path)
       [ fname |> Fpath.to_string; "--show-flat-acc" ]
   in
-  base_dir |> Files.read_dir
-  |> List.filter (Fpath.has_ext ".cu")
-  |> List.sort Fpath.compare
-  |> List.iter (fun f ->
+  let jobs = Parallel.test_jobs () in
+  print_endline (Parallel.test_jobs_banner ());
+  let files =
+    base_dir |> Files.read_dir
+    |> List.filter (Fpath.has_ext ".cu")
+    |> List.sort Fpath.compare
+  in
+  files
+  |> Parallel.map ~jobs (fun f ->
+         Phase_timer.time_it (fun () -> run ~data_dep ~faial_drf f))
+  |> List.combine files
+  |> List.iter (fun (f, (elapsed, outcome)) ->
       print_string (" - " ^ Fpath.filename f);
-      Stdlib.flush_all ();
-      (match run ~data_dep ~faial_drf f with
-      | None -> print_endline " ✔"
+      (match outcome with
+      | None -> Printf.printf " ✔ %.2fs\n" elapsed
       | Some e ->
           print_endline " ✘\n";
           print_endline ("faial-drf --show-flat-acc " ^ Fpath.filename f);

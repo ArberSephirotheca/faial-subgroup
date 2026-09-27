@@ -30,6 +30,21 @@ let tests =
     ("drf-loop-relminus.wgsl", [], 0);
     (* Kernel inlining with return value *)
     ("drf-inline-ret.wgsl", [], 0);
+    (* [select(f, t, cond)] as an operand of an arithmetic operator, so
+       the lowering asks for the select's own type. Thread [t] writes
+       [2t + 1] below 128 and [2t] at or above it, so every thread lands
+       on a distinct cell. *)
+    ("drf-select.wgsl", [], 0);
+    (* Atomics: two atomics on one cell are serialised and do not
+       conflict, the same rule the CUDA path applies. *)
+    ("drf-atomic-same-cell.wgsl", [], 0);
+    (* Winner uniqueness for atomicCompareExchangeWeak. Exercises the
+       struct-shaped result: the contract reaches the guard only
+       because the lowering binds the old_value field as the atomic's
+       target. *)
+    ("drf-cas-winner.wgsl", [], 0);
+    (* Negative companion with atomicExchange, which has no contract. *)
+    ("racy-exchange-no-winner.wgsl", [], 1);
   ]
 
 let unsupported : Fpath.t list = [] |> List.map (fun x -> Fpath.(v "." / x))
@@ -71,9 +86,17 @@ let check_wgsl_to_json () : unit =
 let () =
   let open Fpath in
   check_wgsl_to_json ();
+  let jobs = Parallel.test_jobs () in
   print_endline "Checking examples for DRF:";
+  print_endline (Parallel.test_jobs_banner ());
+  Stdlib.flush_all ();
   tests
-  |> List.iter (fun (filename, args, expected_status) ->
+  |> Parallel.map ~jobs (fun (filename, args, _) ->
+         Phase_timer.time_it (fun () ->
+             faial_drf ~args (v filename) |> Subprocess.run_split))
+  |> List.combine tests
+  |> List.iter (fun ( (filename, args, expected_status),
+                      (elapsed, (given : Subprocess.Completed2.t)) ) ->
       let str_args = if args = [] then "" else String.concat " " args ^ " " in
       let bullet =
         match expected_status with
@@ -83,9 +106,8 @@ let () =
         | _ -> "?:     "
       in
       print_string (bullet ^ "faial-drf " ^ str_args ^ filename);
-      Stdlib.flush_all ();
-      let given = faial_drf ~args (v filename) |> Subprocess.run_split in
-      (if given.status = Unix.WEXITED expected_status then print_endline " ✔"
+      (if given.status = Unix.WEXITED expected_status then
+         Printf.printf " ✔ %.2fs\n" elapsed
        else
          let exit_code = Subprocess.exit_code given.status |> string_of_int in
          print_endline " ✘";

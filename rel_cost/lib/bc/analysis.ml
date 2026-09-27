@@ -35,7 +35,7 @@ module Make (L : Logger.Logger) = struct
     match Simulate.run vec index with
     | Ok cost -> cost
     | Error msg ->
-      L.info (fun () ->
+      L.warning (fun () ->
         "BC: could not simulate cost " ^ Exp.n_to_string index ^ ": " ^ msg);
       Simulate.fallback_cost vec
 

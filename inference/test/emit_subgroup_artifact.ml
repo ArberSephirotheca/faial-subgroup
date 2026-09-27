@@ -49,7 +49,7 @@ let parse_source (fname : string) : D_lang.Program.t =
   match
     Cu_to_json.cu_to_json_res ~exe:!cu_to_json
       ~includes:(Cu_to_json.default_include_dirs () @ List.rev !includes)
-      ~macros:(List.rev !macros) fname
+      ~macros:(List.rev !macros) [fname]
   with
   | Error (status, msg) ->
       fail (Printf.sprintf "cu-to-json failed with status %d: %s" status msg)
@@ -66,10 +66,11 @@ let split_context_and_kernel (name : string) (program : D_lang.Program.t) :
     List.fold_left
       (fun (context_rev, target) def ->
         match def with
-        | D_lang.Def.Kernel kernel when String.equal kernel.name name ->
+        | D_lang.Def.Kernel kernel when String.equal (D_lang.Kernel.name kernel) name ->
             (context_rev, Some kernel)
         | D_lang.Def.Kernel _ -> (context_rev, target)
-        | D_lang.Def.Declaration _ | Typedef _ | Enum _ | LaunchParam _ ->
+        | D_lang.Def.Declaration _ | Typedef _ | Enum _ | LaunchParam _
+        | Prototype _ | Record _ | UsingNamespace _ ->
             (def :: context_rev, target))
       ([], None) program
   in

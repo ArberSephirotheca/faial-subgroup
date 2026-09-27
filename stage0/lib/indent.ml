@@ -14,10 +14,5 @@ let to_string ?indent:(p = 4) (l : t list) : string =
   List.iter (pp 0) l;
   Buffer.contents b
 
-let print ?(ppf = Format.std_formatter) ?indent:(p = 4) : t list -> unit =
-  let rec pp (accum : int) : t -> unit = function
-    | Nil -> ()
-    | Line s -> Format.fprintf ppf "%s%s\n" (Common.repeat " " (p * accum)) s
-    | Block lines -> lines |> List.iter (pp (accum + 1))
-  in
-  List.iter (pp 0)
+let print ?indent:(p = 4) (l : t list) : unit =
+  print_string (to_string ~indent:p l)

@@ -123,8 +123,8 @@ let b_to_expr (config : solver_config) : Z3.context -> Exp.bexp -> Z3.Expr.expr
     =
   match config.logic with
   | Some logic when String.ends_with ~suffix:"BV" logic ->
-      Gen_z3.Bv64Gen.b_to_expr
-  | _ -> Gen_z3.IntGen.b_to_expr
+      fun ctx goal -> Gen_z3.Bv64Gen.b_to_expr ctx (Formula.make goal)
+  | _ -> fun ctx goal -> Gen_z3.IntGen.b_to_expr ctx (Formula.make goal)
 
 let mk_solver (config : solver_config) (ctx : Z3.context) : Solver.solver =
   match config.logic with
@@ -367,7 +367,10 @@ let rec expr_eval_with_constants (constants : int Variable.Map.t)
       | _ -> None)
   | Exp.Unary (op, expr) ->
       expr_eval_with_constants constants expr |> Option.map (N_unary.eval op)
-  | Exp.NCall _ | Exp.NIf _ | Exp.CastInt _ -> None
+  | Exp.Convert { arg; ty } ->
+      Option.bind (expr_eval_with_constants constants arg) (fun value ->
+          Scalar.reduce value ty)
+  | Exp.NCall _ | Exp.NIf _ | Exp.CastInt _ | Exp.ReadResult _ -> None
 
 let expr_proven_constant (terms : Exp.bexp list) (expr : Exp.nexp) : int option
     =
@@ -1025,6 +1028,18 @@ let memory_evidence_lines : memory_outcome -> string list = function
   | Memory_loop_protocol report -> report.evidence
   | Memory_unsupported boundary ->
       [ "unsupported(reason=" ^ normalize_reason boundary.reason ^ ")" ]
+
+let supplement_with_protocol ~(protocol : memory_outcome)
+    (primary : memory_outcome) : memory_outcome =
+  match primary, protocol with
+  | Memory_report primary, Memory_loop_protocol protocol ->
+      Memory_loop_protocol { protocol with
+        classifications =
+          List.map (fun e -> e.classification) primary.obligations
+          @ protocol.classifications;
+        evidence = List.map obligation_evidence_to_string primary.obligations
+          @ protocol.evidence }
+  | _ -> primary
 
 let summary_lines ?uniformity (outcome : memory_outcome) : string list =
   let memory_verdict = memory_verdict outcome in

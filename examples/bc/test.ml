@@ -32,6 +32,15 @@ let bc_tests =
     ("28tid.cu", [ "--blockDim=1024"; "--gridDim=1" ], "3");
     ("30tid.cu", [ "--blockDim=1024"; "--gridDim=1" ], "1");
     ("32tid.cu", [ "--blockDim=1024"; "--gridDim=1" ], "31");
+    (* [m] is all ones, so C's unsigned shift [m >> 60] is 15 and the stride
+       is 16: two banks, sixteen threads each, which is 32tid's neighbour
+       16tid at cost 15. The protocol models [m] as -1, a value no width
+       produces, and the per-thread simulator used to shift it at OCaml's 63
+       bits, answering 7 for the shift, 8 for the stride and 7 for the cost,
+       which understates a cost that is meant to be an upper bound. The
+       simulator now declines the shift and the analysis falls back to the
+       whole warp, 31, which is above the true 15. *)
+    ("rsh-unsigned-wrap.cu", [], "31");
     ("assume.cu", [], "1");
     ("tidx-tidy.cu", [ "--blockDim=[16,16]" ], "1");
     ("tidx-tidy.cu", [ "--blockDim=[32,32]" ], "0");
@@ -180,18 +189,22 @@ let missed_files (dir : Fpath.t) : Fpath.Set.t =
   let unsupported = Fpath.Set.of_list unsupported in
   Fpath.Set.diff (Fpath.Set.diff all_cu_files used_files) unsupported
 
-let run_test ~metric
-    ((filename : string), (args : string list), (expected_output : string)) :
-    unit =
+let exec_test ~metric
+    ((filename : string), (args : string list), (_ : string)) :
+    float * Subprocess.Completed2.t =
+  Phase_timer.time_it (fun () ->
+      cost ~metric ~args (Fpath.v filename) |> Subprocess.run_split)
+
+let report_test
+    ((filename : string), (args : string list), (expected_output : string))
+    ((elapsed : float), (given : Subprocess.Completed2.t)) : unit =
   let str_args = if args = [] then "" else String.concat " " args ^ " " in
   let bullet = " - " in
   print_string (bullet ^ "faial-cost " ^ str_args ^ filename);
-  Stdlib.flush_all ();
-  let given = cost ~metric ~args (Fpath.v filename) |> Subprocess.run_split in
   let expected_output = expected_output |> String.trim in
   let given_output = given.stdout |> String.trim in
   if given.status = Unix.WEXITED 0 && expected_output = given_output then
-    print_endline " ✔"
+    Printf.printf " ✔ %.2fs\n" elapsed
   else (
     print_endline " ✘";
     print_endline "----------------------- EXPECTED -----------------------";
@@ -203,25 +216,34 @@ let run_test ~metric
     exit 1);
   Stdlib.flush_all ()
 
-let run_all ~metric tests : unit =
-  List.iter
-    (fun (filename, args, expected_output) ->
-      run_test ~metric (filename, "--only-cost" :: args, expected_output))
-    tests;
+let run_all ~jobs ~metric tests : unit =
+  let tests =
+    List.map
+      (fun (filename, args, expected_output) ->
+        (filename, "--only-cost" :: args, expected_output))
+      tests
+  in
+  tests
+  |> Parallel.map ~jobs (exec_test ~metric)
+  |> List.combine tests
+  |> List.iter (fun (t, r) -> report_test t r);
   print_endline ""
 
 let () =
   let open Fpath in
+  let jobs = Parallel.test_jobs () in
   print_endline "-=- Checking bank-conflicts examples -=-\n";
+  print_endline (Parallel.test_jobs_banner ());
   print_endline "BC tests:";
-  run_all ~metric:"bc" bc_tests;
+  run_all ~jobs ~metric:"bc" bc_tests;
   print_endline "UA tests:";
-  run_all ~metric:"ua" ua_tests;
+  run_all ~jobs ~metric:"ua" ua_tests;
   print_endline "Skiped files:";
   unsupported
   |> List.iter (fun f ->
       if not (Files.exists f) then (
-        print_endline ("Missing unsupported file: " ^ Fpath.to_string f);
+        print_endline
+          (" ✘ ERROR: Missing unsupported file: " ^ Fpath.to_string f);
         exit 1)
       else print_endline (" - " ^ Fpath.to_string f));
   let missed = missed_files (v ".") in
@@ -231,6 +253,7 @@ let () =
       |> List.map Fpath.to_string |> String.concat " "
     in
     print_endline "";
-    print_endline ("ERROR: The following files are not being checked: " ^ missed);
+    print_endline
+      (" ✘ ERROR: The following files are not being checked: " ^ missed);
     exit (-1))
   else ()

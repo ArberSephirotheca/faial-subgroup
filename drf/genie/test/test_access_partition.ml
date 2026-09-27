@@ -77,7 +77,7 @@ let test_b_single_param () =
     Code.if_ (lt (var "threadIdx.x") (var "N"))
       (access (Exp.Num 0)) Code.Skip
   in
-  let k = mk_kernel ~globals:[ ("N", C_type.int) ] body in
+  let k = mk_kernel ~globals:[ ("N", Ty.int) ] body in
   match Access_partition.partition k with
   | [ e ] ->
     Alcotest.(check bool) "classified parameter-touching"
@@ -97,7 +97,7 @@ let test_c_two_params () =
   in
   let k =
     mk_kernel
-      ~globals:[ ("N", C_type.int); ("M", C_type.int) ]
+      ~globals:[ ("N", Ty.int); ("M", Ty.int) ]
       body
   in
   match Access_partition.partition k with
@@ -120,7 +120,7 @@ let test_d_nested_guards () =
   in
   let k =
     mk_kernel
-      ~globals:[ ("N", C_type.int); ("M", C_type.int) ]
+      ~globals:[ ("N", Ty.int); ("M", Ty.int) ]
       body
   in
   match Access_partition.partition k with
@@ -132,12 +132,12 @@ let test_d_nested_guards () =
     Alcotest.failf "expected 1 entry, got %d" (List.length es)
 
 (* E. Loop range bound depends on param N — the access inside picks up
-   N through [Range.to_cond] in [walk]'s path condition. *)
+   N through [Range.to_bexp] in [walk]'s path condition. *)
 let test_e_loop_param_bound () =
   let i = Variable.from_name "i" in
   let range = Range.make i (var "N") in
   let body = Code.loop range (access (Exp.Var i)) in
-  let k = mk_kernel ~globals:[ ("N", C_type.int) ] body in
+  let k = mk_kernel ~globals:[ ("N", Ty.int) ] body in
   match Access_partition.partition k with
   | [ e ] ->
     Alcotest.(check bool) "classified parameter-touching"
@@ -162,7 +162,7 @@ let test_f_parameter_universe () =
   in
   let k_both =
     mk_kernel
-      ~globals:[ ("N", C_type.int); ("M", C_type.int) ]
+      ~globals:[ ("N", Ty.int); ("M", Ty.int) ]
       (Code.seq acc_n acc_m)
   in
   let entries = Access_partition.partition k_both in
@@ -208,7 +208,7 @@ let test_param_in_index_only () =
                 (Exp.Var p) ]))
       Code.Skip
   in
-  let k = mk_kernel ~globals:[ ("P", C_type.int) ] body in
+  let k = mk_kernel ~globals:[ ("P", Ty.int) ] body in
   match Access_partition.partition k with
   | [ e ] ->
     Alcotest.(check bool) "classified parameter-touching"
@@ -218,15 +218,15 @@ let test_param_in_index_only () =
   | es ->
     Alcotest.failf "expected 1 entry, got %d" (List.length es)
 
-(* Pins [Variable.is_thread_index] on the canonical six thread-
+(* Pins [Variable.is_id] on the canonical six thread-
    divergent built-ins and on three negative cases (a dim built-in,
    a grid-dim built-in, and a freshly-named kernel parameter). The
    predicate is load-bearing for [Access_partition.abductive_scope]
    in [test_abductive_scope_excludes_thread_indices] below; pin its
    contract here so a future rename or mis-spelling fails loudly. *)
-let test_is_thread_index () =
+let test_is_id () =
   let check name expected v =
-    Alcotest.(check bool) name expected (Variable.is_thread_index v)
+    Alcotest.(check bool) name expected (Variable.is_id v)
   in
   check "tid_x"  true  Variable.tid_x;
   check "tid_y"  true  Variable.tid_y;
@@ -259,11 +259,11 @@ let test_abductive_scope_excludes_thread_indices () =
     Code.if_ (lt (var "threadIdx.x") (var "N"))
       (access (Exp.Num 0)) Code.Skip
   in
-  let k0 = mk_kernel ~globals:[ ("N", C_type.int) ] body in
+  let k0 = mk_kernel ~globals:[ ("N", Ty.int) ] body in
   (* Splice [tid_x] into [local_variables] and reference both
      [tid_x] and [N] in [pre]. *)
   let local_variables =
-    Params.add Variable.tid_x C_type.int k0.local_variables
+    Params.add Variable.tid_x Ty.int k0.local_variables
   in
   let pre =
     Exp.b_and
@@ -294,7 +294,7 @@ let test_abductive_scope_excludes_thread_indices () =
    contract on the helper that encodes it. [abductive_universe] is
    the set of variables whose pre-occurrences are kept by
    [abductive_scope]'s intersection with [b_free_names k.pre]; its
-   exclusion of [Variable.thread_index_set] is what makes the filter
+   exclusion of [Variable.id_set] is what makes the filter
    robust to future IR changes that move [threadIdx.*]/[blockIdx.*]
    into [k.global_variables]/[k.local_variables]. *)
 let test_abductive_universe_excludes_thread_indices () =
@@ -303,12 +303,12 @@ let test_abductive_universe_excludes_thread_indices () =
      [bdim_x]. The expected universe is the dim built-ins union [N]
      — tids/bids are excluded by the explicit set diff. *)
   let body = access (Exp.Num 0) in
-  let k0 = mk_kernel ~globals:[ ("N", C_type.int) ] body in
+  let k0 = mk_kernel ~globals:[ ("N", Ty.int) ] body in
   let local_variables =
     k0.local_variables
-    |> Params.add Variable.tid_x C_type.int
-    |> Params.add Variable.bid_y C_type.int
-    |> Params.add Variable.bdim_x C_type.int
+    |> Params.add Variable.tid_x Ty.int
+    |> Params.add Variable.bid_y Ty.int
+    |> Params.add Variable.bdim_x Ty.int
   in
   let k = { k0 with local_variables } in
   let universe = Access_partition.abductive_universe k in
@@ -331,8 +331,8 @@ let tests = [
   ("E. loop bound param contributes",       `Quick, test_e_loop_param_bound);
   ("F. parameter universe + edges",         `Quick, test_f_parameter_universe);
   ("param appears in index only",           `Quick, test_param_in_index_only);
-  ("Variable.is_thread_index pins six tids/bids",
-    `Quick, test_is_thread_index);
+  ("Variable.is_id pins six tids/bids",
+    `Quick, test_is_id);
   ("abductive_scope excludes thread indices",
     `Quick, test_abductive_scope_excludes_thread_indices);
   ("abductive_universe excludes thread indices",

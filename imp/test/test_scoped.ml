@@ -29,7 +29,7 @@ let scoped_conversion_tests =
       (let id = var "id" in
        let sq = var "s_Q" in
        let wr =
-         Imp.Stmt.(Write { array = sq; index = [ Var id ]; payload = None; guard = None })
+         Imp.Stmt.(Write { path = Protocols.Field_path.parse (sq); index = [ Var id ]; payload = None; guard = None })
        in
        let inc (x : Variable.t) =
          Imp.Stmt.decl_set x (n_plus (Num 32) (Var x))
@@ -39,7 +39,7 @@ let scoped_conversion_tests =
        let sq = var "s_Q" in
        Code.Decl
          ( Decl.set id (n_plus (Num 32) (Var id)),
-           Access { array = sq; index = [ Var id ]; mode = Write None } ));
+           Access (Mem_access.write sq [ Var id ] None) ));
     (* Simple variable declaration *)
     test_scoped_conversion "simple variable declaration"
       (Stmt.decl_unset (var "x"))

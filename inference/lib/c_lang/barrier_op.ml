@@ -16,10 +16,14 @@ let of_method_name : string -> t option = function
   | "arrive_and_drop" -> Some ArriveAndDrop
   | _ -> None
 
-(* Strict type guard on a resolved C type. *)
-let is_barrier_c_type (ty : C_type.t) : bool =
-  Common.contains ~substring:"cuda::barrier" (C_type.to_string ty)
+(* Strict type guard on a resolved C type. A barrier is not modelled, so
+   it parses to [Opaque], whose payload carries the resolved spelling
+   even when the declaration was written through a typedef. *)
+let is_barrier_c_type (ty : Ty.t) : bool =
+  match Ty.to_opaque ty with
+  | Some s -> Common.contains ~substring:"cuda::barrier" s
+  | None -> false
 
 (* Strict type guard: the desugared base type must be cuda::barrier<_>. *)
-let is_barrier_base_type (ty : J_type.t) : bool =
-  J_type.desugared_matches is_barrier_c_type ty
+let is_barrier_base_type (ty : Ty.t) : bool =
+  is_barrier_c_type ty

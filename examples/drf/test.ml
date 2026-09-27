@@ -4,6 +4,11 @@ open Stage0
 
 let tests =
   [
+    ("racy-subgroup-template-helper.cu", ["--subgroup-size=32"; "--block-dim=32"], 1);
+    ("racy-subgroup-anonymous-union.cu", ["--subgroup-size=32"; "--block-dim=32"], 1);
+    ("drf-subgroup-record-cast.cu", ["--subgroup-size=32"; "--block-dim=32"], 0);
+    ("drf-subgroup-private-memcpy.cu", ["--subgroup-size=32"; "--block-dim=32"], 0);
+    ("drf-subgroup-guarded-fastdiv.cu", ["--block-dim=64"; "--grid-dim=1"], 0);
     (* The example should be DRF *)
     ("parse-gv.cu", [], 0);
     (* Unless we override the parameters with something other than
@@ -35,12 +40,27 @@ let tests =
         "gridDim.y == 1 && gridDim.z == 1";
       ],
       0 );
+    (* An in-source __assume() inside a loop mentioning the loop counter is
+     routed onto the loop as an invariant; [i == threadIdx.x] discharges the
+     write's cross-thread collision. *)
+    ("drf-loop-assume.cu", [], 0);
+    (* The same kernel without the __assume is racy. *)
+    ("racy-loop-assume.cu", [], 1);
+    (* The same constraint injected through the --assume CLI [binder=]
+     target instead of an in-source __assume: it must resolve to the loop
+     counter [i] and route onto the loop, clearing the race. *)
+    ("racy-loop-assume.cu", [ "--assume"; "binder=i: i == threadIdx.x" ], 0);
+    (* Same idea across a __syncthreads(): the loop is aligned (its first
+     iteration peeled) and the invariant follows the peeling into every
+     phase, so the post-barrier write stays race-free. *)
+    ("drf-loop-sync-assume.cu", [], 0);
+    ("racy-loop-sync-assume.cu", [], 1);
     (* __builtin_assume(cond), clang's assumption builtin, is honoured as a
-       precondition like the __assume() stub: [tid < D] forces [tid % D == tid]
-       so each thread writes a distinct cell and the kernel is DRF. *)
+     precondition like the __assume() stub: [tid < D] forces [tid % D == tid]
+     so each thread writes a distinct cell and the kernel is DRF. *)
     ("drf-builtin-assume.cu", [], 0);
     (* Same kernel without the __builtin_assume: with D free the prover picks
-       D = 1 and every thread aliases onto out[0], so it is racy. *)
+     D = 1 and every thread aliases onto out[0], so it is racy. *)
     ("racy-builtin-assume.cu", [], 1);
     (* This example is only racy at the grid-level *)
     ("racy-grid-level.cu", [], 0);
@@ -90,6 +110,33 @@ let tests =
        atomic-mod the same address; with disjoint cells two threads
        can both get return 0 and alias on the slot write. *)
     ("racy-atomicadd-per-thread-counter.cu", [], 1);
+    (* The atomic scope decides which threads the hardware serialises,
+       and [Gen.mode_spec] reads it off the access mode. Two atomics of
+       the same scope never conflict at block level, whichever scope
+       they carry. *)
+    ("atomic-device-scope.cu", [], 0);
+    ("atomic-block-scope.cu", [], 0);
+    (* At grid level the two scopes part ways: a device-scoped atomic
+       still serialises against every thread, while a block-scoped one
+       does not serialise against a thread of another block. The
+       explicit --gridDim=2 matters, since the default single-block
+       grid admits no second block and both kernels come out DRF for
+       want of a racing partner rather than by the mode rule. *)
+    ("atomic-device-scope.cu", [ "--grid-level"; "--gridDim=2" ], 0);
+    ("atomic-block-scope.cu", [ "--grid-level"; "--gridDim=2" ], 1);
+    (* An operation with no cross-thread contract is still a memory
+       access. atomicExch says nothing about its returned value, but
+       two of them on one cell are serialised, so the kernel is DRF. *)
+    ("drf-atomicexch-same-cell.cu", [], 0);
+    (* The other half of that rule: an atomic conflicts with a plain
+       write to the same cell no matter which operation it is. *)
+    ("racy-atomicmax-write.cu", [], 1);
+    (* The first end-to-end coverage of a predicate carrying a proof.
+       Masking by [n - 1] is the identity on [0, n) exactly when [n]
+       is a power of two, so the verdict turns on whether the
+       assumption is present. *)
+    ("drf-pow2-mask.cu", [], 0);
+    ("racy-pow2-mask.cu", [], 1);
     (* A data-race that occurs when we have warp-concurrent semantics *)
     ("racy-reduce.cu", [], 1);
     (* Pre-Volta warp-synchronous halving reduction on a single warp:
@@ -105,6 +152,22 @@ let tests =
     ( "racy-subgroup-shuffle.cu",
       [ "--subgroup-size=32"; "--block-dim=32" ],
       1 );
+    (* Subgroup-enabled ordinary kernels still use the complete upstream
+       pipeline, including helper bodies and binder-scoped assumptions. *)
+    ("racy-shared-mem-2.cu", ["--subgroup-size=32"], 1);
+    ("racy-loop-assume.cu",
+      ["--subgroup-size=32"; "--assume"; "binder=i: i == threadIdx.x"], 0);
+    (* Kernel-scoped assumptions retain the new upstream syntax. A typo
+       must not silently drop a fact, and binder facts must not be lifted
+       into global subgroup preconditions. *)
+    ("drf-subgroup-shuffle-syncwarp.cu",
+      ["--subgroup-size=32"; "--block-dim=32"; "--assume"; "blockDim.x == 32"], 0);
+    ("racy-subgroup-shuffle.cu",
+      ["--subgroup-size=32"; "--block-dim=32"; "--assume"; "unknown_fact == 0"], 123);
+    ("drf-subgroup-repeated-barrier.cu",
+      ["--subgroup-size=32"; "--block-dim=32"; "--assume"; "binder=iteration: iteration >= 0"], 123);
+    ("drf-subgroup-shuffle-syncwarp.cu",
+      ["--subgroup-size=32"; "--block-dim=32"; "--stop-at=map"], 123);
     ( "drf-subgroup-shuffle-syncwarp.cu",
       [ "--subgroup-size=32"; "--block-dim=32" ],
       0 );
@@ -168,6 +231,30 @@ let tests =
      a SizeOfPackExpr, whose count is unknown until instantiation and is
      read as an opaque unknown value. *)
     ("drf-sizeof-pack.cu", [], 0);
+    (* [x & 1] tests the low bit of [x], so it holds for the odd values of
+     [x] and fails for the even ones. Both polarities are pinned, and each
+     is pinned twice, once over a signed [i] and once over an unsigned one,
+     because the encoding fixes the remainder's signedness rather than
+     taking it from the operand. blockDim.x = 3 makes the two guards admit
+     sets of different size, {1} against {0, 2}, so the verdicts differ:
+     one author for y[0] against two. *)
+    ("drf-and1-odd.cu", [ "--blockDim=3" ], 0);
+    ("racy-and1-even.cu", [ "--blockDim=3" ], 1);
+    ("drf-and1-odd-unsigned.cu", [ "--blockDim=3" ], 0);
+    ("racy-and1-even-unsigned.cu", [ "--blockDim=3" ], 1);
+    (* [sizeof(int)] must be the width of the operand, 4, not the width of
+     the trait's own result type, [unsigned long]. Using the index modulus
+     [threadIdx.x % sizeof(int)] makes the difference observable: at
+     blockDim.x = 8 a modulus of 4 collides threads 0 and 4, whereas a
+     modulus of 8 would leave every index distinct. *)
+    ("racy-sizeof-mod.cu", [ "--blockDim=8" ], 1);
+    (* The companion for an expression operand, whose width has to come
+     from the operand's own type rather than from a re-derivation that
+     answers int for every literal. [sizeof(1L)] is 8, so at blockDim.x = 8
+     the index [threadIdx.x % 8] is the thread id and every thread writes
+     its own cell; the width of an int would give [threadIdx.x % 4] and
+     collide threads 0 and 4, which is the neighbouring verdict. *)
+    ("drf-sizeof-literal.cu", [ "--blockDim=8" ], 0);
     (* A device function bound to a function-pointer template parameter
      reaches the reader as a TemplateArgument carrying a FunctionDecl;
      the argument is read by name (TArgDecl). *)
@@ -177,7 +264,7 @@ let tests =
      FunctionTemplateDecl that wraps a generic lambda's operator(), and
      Lift_lambdas rewrites the operator() call site (a CXXOperatorCallExpr
      whose first argument is the closure) to the synthetic kernel so the
-     body's accesses are analysed. Here the body writes [d[v]] with v the
+     body's accesses are analyzed. Here the body writes [d[v]] with v the
      per-thread argument, so each thread writes a distinct cell: DRF. *)
     ("drf-generic-lambda.cu", [], 0);
     (* A block-scope namespace alias ([namespace a = b;] inside a kernel
@@ -191,9 +278,23 @@ let tests =
     ("drf-using-decl.cu", [], 0);
     (* Same lambda shape but the body writes [d[0]] from every thread, so
      the invocation collides: racy. Pinning that the lambda body is
-     actually analysed, not dropped (a dropped body would false-negative
+     actually analyzed, not dropped (a dropped body would false-negative
      as DRF). *)
     ("racy-generic-lambda.cu", [], 1);
+    (* The same generic lambda called at [int] and at [unsigned]. One
+     lifted body cannot serve both, so no type is deduced for [auto v]
+     and it stays an unbound local. The kernel races for real: the
+     second call writes [A[n]] from every thread with a per-thread
+     payload. *)
+    ("racy-generic-lambda-two-types.cu", [], 1);
+    (* The callee's parameter type decides how an argument binds, so a
+     const reference binds the referent's value: [i] reaches [put] and
+     each thread writes a distinct cell. A mutable reference would stay
+     unsupported, which is what racy-device-ref.cu documents. *)
+    ("drf-const-ref-param.cu", [], 0);
+    (* An array argument carries an additive offset, so the callee's
+     [P[i]] resolves to [A[i + 1]] and threads stay disjoint. *)
+    ("drf-arg-offset.cu", [], 0);
     (* Aliasing using shared memory (example 1) *)
     ("racy-alias-shmem1.cu", [], 1);
     (* Aliasing using shared memory (example 1) *)
@@ -202,6 +303,278 @@ let tests =
     ("racy-alias-shmem3.cu", [], 1);
     (* Aliasing with increment *)
     ("racy-alias-assign.cu", [], 1);
+    (* A pointer view whose element differs in width from the array's
+     indexes in its own units, so the index is a byte address to be
+     truncated by the array's step rather than an element index. A
+     narrower view puts several of its cells inside one element: byte 1
+     is element 0 and collides, byte 5 is element 1 and does not. *)
+    ("racy-ptr-view-narrow.cu", [], 1);
+    ("drf-ptr-view-narrow.cu", [], 0);
+    (* Two writes of one literal are taken not to conflict, which stops
+     holding once the view lands them on the same cell, since storing 1
+     as a byte does not store the bits that storing 1 as an int does. A
+     scaled access therefore gives up its payload. *)
+    ("racy-ptr-view-payload.cu", [], 1);
+    (* A wider view covers several elements per access, so the collision
+     is with the last of them and modelling one element would lose it. *)
+    ("racy-ptr-view-wide.cu", [], 1);
+    ("racy-ptr-view-float4.cu", [], 1);
+    (* A flat view of a two-dimensional array counts cells, not rows, so
+     the flat index is split back across the axes: [p[5]] and [p[6]] are
+     [A[1, 1]] and [A[1, 2]], distinct. Truncating by the row instead
+     would put both in row 1 and invent a collision. *)
+    ("drf-ptr-view-flat-2d.cu", [], 0);
+    (* The same split on a view narrower than the cell: byte 3 retypes to
+     flat element 0 and splits to [A[0, 0]], which is where the direct
+     subscript writes. Left flat it was a one-index access on an array
+     whose other accesses carry two, and the mixed arity hid the
+     collision. *)
+    ("racy-ptr-view-arity.cu", [], 1);
+    (* A view rooted part-way in, which is what a row taken out of a table
+     is. One axis is fixed by the subscript on the way in, so what the
+     split consumes is the suffix of dimensions below it and the subscript
+     stays in front. *)
+    ("racy-ptr-view-row-suffix.cu", [], 1);
+    (* The same row view on two distinct cells of it. *)
+    ("drf-ptr-view-row-suffix.cu", [], 0);
+    (* A flat index that does not fold, so the split stands as a division
+     and an unsigned modulus rather than as literals. *)
+    ("racy-ptr-view-flat-symbolic.cu", [], 1);
+    (* A dereference of an address-of names the cell the address was
+     taken from, and the address-of of a dereference is an address rather
+     than a read. Left standing, the first pair drops a store and the
+     second invents a read. *)
+    ("racy-deref-address-of.cu", [], 1);
+    ("drf-address-of-deref.cu", [], 0);
+    (* The address of a whole array is that array at offset zero, and the
+     dereference that undoes it keeps the array rather than reading a
+     cell of the pointer, so the subscripts that follow are the array's
+     own. Both halves are needed: without the first the pointer is a
+     local, without the second the subscripts land on a scalar. *)
+    ("racy-address-of-array.cu", [], 1);
+    ("drf-address-of-array.cu", [], 0);
+    ("racy-address-of-array-read.cu", [], 1);
+    (* [T()] on a scalar is zero. Its twin holds thread 0's store one
+     cell away from every other thread's, so reading the value as an
+     unknown rather than as zero reports a race, and not knowing the
+     node at all is an error rather than either answer. *)
+    ("racy-scalar-value-init.cu", [], 1);
+    ("drf-scalar-value-init.cu", [], 0);
+    (* A method reached through the class that inherits it rather than
+     the one that declares it. The two race-free ones are what move: a
+     lost call leaves the kernel with no access at all, which warns
+     rather than clearing. *)
+    ("racy-inherited-method.cu", [], 1);
+    ("drf-inherited-method.cu", [], 0);
+    ("drf-inherited-method-deep.cu", [], 0);
+    (* A pointer a callee returns names memory the caller can index. The
+     quiet one is the sharpest: its store is lost while another keeps
+     the zero-accesses warning down, so the kernel answered race-free
+     rather than saying anything. *)
+    ("racy-call-result-quiet.cu", [], 1);
+    ("drf-call-result-pointer.cu", [], 0);
+    ("drf-call-result-member.cu", [], 0);
+    (* What comes back carries a displacement as well as an array, and
+     the pair moves in opposite directions when it is dropped. *)
+    ("drf-call-result-offset.cu", [], 0);
+    ("racy-call-result-offset.cu", [], 1);
+    (* An atomic on a scalar counter, whose target is the address of a
+     name rather than of a cell. The first two move: the builtin used
+     to fall out of the atomic rewrite and be declined as a call with
+     no body. The shared one already resolved, by a road of its own,
+     and is here to hold the two spellings together. *)
+    ("racy-atomic-scalar-counter.cu", [], 1);
+    ("drf-atomic-scalar-counter.cu", [], 0);
+    ("drf-atomic-shared-scalar.cu", [], 0);
+    (* Every spelling of an atomic's target in one kernel. An address the
+     rewrite cannot read leaves the builtin standing as a call with no
+     body, so one spelling regressing declines the whole kernel and this
+     entry moves from 0 to 1. *)
+    ("drf-atomic-target-shapes.cu", [], 0);
+    (* A pointer member names the region it points at rather than the
+     field holding the address, which is where the atomic and the store
+     meet. Naming the field instead separates them. *)
+    ("racy-atomic-member-target.cu", [], 1);
+    ("drf-atomic-member-target.cu", [], 0);
+    (* The other half of what names an atomic: not the target but the
+     callee. In a template that is never instantiated the overload set
+     is still open, and the name arrives as an unresolved lookup. *)
+    ("racy-atomic-dependent-callee.cu", [], 1);
+    ("drf-atomic-dependent-callee.cu", [], 0);
+    (* [std::forward] and [std::move] are static casts spelled as calls.
+     Only the pattern carries a body and a call binds to the
+     instantiation, so resolving one finds nothing. The race-free one is
+     what moves: a decline exits 1 the way a race does. *)
+    ("racy-std-forward.cu", [], 1);
+    ("drf-std-forward.cu", [], 0);
+    ("racy-std-move.cu", [], 1);
+    (* A method carrying template parameters of its own, which clang
+     wraps in a function template. The record walk kept plain methods
+     and nested records only, so such a method was absent from the
+     program rather than declined, and its accesses with it. *)
+    ("racy-member-template.cu", [], 1);
+    ("drf-member-template.cu", [], 0);
+    (* Two instantiations hang under one template. Taking only the first
+     keeps the safe store and loses the racy one, so the kernel clears
+     rather than warning and nothing says an access went missing. *)
+    ("racy-member-template-two.cu", [], 1);
+    (* A template type parameter with no name, which is how a constraint
+     is written in place. Only the value form of that idiom was
+     tolerated, so the type form failed to parse and took the whole file
+     with it, whatever the file went on to declare. *)
+    ("drf-anon-template-parm.cu", [], 0);
+    ("racy-anon-template-parm.cu", [], 1);
+    (* A table of pointers held as a member of an object passed by value.
+     The object is copied per thread, which is why an array member is
+     the thread's own storage and was dropped, but the cells of this one
+     hold the caller's memory. The race-free pair is what moves. *)
+    ("racy-pointer-array-field.cu", [], 1);
+    ("drf-pointer-array-field.cu", [], 0);
+    (* Two rows of the table are separate memory, so dropping the row
+     index lands both stores on one cell and invents a race. *)
+    ("drf-pointer-array-field-rows.cu", [], 0);
+    (* The table one object further down. A member that is itself an
+     object contributes its own members under the selection that reaches
+     it, and that selection can be any length. *)
+    ("racy-nested-pointer-field.cu", [], 1);
+    ("drf-nested-pointer-field.cu", [], 0);
+    ("drf-nested-pointer-field-deep.cu", [], 0);
+    (* A pointer loaded out of a table of pointers names a row of that
+     table, which is the same reading [table[cat][0]] already gets when it
+     is written out in full. Every thread writes cell 0 of whichever row
+     [cat] picks; indexing the row per thread separates them. *)
+    ("racy-ptr-row-local.cu", [], 1);
+    ("drf-ptr-row-local.cu", [], 0);
+    (* Distinct entries of the table address distinct rows, so two threads
+     writing cell 0 of different rows do not collide. Its twin holds the
+     row fixed, which is what shows the verdict above is a decision and
+     not a dropped access. *)
+    ("drf-ptr-row-distinct.cu", [], 0);
+    ("racy-ptr-row-same.cu", [], 1);
+    (* A conditional in pointer position reaches one of its arms, so the
+     access is emitted once per arm under the condition that selects it.
+     Both arms race on cell 0; indexing per thread clears both. *)
+    ("racy-ptr-select-local.cu", [], 1);
+    ("drf-ptr-select-local.cu", [], 0);
+    (* The same conditional subscripted where it stands rather than bound
+     to a local, which the front end binds to a temporary and so reaches
+     the same arm. *)
+    ("racy-ptr-select-subscript.cu", [], 1);
+    (* Only the arm that selects [A] collides with the write to [A], so a
+     guard dropped in either direction changes the answer: without it the
+     kernel reports a race it cannot have, and with only one arm emitted
+     it reports none at all. *)
+    ("racy-ptr-select-cross.cu", [], 1);
+    ("drf-ptr-select-cross.cu", [], 0);
+    (* The same choice arrived at by two assignments rather than by one
+     expression. A pointer bound in an arm has to survive the join, or
+     the use after it names a local and the access is deleted. *)
+    ("racy-ptr-select-branch.cu", [], 1);
+    ("drf-ptr-select-branch.cu", [], 0);
+    (* Which arm goes with which condition. Thread 1 writes [B] only when
+     [c] holds, so it meets thread 0 exactly when the join sends [p] to
+     [B] on the same condition. Swapping the arms flips both verdicts. *)
+    ("drf-ptr-select-branch-cross.cu", [], 0);
+    ("racy-ptr-select-branch-cross.cu", [], 1);
+    (* One arm reassigns a pointer already bound before the branch, so
+     the arm that leaves it alone contributes the binding it came in
+     with. Read as [A] throughout, both kernels answer race-free. *)
+    ("racy-ptr-select-rebind.cu", [], 1);
+    ("drf-ptr-select-rebind.cu", [], 0);
+    (* A row crossing into a call. The subscript is bound to a name on
+     the way in and the binding outlives inlining, so the callee's
+     parameter resolves onto it and the write lands on the row. Every
+     thread writes cell 0 of the row [cat] picks; indexing the row per
+     thread separates them. *)
+    ("racy-ptr-row-arg.cu", [], 1);
+    ("drf-ptr-row-arg.cu", [], 0);
+    (* An atomic's address is a base plus whatever is added to it, in any
+     association and either order. [p + a + b] parses as [(p + a) + b], so
+     the base is not on the left of a single plus; reading it off the left
+     regardless takes [i] as the array in [i + p]. Recognition failing
+     leaves a call to a body-less [atomicAdd], which discards the kernel,
+     so the race-free one answers 1 for that reason instead of 0. The
+     plain write is what pins the index: put the atomic on cell 0 and the
+     first turns racy, leave it on 1 and the third turns clear. *)
+    ("drf-atomic-addr-spine.cu", [], 0);
+    ("racy-atomic-addr-spine.cu", [], 1);
+    ("racy-atomic-addr-commuted.cu", [], 1);
+    (* A pointer reads its offset where it was taken, not where it is
+     used, so an assignment to a variable the offset mentions cannot
+     reach back and move the access. The pair is the two directions of
+     getting that wrong: the first loses a race by reading the later
+     value, the second invents one. *)
+    ("racy-alias-capture.cu", [], 1);
+    ("drf-alias-capture.cu", [], 0);
+    (* Rebinding the same pointer name is the other side: the second
+     binding owns the accesses that follow it, and the first owns those
+     before. Resolve the later access against the earlier pointer and
+     both threads land on cell 0. *)
+    ("drf-realias-offset.cu", [], 0);
+    (* A [__constant__] global is memory, so its read reaches the protocol
+     and the kernel is checked rather than reported empty. Without the
+     array the kernel has nothing in it, so this answers 1 with the
+     zero-accesses message where a race-free kernel answers 0. *)
+    ("drf-constant-mem.cu", [], 0);
+    (* Constant memory holds the table, global memory holds the row it
+     points at, and only the table has to register for the write through
+     the row to be attributed. The write to [A] is what makes the status
+     tell the two apart: without it the table's absence empties the
+     kernel and the zero-accesses message exits 1, which is the answer
+     the racy one expects for its own reason. *)
+    ("racy-constant-mem-row.cu", [], 1);
+    ("drf-constant-mem-row.cu", [], 0);
+    (* Constant memory is one object per grid, like global memory, so the
+     grid-level view has to keep it. The write to [A] is per global
+     thread and clears on its own; the race is the row, and it is the
+     only thing the array filter can take away. *)
+    ("racy-constant-mem-row-grid.cu", [ "--grid-level"; "--gridDim=2" ], 1);
+    (* The same kernel read at both levels. Threads of one block hold
+     distinct [threadIdx.x] and separate, while two blocks repeat it and
+     land on the same cell of the same row, which is one object for the
+     whole grid. Its twin spreads the row by global thread and stays
+     clear at both. *)
+    ("racy-constant-mem-grid-only.cu", [], 0);
+    ("racy-constant-mem-grid-only.cu", [ "--grid-level"; "--gridDim=2" ], 1);
+    ("drf-constant-mem-grid.cu", [ "--grid-level"; "--gridDim=2" ], 0);
+    (* Per-block and grid-wide memory in one kernel, each level finding a
+     different race. The shared cell is the block-level race and each
+     block has its own, so the grid level drops it; the row is clear
+     inside a block and races across them, and it is reached through
+     constant memory, which the grid level has to keep. Drop the table
+     with it and the grid level has nothing left to report. *)
+    ("racy-shared-with-constant-mem.cu", [], 1);
+    ("racy-shared-with-constant-mem.cu", [ "--grid-level"; "--gridDim=2" ], 1);
+    (* The same kernel without the table, which is the other half of the
+     rule: nothing grid-wide is left once the shared cell goes, so the
+     grid level clears. Keep shared memory visible there and this is the
+     one that reports a race between threads that write cells of two
+     different blocks. The second block is what makes it say so, and is
+     why [racy-shared-scalar.cu] under a bare [--grid-level] cannot: with
+     one block there is no pair of blocks to compare. *)
+    ("racy-shared-block-only.cu", [], 1);
+    ("racy-shared-block-only.cu", [ "--grid-level"; "--gridDim=2" ], 0);
+    (* A pointer member of a constant struct is memory of its own, and
+     what it points at is not constant. The write to [A] keeps the status
+     honest: with the member unregistered the kernel is empty and exits 1
+     for the wrong reason. *)
+    ("racy-constant-mem-struct.cu", [], 1);
+    (* A constant scalar is a value rather than storage, since no thread
+     can write it, so it keeps the fold that a device scalar loses to the
+     array map. Registered as storage the index goes symbolic, and a
+     zero [n] would put every thread on cell 0. *)
+    ("drf-constant-mem-scalar.cu", [], 0);
+    (* An array argument's offset is a byte count, and the step that
+     converts it back has to be the same one that converted it. The racy
+     shape is the guard: with the two apart, the call-side write lands a
+     row width away and the collision disappears. *)
+    ("racy-2d-arg-offset.cu", [], 1);
+    ("drf-2d-arg-offset.cu", [], 0);
+    (* memcpy copies bytes, so its stub's loop runs one iteration per byte
+     and the index has to be truncated to an element before it names a
+     cell. Reading the byte count as an element count would have thread t
+     cover elements t to t + 3 and collide with its neighbours. *)
+    ("drf-memcpy-extent.cu", [], 0);
     (* Array accesses of local memory should not introduce data-races. *)
     ("drf-local-array.cu", [], 0);
     (* Check support for macros *)
@@ -217,7 +590,7 @@ let tests =
     ("drf-assert-loop.cu", [], 0);
     (* Two calls to a forward-declared [__device__ unsigned int
      get(int)] must each produce a distinct unknown-valued local.
-     The [__uniform_int] asserts pin both as thread-uniform, so
+     The [__is_thread_unif] asserts pin both as thread-uniform, so
      the race witness picks adversarial values that make
      [y[i + offset1]] and [y[i + offset2]] coincide across two
      threads. *)
@@ -236,6 +609,32 @@ let tests =
     ("drf-loop5.cu", [], 0);
     (* (int j = 1; j + k < n; j++) *)
     ("drf-loop6.cu", [], 0);
+    (* A not-equal condition bounds a loop. Each kernel here counts with
+     [i != n] in one of its five spellings and writes [out[i]], while
+     thread 1 writes a single cell placed just outside the range. In C the
+     body runs for [i = 0, 1, ..., n - 1], because reaching [n] is what
+     stops the loop, so [out[n]] is never written and the two threads stay
+     disjoint. Taking the last iteration to be [n] instead, the endpoint
+     the subtraction spelling used to produce, has thread 0 write [out[n]]
+     as well and collide with thread 1; that is what [neq_bare] pins, and
+     it reported a race. [neq_bounded] pins the bound rather than its
+     endpoint by placing thread 1 on [out[n + 1]], a cell a range capped
+     at [n - 1] cannot reach but a havoc loop's free iteration variable
+     can, since the condition demoted into its body rules out only [n].
+     [neq_down] counts the other way, from [n] down to [1], leaving
+     [out[0]] to thread 1; its direction is read off the decrement,
+     because [i != 0] alone does not say which side [0] is reached from. *)
+    ("drf-loop-neq.cu", [], 0);
+    (* The other end of that endpoint. Thread 1 writes [out[n - 1]], which
+     the loop's last iteration also writes, so the race is real and a
+     bound that stopped one iteration early would clear it. *)
+    ("racy-loop-neq-last.cu", [], 1);
+    (* A decreasing not-equal loop must not come out empty. Reading the
+     direction off the condition instead of the decrement gives the
+     ascending range from [n] to [-1], which is empty for every positive
+     [n], and every access in the loop vanishes along with the race
+     between the threads writing [out[i]]. *)
+    ("racy-loop-neq-down.cu", [], 1);
     (* Literal-stride [+= blockDim.x * 2] loop with a [/ 2]
      access mirroring a [(half2* )src] cast. Drives
      [Range.normalize] / [Unsynced.normalize_loops]: the modulo
@@ -297,9 +696,17 @@ let tests =
     (* Templated kernel writing [Traits<T>::value] to a single shared
      index from every thread. With no explicit launch, the primary
      template body is parsed and the qualified dependent reference
-     reaches the analyser as a [DependentScopeRef] rather than
+     reaches the analyzer as a [DependentScopeRef] rather than
      collapsing to RecoveryExpr. *)
     ("racy-template-dep-scope.cu", [], 1);
+    (* An uninstantiated out-of-line member template of a class template.
+     Its dependent body calls a sibling member unqualified, which arrives
+     as an [UnresolvedMemberExpr] with no member name and no base. The
+     collapse to an unknown value keeps the failure inside that one
+     declaration, so the launched kernel in the same file is still
+     analyzed and its race reported. *)
+    ("racy-uninstantiated-member-template.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
     (* Launch metadata: one [<<<grid, block>>>] launch with host-side
      dim3 locals and a templated kernel argument. The LaunchParam node
      emitted alongside the AST must parse without disturbing the
@@ -313,7 +720,7 @@ let tests =
       [ "--all-dims"; "--all-levels"; "--assume-launch" ],
       0 );
     (* Two distinct launches of the same templated kernel must each
-     produce their own pseudo-kernel and analyse independently with
+     produce their own pseudo-kernel and analyze independently with
      the launch's concrete dims. *)
     ( "drf-launch-multi.cu",
       [ "--all-dims"; "--all-levels"; "--assume-launch" ],
@@ -322,13 +729,19 @@ let tests =
      dims (every thread writes [out[0]]) stays racy under
      [--assume-launch] — pinning blockDim doesn't suppress real
      races. *)
-    ( "racy-launch-mismatch.cu",
-      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
-      1 );
+    ("racy-launch-mismatch.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
+    (* Two overloads share a bare name and only one of them is
+     launched. The launched overload is demoted and checked through
+     its pseudo-kernel; the unlaunched one stays an entry point and is
+     checked with free dims, where it races. Resolving the launch
+     target by bare name demotes both, and the race goes unreported. *)
+    ("racy-launch-overload-sibling.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
     (* A scalar kernel arg supplied by a non-Ident launch-site
      expression (here [params[0]]). The launch-arg resolver folds
      the array-subscript into a fresh uniform pseudo-parameter so
-     the formal stays block-uniform; analyses DRF. Without the
+     the formal stays block-uniform; analyzes DRF. Without the
      resolver, this would false-positive racy because the launch
      arg surfaces as a per-thread @AccessState. *)
     ( "drf-launch-complex-arg.cu",
@@ -342,15 +755,62 @@ let tests =
      unbound and Z3 picks an adversarial witness, false-positive
      reporting racy on a kernel where every (blockIdx.x,
      threadIdx.x) pair writes a distinct address. *)
-    ( "drf-launch-const-arg.cu",
-      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
-      0 );
+    ("drf-launch-const-arg.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    (* The same const-argument shape with an initialiser cu-to-json
+     cannot resolve to a value. It inlines the opaque call into every
+     slot naming the const, so nothing in the launch record says the
+     block dimension and the argument came from one variable. The
+     per-launch dedup cache recovers it structurally: both copies
+     translate to the same [@Launch] parameter, and the DRF verdict
+     rests on that sharing. The racy sibling gives the argument its own
+     binding, which must not converge. *)
+    ("drf-launch-impure-const-arg.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 0);
+    ("racy-launch-unrelated-const-arg.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
     (* A structured-binding variable ([const auto [slot, token] = ...])
      passed as a scalar launch argument. The launch-arg walk reads the
      [slot] reference, whose [DeclRefExpr] resolves to a [BindingDecl];
      that decl kind is read like a [VarDecl]. Without it the launch
      synthesis hits parse_exp and the whole file exits 2. *)
-    ("drf-launch-binding-arg.cu", [ "--all-dims"; "--assume-launch" ], 0);
+    ("drf-launch-binding-arg.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
+    (* Two launches of one kernel on one source line. A pseudo-kernel is
+     named after its callee and its line, so without a discriminator the
+     second overwrites the first and only the single-thread launch, which
+     cannot race, is checked. *)
+    ("racy-launch-same-line.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
+    (* The same collision reached from two instantiations of the enclosing
+     template rather than from two written launches. Both records sit at
+     one line and one column, and what tells them apart is the host
+     function's declaration. *)
+    ("racy-launch-instances.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
+    (* A launch behind a condition that folds to false performs on no run,
+     so it mints no pseudo-kernel and demotes nothing. The kernel is left
+     where one with no launch site would be, an entry point with free
+     dimensions, rather than becoming a wrapper whose body prunes away. *)
+    ("drf-launch-dead-branch.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
+    (* A pointer argument held by the host wrapper as a mutable reference.
+     The reference is the wrapper's, not the kernel's: the launch passes
+     the referent's value and the pseudo-kernel only reads the variable,
+     so its parameter has to be the pointer. Left as a reference it is
+     unsupported, no array registers, and the access is dropped. *)
+    ("drf-launch-ptr-ref.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
+    (* The same loss beside an array that does register, so the kernel is
+     not empty and the missing array reads as race-free. *)
+    ("racy-launch-ptr-ref.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
+    (* The same reference in a launch dimension. A reference is not an
+     integer, and the dim3 decomposition is all-or-nothing, so blockDim.y
+     and blockDim.z lose their pins along with blockDim.x and threads
+     sharing threadIdx.x collide. *)
+    ("drf-launch-dim-ref.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
     (* Grid-arithmetic relation flowing transitively to a kernel
      arg: launch picks [gridDim.x = imageW / 128]. The launch-arg
      resolver passes the BinaryOp structure through verbatim
@@ -365,7 +825,7 @@ let tests =
       [ "--all-dims"; "--all-levels"; "--assume-launch" ],
       0 );
     (* Host-side guard ([if (n >= 256)]) enclosing the launch
-     reaches the analyser via c-to-json's [path_condition] slot;
+     reaches the analyzer via c-to-json's [path_condition] slot;
      the synth kernel lifts it into [assert(n >= 256)] alongside
      the dim asserts. The kernel races without the bound (a
      stride pattern: two threads in different blocks collide
@@ -376,7 +836,7 @@ let tests =
       0 );
     (* Host-side const-binding ([const int inum = N * 1024]) used
      nested in the grid axis ([dim3(inum / 256)]) reaches the
-     analyser via c-to-json's [const_bindings] slot. The synth
+     analyzer via c-to-json's [const_bindings] slot. The synth
      kernel lifts each binding into a local [const int <name> =
      <init>;] decl, which [d_to_imp] lowers to a definitional
      binding in Imp. Combined with [assert(gridDim.x == inum /
@@ -408,9 +868,24 @@ let tests =
      [threadIdx.y]. A prior implementation fabricated
      [blockDim.y == 1] / [blockDim.z == 1] for this case,
      suppressing the race (false-negative DRF). *)
-    ( "racy-launch-opaque-block.cu",
-      [ "--all-dims"; "--all-levels"; "--assume-launch" ],
-      1 );
+    ("racy-launch-opaque-block.cu",
+     [ "--all-dims"; "--all-levels"; "--assume-launch" ], 1);
+    (* A pointer kernel arg taken out of a host-side array of pointers
+     ([int *d[4]] launched with [d[2]]). Reading the element yields a
+     value the host never exposes, so the argument aliases [d] itself
+     and the kernel's writes land on that array. The subscript used to
+     abstract into an opaque scalar, and a formal bound to a scalar has
+     no location to record accesses against, so every access through
+     [out] was dropped and this kernel reported DRF while all 32 threads
+     write [out[0]]. *)
+    ("racy-launch-ptr-array.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
+    (* The companion for the same aliasing, pinning that recovering the
+     accesses does not by itself make the kernel racy: each thread writes
+     [out[threadIdx.x]], one cell per thread. It also reported DRF before
+     the aliasing, but with no access in the protocol at all. *)
+    ("drf-launch-ptr-array.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
     (* 2d array *)
     ("drf-2d.cu", [], 0);
     (* add support for side-effects (reads/writes) in the conditions as commas *)
@@ -418,6 +893,24 @@ let tests =
     ("racy-loop-comma-in-cond.cu", [], 1);
     (* support for inlining functions which return values *)
     ("drf-inline-var.cu", [], 0);
+    (* if-conversion of a conditional scalar assignment: [idx] is reassigned
+     inside an [if], and its post-branch value is [flag ? i + n : i], injective
+     in the thread id on both arms, so the write is DRF. Without if-conversion
+     [idx] is dropped after the branch and the write aliases. *)
+    ("drf-cond-assign.cu", [], 0);
+    (* Blowup guard for if-conversion: a chain of conditional self-updates
+     [if (i < k) i = i + n;] each if-converts to [i = (i < k) ? i + n : i],
+     referencing [i] on every arm, so inlining the chain expands the write index
+     to a term exponential in the chain length (16 levels timed out / exhausted
+     memory before SMT). Encode_assigns bounds the inlined size
+     ([--infer-cond-bound]) and abstracts an over-budget value to an unknown, so
+     this stays flat; the index is then unconstrained, hence racy. *)
+    ("racy-cond-assign-chain.cu", [], 1);
+    (* Companion guard for a non-conditional chain: a loop-carried scalar [s]
+     repeatedly self-multiplied [s = s * s * v] doubles the inlined term at every
+     step. The same inlined-size bound abstracts [s] once it exceeds the budget,
+     so this stays flat. *)
+    ("drf-loop-mul-chain.cu", [], 0);
     (* Regression for a bug in [drf/lib/delinearize.ml]'s
      [Expr.( - )] polynomial-subtraction primitive that mis-signed
      remainder terms when delinearising indices containing
@@ -464,9 +957,22 @@ let tests =
     ("drf-loop-aligned-1.cu", [], 0);
     (* End-to-end smoke test for IntegerLiteral parsing of uint64
      sentinels that exceed OCaml's 63-bit int — they must reach the
-     analyser as concrete two's-complement values, not the
+     analyzer as concrete two's-complement values, not the
      [Int.max_int] fallback. *)
     ("drf-uint64-sentinel.cu", [], 0);
+    (* A 64-bit parameter's bound is a hypothesis about an argument, and
+       neither end of a signed 64-bit domain is an OCaml int. Answering
+       with the 32-bit signed range rules out every argument beyond
+       2147483647, which is exactly where this kernel's race lives: the
+       verdict was data-race free and the witness now picks
+       [n = 3000000001]. *)
+    ("racy-int64-param.cu", [], 1);
+    (* The half of that domain that is still writable. An unsigned 64-bit
+       parameter keeps [n >= 0], which is what makes this companion's
+       [n + 1 == 0] branch unreachable; dropping both ends instead of the
+       upper one alone witnesses [n = -1] and reports a race the kernel
+       does not have. *)
+    ("drf-uint64-param.cu", [], 0);
     (* C++11 range-based for over a fixed-size array: the bound is
      extracted from the RangeStmt's qualType so the iteration
      variable becomes [arr[__idx]] inside a bounded foreach,
@@ -484,6 +990,795 @@ let tests =
      Unsupported and every access lowers to [skip], producing a
      false-negative DRF on a kernel that races on every thread. *)
     ("racy-qualified-pointer.cu", [], 1);
+    (* Congruence on the read symbol doing real work: with one warp per
+     block both threads of a witness load the same cell and share a
+     base, so the write index separates them by thread id alone. The
+     two load indices are distinct terms, one per thread, so only the
+     equality axiom relates them. *)
+    ("drf-read-congruence.cu", [ "--block-dim=32" ], 0);
+    (* Two warps per block put the witness on unrelated bases, which
+     can undercut each other by the thread-id gap. *)
+    ("drf-read-congruence.cu", [ "--block-dim=64" ], 1);
+    (* A load that follows a store to the same array must not reuse the
+     earlier load's value: reading a cell back after overwriting it
+     yields a different number, and cancelling the two against each
+     other clears a real race. *)
+    ("racy-read-after-write.cu", [], 1);
+    (* The companion precision case: separating the two loads must not
+     downgrade either to an unknown local. Both stay uniform across
+     threads, so the write index offsets a shared constant by the
+     thread id. *)
+    ("drf-read-version.cu", [], 0);
+    (* A read symbol is minted only after an array has reached its final
+     name and its index has picked up every offset folded into it. A load
+     in a callee therefore carries the caller's array and the offset of
+     the argument, and agrees with a load the caller writes directly on
+     that array, so the two cancel in the write index. Minting the symbol
+     before inlining keeps the callee's parameter as the array and drops
+     the offset, which separates the two loads and reports a race. *)
+    ("drf-read-call-arg.cu", [], 0);
+    (* The other direction on the offset: two calls of one callee at
+     different offsets of one array read different cells and must stay
+     apart, so their difference is free and two threads collide. Dropping
+     the offset of the argument merges the two loads and clears the
+     race. *)
+    ("racy-read-call-offsets.cu", [], 1);
+    (* A pointer bound to the interior of an array is resolved before the
+     symbol is minted, so a load through the pointer and a load written on
+     the array itself are the same load. *)
+    ("drf-read-source-alias.cu", [], 0);
+    (* Offsets accumulate along a chain of calls, and the load carries the
+     sum of all of them. *)
+    ("drf-read-nested-call.cu", [], 0);
+    (* One callee inlined against two arrays keeps the arrays apart, since
+     the symbol is named after the resolved array. A symbol shared by every
+     array, or one left named after the callee's parameter, merges the two
+     loads and clears the race. *)
+    ("racy-read-two-arrays.cu", [], 1);
+    (* An uninterpreted function's result carries the range its
+     declaration states. Without it __clz is an unbounded integer and a
+     stride of 64 does not separate two threads, so the kernel reports a
+     race it does not have. *)
+    ("drf-clz-range.cu", [], 0);
+    (* The companion: at a stride of 16 the same range no longer
+     separates the threads, so the range must not clear this one. *)
+    ("racy-clz-range.cu", [], 1);
+    (* The second declared range, against __ffs. *)
+    ("drf-ffs-range.cu", [], 0);
+    (* Reads are the second class of uninterpreted function, and their
+     result range comes from the array's element type. Without it the
+     loaded unsigned char is an unbounded integer and the stride of 256
+     does not separate two threads. *)
+    ("drf-read-elem-range.cu", [], 0);
+    (* The companion at an int element type, whose range spans more than
+     the stride, so the range must not clear this one. *)
+    ("racy-read-elem-range.cu", [], 1);
+    (* An entry with a body lowers to that body at every application,
+     not only where every argument is a literal. Leaving min an
+     uninterpreted function makes its result an unbounded integer, which
+     is the same false alarm a missing declaration produces. *)
+    ("drf-min-rewrite.cu", [], 0);
+    (* The companion: the body has to be min's own graph, since
+     rewriting the call to its second argument, to a constant or to max
+     clears this one. *)
+    ("racy-min-rewrite.cu", [], 1);
+    (* The same rung against max, whose body is the mirror conditional. *)
+    ("drf-max-rewrite.cu", [], 0);
+    ("racy-max-rewrite.cu", [], 1);
+    (* The third entry with a body, and the one whose body divides. *)
+    ("drf-divup-rewrite.cu", [], 0);
+    (* A registered name applied at an arity the entry does not declare
+     is a different function: it gets neither the body nor the
+     declaration, and applying the body regardless raises out of it. *)
+    ("racy-divup-arity.cu", [], 1);
+    (* The third entry carrying a 0..32 result, whose companion is
+     racy-clz-range.cu. *)
+    ("drf-popc-range.cu", [], 0);
+    (* The 64-bit intrinsics count over a wider word, so their result
+     range is 0..64 and a stride of 128 is what separates two threads. *)
+    ("drf-clzll-range.cu", [], 0);
+    (* The companion at a stride of 64, the exact width of that range,
+     which fails if the 64-bit entries inherit the 32-bit range. *)
+    ("racy-clzll-range.cu", [], 1);
+    (* The other two 64-bit entries, sharing that companion. *)
+    ("drf-ffsll-range.cu", [], 0);
+    ("drf-popcll-range.cu", [], 0);
+    (* A declaration is instantiated once per occurring application, and
+     an application nested inside another is still one of them. Dropping
+     either of the two ranges reports a race. *)
+    ("drf-nested-range.cu", [], 0);
+    (* The companion at a stride of 64, the two ranges summed. *)
+    ("racy-nested-range.cu", [], 1);
+    (* A declaration governs every query, not only the race query. The
+     precondition here contradicts __clz's declared range, so the kernel
+     clears vacuously and --check-pre-sat must say so. A precondition
+     query that does not carry the declaration finds the precondition
+     satisfiable, runs the race pipeline and reports plain data-race
+     freedom, which is exit 0 rather than the 1 expected here. *)
+    ("vacuous-clz-pre.cu",
+     [ "--check-pre-sat"; "--assume"; "__clz(n) > 40" ], 1);
+    (* An integer conversion carries a term of its own from clang's AST down
+       to [Exp.nexp]. These four pin that the term arrives and that it does
+       not yet prove anything: every consumer treats it as its operand, so
+       the verdicts are the ones faial gave when the parser discarded the
+       conversion.
+
+       The two below are the implicit and explicit syntaxes for the same
+       operation, and both build the identical protocol
+       [rw out[(char)(((int)threadIdx.x) * 256)]]. Both verdicts are wrong:
+       the low eight bits of a multiple of 256 are zero, so every thread
+       writes out[0]. They flip to racy once the node is given a meaning in
+       the solver, which is what makes them worth asserting now. *)
+    ("drf-cast-implicit.cu", [], 0);
+    ("drf-cast-explicit.cu", [], 0);
+    (* A conversion over a load. Reads are hoisted to statements before
+       [Infer_exp], so the node has to wrap the value the load was bound to
+       rather than the load expression; it comes out as
+       [rw out[(char)$read_a(0, (int)threadIdx.x)]]. Racy because the loaded
+       value is unconstrained beyond its element range, which is the verdict
+       from before the node existed. *)
+    ("racy-cast-read.cu", [], 1);
+    (* The third syntax a conversion arrives through, and the one this node
+       is not for: [__float2int_rz] is declared [__device__ int
+       __float2int_rz(float)], so its call site is a CallExpr with no cast
+       node and no two types to compare. It mints nothing and stays an
+       unknown value. Reaching it is the [Functions] registry's job. *)
+    ("racy-cast-intrinsic.cu", [], 1);
+    (* A literal stored into a narrow-element array is [int -> char], which
+       the keep-rule keeps, so [D_lang]'s benign-write payload has to read
+       through the conversion. Losing it drops the [rw(0)] tag, and a write
+       with no payload is never paired off as benign, which turns this DRF
+       kernel racy. *)
+    ("drf-cast-narrow-store.cu", [], 0);
+    (* The payload is the value the cell ends up holding, not the value
+       written in the source. [(char)200] is [-56], so both threads leave
+       the same byte in [y[0]] and the two writes pair off as benign. *)
+    ("drf-payload-signed-wrap.cu", [], 0);
+    (* The same shape over two literals that stay apart once reduced:
+       [(char)200] is [-56] where [(char)100] is [100], so the threads leave
+       different bytes and the race is real. This is what stops the
+       reduction from being applied widely enough to discharge a genuine
+       race. *)
+    ("racy-payload-signed-wrap.cu", [], 1);
+    (* An unsigned destination keeps the other representative of the
+       residue: [(unsigned char)200] is [200], and [(unsigned char)456] is
+       [200] as well, where the signed reduction would have recorded [-56]
+       for both. Same byte from both threads, so this is benign. *)
+    ("drf-payload-unsigned-wrap.cu", [], 0);
+    (* Every conversion on the way to the cell counts, so reaching the
+       literal cannot mean reading past them: [(char)200] is [-56], and the
+       element type takes that to [(unsigned short)(-56)], which is [65480]
+       against the [200] the other thread stores. Reading past both
+       conversions recovers [200] twice and pairs off two writes that leave
+       different values behind. *)
+    ("racy-payload-cast-chain.cu", [], 1);
+    (* A right shift rounds towards minus infinity and keeps the operand's
+       signedness, and these four pin both halves of that on the three paths
+       a shift can take through the folder.
+
+       Both operands literal: the answer is settled while folding, and a
+       negative left operand shifted as a machine-word logical shift comes
+       back a large positive number, which closes the guard and loses the
+       race. *)
+    ("racy-shift-literal-negative.cu", [], 1);
+    (* Literal shift amount over a value that may be negative. Rewriting the
+       shift into a division that truncates towards zero answers 0 for
+       n = -1, where the shift answers -1. The [&] in the index is what puts
+       this on the bit-vector backend, since the arithmetic encoder has no
+       bitwise operators; that backend is where truncation and flooring
+       differ. *)
+    ("drf-shift-signed-floor.cu", [], 0);
+    (* Non-literal shift amount over an unsigned operand, whose marker has to
+       survive folding: an unsigned shift fills zero, so an all-ones value
+       shifted by 1..63 is no longer all ones. Carrying it as a signed shift
+       fills with the sign and opens the branch. *)
+    ("drf-shift-unsigned-fill.cu", [], 0);
+    (* The other direction on the fill bit: a signed shift keeps the sign, so
+       a negative operand stays negative and the race is real. Guards against
+       answering every shift with a zero fill. *)
+    ("racy-shift-signed-keeps-sign.cu", [], 1);
+    (* A shift amount outside the range OCaml's shift operators answer over.
+       Clang warns and keeps the shift, so it reaches the folder, which used to
+       rewrite the shift into a multiplication by two raised to the amount and
+       raise out of that rewrite on a negative one, aborting the whole file.
+       The shift is now left for the solver, and the kernel is racy for a
+       reason that does not depend on what the shift means: the amount is
+       thread-uniform, so every thread writes the same cell, and each writes a
+       different value. *)
+    ("racy-shift-negative-amount.cu", [], 1);
+    (* Turning a proposition into an integer yields 0 or 1.
+       [!!threadIdx.x] is 0 for thread 0 and 1 for every other thread, so
+       threads 1 and 2 both write [out[1]], storing 1 and 2, which is a
+       real race. Handing back the proposition's operand instead makes the
+       index the thread id, every thread writes its own cell, and this
+       kernel came out data-race free. *)
+    ("racy-bool-to-int.cu", [], 1);
+    (* The companion, pinning that the conversion is 0 or 1 rather than an
+       unknown value. The index [2 * threadIdx.x + f] separates two threads
+       precisely because [f] cannot exceed 1: [2 * t1 + f1 = 2 * t2 + f2]
+       forces [t1 = t2] once both [f1] and [f2] lie in [0, 1]. An unknown
+       [f] admits a witness and reports a race. *)
+    ("drf-bool-to-int.cu", [], 0);
+    (* A conversion to bool is a test against zero. [threadIdx.x + 1] is
+       never zero, so every thread assigns [b] the value 1 and every
+       thread writes [out[1]] a different value, which is a real race.
+       Dropping the conversion makes the index the sum itself, one cell
+       per thread, and the kernel came out data-race free. *)
+    ("racy-bool-cond.cu", [], 1);
+    (* [for (int i = 4; i; i--)] is the same loop as [i != 0]. The bound
+       is what separates the threads: [i] runs over [1, 4], so the stride
+       of 8 in [8 * threadIdx.x + i] keeps two threads apart. A condition
+       the range inference does not read leaves an unbounded loop whose
+       counter is free, and then the two threads collide. *)
+    ("drf-loop-bare-cond.cu", [], 0);
+    (* [for (; j != n; j++, i++)] leaves the loop counter uninitialised
+       in the init slot, so the loop starts at whatever [j] holds on
+       entry. That entry value is bound ahead of the loop, because the
+       closed form for the harvested [i++], [i = (j - entry) / step + i],
+       is placed inside the body, where [j] denotes the range variable.
+       Naming the entry value [j] there made the difference [j - j],
+       collapsing every iteration onto the value [i] had on entry: the
+       write became [out[threadIdx.x]], one cell per thread, and the
+       kernel reported DRF. The write is really [out[threadIdx.x + j]],
+       which two threads one apart share. *)
+    ("racy-loop-no-init.cu", [], 1);
+    (* The companion, pinning that reading the counter back does not by
+       itself make such a loop racy: eight consecutive cells per thread
+       starting at [8 * threadIdx.x] stay disjoint. It also reported DRF
+       before, but for the collapsed index [out[8 * threadIdx.x]]. *)
+    ("drf-loop-no-init.cu", [], 0);
+    (* A store of a literal [true] records the payload [1], the same way
+       [= 1] does. Two threads storing the same value into [y[0]] agree
+       on what ends up there, so the pair is benign. The literal was
+       read for integers only, leaving the bool store with no payload at
+       all, and two payload-less writes to one cell are reported as a
+       race. *)
+    ("drf-payload-bool-literal.cu", [], 0);
+    (* The companion, pinning that the payload is the literal's value
+       rather than a fixed one: [true] and [false] record 1 and 0, the
+       two threads disagree on what [y[0]] ends up holding, and the race
+       is real. *)
+    ("racy-payload-bool-literal.cu", [], 1);
+    (* A protocol with no memory access at all is reported as
+       zero-accesses, not as data-race freedom: with nothing to compare
+       there is no race to find, and a GPU kernel that never touches
+       memory points at accesses lost while inferring the protocol.
+       Like the vacuous verdict, zero-accesses exits 1. The expected
+       value here is that exit status, which does not tell zero-accesses
+       apart from racy; run the file under --json to read the status
+       itself. *)
+    ("zero-accesses-no-memory.cu", [], 1);
+    (* The same kernel shape once it reaches memory: one write per
+       thread, each to its own cell. The accesses are present, so this
+       stays plain data-race freedom. *)
+    ("drf-one-write-per-thread.cu", [], 0);
+    (* The boundary the zero-accesses check must respect: reads and an
+       atomic increment give a race proof that is trivial, yet the
+       protocol holds three accesses. Reporting it as anything other
+       than data-race freedom would make the new status fire on kernels
+       that are simply easy to clear. *)
+    ("drf-read-plus-atomic.cu", [], 0);
+    (* A kernel whose calls reach a cycle in the call graph is discarded
+       rather than analyzed: the inliner cannot substitute a recursive
+       callee, and analyzing what is left would answer for a program with
+       the callee's accesses missing. Like zero-accesses, a discarded
+       kernel exits 1. *)
+    ("discarded-recursion-direct.cu", [], 1);
+    (* The cycle need not be a self-call; mutual recursion is the same
+       condition on the call graph. *)
+    ("discarded-recursion-mutual.cu", [], 1);
+    (* The kernel itself calls nothing recursive: it calls [helper], which
+       calls [rec]. Rejection follows reachability, so [k] goes too, and
+       [helper]'s own write does not reach the analysis. *)
+    ("discarded-recursion-via-helper.cu", [], 1);
+    (* The case the zero-accesses status cannot catch: the kernel keeps a
+       write of its own, so its protocol is non-empty and it used to clear
+       as data-race free at exit 0, while the race lives in the accesses
+       the recursive callee contributed. *)
+    ("discarded-recursion-partial.cu", [], 1);
+    (* A callee declared but never defined. The kernel keeps a write of
+       its own, so its protocol is non-empty and the zero-accesses status
+       cannot catch it: before the discard it cleared as data-race free
+       while the race lived in the accesses [touch] contributed. *)
+    ("undefined-call.cu", [], 1);
+    (* The policy that restores the old behaviour: the call is ignored and
+       the kernel is analyzed as though it were never written. *)
+    ("undefined-call.cu", [ "--opaque-calls=skip-all" ], 0);
+    (* The body [touch] lacks is not absent from the project, only from
+       this file. Handing over the sibling that defines it resolves the
+       call and the kernel is analyzed: the file that is discarded on its
+       own clears as data-race free, since its own write and the one
+       [touch] contributes are both to [A[threadIdx.x]], and a thread does
+       not race with itself. *)
+    ("undefined-call.cu", [ "undefined-call-sibling.cu" ], 0);
+    (* The same sibling, whose definition writes [int *__restrict__ A]
+       where the prototype writes [int *A]. A top-level qualifier on a
+       parameter is not part of the function type, so these declare one
+       function and the kernel resolves exactly as above. The identity is
+       taken from the canonical type for that reason: the written spelling
+       separates a prototype from its own definition. *)
+    ("undefined-call.cu", [ "undefined-call-sibling-restrict.cu" ], 0);
+    (* The sibling's accesses arrive, they are not merely counted as
+       resolved: this body writes [A[i / 2]], which two threads share.
+       The flags are the ones that clear the kernel above, so the race can
+       only come from the file that was added. [--opaque-calls] does not
+       hold it back either, because that policy speaks for a call whose
+       body is invisible and this body is now visible. *)
+    ("undefined-call.cu",
+     [ "--opaque-calls=skip-all"; "undefined-call-sibling-racy.cu" ], 1);
+    (* A discarded kernel answers to its own name: selecting it reports
+       the discard, where naming it used to fail as though the kernel
+       were absent from the file. *)
+    ("undefined-call.cu", [ "--kernel"; "k" ], 1);
+    (* One kernel is discarded and the other is analyzable. Selecting the
+       discarded one reports the discard; selecting the survivor reports
+       only the survivor, where the discard of the kernel that was not
+       selected used to be reported alongside it. *)
+    ("discarded-with-survivor.cu", [], 1);
+    ("discarded-with-survivor.cu", [ "--kernel"; "declined" ], 1);
+    ("discarded-with-survivor.cu", [ "--kernel"; "analyzed" ], 0);
+    (* A parameter that reads a flat buffer as an array of structs. The
+       member has no array of its own in the caller, so the access is the
+       byte it lands on, [in[4 * g + i]], read in the caller's cells. *)
+    ("drf-reinterpret-view.cu", [], 0);
+    (* The same view with the write landing in the buffer it reads, so the
+       offset the member contributes decides whether the two meet. *)
+    ("racy-reinterpret-view.cu", [], 1);
+    (* The same view starting part way into the buffer. The offset is in
+       the caller's cells, not in the view's objects, and scaling it by
+       the object would move the read clear of the write. *)
+    ("racy-reinterpret-view-offset.cu", [], 1);
+    (* A call whose argument is the parameter's own type binds member to
+       member, which is the case the expansion above must not disturb. *)
+    ("racy-call-arity.cu", [], 1);
+    (* Rejection follows reachability: [k] calls [helper], and [helper] is
+       the one that calls the undefined function. *)
+    ("undefined-call-indirect.cu", [], 1);
+    ("undefined-call-indirect.cu", [ "--opaque-calls=skip-all" ], 0);
+    (* A callee that cannot write through any parameter is skipped under
+       the default and taken under the strictest policy. *)
+    ("undefined-call-scalar.cu", [], 0);
+    ("undefined-call-scalar.cu", [ "--opaque-calls=skip-none" ], 1);
+    (* A function the [Functions] registry models is never opaque, whatever
+       the policy: its applications are lowered by the signature lookup
+       missing, so recording the declaration would turn [log2(n)] into a
+       call to a body that does not exist. *)
+    ("registry-call.cu", [], 0);
+    ("registry-call.cu", [ "--opaque-calls=skip-none" ], 0);
+    (* A definition followed by a re-declaration of the same function. The
+       database entry must stay the definition, so the call inlines and
+       the kernel is analyzed rather than discarded. *)
+    ("redeclared-callee.cu", [], 0);
+    (* Two instantiations of one template share a name and a function
+       type, and a call site names neither of them: its [DeclRefExpr]
+       carries the same name and type for both. The instantiation is
+       recovered from the declaration the call resolves to, so the body
+       substituted at a call site is the body that call runs.
+
+       [k] calls the safe [f<0>]; substituting [f<1>] instead reports a
+       race the kernel does not have. *)
+    ("template-instances.cu", [], 0);
+    (* The same in the other direction: [k] calls the racy [f<0>], and
+       substituting the safe [f<1>] clears a kernel that races. *)
+    ("template-instance-racy.cu", [], 1);
+    (* [f<0>] calls a function with no visible body and [f<1>] does not,
+       so which instantiation [k] reaches decides whether it is
+       analyzable at all. *)
+    ("template-instance-undefined.cu", [], 1);
+    (* Two namespaces declaring the same signature is the same collapse
+       without templates: clang reports the name unqualified, so the
+       identity has to carry the enclosing namespace. *)
+    ("namespace-overload.cu", [], 0);
+    ("namespace-overload-racy.cu", [], 1);
+    (* A namespace member defined out of line, under its qualified name,
+       so the definition is written at file scope while belonging to [N].
+       The enclosing [NamespaceDecl] nodes are the wrong place to read the
+       namespaces from: they hold for a definition written inside the
+       braces and say nothing about this one. Alone the kernel is
+       discarded, and the sibling that defines [N::touch] resolves it. *)
+    ("namespace-out-of-line.cu", [], 1);
+    ("namespace-out-of-line.cu", [ "namespace-out-of-line-sibling.cu" ], 0);
+    (* A [__device__] static member function is qualified by its record the
+       way a free function is qualified by its namespace, so [W::put]
+       resolves and its body is inlined: every thread writes [A[0]]. The
+       write to [B] is what keeps the kernel from reporting no accesses at
+       all, which exits 1 too and would pass this test without inlining
+       anything. *)
+    ("racy-static-method.cu", [], 1);
+    (* The same call with a per-thread index, so the argument has to bind
+       through the qualified name for [A[i]] to stay disjoint. *)
+    ("drf-static-method.cu", [], 0);
+    (* An instance call, where the object is the leading argument and the
+       callee's [this] is a parameter it expands into members like any
+       record. Every thread writes its own element, so the binding has to
+       carry the array rather than merely produce an access. *)
+    ("drf-callable-by-value.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
+    (* The same callable writing one element from every thread, beside a
+       direct write that keeps the kernel from reporting no accesses, so a
+       dropped call reads as race-free. *)
+    ("racy-callable-by-value.cu",
+     [ "--all-dims"; "--assume-launch" ], 1);
+    (* A pointer bound to a struct: the binder names the object and the
+       access names the member, so resolution matches the access's root
+       rather than its whole name. Before it did, the access named a
+       variable in no array map and was deleted. *)
+    ("racy-alias-struct-field.cu", [], 1);
+    (* The same binding with a per-thread element. *)
+    ("drf-alias-struct-field.cu", [], 0);
+    (* A lane of a vector element is a cell of its own array, indexed by
+       the element, the same way a struct member is. *)
+    ("racy-vector-lane.cu", [], 1);
+    (* Two lanes are two arrays and never meet. *)
+    ("drf-vector-lane.cu", [], 0);
+    (* An atomic's address is a location, so it is recognised the way a
+       write target is. Recovered as a base plus one offset, a member path
+       with a subscript had nothing to recover, and the call was left as a
+       call to atomicCAS, whose body faial cannot see. *)
+    ("racy-atomic-element-field.cu", [], 1);
+    (* The same with every thread on its own element; a discarded kernel
+       exits non-zero, so this is the half that catches the regression. *)
+    ("drf-atomic-element-field.cu", [], 0);
+    (* The same with two subscripts around the member selection. *)
+    ("racy-atomic-array-of-structs.cu", [], 1);
+    (* A scalar member of an array element is a cell of its own array,
+       indexed by the element. Before a member selection could be a store
+       target the assignment left a read of the element in its place. *)
+    ("racy-element-field.cu", [], 1);
+    (* Two members are two arrays, so [C[i].key] and [C[i].val] never
+       meet, and the per-thread element index keeps each apart. *)
+    ("drf-element-field.cu", [], 0);
+    (* An inline array member of an array element is one array whose
+       leading index is the element. Named as the enclosing element the
+       write became a read, and reads do not race with reads. *)
+    ("racy-array-of-structs.cu", [], 1);
+    (* The same shape with the element index per thread. *)
+    ("drf-array-of-structs.cu", [], 0);
+    (* [p->f] is [p[0].f], so the arrow contributes the element index it
+       leaves implicit. Without it the two writes carry different index
+       counts and cell zero is reported to collide with cell one. *)
+    ("drf-arrow-vs-subscript.cu", [], 0);
+    (* Storing a whole record touches every scalar under it, so the store
+       expands into one access per leaf and meets a member store on the
+       same cell. Named as the enclosing element it could not meet [s.f],
+       and two writes to the same bytes cleared. *)
+    ("racy-struct-copy.cu", [], 1);
+    (* The same expansion with every thread copying its own element, so
+       the leaf accesses stay disjoint. *)
+    ("drf-struct-copy.cu", [], 0);
+    (* The copy expands into a loop over the cells, so the width of the
+       record stops mattering. Listing them needed a bound, and past it the
+       copy kept naming the enclosing object, which is a different array
+       from the member and could not meet the member write. *)
+    ("racy-struct-copy-wide.cu", [], 1);
+    (* An extent the type does not state becomes an uninterpreted function
+       of the object, so the loop still has a bound and the solver chooses
+       one where the copy reaches cell zero. *)
+    ("racy-struct-copy-flex.cu", [], 1);
+    (* A record is declared under a bare name and used under a qualified
+       one, so keying the declaration on the bare name left a namespaced
+       record matching nothing and derived no member arrays. *)
+    ("racy-record-namespace.cu", [], 1);
+    (* The same record with a per-thread element. *)
+    ("drf-record-namespace.cu", [], 0);
+    (* A record nested in another is a child of the enclosing declaration,
+       and descending only into methods dropped it. *)
+    ("racy-record-nested.cu", [], 1);
+    (* The same nested record with a per-thread element. *)
+    ("drf-record-nested.cu", [], 0);
+    (* Two records of the same bare name in different scopes: keying on the
+       bare name let the later one overwrite the earlier and substitute its
+       member list. *)
+    ("racy-record-shadowed.cu", [], 1);
+    (* The same pair with a per-thread element. *)
+    ("drf-record-shadowed.cu", [], 0);
+    (* A type is spelled as it is written where it is used, so a record
+       named from inside its own namespace loses the qualifier its
+       declaration carries and the two spellings did not compare equal. *)
+    ("racy-record-in-namespace.cu", [], 1);
+    (* The same spelling reached through a using-directive, which makes the
+       name visible unqualified from outside the namespace. *)
+    ("racy-record-using-namespace.cu", [], 1);
+    (* The same shape with a per-thread element, which reports nothing at
+       all when the unqualified name does not resolve. *)
+    ("drf-record-in-namespace.cu", [], 0);
+    (* A record declared with the typedef idiom registers under its own tag
+       while every use says the alias, so a typedef of a record is kept when
+       it renames one. The self-named form is how CUDA declares its vector
+       types and bridges nothing. *)
+    ("racy-record-typedef.cu", [], 1);
+    (* The same alias with a per-thread element, which reports nothing at
+       all when the alias does not resolve. *)
+    ("drf-record-typedef.cu", [], 0);
+    (* A base subobject is laid out ahead of a record's own members and its
+       fields are reached without an intermediate name, so they belong to
+       the derived record's field list. Collecting only a record's own
+       declarations left it unregistered and the copy unexpanded. *)
+    ("racy-record-inherited.cu", [], 1);
+    (* The same with a member the derived record declares itself, so both
+       halves of the field list are exercised. *)
+    ("drf-record-inherited.cu", [], 0);
+    (* A member class defined out of line belongs to a scope it is not
+       written in, so the enclosing declarations cannot supply it and the
+       record's own answer is what matches the type. *)
+    ("racy-record-out-of-line.cu", [], 1);
+    (* The same class with a per-thread element, which reports nothing at
+       all when the scope is not recovered. *)
+    ("drf-record-out-of-line.cu", [], 0);
+    (* Each specialisation of a class template is a scope of its own, so a
+       record declared inside one does not collapse onto the same bare name
+       as its sibling. *)
+    ("drf-record-template-scope.cu", [], 0);
+    (* The same pair with threads sharing an element inside one of them. *)
+    ("racy-record-template-scope.cu", [], 1);
+    (* A pointer member of a struct parameter is memory of its own, so
+       [v.p] is an array and every thread writing [v.p[0]] races. The write
+       to [B] is what keeps the kernel from reporting no accesses at all,
+       which would pass this test without expanding the parameter. *)
+    ("racy-pointer-field.cu", [], 1);
+    (* The same expansion has to carry the scalar member too: [v.n] is a
+       uniform parameter, so [v.p[threadIdx.x + v.n]] stays disjoint. *)
+    ("drf-pointer-field.cu", [], 0);
+    (* [s->p] reaches the subscript as the same shape as [v.p], so a
+       pointer-to-struct parameter expands the same way. *)
+    ("racy-arrow-field.cu", [], 1);
+    (* The storage holding a pointer member's address is memory of the
+       object it sits in, so two threads assigning the same slot race.
+       Before it had a name of its own the assignment became a read of the
+       enclosing element and the store was lost. *)
+    ("racy-pointer-field-store.cu", [], 1);
+    (* The same store with every thread taking its own slot. *)
+    ("drf-pointer-field-store.cu", [], 0);
+    (* The storage and what it points at occupy different bytes, so
+       writing the address cannot collide with writing through it. *)
+    ("drf-pointer-field-split.cu", [], 0);
+    (* Two cells of an array of objects hold two addresses, so each names
+       a region of its own. Merged under one name they met and the kernel
+       reported a race that cannot happen. *)
+    ("drf-pointer-field-cells.cu", [], 0);
+    (* The same two cells, spelled at different depths: one subscript
+       indexes the object and the other indexes an array member. A name
+       that folds every subscript onto the root cannot tell them apart,
+       and the kernel reported a race that needs the two cells to hold
+       one address. *)
+    ("drf-member-cell-pointer.cu", [], 0);
+    (* The twin where both spellings reach the same cell, since the arrow
+       contributes the zero the other writes out. Naming a cell by its
+       position still has to identify these two. *)
+    ("racy-member-cell-pointer.cu", [], 1);
+    (* A zero cell is elided, so the arrow and an explicit zero reach one
+       region and do meet. *)
+    ("racy-pointer-field-cell.cu", [], 1);
+    (* Which cell holds the address is decided by a value, so no name
+       denotes one region. The address the read returns carries that
+       question instead, and two cells of one table hold two addresses, so
+       the threads are apart where the kernel used to be discarded. *)
+    ("drf-dynamic-pointer-cell.cu", [], 0);
+    (* The twin where two threads reach one bucket, so they read one cell,
+       hold one address and meet. Without it the pair above could clear by
+       losing its accesses rather than by keeping them apart. *)
+    ("racy-dynamic-pointer-cell.cu", [], 1);
+    (* The members of a record behind a pointer are regions of their own,
+       named through the crossing, so a write to one lands somewhere
+       nameable where it used to name nothing and be discarded. *)
+    ("racy-pointer-to-record.cu", [], 1);
+    (* The same record with each thread reading its own address, which is
+       what separates them. *)
+    ("drf-pointer-to-record.cu", [], 0);
+    (* Copying a record copies the address a pointer member holds, so the
+       copy touches that member's storage and meets a thread assigning it.
+       It does not touch what the pointer points at. *)
+    ("racy-struct-copy-pointer.cu", [], 1);
+    (* The same pair with every thread on its own element. *)
+    ("drf-struct-copy-pointer.cu", [], 0);
+    (* An object whose members are the memory is not memory itself. Here
+       the expansion cannot reach the members, since the only one has no
+       cells, so the copy names the object and the kernel is discarded
+       rather than analyzed under a name that denotes the members' own
+       bytes. *)
+    ("declined-object-with-members.cu", [], 1);
+    (* An object with nothing below it is the memory, which is what keeps
+       the rule above from swallowing a plain pointer parameter. *)
+    ("racy-object-without-members.cu", [], 1);
+    (* A subscript in the middle of a member path indexes the region and
+       is no part of its name. While it stayed in the name the region
+       matched nothing and the kernel was discarded. *)
+    ("racy-member-array-cell.cu", [], 1);
+    (* The same path with that middle cell separating the threads, which
+       only a name free of it can decide. *)
+    ("drf-member-array-cell.cu", [], 0);
+    (* Reading a cell that holds a record reads every member of it. How
+       many subscripts the cell's type takes is what is written below the
+       member, not what the whole path carries, and counting the whole
+       path left the read unexpanded and unnamed. *)
+    ("racy-record-cell-read.cu", [], 1);
+    (* The same read with each thread on its own site. *)
+    ("drf-record-cell-read.cu", [], 0);
+    (* A vector pointer is decomposed into one array per lane, so the object
+       holding a cell names no memory and only its lanes do. Touching the
+       whole cell was left unexpanded and named that object, which nothing
+       matched, and the accesses went missing. *)
+    ("racy-vector-cell-read.cu", [], 1);
+    (* The same read with each thread on its own cell. *)
+    ("drf-vector-cell-read.cu", [], 0);
+    (* The store half of the same rule. *)
+    ("racy-vector-cell-write.cu", [], 1);
+    (* Shifting a vector pointer argument counts objects, and each lane
+       array holds one cell per object, so the shift is scaled by the lane's
+       cell. Every lane used to collapse onto the object's name carrying the
+       object-scaled shift, which named nothing. *)
+    ("racy-vector-arg-shift.cu", [], 1);
+    (* The same shift with the direct write an object's width further on,
+       which is where the object-scaled shift would have landed. *)
+    ("drf-vector-arg-shift.cu", [], 0);
+    (* With [f.x] a free variable the prover gave each thread its own, and
+       the kernel reported a race that cannot happen; expanded, [f.x] is
+       uniform and the indices are disjoint. *)
+    ("drf-field-in-param.cu", [], 0);
+    (* An array member of a [__shared__] struct is shared memory of its
+       own. Before it was, the write was discarded and a read of the
+       enclosing struct was fabricated in its place, and reads do not race
+       with reads, so the kernel was reported race-free. *)
+    ("racy-shared-struct-field.cu", [], 1);
+    (* Two members are two arrays, so a write to [s.a[i]] and a read of
+       [s.b[i + 1]] do not meet. Collapsing both onto the enclosing struct
+       would put them one cell apart and report a race. *)
+    ("drf-shared-struct-field.cu", [], 0);
+    (* The same expansion for a file-scope [__device__] struct. The write
+       to [B] is what keeps the kernel from reporting no accesses at all. *)
+    ("racy-device-struct-field.cu", [], 1);
+    (* A scalar in shared memory is written with a subscript of its own,
+       which reaches the object and takes no level off its type. Counting
+       it as one left the store naming an object whose lanes are the
+       memory, so the store went missing while the lane read resolved. *)
+    ("drf-shared-scalar-object.cu", [], 0);
+    (* The same pair without the barrier between them. *)
+    ("racy-shared-scalar-object.cu", [], 1);
+    (* An alias is what every use of a typedef spells, and a use may write
+       a qualifier in front of it. Looked up by its printed spelling,
+       [const LatLong] matched nothing the plain name registered and the
+       parameter stayed one region with no members. *)
+    ("drf-typedef-record-arg.cu", [ "--all-dims"; "--assume-launch" ], 0);
+    (* The same alias with every thread on one output cell. *)
+    ("racy-typedef-record-arg.cu", [ "--all-dims"; "--assume-launch" ], 1);
+    (* A struct argument expands into its members at the call site the way
+       the callee's parameter does, so the two lists still line up and
+       [v.p] inside [put] binds to the caller's [v.p]. *)
+    ("racy-struct-arg.cu", [], 1);
+    (* The same call with a per-thread index, so the binding has to carry
+       the array rather than merely produce an access. *)
+    ("drf-struct-arg.cu", [], 0);
+    (* The same call through a [const] parameter. A record is registered
+       under its tag, so the qualifier has to come off the written type
+       before the lookup, or the parameter stays opaque and the member the
+       caller passes binds to nothing. *)
+    ("drf-const-struct-arg.cu", [], 0);
+    (* Two members make that failure shift the arguments rather than merely
+       drop one: the callee's [i] takes [w.q] and the racy write is lost,
+       while the write to [B] keeps the kernel from reporting no accesses,
+       so the loss reads as a race-free verdict. *)
+    ("racy-const-struct-arg.cu", [], 1);
+    (* The same qualifier on a kernel's own parameter, with a launch site
+       supplying it. The wrapper expands the argument from the host
+       variable's unqualified type, so a kernel parameter that does not
+       expand shifts [p] onto a scalar and the write disappears. *)
+    ("drf-launch-const-struct-arg.cu",
+     [ "--all-dims"; "--assume-launch" ], 0);
+    (* A pointer member reached through a cast and an offset: the local
+       [row] has to alias the member, so the byte-view machinery sees
+       [v.ptr] where before the member had no name to alias to. *)
+    ("racy-struct-ptr-view.cu", [], 1);
+    (* An inline array member of a by-value parameter is storage inside a
+       per-thread copy, so every thread writes its own [b.a[0]] and the
+       kernel is race-free. Only a pointer member of such a parameter names
+       memory the threads share. *)
+    ("drf-byvalue-array-field.cu", [], 0);
+    (* A dimension pinned with [-p] rather than [--block-dim]. The pin is
+       substituted first, which drops blockDim.x from the thread-globals,
+       so the dimension defaults that follow must skip it instead of
+       assigning over it. Both values are checked so a pin that is
+       accepted but not applied is caught too. *)
+    ("racy-param-block-dim.cu", [], 1);
+    ("racy-param-block-dim.cu", [ "-p"; "blockDim.x=32" ], 0);
+    ("racy-param-block-dim.cu", [ "-p"; "blockDim.x=64" ], 1);
+    (* An overloaded subscript consumed as a value. A call in statement
+       position is already inlined, so what was missing is the lift that
+       binds a call in expression position to a name, which is what a plain
+       call has had all along. *)
+    ("racy-operator-subscript.cu", [], 1);
+    (* The same accessor indexed per thread, so a lift that dropped the
+       subscript would report a race here. *)
+    ("drf-operator-subscript.cu", [], 0);
+    (* A method named by a member selection rather than by a declaration
+       reference, which is how clang emits a call on an object. The method
+       is recovered from the class the receiver belongs to. *)
+    ("racy-member-call.cu", [], 1);
+    (* The same lookup for a method that never reads its object, so faial
+       synthesises no [this] parameter and the receiver is not an argument.
+       The two arities have to be told apart or the call resolves to
+       nothing. *)
+    ("racy-instance-method.cu", [], 1);
+    (* The accessor as a class template. A use spells the type with its
+       arguments and the declaration registers under the bare name, so the
+       two have to be keyed the same way or the parameter resolves to no
+       record at all. *)
+    ("racy-template-accessor.cu", [], 1);
+    (* Assigning through what a call returns. A reference return hands back
+       the address, so the store is a write through it; before, the
+       assignment vanished and the kernel answered on its reads alone. *)
+    ("racy-write-through-call.cu", [], 1);
+    (* The same store with each thread on a cell of its own, which only
+       holds if the index survives into the address. *)
+    ("drf-write-through-call.cu", [], 0);
+    (* The reference returned by a free function over a pointer parameter,
+       which lands on whatever array the caller bound it to. *)
+    ("racy-write-through-static-ref.cu", [], 1);
+    (* The address of a by-value object's member array names no memory, so
+       the store through it is dropped the way a spelled one is. *)
+    ("racy-write-through-local-ref.cu", [], 1);
+    (* Storing through the dereference of a call, which is the same cell a
+       subscript by zero reaches. This one went missing unreported. *)
+    ("racy-deref-call-write.cu", [], 1);
+    (* A reference return whose lvalue is a choice between two arrays has no
+       address to hand back, so the store still cannot be placed and the
+       kernel is declined rather than losing its only write. *)
+    ("declined-write-through-choice.cu", [], 1);
+    (* Two specialisations separated only by a declaration argument, whose
+       identity is one level below the argument. The verdict is the same
+       either way; what the snapshot holds is which array each write
+       names. *)
+    ("racy-template-decl-arg.cu", [], 1);
+    (* A const and a non-const accessor of the same name and arity, which a
+       call separates by the signature the method reference names. *)
+    ("racy-const-overload.cu", [], 1);
+    (* A kernel whose only access is inside a callable it takes by value.
+       The lambda is written in host code, which is dropped whole, so the
+       closure and its body have to be carried out of it. *)
+    ("racy-host-lambda.cu", [ "--all-dims"; "--assume-launch" ], 1);
+    (* The same callable bound in the launching function itself, which the
+       wrapper used to bind by rewriting its initialiser. *)
+    ("racy-launch-site-lambda.cu", [ "--all-dims"; "--assume-launch" ], 1);
+    (* A template recursion the compiler has already unrolled. Its base case
+       is an explicit specialization with an empty body, and dropping that
+       declaration left the last call in the chain to bind by name and
+       signature to a sibling instantiation, which reads as a cycle. *)
+    ("racy-template-recursion.cu", [], 1);
+    (* The same chain with each step a block further along. *)
+    ("drf-template-recursion.cu", [], 0);
+    (* A dependent call, whose candidates are the ones clang's lookup found
+       and not every function of that name and arity in the file. Taking
+       any of them lands an unrelated body's accesses in the kernel. *)
+    ("drf-dependent-operator.cu", [], 0);
+    (* The same call over one output cell, which the kernel's own write
+       still has to reach. *)
+    ("racy-dependent-operator.cu", [], 1);
+    (* A call whose signature matches nothing faial can see. The one other
+       overload of the name is the caller, so binding by the name alone
+       makes the function call itself. *)
+    ("drf-unseen-overload.cu", [], 0);
+    (* The same overload pair over one output cell. *)
+    ("racy-unseen-overload.cu", [], 1);
+    (* A by-value record parameter written through a typedef of an
+       elaborated name, whose fields are found under the name the record
+       was declared with and not under the alias. *)
+    ("racy-typedef-struct-field.cu", [], 1);
+    (* The same parameter with each thread on a cell of its own. *)
+    ("drf-typedef-struct-field.cu", [], 0);
+    (* A view over a vector buffer, whose cell straddles the lanes the
+       array was decomposed into. With the dimensions free the column two
+       rows share is written twice. *)
+    ("racy-vector-flat-view.cu", [ "--all-dims" ], 1);
+    (* The same kernel reached through its launch site, which decomposes
+       the argument as well. The view has to survive that and land on the
+       lane the thread index picks, which under one row is its own. *)
+    ("racy-vector-flat-view.cu", [ "--all-dims"; "--assume-launch" ], 0);
+    (* An aggregate whose fields are lanes of one region rather than a
+       region each, so a view reading the same storage as a flat run of
+       scalars lands on cells the lane accesses can be compared against. *)
+    ("drf-lane-region-view.cu", [ "--blockDim=64" ], 0);
+    (* The same pair of views one cell apart, which is the race naming them
+       separately used to hide. *)
+    ("racy-lane-region-view.cu", [ "--blockDim=64" ], 1);
   ]
 
 (* These are kernels that are being documented, but are
@@ -496,12 +1791,21 @@ let unsupported : Fpath.t list =
     (* example where assignment is used as an expression, rather
      than a statement *)
     "drf-assign-exp.cu";
-    (* Data-race free requires understanding fields in parameters. *)
-    "drf-field-in-param.cu";
     (* A racy example that uses structs *)
     "racy-struct.cu";
     (* A racy example that calls a device function without array as args *)
     "racy-device-no-args.cu";
+    (* A pointer view written at the subscript rather than at a
+     declaration: the parser deletes the cast and no trace of the width
+     survives. *)
+    "racy-ptr-view-subscript.cu";
+    (* A choice between two arrays passed as an argument. It has no
+     spelling as a name plus an offset, which is the only thing an
+     argument carries, and unlike a row it is never bound to a name of
+     its own on the way in, so nothing survives for the pointer pass to
+     discharge. It resolves at a use site; it is the crossing into a
+     call that is missing. *)
+    "racy-ptr-select-arg.cu";
   ]
   |> List.map (fun x -> Fpath.(v "." / x))
 
@@ -529,8 +1833,11 @@ let faial_drf ?(args = []) (fname : Fpath.t) : Subprocess.t =
 
 let used_files : Fpath.Set.t =
   tests
-  (* get just the filenames as paths *)
-  |> List.map (fun (x, _, _) -> Fpath.(v "." / x))
+  (* get just the filenames as paths; a case may name further sources
+     among its arguments, which faial-drf takes as extra input files *)
+  |> List.concat_map (fun (x, args, _) ->
+      x :: List.filter (fun (a : string) -> Filename.check_suffix a ".cu") args)
+  |> List.map (fun (x : string) -> Fpath.(v "." / x))
   (* convert to a set *)
   |> Fpath.Set.of_list
 
@@ -543,12 +1850,20 @@ let missed_files (dir : Fpath.t) : Fpath.Set.t =
   let unsupported = Fpath.Set.of_list unsupported in
   Fpath.Set.diff (Fpath.Set.diff all_cu_files used_files) unsupported
 
-let () =
+let run_tests () =
   let open Fpath in
+  let jobs = Parallel.test_jobs () in
   print_endline "Checking examples for DRF:";
+  print_endline (Parallel.test_jobs_banner ());
+  Stdlib.flush_all ();
   Unix.chdir (Fpath.to_string test_dir);
   tests
-  |> List.iter (fun (filename, args, expected_status) ->
+  |> Parallel.map ~jobs (fun (filename, args, _) ->
+         Phase_timer.time_it (fun () ->
+             faial_drf ~args (v filename) |> Subprocess.run_split))
+  |> List.combine tests
+  |> List.iter (fun ( (filename, args, expected_status),
+                      (elapsed, (given : Subprocess.Completed2.t)) ) ->
       let str_args = if args = [] then "" else String.concat " " args ^ " " in
       let bullet =
         match expected_status with
@@ -558,9 +1873,8 @@ let () =
         | _ -> "?:     "
       in
       print_string (bullet ^ "faial-drf " ^ str_args ^ filename);
-      Stdlib.flush_all ();
-      let given = faial_drf ~args (v filename) |> Subprocess.run_split in
-      (if given.status = Unix.WEXITED expected_status then print_endline " ✔"
+      (if given.status = Unix.WEXITED expected_status then
+         Printf.printf " ✔ %.2fs\n" elapsed
        else
          let exit_code = Subprocess.exit_code given.status |> string_of_int in
          print_endline " ✘";
@@ -601,9 +1915,29 @@ let () =
   unsupported
   |> List.iter (fun f ->
       if not (Files.exists f) then (
-        print_endline ("Missing unsupported file: " ^ Fpath.to_string f);
+        print_endline
+          (" ✘ ERROR: Missing unsupported file: " ^ Fpath.to_string f);
         exit 1)
       else print_endline ("TODO:  " ^ Fpath.to_string f));
+  (* [--list-kernels] is checked on its output rather than its exit
+     status, which is 0 whatever it prints. Enumeration must name the
+     discarded kernel too, since a name it omits is a name [--kernel]
+     cannot be given back. *)
+  let elapsed, listing =
+    Phase_timer.time_it (fun () ->
+        faial_drf ~args:[ "--list-kernels" ] (v "discarded-with-survivor.cu")
+        |> Subprocess.run_split)
+  in
+  print_string "LIST:  faial-drf --list-kernels discarded-with-survivor.cu";
+  if listing.stdout = "analyzed\ndeclined\n" then
+    Printf.printf " ✔ %.2fs\n" elapsed
+  else (
+    print_endline " ✘";
+    print_endline "------------------------ OUTPUT ------------------------";
+    print_endline listing.stdout;
+    print_endline listing.stderr;
+    print_endline "ERROR: Expected the analyzable and the discarded kernel.";
+    exit 1);
   let missed = missed_files (v ".") in
   if not (Fpath.Set.is_empty missed) then (
     let missed =
@@ -611,6 +1945,48 @@ let () =
       |> List.map Fpath.to_string |> String.concat " "
     in
     print_endline "";
-    print_endline ("ERROR: The following files are not being checked: " ^ missed);
+    print_endline
+      (" ✘ ERROR: The following files are not being checked: " ^ missed);
     exit (-1))
   else ()
+
+(* ---- Protocol snapshot ----- *)
+
+let strip_ansi (s : string) : string =
+  let n = String.length s in
+  let rec go (i : int) (acc : char list) : char list =
+    if i >= n then acc
+    else if s.[i] = '\027' && i + 1 < n && s.[i + 1] = '[' then
+      let rec skip (j : int) : int =
+        if j >= n then j else if s.[j] = 'm' then j + 1 else skip (j + 1)
+      in
+      go (skip (i + 2)) acc
+    else go (i + 1) (s.[i] :: acc)
+  in
+  go 0 [] |> List.rev |> List.to_seq |> String.of_seq
+
+let snapshot () =
+  let jobs = Parallel.test_jobs () in
+  Unix.chdir (Fpath.to_string test_dir);
+  tests
+  |> Parallel.map ~jobs (fun (filename, args, _) ->
+         faial_drf ~args:("--show-map" :: args) (Fpath.v filename)
+         |> Subprocess.run_split)
+  |> List.combine tests
+  |> List.iter (fun ((filename, args, _), (given : Subprocess.Completed2.t)) ->
+      print_endline
+        ("### faial-drf "
+        ^ String.concat " " ("--show-map" :: args @ [ filename ]));
+      print_endline
+        ("### exit " ^ string_of_int (Subprocess.exit_code given.status));
+      print_string (strip_ansi given.stdout);
+      let err = strip_ansi given.stderr in
+      if String.trim err <> "" then (
+        print_endline "### stderr";
+        print_string err);
+      print_newline ())
+
+let () =
+  match Array.to_list Sys.argv with
+  | _ :: "--snapshot" :: _ -> snapshot ()
+  | _ -> run_tests ()

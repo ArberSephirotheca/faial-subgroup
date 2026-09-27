@@ -39,7 +39,8 @@ module Make (L : Logger.Logger) = struct
       | Skip -> Skip
       | If (b, p, q) -> If (b, simpl p, simpl q)
       | Decl d -> Decl { d with body = simpl d.body }
-      | Loop { range = r; body = p } -> (
+      | Loop { cond_range; body = p } -> (
+          let r = cond_range.range in
           let p = simpl p in
           match
             Uniform_range.uniform Maximize k.global_variables cfg.block_dim r
@@ -51,8 +52,12 @@ module Make (L : Logger.Logger) = struct
                   (n_ge (Var r.var) r.lower_bound)
                   (n_lt (Var r.var) r.upper_bound)
               in
-              Loop { range = r'; body = If (cnd, p, Skip) }
-          | None -> Loop { range = r; body = p })
+              Loop
+                {
+                  cond_range = Protocols.Cond_range.make r' cond_range.cond;
+                  body = If (cnd, p, Skip);
+                }
+          | None -> Loop { cond_range; body = p })
       | Sync l -> Sync l
       | Seq (p, q) -> Seq (simpl p, simpl q)
     in
@@ -61,8 +66,9 @@ module Make (L : Logger.Logger) = struct
       |> Variable.Map.map (fun m ->
           let open Memory in
           let m = { m with data_type = [ "int" ] } in
-          if Memory.is_shared m && List.length m.size > 0 then
-            { m with size = [ List.fold_left ( * ) 1 m.size ] }
+          let known = Memory.known_size m in
+          if Memory.is_shared m && List.length known > 0 then
+            { m with size = [ Some (List.fold_left ( * ) 1 known) ] }
           else m)
     in
     {

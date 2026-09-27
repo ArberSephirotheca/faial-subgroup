@@ -8,6 +8,16 @@ type nexp =
   | Binary of N_binary.t * nexp * nexp
   | Unary of N_unary.t * nexp
   | NCall of string * nexp list
+  | ReadResult of {
+      array : Variable.t;
+      version : int;
+      (* [None] when the element type is not a value type, which is where
+         the array-or-scalar seam does not hold. *)
+      ty : Scalar.t option;
+      address : bool;
+      args : nexp list;
+    }
+  | Convert of { ty : Scalar.t; arg : nexp }
   | NIf of bexp * nexp * nexp
   | CastInt of bexp
 
@@ -25,7 +35,7 @@ and bexp =
       index : nexp list;
       operation : nexp Atomic.Operation.t;
     }
-  | ThreadUnif of nexp
+  | IsThreadUnif of nexp
 
 
 
@@ -49,6 +59,13 @@ and bexp =
         let@ () = b_compare b1 b2 in
         let@ () = n_compare t1 t2 in
         n_compare f1 f2
+    | ReadResult r1, ReadResult r2 ->
+        let@ () = Variable.compare r1.array r2.array in
+        let@ () = compare r1.version r2.version in
+        List.compare n_compare r1.args r2.args
+    | Convert c1, Convert c2 ->
+        let@ () = Scalar.compare c1.ty c2.ty in
+        n_compare c1.arg c2.arg
     | CastInt b1, CastInt b2 -> b_compare b1 b2
     | Var _, _ -> -1
     | _, Var _ -> 1
@@ -60,6 +77,10 @@ and bexp =
     | _, Unary _ -> 1
     | NCall _, _ -> -1
     | _, NCall _ -> 1
+    | ReadResult _, _ -> -1
+    | _, ReadResult _ -> 1
+    | Convert _, _ -> -1
+    | _, Convert _ -> 1
     | NIf _, _ -> -1
     | _, NIf _ -> 1
 
@@ -87,7 +108,7 @@ and bexp =
         let@ () = Variable.compare a1 a2 in
         let@ () = List.compare n_compare i1 i2 in
         Atomic.Operation.compare n_compare op1 op2
-    | ThreadUnif e1, ThreadUnif e2 -> n_compare e1 e2
+    | IsThreadUnif e1, IsThreadUnif e2 -> n_compare e1 e2
     | Bool _, _ -> -1
     | _, Bool _ -> 1
     | NRel _, _ -> -1
@@ -116,11 +137,19 @@ let rec n_eval_res (n : nexp) : (int, string) Result.t =
   | Unary (o, n) ->
       let* n = n_eval_res n in
       Ok (N_unary.eval o n)
-  | Binary (o, n1, n2) ->
+  | Binary (o, n1, n2) -> (
       let* n1 = n_eval_res n1 in
       let* n2 = n_eval_res n2 in
-      Ok (N_binary.eval o n1 n2)
+      try Ok (N_binary.eval o n1 n2) with
+      | N_binary.Unknown_width ->
+          Error ("n_eval: no width for " ^ N_binary.to_string o)
+      | N_binary.Shift_amount_out_of_range ->
+          Error
+            ("n_eval: shift amount out of range: " ^ N_binary.to_string o ^ " "
+           ^ string_of_int n2))
   | NCall (x, _) -> Error ("n_eval: call " ^ x)
+  | ReadResult r -> Error ("n_eval: read " ^ Variable.name r.array)
+  | Convert c -> n_eval_res c.arg
   | NIf (b, n1, n2) ->
       let* b = b_eval_res b in
       if b then n_eval_res n1 else n_eval_res n2
@@ -148,7 +177,7 @@ and b_eval_res (b : bexp) : (bool, string) Result.t =
       (* You'll implement this - placeholder for now *)
       Error "Distinct evaluation not implemented yet"
   | AtomicResult _ -> Error "b_eval: atomic_result"
-  | ThreadUnif _ -> Error "b_eval: thread_unif"
+  | IsThreadUnif _ -> Error "b_eval: thread_unif"
 
 let n_eval_opt (n : nexp) : int option = n_eval_res n |> Result.to_option
 let b_eval_opt (b : bexp) : bool option = b_eval_res b |> Result.to_option
@@ -285,6 +314,29 @@ let n_udiv n1 n2 =
   | Num n1, Num n2 -> Num (n1 / n2)
   | _, _ -> Binary (Div Signedness.Unsigned, n1, n2)
 
+(* [Some m] when the expression is [k * m], so that dividing by [k] is an
+   identity rather than a [Div] node. Answering [None] costs the shape of
+   an expression and never its value, which is why staying conservative is
+   safe. *)
+let rec exact_div (e : nexp) (k : int) : nexp option =
+  let ( let* ) = Option.bind in
+  if k = 0 then None
+  else if k = 1 then Some e
+  else
+    match e with
+    | Num n when n mod k = 0 -> Some (Num (n / k))
+    | Binary (Mult _, Num c, e) when c mod k = 0 -> Some (n_mult (Num (c / k)) e)
+    | Binary (Mult _, e, Num c) when c mod k = 0 -> Some (n_mult (Num (c / k)) e)
+    | Binary (Plus _, e1, e2) ->
+        let* e1 = exact_div e1 k in
+        let* e2 = exact_div e2 k in
+        Some (n_plus e1 e2)
+    | Binary (Minus _, e1, e2) ->
+        let* e1 = exact_div e1 k in
+        let* e2 = exact_div e2 k in
+        Some (n_minus e1 e2)
+    | _ -> None
+
 let n_mod n1 n2 =
   match (n1, n2) with
   | Num n1, Num n2 -> Num (Common.modulo n1 n2)
@@ -297,19 +349,25 @@ let n_umod n1 n2 =
 
 let n_left_shift (l : nexp) (r : nexp) : nexp =
   match (l, r) with
-  | a, Num n -> Binary (Mult Signedness.Signed, a, Num (Common.pow ~base:2 n))
+  | a, Num n when n >= 0 && n < Sys.int_size - 1 ->
+      Binary (Mult Signedness.Signed, a, Num (Common.pow ~base:2 n))
   | _, _ -> Binary (LeftShift, l, r)
 
-let n_right_shift (l : nexp) (r : nexp) : nexp =
-  match (l, r) with
-  | a, Num n -> Binary (Div Signedness.Signed, a, Num (Common.pow ~base:2 n))
-  | _, _ -> Binary (RightShift Signedness.Signed, l, r)
+(* Shifting a negative value right as unsigned reads it at its own width's
+   two's complement, and nexp carries no width, so that fold is left to the
+   solver rather than answered at a width we would have to invent. *)
+let n_right_shift (s : Signedness.t) (l : nexp) (r : nexp) : nexp =
+  match (s, l, r) with
+  | Signedness.Signed, Num a, Num b when b >= 0 && b < 63 -> Num (a asr b)
+  | Unsigned, Num a, Num b when a >= 0 && b >= 0 && b < 63 -> Num (a asr b)
+  | _, _, _ -> Binary (RightShift s, l, r)
 
 let n_bin o n1 n2 =
   try
     match (o, n1, n2) with
+    | N_binary.RightShift s, _, _ -> n_right_shift s n1 n2
     | _, Num n1, Num n2 -> Num (N_binary.eval o n1 n2)
-    | N_binary.Plus _, _, _ -> n_plus n1 n2
+    | Plus _, _, _ -> n_plus n1 n2
     | Minus _, _, _ -> n_minus n1 n2
     | Mult _, _, _ -> n_mult n1 n2
     | Div Signed, _, _ -> n_div n1 n2
@@ -317,9 +375,11 @@ let n_bin o n1 n2 =
     | Mod Signed, _, _ -> n_mod n1 n2
     | Mod Unsigned, _, _ -> n_umod n1 n2
     | LeftShift, _, _ -> n_left_shift n1 n2
-    | RightShift _, _, _ -> n_right_shift n1 n2
     | _, _, _ -> Binary (o, n1, n2)
-  with Division_by_zero -> Binary (o, n1, n2)
+  with
+  | Division_by_zero | N_binary.Unknown_width
+  | N_binary.Shift_amount_out_of_range ->
+      Binary (o, n1, n2)
 
 let b_or b1 b2 =
   match (b1, b2) with
@@ -369,10 +429,14 @@ let n_bit_not : nexp -> nexp = function
   | Num n -> Num Int32.(of_int n |> lognot |> to_int)
   | e -> Unary (BitNot, e)
 
+let convert (ty : Scalar.t) (arg : nexp) : nexp =
+  match arg with
+  | Num n when Scalar.contains n ty -> arg
+  | _ -> Convert { ty; arg }
+
 let cast_int : bexp -> nexp = function
   | Bool true -> Num 1
   | Bool false -> Num 0
-  | CastBool n -> n
   | b -> CastInt b
 
 let cast_bool : nexp -> bexp = function
@@ -386,10 +450,20 @@ let rec b_and_ex l =
 let rec b_or_ex l =
   match l with [] -> Bool true | [ x ] -> x | x :: l -> b_or x (b_or_ex l)
 
-let thread_eq (e : nexp) : bexp = ThreadUnif e
+let is_thread_unif (e : nexp) : bexp = IsThreadUnif e
 
-let thread_distinct (idx : Variable.t list) : bexp =
-  b_or_ex (List.map (fun x -> b_not (thread_eq (Var x))) idx)
+let is_thread_distinct (idx : Variable.t list) : bexp =
+  b_or_ex (List.map (fun x -> b_not (is_thread_unif (Var x))) idx)
+
+let is_thread_unif_name : string = "__is_thread_unif"
+let is_thread_distinct_name : string = "__is_thread_distinct"
+
+(* Source-level spelling of the uniformity annotations. Both frontends
+   recognise these names and build [IsThreadUnif] directly, so the
+   annotation is never carried as a [Predicates.t]. *)
+let is_uniformity_intrinsic (name : string) : bool =
+  String.equal name is_thread_unif_name
+  || String.equal name is_thread_distinct_name
 
 let rec n_bin_split (o : N_binary.t) : nexp -> nexp list = function
   | Binary (o', e1, e2) when o' = o -> n_bin_split o e1 @ n_bin_split o e2
@@ -420,6 +494,8 @@ let rec n_definedness_conditions (expr : nexp) : bexp list =
       @ n_definedness_conditions then_expr
       @ n_definedness_conditions else_expr
   | NCall (_, exprs) -> List.concat_map n_definedness_conditions exprs
+  | ReadResult read -> List.concat_map n_definedness_conditions read.args
+  | Convert conversion -> n_definedness_conditions conversion.arg
   | CastInt cond -> b_definedness_conditions cond
 
 and b_definedness_conditions (condition : bexp) : bexp list =
@@ -438,7 +514,7 @@ and b_definedness_conditions (condition : bexp) : bexp list =
       @ Atomic.Operation.fold
           (fun expr acc -> n_definedness_conditions expr @ acc)
           operation []
-  | ThreadUnif expr -> n_definedness_conditions expr
+  | IsThreadUnif expr -> n_definedness_conditions expr
 
 (* Preserve source order: it is also the order used in solver diagnostics. *)
 let dedup_conditions (conditions : bexp list) : bexp list =
@@ -457,6 +533,8 @@ let rec n_fold f e a =
   | Binary (_, e1, e2) -> n_fold f e1 a |> n_fold f e2
   | NIf (b, e1, e2) -> b_fold f b a |> n_fold f e1 |> n_fold f e2
   | NCall (_, es) -> List.fold_left (fun a e -> n_fold f e a) a es
+  | ReadResult r -> List.fold_left (fun a e -> n_fold f e a) a r.args
+  | Convert c -> n_fold f c.arg a
 
 and b_fold f e a =
   match e with
@@ -472,13 +550,45 @@ and b_fold f e a =
       let a = f array a in
       let a = List.fold_left (fun a e -> n_fold f e a) a index in
       Atomic.Operation.fold (fun e a -> n_fold f e a) operation a
-  | ThreadUnif e -> n_fold f e a
+  | IsThreadUnif e -> n_fold f e a
 
 let n_free_names : nexp -> Variable.Set.t -> Variable.Set.t =
   n_fold Variable.Set.add
 
 let b_free_names : bexp -> Variable.Set.t -> Variable.Set.t =
   b_fold Variable.Set.add
+
+let n_equal (a : nexp) (b : nexp) : bool = n_compare a b = 0
+let b_equal (a : bexp) (b : bexp) : bool = b_compare a b = 0
+
+let rec strip_convert : nexp -> nexp = function
+  | Convert c -> strip_convert c.arg
+  | n -> n
+
+let b_calls : bexp -> nexp list =
+  let rec b_walk (acc : nexp list) (b : bexp) : nexp list =
+    match b with
+    | Bool _ -> acc
+    | NRel (_, n1, n2) -> n_walk (n_walk acc n1) n2
+    | BRel (_, b1, b2) -> b_walk (b_walk acc b1) b2
+    | BNot b -> b_walk acc b
+    | Pred (_, ns) | Distinct ns -> List.fold_left n_walk acc ns
+    | CastBool n | IsThreadUnif n -> n_walk acc n
+    | AtomicResult { index; operation; _ } ->
+        let acc = List.fold_left n_walk acc index in
+        Atomic.Operation.fold (fun n acc -> n_walk acc n) operation acc
+  and n_walk (acc : nexp list) (n : nexp) : nexp list =
+    match n with
+    | Var _ | Num _ -> acc
+    | Unary (_, e) -> n_walk acc e
+    | Binary (_, n1, n2) -> n_walk (n_walk acc n1) n2
+    | CastInt b -> b_walk acc b
+    | NIf (b, n1, n2) -> n_walk (n_walk (b_walk acc b) n1) n2
+    | NCall (_, args) -> List.fold_left n_walk (n :: acc) args
+    | ReadResult r -> List.fold_left n_walk (n :: acc) r.args
+    | Convert c -> n_walk acc c.arg
+  in
+  fun b -> b_walk [] b |> List.sort_uniq n_compare
 
 (* Checks if variable [x] is in the given expression *)
 let rec n_exists (f : Variable.t -> bool) : nexp -> bool = function
@@ -487,6 +597,8 @@ let rec n_exists (f : Variable.t -> bool) : nexp -> bool = function
   | Num _ -> false
   | Binary (_, e1, e2) -> n_exists f e1 || n_exists f e2
   | NCall (_, es) -> List.exists (n_exists f) es
+  | ReadResult r -> List.exists (n_exists f) r.args
+  | Convert c -> n_exists f c.arg
   | Unary (_, e) -> n_exists f e
   | NIf (b, e1, e2) -> b_exists f b || n_exists f e1 || n_exists f e2
 
@@ -502,7 +614,7 @@ and b_exists (f : Variable.t -> bool) : bexp -> bool = function
       f target || f array
       || List.exists (n_exists f) index
       || Atomic.Operation.exists (n_exists f) operation
-  | ThreadUnif e -> n_exists f e
+  | IsThreadUnif e -> n_exists f e
 
 (* Checks if variable [x] is in the given expression *)
 let n_mem (x : Variable.t) : nexp -> bool = n_exists (Variable.equal x)
@@ -514,8 +626,27 @@ let n_intersects (s : Variable.Set.t) : nexp -> bool =
 let b_intersects (s : Variable.Set.t) : bexp -> bool =
   b_exists (fun x -> Variable.Set.mem x s)
 
-(* b_map only recurses to the first numeric expression it finds, not recursively
-   in numeric expressions. *)
+let rec erase_converts : nexp -> nexp = function
+  | (Var _ | Num _) as n -> n
+  | Convert c -> erase_converts c.arg
+  | Unary (o, e) -> Unary (o, erase_converts e)
+  | Binary (o, a, b) -> Binary (o, erase_converts a, erase_converts b)
+  | NCall (x, args) -> NCall (x, List.map erase_converts args)
+  | ReadResult r -> ReadResult { r with args = List.map erase_converts r.args }
+  | NIf (b, a, c) -> NIf (b_erase_converts b, erase_converts a, erase_converts c)
+  | CastInt b -> CastInt (b_erase_converts b)
+
+and b_erase_converts : bexp -> bexp = function
+  | (Bool _ | IsThreadUnif _) as b -> b
+  | NRel (o, a, b) -> NRel (o, erase_converts a, erase_converts b)
+  | BRel (o, a, b) -> BRel (o, b_erase_converts a, b_erase_converts b)
+  | BNot b -> BNot (b_erase_converts b)
+  | Pred (x, ns) -> Pred (x, List.map erase_converts ns)
+  | CastBool n -> CastBool (erase_converts n)
+  | Distinct ns -> Distinct (List.map erase_converts ns)
+  | AtomicResult a ->
+      AtomicResult { a with index = List.map erase_converts a.index }
+
 let rec b_map (f : nexp -> nexp) : bexp -> bexp = function
   | Bool _ as b -> b
   | NRel (o, n1, n2) -> NRel (o, f n1, f n2)
@@ -532,7 +663,25 @@ let rec b_map (f : nexp -> nexp) : bexp -> bexp = function
           index = List.map f index;
           operation = Atomic.Operation.map f operation;
         }
-  | ThreadUnif e -> ThreadUnif (f e)
+  | IsThreadUnif e -> IsThreadUnif (f e)
+
+let reset_variable_kind_n ~kernel_parameters ~loop_variables : nexp -> nexp =
+  let reset_v = Variable.reset_kind ~kernel_parameters ~loop_variables in
+  let rec reset = function
+    | Var v -> Var (reset_v v)
+    | Num _ as e -> e
+    | Binary (o, a, b) -> Binary (o, reset a, reset b)
+    | Unary (o, a) -> Unary (o, reset a)
+    | NCall (g, es) -> NCall (g, List.map reset es)
+    | ReadResult r -> ReadResult { r with args = List.map reset r.args }
+    | Convert c -> convert c.ty (reset c.arg)
+    | NIf (b, a1, a2) -> NIf (b_map reset b, reset a1, reset a2)
+    | CastInt b -> CastInt (b_map reset b)
+  in
+  reset
+
+let reset_variable_kind_b ~kernel_parameters ~loop_variables : bexp -> bexp =
+  b_map (reset_variable_kind_n ~kernel_parameters ~loop_variables)
 
 type side = Left | Right
 
@@ -542,8 +691,10 @@ let rec n_par ?context (* ?side *) (n : nexp) : string =
       Binary ((N_binary.Plus _ | N_binary.Mult _ | N_binary.Div _), _, _) )
   | Some (N_binary.Mult _), Binary (N_binary.Mult _, _, _) ->
       n_to_string n
-  | _, Num _ | _, Var _ | _, NCall _ | _, CastInt _ -> n_to_string n
-  | _, NIf _ | _, Unary _ | _, Binary _ -> "(" ^ n_to_string n ^ ")"
+  | _, Num _ | _, Var _ | _, NCall _ | _, ReadResult _ | _, CastInt _ ->
+      n_to_string n
+  | _, NIf _ | _, Unary _ | _, Binary _ | _, Convert _ ->
+      "(" ^ n_to_string n ^ ")"
 
 and n_to_string : nexp -> string = function
   | Num n -> string_of_int n
@@ -552,6 +703,12 @@ and n_to_string : nexp -> string = function
   | Binary (b, a1, a2) -> n_par ~context:b a1 ^ " " ^ N_binary.to_string b ^ " " ^ n_par ~context:b a2
   | NCall (x, args) ->
       x ^ "(" ^ String.concat ", " (List.map n_to_string args) ^ ")"
+  | ReadResult r ->
+      Read_symbol.name r.array ^ "("
+      ^ String.concat ", "
+          (string_of_int r.version :: List.map n_to_string r.args)
+      ^ ")"
+  | Convert c -> "(" ^ Scalar.to_string c.ty ^ ")" ^ n_par c.arg
   | NIf (b, n1, n2) -> b_par b ^ " ? " ^ n_par n1 ^ " : " ^ n_par n2
   | CastInt b -> "int(" ^ b_to_string b ^ ")"
 
@@ -576,12 +733,12 @@ and b_to_string : bexp -> string = function
       ^ Atomic.Operation.to_string operation
       ^ (if op_args = "" then "" else "(" ^ op_args ^ ")")
       ^ ")"
-  | ThreadUnif e -> "thread_unif(" ^ n_to_string e ^ ")"
+  | IsThreadUnif e -> "thread_unif(" ^ n_to_string e ^ ")"
 
 and b_par (b : bexp) : string =
   match b with
   | Pred _ | CastBool _ | Bool _ | BNot _ | Distinct _ | AtomicResult _
-  | ThreadUnif _ ->
+  | IsThreadUnif _ ->
       b_to_string b
   | BRel _ | NRel _ -> "(" ^ b_to_string b ^ ")"
 
@@ -590,7 +747,7 @@ let b_to_s : bexp -> Indent.t list =
     let open Indent in
     match b with
     | NRel _ | Bool _ | BNot _ | CastBool _ | Pred _ | Distinct _
-    | AtomicResult _ | ThreadUnif _ ->
+    | AtomicResult _ | IsThreadUnif _ ->
         [ Line (b_to_string b) ]
     | BRel (o, _, _) ->
         let op = B_rel.to_string o in
@@ -607,3 +764,22 @@ let b_to_s : bexp -> Indent.t list =
         |> List.concat
   in
   to_s true
+
+(* The constraint a set of bounds imposes on a term: an end that cannot be
+   written contributes no inequality, so the result is anything from [Bool
+   true] through a single inequality to a conjunction of two. *)
+let in_bounds (n : nexp) (b : Bounds.t) : bexp =
+  [
+    b.lower |> Option.map (fun lo -> n_le (Num lo) n);
+    b.upper |> Option.map (fun hi -> n_le n (Num hi));
+  ]
+  |> List.filter_map Fun.id |> b_and_ex
+
+let scalar_bound (n : nexp) (ty : Scalar.t) : bexp =
+  match Scalar.to_bounds ty with Some b -> in_bounds n b | None -> Bool true
+
+let ty_bound (n : nexp) (ty : Ty.t) : bexp =
+  match Ty.to_bounds ty with Some b -> in_bounds n b | None -> Bool true
+
+let int_dom_bound (n : nexp) (d : Int_dom.t) : bexp =
+  in_bounds n (Int_dom.to_bounds d)

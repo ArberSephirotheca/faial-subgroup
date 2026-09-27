@@ -3,7 +3,7 @@ open Stage0
 
 module Code = struct
   type t =
-    | Decl of { ty : C_type.t; var : Variable.t; body : t }
+    | Decl of { ty : Ty.t; var : Variable.t; body : t }
     | Loop of { range : Range.t; body : t }
     | Cond of { test : Exp.bexp; body : t }
     | Barrier of Sync.t
@@ -11,7 +11,7 @@ module Code = struct
   let rec from_proto : Protocols.Code.t -> t Seq.t = function
     | Skip | Access _ -> Seq.empty
     | Sync s -> Seq.return (Barrier s)
-    | Decl { ty; var; body = s } ->
+    | Decl { ty; var; body = s; _ } ->
         from_proto s |> Seq.map (fun body -> Decl { ty; body; var })
     | If (b, p, q) ->
         Seq.append
@@ -19,7 +19,7 @@ module Code = struct
           (from_proto q
           |> Seq.map (fun q -> Cond { test = Exp.b_not b; body = q }))
     | Seq (s1, s2) -> from_proto s1 |> Seq.append (from_proto s2)
-    | Loop { range = r; body = s } ->
+    | Loop { cond_range = { range = r; _ }; body = s } ->
         from_proto s |> Seq.map (fun s -> Loop { range = r; body = s })
 
   let b_locals (thread_locals : Variable.Set.t) (e : Exp.bexp) : Variable.Set.t

@@ -24,3 +24,4 @@ module Matrix : sig
 end
 
 val int_solve : Matrix.t -> Vector.t -> Vector.t option
+val tri_solve : Matrix.t -> Vector.t -> Vector.t option

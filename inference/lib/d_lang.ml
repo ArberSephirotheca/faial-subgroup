@@ -17,10 +17,11 @@ let list_to_s (f : 'a -> string) (l : 'a list) : string =
 
 module Expr = struct
   type t =
-    | SizeOfExpr of J_type.t
-    | CXXNewExpr of { arg : t; ty : J_type.t }
-    | CXXDeleteExpr of { arg : t; ty : J_type.t }
-    | RecoveryExpr of J_type.t
+    | SizeOfExpr of Ty.t
+    | Convert of { arg : t; ty : Ty.t }
+    | CXXNewExpr of { arg : t; ty : Ty.t }
+    | CXXDeleteExpr of { arg : t; ty : Ty.t }
+    | RecoveryExpr of Ty.t
     | CharacterLiteral of int
     | BinaryOperator of d_binary
     | CallExpr of d_call
@@ -28,20 +29,23 @@ module Expr = struct
         cond : t;
         then_expr : t;
         else_expr : t;
-        ty : J_type.t;
+        ty : Ty.t;
       }
-    | CXXConstructExpr of { args : t list; ty : J_type.t }
+    | CXXConstructExpr of { args : t list; ty : Ty.t }
     | CXXBoolLiteralExpr of bool
-    | CXXOperatorCallExpr of { func : t; args : t list; ty : J_type.t }
+    | CXXOperatorCallExpr of { func : t; args : t list; ty : Ty.t }
     | FloatingLiteral of float
     | IntegerLiteral of int
-    | MemberExpr of { name : string; base : t; ty : J_type.t }
+    | MemberExpr of { name : string; base : t; ty : Ty.t }
     | Ident of Decl_expr.t
-    | UnaryOperator of { opcode : string; child : t; ty : J_type.t }
-    | UnresolvedLookupExpr of { name : Variable.t; tys : J_type.t list }
+    | UnaryOperator of { opcode : string; child : t; ty : Ty.t }
+    | UnresolvedLookupExpr of {
+        name : Variable.t;
+        lookups : C_lang.Lookup.t list;
+      }
 
-  and d_binary = { opcode : string; lhs : t; rhs : t; ty : J_type.t }
-  and d_call = { func : t; args : t list; ty : J_type.t }
+  and d_binary = { opcode : string; lhs : t; rhs : t; ty : Ty.t }
+  and d_call = { func : t; args : t list; ty : Ty.t }
 
   let ident ?(ty = J_type.int) ?(kind = Decl_expr.Kind.Var) (name : Variable.t)
       =
@@ -51,8 +55,9 @@ module Expr = struct
 
   let name = function
     | SizeOfExpr _ -> "SizeOfExpr"
+    | Convert _ -> "Convert"
     | CXXNewExpr _ -> "CXXNewExpr"
-    | CXXDeleteExpr _ -> "CXXNewExpr"
+    | CXXDeleteExpr _ -> "CXXDeleteExpr"
     | RecoveryExpr _ -> "RecoveryExpr"
     | CharacterLiteral _ -> "CharacterLiteral"
     | BinaryOperator _ -> "BinaryOperator"
@@ -68,14 +73,15 @@ module Expr = struct
     | UnresolvedLookupExpr _ -> "UnresolvedLookupExpr"
     | Ident _ -> "Ident"
 
-  let rec to_type : t -> J_type.t = function
+  let to_type : t -> Ty.t = function
     | SizeOfExpr _ -> J_type.int
+    | Convert c -> c.ty
     | CXXNewExpr c -> c.ty
     | CXXDeleteExpr c -> c.ty
     | RecoveryExpr ty -> ty
     | CharacterLiteral _ -> J_type.char
     | BinaryOperator a -> a.ty
-    | ConditionalOperator c -> to_type c.then_expr
+    | ConditionalOperator c -> c.ty
     | CXXBoolLiteralExpr _ -> J_type.bool
     | Ident a -> Decl_expr.ty a
     | CXXConstructExpr c -> c.ty
@@ -90,8 +96,8 @@ module Expr = struct
   let to_string ?(modifier : bool = false) ?(provenance : bool = false)
       ?(types : bool = false) : t -> string =
     let attr (s : string) : string = if modifier then "@" ^ s ^ " " else "" in
-    let opcode (o : string) (j : J_type.t) : string =
-      if types then "(" ^ o ^ "." ^ J_type.to_string j ^ ")" else o
+    let opcode (o : string) (j : Ty.t) : string =
+      if types then "(" ^ o ^ "." ^ Ty.to_string j ^ ")" else o
     in
     let var_name : Variable.t -> string =
       if provenance then Variable.repr else Variable.name
@@ -100,6 +106,7 @@ module Expr = struct
       let par (e : t) : string =
         match e with
         | BinaryOperator _ | ConditionalOperator _ -> "(" ^ exp_to_s e ^ ")"
+        | Convert _ -> "(" ^ exp_to_s e ^ ")"
         | UnaryOperator _ | CXXNewExpr _ | CXXDeleteExpr _ | Ident _
         | UnresolvedLookupExpr _ | CallExpr _ | CXXOperatorCallExpr _
         | CXXConstructExpr _ | CXXBoolLiteralExpr _ | MemberExpr _
@@ -108,9 +115,10 @@ module Expr = struct
             exp_to_s e
       in
       function
-      | SizeOfExpr ty -> "sizeof(" ^ J_type.to_string ty ^ ")"
+      | SizeOfExpr ty -> "sizeof(" ^ Ty.to_string ty ^ ")"
+      | Convert c -> "(" ^ Ty.to_string c.ty ^ ")" ^ par c.arg
       | CXXNewExpr c ->
-          "new " ^ J_type.to_string c.ty ^ "(" ^ exp_to_s c.arg ^ ")"
+          "new " ^ Ty.to_string c.ty ^ "(" ^ exp_to_s c.arg ^ ")"
       | CXXDeleteExpr c -> "del " ^ par c.arg
       | RecoveryExpr _ -> "?"
       | FloatingLiteral f -> string_of_float f
@@ -122,7 +130,7 @@ module Expr = struct
       | MemberExpr m -> par m.base ^ "." ^ m.name
       | CXXBoolLiteralExpr b -> if b then "true" else "false"
       | CXXConstructExpr c ->
-          attr "ctor" ^ J_type.to_string c.ty ^ "(" ^ list_to_s exp_to_s c.args
+          attr "ctor" ^ Ty.to_string c.ty ^ "(" ^ list_to_s exp_to_s c.args
           ^ ")"
       | CXXOperatorCallExpr c ->
           exp_to_s c.func ^ "[" ^ list_to_s exp_to_s c.args ^ "]"
@@ -144,7 +152,10 @@ module Expr = struct
     | Ident d1, Ident d2 -> Decl_expr.compare d1 d2
     | UnresolvedLookupExpr a, UnresolvedLookupExpr b ->
         let@ () = Variable.compare a.name b.name in
-        Stdlib.compare a.tys b.tys
+        Stdlib.compare a.lookups b.lookups
+    | Convert a, Convert b ->
+        let@ () = compare a.arg b.arg in
+        Stdlib.compare a.ty b.ty
     | CXXNewExpr a, CXXNewExpr b ->
         let@ () = compare a.arg b.arg in
         Stdlib.compare a.ty b.ty
@@ -193,6 +204,9 @@ module Expr = struct
     | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _ | Ident _
     | UnresolvedLookupExpr _ ->
         f e
+    | Convert { arg; ty } ->
+        let* arg = st_map f arg in
+        f (Convert { arg; ty })
     | CXXNewExpr { arg; ty } ->
         let* arg = st_map f arg in
         f (CXXNewExpr { arg; ty })
@@ -232,6 +246,9 @@ module Expr = struct
     | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _ | Ident _
     | UnresolvedLookupExpr _ ->
         f e
+    | Convert { arg; ty } ->
+        let arg = map f arg in
+        f (Convert { arg; ty })
     | CXXNewExpr { arg; ty } ->
         let arg = map f arg in
         f (CXXNewExpr { arg; ty })
@@ -270,6 +287,26 @@ module Expr = struct
     | Ident d when Variable.equal (Decl_expr.name d) var -> replacement
     | e -> e)
 
+  let children : t -> t list = function
+    | SizeOfExpr _ | RecoveryExpr _ | CharacterLiteral _ | CXXBoolLiteralExpr _
+    | FloatingLiteral _ | IntegerLiteral _ | Ident _ | UnresolvedLookupExpr _ ->
+        []
+    | Convert { arg; _ } | CXXNewExpr { arg; _ } | CXXDeleteExpr { arg; _ } ->
+        [ arg ]
+    | BinaryOperator { lhs; rhs; _ } -> [ lhs; rhs ]
+    | CallExpr { func; args; _ } | CXXOperatorCallExpr { func; args; _ } ->
+        func :: args
+    | ConditionalOperator { cond; then_expr; else_expr; _ } ->
+        [ cond; then_expr; else_expr ]
+    | CXXConstructExpr { args; _ } -> args
+    | MemberExpr { base; _ } -> [ base ]
+    | UnaryOperator { child; _ } -> [ child ]
+
+  let rec find_map (f : t -> 'a option) (e : t) : 'a option =
+    match f e with
+    | Some a -> Some a
+    | None -> children e |> List.find_map (find_map f)
+
   module OT = struct
     type nonrec t = t
 
@@ -283,8 +320,8 @@ end
 
 module Init = struct
   type t =
-    | CXXConstructExpr of { constructor : J_type.t; ty : J_type.t }
-    | InitListExpr of { ty : J_type.t; args : Expr.t list }
+    | CXXConstructExpr of { constructor : Ty.t; ty : Ty.t }
+    | InitListExpr of { ty : Ty.t; args : Expr.t list }
     | IExpr of Expr.t
 
   let to_exp (i : t) : Expr.t list =
@@ -293,7 +330,7 @@ module Init = struct
     | InitListExpr i -> i.args
     | IExpr e -> [ e ]
 
-  let to_type : t -> J_type.t = function
+  let to_type : t -> Ty.t = function
     | CXXConstructExpr { ty; _ } | InitListExpr { ty; _ } -> ty
     | IExpr e -> Expr.to_type e
 
@@ -325,12 +362,12 @@ end
 module Decl = struct
   type t = {
     var : Variable.t;
-    ty : J_type.t;
+    ty : Ty.t;
     init : Init.t option;
     attrs : string list;
   }
 
-  let types (d : t) : J_type.t list =
+  let types (d : t) : Ty.t list =
     d.ty :: Option.to_list (Option.map Init.to_type d.init)
 
   let make ~ty ~var ~init ~attrs : t = { ty; var; init; attrs }
@@ -358,15 +395,13 @@ module Decl = struct
 
   let get_shared (d : t) : Memory.t option =
     if List.mem C_lang.c_attr_shared d.attrs then
-      match J_type.to_c_type_res d.ty with
-      | Ok ty ->
-          Some
-            {
-              hierarchy = SharedMemory;
-              size = C_type.get_array_length ty;
-              data_type = C_type.get_array_type ty;
-            }
-      | Error _ -> None
+      Some
+        {
+          hierarchy = SharedMemory;
+          size = Ty.get_array_dims d.ty;
+          data_type = Ty.get_array_type d.ty;
+          layout = None;
+        }
     else None
 
   let to_exp (d : t) : Expr.t list =
@@ -382,7 +417,7 @@ module Decl = struct
         let attrs = String.concat " " d.attrs |> String.trim in
         attrs ^ " "
     in
-    let ty = J_type.to_string d.ty in
+    let ty = Ty.to_string d.ty in
     let x = Variable.name d.var in
     attr ^ ty ^ " " ^ x ^ i
 
@@ -438,17 +473,39 @@ module ForInit = struct
 end
 
 type d_subscript = {
-  name : Variable.t;
+  path : Expr.t Field_path.t;
   index : Expr.t list;
-  ty : J_type.t;
+  ty : Ty.t;
   location : Location.t;
 }
 
-let subscript_to_s (s : d_subscript) : string =
-  Variable.name s.name ^ "[" ^ list_to_s Expr.to_string s.index ^ "]"
+(* A subscript that does not cross an indirection indexes the region the
+   member path names, so its cells belong with the access's own index. A
+   subscript before a crossing says which stored address is taken, so it
+   stays on the path. *)
+let subscript_path (s : d_subscript) : Expr.t Field_path.t =
+  Field_path.without_region_index s.path
 
-let make_subscript ~name ~index ~ty ~location : d_subscript =
-  { name; index; ty; location }
+let subscript_index (s : d_subscript) : Expr.t list =
+  Field_path.region_index s.path @ s.index
+
+let subscript_name (s : d_subscript) : Variable.t =
+  let name =
+    Field_path.to_name
+      (function
+        | Expr.IntegerLiteral 0 -> None
+        | Expr.IntegerLiteral k -> Some ("[" ^ string_of_int k ^ "]")
+        | _ -> Some "[?]")
+      (subscript_path s)
+  in
+  Variable.set_name name (Field_path.base s.path)
+
+let subscript_to_s (s : d_subscript) : string =
+  Variable.name (subscript_name s)
+  ^ "[" ^ list_to_s Expr.to_string (subscript_index s) ^ "]"
+
+let make_subscript ~path ~index ~ty ~location () : d_subscript =
+  { path; index; ty; location }
 
 type d_write = {
   (* The index *)
@@ -466,7 +523,7 @@ type d_write = {
 type d_read = {
   target : Variable.t;
   source : d_subscript;
-  ty : C_type.t;
+  ty : Ty.t;
   guard : Expr.t option;
 }
 
@@ -474,7 +531,7 @@ type d_atomic = {
   target : Variable.t;
   source : d_subscript;
   atomic : Expr.t Atomic.t;
-  ty : C_type.t;
+  ty : Ty.t;
   guard : Expr.t option;
 }
 
@@ -514,7 +571,7 @@ module Stmt = struct
         captures : (Variable.t * Expr.t) list;
         params : C_lang.Param.t list;
         body : t;
-        ret_ty : J_type.t;
+        ret_ty : Ty.t;
       }
 
   and d_cond = { cond : Expr.t; body : t }
@@ -539,20 +596,16 @@ module Stmt = struct
 
   let read_access (target : Variable.t) (source : d_subscript) : t =
     let ty =
-      source.ty
-      |> J_type.to_c_type ~default:C_type.int
       (* If it's an array get the elements type *)
-      |> C_type.strip_array
+      Ty.strip_array source.ty
     in
     ReadAccessStmt { target; source; ty; guard = None }
 
   let atomic_access (target : Variable.t) (source : d_subscript)
       (atomic : Expr.t Atomic.t) : t =
     let ty =
-      source.ty
-      |> J_type.to_c_type ~default:C_type.int
       (* If it's an array get the elements type *)
-      |> C_type.strip_array
+      Ty.strip_array source.ty
     in
     AtomicAccessStmt { target; source; atomic; ty; guard = None }
 
@@ -567,6 +620,54 @@ module Stmt = struct
            (Variable.from_name "assert"))
     in
     SExpr (CallExpr { func = assert_func; args = [ cond ]; ty = J_type.int })
+
+  let assigned_call ~(resolved : Expr.t -> int -> bool) :
+      t -> Location.t option =
+    let target (e : Expr.t) : Location.t option =
+      let rec spelled : Expr.t -> Location.t option = function
+        | Ident v -> Some (Variable.location (Decl_expr.name v))
+        | MemberExpr { base; _ } -> spelled base
+        | _ -> None
+      in
+      Expr.find_map
+        (function
+          | Expr.BinaryOperator
+              { opcode = "="; lhs = CallExpr { func; args; _ }; _ }
+          | Expr.BinaryOperator
+              { opcode = "="; lhs = CXXOperatorCallExpr { func; args; _ }; _ }
+            when not (resolved func (List.length args)) ->
+              Some (Option.value (spelled func) ~default:Location.empty)
+          | _ -> None)
+        e
+    in
+    let ( ||| ) (a : Location.t option) (b : unit -> Location.t option) =
+      match a with Some _ -> a | None -> b ()
+    in
+    let rec walk : t -> Location.t option = function
+      | Skip | BreakStmt | GotoStmt | ContinueStmt -> None
+      | Seq (s1, s2) -> walk s1 ||| fun () -> walk s2
+      | SExpr e | CaseStmt { case = e; body = Skip } -> target e
+      | ReturnStmt e -> Option.bind e target
+      | AsmStmt _ | BarrierOp _ -> None
+      | WriteAccessStmt w -> target w.source
+      | ReadAccessStmt _ | AtomicAccessStmt _ -> None
+      | DeclStmt l ->
+          l
+          |> List.find_map (fun (d : Decl.t) ->
+                 match d.init with Some (IExpr e) -> target e | _ -> None)
+      | IfStmt { cond; then_stmt; else_stmt } ->
+          target cond
+          ||| fun () -> walk then_stmt ||| fun () -> walk else_stmt
+      | WhileStmt { cond; body } | DoStmt { cond; body }
+      | SwitchStmt { cond; body } ->
+          target cond ||| fun () -> walk body
+      | DefaultStmt s | CaseStmt { body = s; _ } | LambdaDecl { body = s; _ } ->
+          walk s
+      | ForStmt f ->
+          (match f.cond with Some e -> target e | None -> None)
+          ||| fun () -> walk f.inc ||| fun () -> walk f.body
+    in
+    walk
 
   let rec to_s : t -> Indent.t list = function
     | Skip -> [ Line "skip;" ]
@@ -583,7 +684,7 @@ module Stmt = struct
     | AtomicAccessStmt r ->
         [
           Line
-            ("atomic " ^ C_type.to_string r.ty ^ " " ^ Variable.name r.target
+            ("atomic " ^ Ty.to_string r.ty ^ " " ^ Variable.name r.target
            ^ " = " ^ subscript_to_s r.source);
         ]
     | ReturnStmt None -> [ Line "return" ]
@@ -758,8 +859,9 @@ module Stmt = struct
       ('s, t) State.t =
     let open State.Syntax in
     let map_subscript (s : d_subscript) : ('s, d_subscript) State.t =
+      let* path = Field_path.map_state f s.path in
       let* index = State.list_map f s.index in
-      return { s with index }
+      return { s with path; index }
     in
     match s with
     | Skip | BreakStmt | GotoStmt | ContinueStmt | Seq _ | DefaultStmt _ ->
@@ -835,52 +937,57 @@ let for_loop_vars (f : Stmt.d_for) : Variable.t list =
 
 module Kernel = struct
   type t = {
-    ty : string;
-    name : string;
+    id : Imp.Function_id.t;
+    decl_id : string option;
     code : Stmt.t;
     type_params : Ty_param.t list;
     template_args : C_lang.TemplateArgument.t list;
     params : Param.t list;
     attribute : KernelAttr.t;
+    returns_location : bool;
   }
 
   let is_global (k : t) : bool = k.attribute |> KernelAttr.is_global
 
-  let to_s (k : t) : Indent.t list =
+  (* [name] is the bare name clang reports, [label] adds the enclosing
+     namespaces and the template arguments. *)
+  let name (k : t) : string = Imp.Function_id.name k.id
+  let label (k : t) : string = Imp.Function_id.label k.id
+  let ty (k : t) : string = Imp.Function_id.ty k.id
+
+  let header (k : t) : string =
+    let open C_lang in
     let tps =
-      let open C_lang in
       if k.type_params <> [] then
         "[" ^ list_to_s Ty_param.to_string k.type_params ^ "]"
       else ""
     in
-    let targs =
-      let open C_lang in
-      if k.template_args <> [] then
-        "<" ^ list_to_s TemplateArgument.to_string k.template_args ^ ">"
-      else ""
-    in
+    KernelAttr.to_string k.attribute
+    ^ " " ^ label k ^ " " ^ tps ^ "("
+    ^ list_to_s Param.to_string k.params
+    ^ ")"
+
+  let to_s (k : t) : Indent.t list =
     let open Indent in
-    [
-      (let open C_lang in
-       Line
-         (KernelAttr.to_string k.attribute
-         ^ " " ^ k.name ^ targs ^ " " ^ tps ^ "("
-         ^ list_to_s Param.to_string k.params
-         ^ ") {"));
-      Block (Stmt.to_s k.code);
-      Line "}";
-    ]
+    [ Line (header k ^ " {"); Block (Stmt.to_s k.code); Line "}" ]
+
+  let signature_to_s (k : t) : Indent.t list =
+    let open Indent in
+    [ Line (header k ^ ";") ]
 end
 
 module Def = struct
   type t =
     | Kernel of Kernel.t
+    | Prototype of Kernel.t
     | Declaration of Decl.t
     | Typedef of Typedef.t
+    | Record of Record.t
+    | UsingNamespace of string
     | Enum of Imp.Enum.t
     (* Launch metadata is propagated through the C->D lowering as-is:
        the expression slots stay in [C_lang.Expr.t] form because no
-       D_lang consumer rewrites or analyses them yet. If a downstream
+       D_lang consumer rewrites or analyzes them yet. If a downstream
        stage starts driving assumptions (e.g. on grid/block shape), a
        parallel [D_lang.LaunchParam.t] with rewritten expressions can
        be introduced and rewrite_def updated to convert. *)
@@ -895,7 +1002,10 @@ module Def = struct
     match d with
     | Declaration d -> [ Line (Decl.to_string d ^ ";") ]
     | Kernel k -> Kernel.to_s k
+    | Prototype k -> Kernel.signature_to_s k
     | Typedef d -> Typedef.to_s d
+    | Record r -> Record.to_s r
+    | UsingNamespace n -> [ Line ("using namespace " ^ n ^ ";") ]
     | Enum e -> Imp.Enum.to_s e
     | LaunchParam lp -> C_lang.LaunchParam.to_s lp
 end
@@ -908,93 +1018,214 @@ module Program = struct
 
   let print (p : t) : unit = Indent.print (to_s p)
   let filter (pred : Def.t -> bool) (p : t) : t = List.filter pred p
-
-  (* Names of every kernel that is the target of at least one
-     [LaunchParam] in the program. *)
-  let launched_kernel_names (p : t) : Variable.Set.t =
-    List.fold_left
-      (fun acc def ->
-        match def with
-        | Def.LaunchParam lp -> Variable.Set.add lp.kernel.name acc
-        | _ -> acc)
-      Variable.Set.empty p
 end
 
 module SignatureDB = struct
+  module Function_id = Imp.Function_id
+
   module Signature = struct
-    type t = { kernel : string; ty : string; params : Variable.t list }
+    type t = {
+      id : Function_id.t;
+      params : Variable.t list;
+      types : Ty.t list;
+      expand_vectors : bool;
+      returns_location : bool;
+    }
 
     let to_string (s : t) : string =
-      s.kernel ^ "(" ^ Variable.list_to_string s.params ^ "):" ^ s.ty
+      Function_id.label s.id
+      ^ "(" ^ Variable.list_to_string s.params ^ "):"
+      ^ Function_id.ty s.id
 
     let from_kernel (k : Kernel.t) : t =
-      let open Kernel in
-      { kernel = k.name; ty = k.ty; params = List.map Param.name k.params }
+      {
+        id = k.Kernel.id;
+        params = List.map Param.name k.Kernel.params;
+        types =
+          List.map (fun (p : Param.t) -> (Param.ty_var p).ty) k.Kernel.params;
+        expand_vectors = KernelAttr.is_global k.Kernel.attribute;
+        returns_location = k.Kernel.returns_location;
+      }
   end
 
-  type t = Kernel.t StringMap.t StringMap.t
+  type t = {
+    (* Every function we can see, keyed by what makes it distinct. A
+       prototype and the definition it declares reach the same key, which
+       is what merges them. *)
+    by_id : Kernel.t Function_id.Map.t;
+    (* Which function a declaration belongs to. A call site names the
+       declaration clang resolved it to, and several declarations of one
+       function land on one identity. *)
+    by_decl : Function_id.t StringMap.t;
+    (* Candidates for a call that names no declaration: an unresolved
+       overload, or a call synthesised by faial itself. *)
+    by_name : Function_id.t list StringMap.t;
+  }
+
+  let empty : t =
+    { by_id = Function_id.Map.empty; by_decl = StringMap.empty;
+      by_name = StringMap.empty }
+
+  let index (k : Kernel.t) (db : t) : t =
+    let id = k.Kernel.id in
+    let name = Function_id.name id in
+    let ids = db.by_name |> StringMap.find_opt name |> Option.value ~default:[] in
+    {
+      db with
+      by_decl =
+        (match k.Kernel.decl_id with
+         | Some d -> StringMap.add d id db.by_decl
+         | None -> db.by_decl);
+      by_name =
+        StringMap.add name
+          (if List.exists (Function_id.equal id) ids then ids else ids @ [ id ])
+          db.by_name;
+    }
 
   let add (k : Kernel.t) (db : t) : t =
-    let sigs : Kernel.t StringMap.t =
-      db |> StringMap.find_opt k.name |> Option.value ~default:StringMap.empty
-    in
-    let sigs : Kernel.t StringMap.t = StringMap.add k.ty k sigs in
-    StringMap.add k.name sigs db
+    let db = index k db in
+    { db with by_id = Function_id.Map.add k.Kernel.id k db.by_id }
+
+  (* A body-less declaration must not displace the body it declares. *)
+  let add_if_absent (k : Kernel.t) (db : t) : t =
+    let db = index k db in
+    if Function_id.Map.mem k.Kernel.id db.by_id then db
+    else { db with by_id = Function_id.Map.add k.Kernel.id k db.by_id }
 
   let to_string (db : t) : string =
     let curr =
-      db |> StringMap.bindings |> List.map snd
-      |> List.concat_map (fun tys ->
-          tys |> StringMap.bindings |> List.map snd
-          |> List.map Signature.from_kernel
-          |> List.map Signature.to_string)
+      db.by_id |> Function_id.Map.bindings |> List.map snd
+      |> List.map Signature.from_kernel
+      |> List.map Signature.to_string
       |> String.concat ", "
     in
     "[" ^ curr ^ "]"
 
-  let get ~kernel ~ty ~arg_count (db : t) : Kernel.t option =
-    db |> StringMap.find_opt kernel
-    |> Option.map (fun sigs ->
-        match StringMap.find_opt ty sigs with
-        | Some e -> Some e
-        | None when ty = "?" ->
-            (* Unresolved-lookup call: clang couldn't resolve the
-               overload at parse time, so we fall back to the
-               first kernel whose arity matches. A concrete [ty]
-               that doesn't appear as a key means the call's
-               source type doesn't match any registered kernel
-               signature, and falling back here would silently
-               bind the call to an unrelated overload (e.g.
-               picking [std::get<T1,T2>(pair<T1,T2>&)] for a
-               user-declared [unsigned int get(int)] whose body
-               isn't in the DB). *)
-            sigs |> StringMap.bindings |> List.map snd
-            |> List.find_opt (fun k ->
-                let open Kernel in
-                List.length k.params = arg_count)
-        | None -> None)
-    |> Option.join
+  let get_id (id : Function_id.t) (db : t) : Kernel.t option =
+    Function_id.Map.find_opt id db.by_id
 
-  let lookup (e : Expr.t) (arg_count : int) (db : t) : Signature.t option =
-    let ( let* ) = Option.bind in
-    let* kernel, ty =
-      match e with
-      | UnresolvedLookupExpr { name = n; _ } -> Some (Variable.name n, "?")
-      | Ident { name = n; kind = Function; ty } ->
-          Some (Variable.name n, J_type.to_string ty)
-      | _ -> None
+  let named (name : string) (db : t) : Kernel.t list =
+    db.by_name |> StringMap.find_opt name
+    |> Option.value ~default:[]
+    |> List.filter_map (fun id -> get_id id db)
+
+  (* A call whose callee names no declaration faial indexed. The type
+     still has to match, because a name alone would bind the call to an
+     unrelated overload. *)
+  let get_unresolved ~(name : string) ~(ty : string) (db : t) :
+      Kernel.t option =
+    named name db
+    |> List.find_opt (fun (k : Kernel.t) -> Function_id.ty k.Kernel.id = ty)
+
+  (* A call in a template that is never instantiated. Its arguments have
+     no types yet, so the arity is all that separates the candidates, and
+     which functions are candidates at all is what clang's lookup found
+     at the call, not whatever the translation unit holds under that
+     name. Unrestricted, comparing two values of a template parameter's
+     type reaches any [operator==] in the file. *)
+  let get_overload ~(name : string) ~(lookups : C_lang.Lookup.t list)
+      ~(arg_count : int) (db : t) : Kernel.t option =
+    named name db
+    |> List.find_opt (fun (k : Kernel.t) ->
+           List.length k.params = arg_count
+           && List.exists (C_lang.Lookup.matches k.Kernel.id) lookups)
+
+  let get_method ~(record : Ty.segment list) ~(name : string) ~(ty : string)
+      ~(arg_count : int) (db : t) : Kernel.t option =
+    let of_class (k : Kernel.t) : bool =
+      Function_id.qualifier k.Kernel.id = record
     in
-    get ~kernel ~ty ~arg_count db |> Option.map Signature.from_kernel
+    let of_arity (n : int) : Kernel.t option =
+      let candidates =
+        named name db
+        |> List.filter (fun (k : Kernel.t) ->
+               List.length k.params = n && of_class k)
+      in
+      match
+        List.filter
+          (fun (k : Kernel.t) -> Function_id.ty k.Kernel.id = ty)
+          candidates
+      with
+      | [ k ] -> Some k
+      | _ ->
+          (* Settling for the name and the arity is only right where the
+             reference carries no signature to disagree with. One that
+             spells a signature and matches none names an overload faial
+             cannot see, not the single candidate left. *)
+          if ty <> Ty.to_string Ty.unknown then None
+          else (match candidates with [ k ] -> Some k | _ -> None)
+    in
+    match of_arity (arg_count + 1) with
+    | Some k -> Some k
+    | None -> of_arity arg_count
 
-  (* Returns a map from kernel name to name of parameters *)
-  let from_program (p : Program.t) : t =
+  (* A method a class inherits is declared on one of its bases, so the
+     receiver's own path is only where the search starts. [bases] answers
+     for a path what it derives from, which is what the caller's record
+     database knows and this one does not. *)
+  let lookup ?(bases = fun (_ : Ty.segment list) -> []) (e : Expr.t)
+      (arg_count : int) (db : t) : Signature.t option =
+    let ( let* ) = Option.bind in
+    let by_decl (d : string option) : Kernel.t option =
+      let* d = d in
+      let* id = StringMap.find_opt d db.by_decl in
+      get_id id db
+    in
+    let method_in ~(record : Ty.segment list) ~(name : string) ~(ty : string) :
+        Kernel.t option =
+      let rec walk (seen : Ty.segment list list) (record : Ty.segment list) :
+          Kernel.t option =
+        if List.mem record seen then None
+        else
+          match get_method ~record ~name ~ty ~arg_count db with
+          | Some k -> Some k
+          | None -> bases record |> List.find_map (walk (record :: seen))
+      in
+      walk [] record
+    in
+    (match e with
+     | UnresolvedLookupExpr { name = n; lookups } ->
+         get_overload ~name:(Variable.name n) ~lookups ~arg_count db
+     | Ident { name = n; kind = Function | CXXMethod; ty; decl_id; qualifier }
+       -> (
+         match by_decl decl_id with
+         | Some k -> Some k
+         | None -> (
+             match
+               get_unresolved ~name:(Variable.name n) ~ty:(Ty.to_string ty) db
+             with
+             | Some k -> Some k
+             | None ->
+                 let record =
+                   List.concat_map
+                     (fun c ->
+                       Record.type_path (Ty.opaque c) |> Option.value ~default:[])
+                     qualifier
+                 in
+                 method_in ~record ~name:(Variable.name n)
+                   ~ty:(Ty.to_string ty)))
+     | MemberExpr { base; name; ty } ->
+         let* record = Record.type_path (Expr.to_type base) in
+         method_in ~record ~name ~ty:(Ty.to_string ty)
+     | _ -> None)
+    |> Option.map Signature.from_kernel
+
+  let from_program ?(policy = Opaque_call_policy.default) (p : Program.t) : t =
     List.fold_left
       (fun kernels d ->
         let open Def in
         match d with
         | Kernel k -> add k kernels
-        | Declaration _ | Typedef _ | Enum _ | LaunchParam _ -> kernels)
-      StringMap.empty p
+        | Prototype k ->
+            if
+              Opaque_call_policy.is_opaque policy ~name:(Kernel.name k)
+                ~params:k.params
+            then add_if_absent k kernels
+            else kernels
+        | Declaration _ | Typedef _ | Record _ | Enum _ | LaunchParam _
+        | UsingNamespace _ ->
+            kernels)
+      empty p
 end
 
 module Wmma_call = struct
@@ -1043,15 +1274,16 @@ module AccessState = struct
 
   let add (s : Stmt.t) : unit state = State.update (fun s' -> Stmt.seq s' s)
 
-  let add_var (lbl : string) (f : Variable.t -> Stmt.t) : Variable.t state =
+  let add_var ?(kind = Variable.Kind.Synthesized) (lbl : string)
+      (f : Variable.t -> Stmt.t) : Variable.t state =
     let count = !counter in
     counter := count + 1;
     let name : string = "@AccessState" ^ string_of_int count in
-    let x : Variable.t = { name; label = Some lbl; location = None } in
+    let x : Variable.t = Variable.make ~name ~label:lbl ~kind () in
     let* () = add (f x) in
     return x
 
-  let add_expr (expr : Expr.t) (ty : J_type.t) : Variable.t state =
+  let add_expr (expr : Expr.t) (ty : Ty.t) : Variable.t state =
     add_var (Expr.to_string expr) (fun name ->
         let ty_var = Ty_variable.make ~ty ~name in
         DeclStmt [ Decl.from_expr ty_var expr ])
@@ -1069,28 +1301,25 @@ module AccessState = struct
     | _ ->
         add_var (subscript_to_s a) (fun x ->
             let ty =
-              a.ty
-              |> J_type.to_c_type ~default:C_type.int
               (* If it's an array get the elements type *)
-              |> C_type.strip_array
-              |> J_type.from_c_type
+              Ty.strip_array a.ty
             in
             let ty_var = Ty_variable.make ~name:x ~ty in
             Seq
-              ( wr (Decl_expr.from_name x),
-                DeclStmt [ Decl.from_expr ty_var source ] ))
+              ( DeclStmt [ Decl.from_expr ty_var source ],
+                wr (Decl_expr.from_name x) ))
 
   let add_read (a : d_subscript) : Variable.t state =
-    add_var (subscript_to_s a) (fun x -> Stmt.read_access x a)
+    add_var ~kind:ReadResult (subscript_to_s a) (fun x -> Stmt.read_access x a)
 
   let add_atomic (atomic : Expr.t Atomic.t) (source : d_subscript) :
       Variable.t state =
-    add_var (subscript_to_s source) (fun target ->
+    add_var ~kind:AtomicResult (subscript_to_s source) (fun target ->
         Stmt.atomic_access target source atomic)
 
   let add_call (c : Expr.d_call) : Variable.t state =
     let e = Expr.CallExpr c in
-    add_var (Expr.to_string e) (fun x ->
+    add_var ~kind:FunctionResult (Expr.to_string e) (fun x ->
         let ty = Ty_variable.make ~name:x ~ty:(Expr.to_type e) in
         DeclStmt [ Decl.from_expr ty e ])
 end
@@ -1134,14 +1363,147 @@ let rec stamp_guard (g : Expr.t) (s : Stmt.t) : Stmt.t =
 
 let capture (m : 'a state) : Stmt.t * 'a = State.run m Stmt.Skip
 
+let to_subscript : C_lang.Expr.t -> C_lang.Expr.c_array_subscript option =
+  let cell (x : Decl_expr.t) (rhs : C_lang.Expr.t) :
+      C_lang.Expr.c_array_subscript option =
+    Some
+      { lhs = Ident x; rhs; ty = x.ty; location = Variable.location x.name }
+  in
+  function
+  | ArraySubscriptExpr a -> Some a
+  | UnaryOperator { opcode = "*"; child = Ident x; _ } ->
+      cell x (IntegerLiteral 0)
+  | UnaryOperator
+      {
+        opcode = "*";
+        child = BinaryOperator { lhs = Ident x; rhs; opcode = "+"; _ };
+        _;
+      } ->
+      cell x rhs
+  | CXXOperatorCallExpr
+      { func = UnresolvedLookupExpr { name = v; _ }; args = [ Ident x ]; _ }
+    when Variable.name v = "operator*" ->
+      cell x (IntegerLiteral 0)
+  | UnaryOperator
+      { opcode = "*";
+        child = (CallExpr { func; _ } | CXXOperatorCallExpr { func; _ }) as child;
+        _ } ->
+      let rec spelled : C_lang.Expr.t -> Location.t = function
+        | Ident v -> Variable.location (Decl_expr.name v)
+        | MemberExpr { base; _ } -> spelled base
+        | _ -> Location.empty
+      in
+      Some
+        {
+          lhs = child;
+          rhs = IntegerLiteral 0;
+          ty = C_lang.Expr.to_type child;
+          location = spelled func;
+        }
+  | _ -> None
+
+(* An atomic's address is a base plus whatever is added to it, in any
+   association and either order: [p + i + j] parses as [(p + i) + j] and
+   [i + p] addresses the same cell as [p + i]. Walk the additive spine on
+   whichever side carries the memory, which is what tells the base from
+   the offsets, and sum the rest into one index. Reading the base off the
+   left instead would take [i] as the array in [i + p]. *)
+let atomic_address (e : Expr.t) : (Decl_expr.t * Expr.t option) option =
+  let is_memory (e : Expr.t) : bool =
+    Ty.is_array_or_pointer (Expr.to_type e)
+  in
+  let add (e : Expr.t) : Expr.t option -> Expr.t option = function
+    | None -> Some e
+    | Some acc ->
+        Some
+          (Expr.BinaryOperator
+             { opcode = "+"; lhs = e; rhs = acc; ty = Expr.to_type e })
+  in
+  let rec walk (e : Expr.t) (offset : Expr.t option) :
+      (Decl_expr.t * Expr.t option) option =
+    match e with
+    | Ident x -> Some (x, offset)
+    | BinaryOperator { lhs; rhs; opcode = "+"; _ } ->
+        if is_memory lhs then walk lhs (add rhs offset)
+        else if is_memory rhs then walk rhs (add lhs offset)
+        else None
+    | _ -> None
+  in
+  walk e None
+
+(* The cell an atomic acts on, when its argument is written bare rather
+   than as an address: [atomicAdd(p, v)] acts on [p[0]]. Naming the memory
+   an lvalue reaches is what the subscript walk already does, including the
+   rule that a pointer member names the region it points at rather than the
+   field holding the address, so the cell is handed to it as a subscript
+   instead of being decided here. An argument that is not an lvalue, an
+   additive spine for instance, has no subscript form and is left to the
+   walk over the expression. *)
+let atomic_cell ~(ty : Ty.t) ~(location : Location.t) (e : C_lang.Expr.t) :
+    C_lang.Expr.c_array_subscript option =
+  match e with
+  | Ident _ | MemberExpr _ | ArraySubscriptExpr _ ->
+      Some { lhs = e; rhs = IntegerLiteral 0; ty; location }
+  | _ -> None
+
 let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   let open Expr in
+  match to_subscript c with
+  | Some a -> rewrite_read a
+  | None -> (
   match c with
   (* When an atomic happens *)
-  | CallExpr { func = Ident f; args = (e : C_lang.Expr.t) :: args; ty }
-    when Atomic.is_valid f.name -> (
-      let atomic = Atomic.from_name f.name |> Option.get in
-      let* e : Expr.t = rewrite_exp e in
+  (* A call whose overload set is still open, which is what an atomic in an
+     uninstantiated template is, names its callee the same way a resolved
+     one does. *)
+  | CallExpr
+      {
+        func = (Ident { name = f; _ } | UnresolvedLookupExpr { name = f; _ }) as func;
+        args = (e : C_lang.Expr.t) :: args;
+        ty;
+      }
+    when Atomic.is_valid f -> (
+      let atomic = Atomic.from_name f |> Option.get in
+      let addressed : C_lang.Expr.t option =
+        match e with
+        | UnaryOperator { opcode = "&"; child; _ } -> Some child
+        | _ -> None
+      in
+      let* addr =
+        match addressed with
+        | Some c when Option.is_some (to_subscript c) ->
+            let* a = rewrite_subscript (Option.get (to_subscript c)) in
+            return (Either.Left { a with ty })
+        | Some (MemberExpr { base; name = field; _ }) -> (
+            let* path = rewrite_member_path base field in
+            match path with
+            (* Only a member of something indexed is memory, the same rule
+               an assignment to a member follows. *)
+            | Some path when Field_path.subscripts path <> [] ->
+                return
+                  (Either.Left
+                     (make_subscript ~path ~index:[] ~ty
+                        ~location:(Variable.location (Field_path.base path)) ()))
+            | Some _ | None ->
+                let* e = rewrite_exp e in
+                return (Either.Right e))
+        (* The address of a name is that name's first cell, which is what
+           an atomic on a scalar counter takes. Reading the argument as
+           written leaves the [&] in front of it, and an address is not a
+           spelling the walk below knows, so the whole builtin fell out of
+           this arm and became a call with no body. *)
+        | Some c ->
+            let* c = rewrite_exp c in
+            return (Either.Right c)
+        | None -> (
+            match atomic_cell ~ty ~location:(Variable.location f) e with
+            | Some a ->
+                let* a = rewrite_subscript a in
+                return (Either.Left { a with ty })
+            | None ->
+                let* e = rewrite_exp e in
+                return (Either.Right e))
+      in
       (* Rewrite the remaining arguments to extract any reads they
          may hide, but most are discarded — the access-protocol
          layer only needs to know that an atomic happened on the
@@ -1171,91 +1533,74 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
         | op, _ -> op
       in
       let atomic = { atomic with operation } in
-      match e with
-      | Ident x ->
-          rewrite_atomic atomic
-            (make_subscript ~name:x.name ~index:[ IntegerLiteral 0 ]
-               ~location:(Variable.location f.name) ~ty)
-      | BinaryOperator { lhs = Ident x; rhs = e; opcode = "+"; _ } ->
-          rewrite_atomic atomic
-            (make_subscript ~name:x.name ~index:[ e ]
-               ~location:(Variable.location f.name) ~ty)
-      | _ -> return (CallExpr { func = Ident f; args = e :: args; ty }))
+      match addr with
+      | Either.Left a -> rewrite_atomic atomic a
+      | Either.Right e -> (
+          match atomic_address e with
+          | Some (x, offset) ->
+              let index = Option.value offset ~default:(IntegerLiteral 0) in
+              rewrite_atomic atomic
+                (make_subscript ~path:(Field_path.root x.name)
+                   ~index:[ index ] ~location:(Variable.location f) ~ty ())
+          | None ->
+              let* func = rewrite_exp func in
+              return (CallExpr { func; args = e :: args; ty })))
   (* When a write happens *)
-  | BinaryOperator { lhs = ArraySubscriptExpr a; rhs = src; opcode = "="; _ } ->
-      rewrite_write a src
-  (*   *w = *)
-  | BinaryOperator
-      {
-        lhs =
-          UnaryOperator
-            { opcode = "*"; child = Ident { name = x; ty; _ } as lhs; _ };
-        rhs = src;
-        opcode = "=";
-        _;
-      } ->
-      rewrite_write
-        { lhs; rhs = IntegerLiteral 0; ty; location = Variable.location x }
-        src
-  (*   *w = *)
-  | BinaryOperator
-      {
-        lhs =
-          UnaryOperator
-            {
-              opcode = "*";
-              child =
-                BinaryOperator
-                  {
-                    lhs = Ident { name = x; ty; _ } as lhs;
-                    rhs;
-                    opcode = "+";
-                    _;
-                  };
-              _;
-            };
-        rhs = src;
-        opcode = "=";
-        _;
-      } ->
-      rewrite_write { lhs; rhs; ty; location = Variable.location x } src
-  (* operator*[w] = *)
-  | BinaryOperator
-      {
-        lhs =
-          CXXOperatorCallExpr
-            {
-              func = UnresolvedLookupExpr { name = v; _ };
-              args = [ (Ident { name = x; ty; _ } as lhs) ];
-              _;
-            };
-        rhs = src;
-        opcode = "=";
-        _;
-      }
-    when Variable.name v = "operator*" ->
-      rewrite_write
-        { lhs; rhs = IntegerLiteral 0; ty; location = Variable.location x }
-        src
+  | BinaryOperator { lhs; rhs = src; opcode = "="; ty } -> (
+      match to_subscript lhs with
+      | Some a -> rewrite_write a src
+      | None -> (
+          let* member =
+            match lhs with
+            | MemberExpr { base; name = field; ty } ->
+                rewrite_member_write base field ty src
+            | _ -> return None
+          in
+          match member with
+          | Some w -> w
+          | None -> (
+          match lhs with
+          (* Nested scalar assignment [x = e] used as an expression value
+             (e.g. [(idx /= k) % m] after [c_lang] desugars to
+             [(idx = idx / k) % m]). Lift the assignment as a sequenced
+             [SExpr] side-effect and substitute the LHS identifier for the
+             expression's value, matching C's "assignment-expression
+             evaluates to the new value of [x]". The [SExpr] is then
+             lowered by [d_to_imp]'s existing arm to an
+             [Infer_stmt.Assign]. *)
+          | Ident d ->
+              let* src = rewrite_exp src in
+              let* () =
+                AccessState.add
+                  (SExpr
+                     (BinaryOperator
+                        { lhs = Ident d; opcode = "="; rhs = src; ty }))
+              in
+              return (Ident d)
+          | ( CallExpr { func; args; ty = target }
+            | CXXOperatorCallExpr { func; args; ty = target } ) as call ->
+              let* func = rewrite_exp func in
+              let* args = State.list_map rewrite_exp args in
+              let* rhs = rewrite_exp src in
+              let lhs =
+                match call with
+                | CallExpr _ -> CallExpr { func; args; ty = target }
+                | _ -> CXXOperatorCallExpr { func; args; ty = target }
+              in
+              return (BinaryOperator { lhs; rhs; opcode = "="; ty })
+          | lhs ->
+              let* lhs = rewrite_exp lhs in
+              let* rhs = rewrite_exp src in
+              return (BinaryOperator { lhs; rhs; opcode = "="; ty }))))
   | CXXOperatorCallExpr
-      { func = Ident { name = v; _ }; args = [ ArraySubscriptExpr a; src ]; _ }
-    when Variable.name v = "operator=" ->
-      rewrite_write a src
-  (* Nested scalar assignment [x = e] used as an expression value (e.g.
-     [(idx /= k) % m] after [c_lang] desugars to [(idx = idx / k) % m]).
-     Lift the assignment as a sequenced [SExpr] side-effect and
-     substitute the LHS identifier for the expression's value, matching
-     C's "assignment-expression evaluates to the new value of [x]". The
-     [SExpr] is then lowered by [d_to_imp]'s existing arm to an
-     [Infer_stmt.Assign]. *)
-  | BinaryOperator { lhs = Ident d; opcode = "="; rhs = src; ty } ->
-      let* src = rewrite_exp src in
-      let* () =
-        AccessState.add
-          (SExpr
-             (BinaryOperator { lhs = Ident d; opcode = "="; rhs = src; ty }))
-      in
-      return (Ident d)
+      { func = Ident { name = v; _ } as func; args = [ lhs; src ]; ty }
+    when Variable.name v = "operator=" -> (
+      match to_subscript lhs with
+      | Some a -> rewrite_write a src
+      | None ->
+          let* func = rewrite_exp func in
+          let* args = State.list_map rewrite_exp [ lhs; src ] in
+          return (CXXOperatorCallExpr { func; args; ty }))
   (* When a read happens *)
   | ArraySubscriptExpr a -> rewrite_read a
   | CallExpr
@@ -1308,17 +1653,35 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       let* () = AccessState.add (stamp_guard cond then_pre) in
       let* () = AccessState.add (stamp_guard (not_ cond) else_pre) in
       return (ConditionalOperator { cond; then_expr; else_expr; ty })
+  | Convert { arg; ty } ->
+      let* arg = rewrite_exp arg in
+      return (Convert { arg; ty })
   | CXXNewExpr { arg; ty } ->
       let* arg = rewrite_exp arg in
       return (CXXNewExpr { arg; ty })
   | CXXDeleteExpr { arg; ty } ->
       let* arg = rewrite_exp arg in
       return (CXXDeleteExpr { arg; ty })
-  | CXXOperatorCallExpr { func; args; ty } ->
+  | CXXOperatorCallExpr
+      {
+        func =
+          (UnresolvedLookupExpr { name = n; _ } | Ident { name = n; _ }) as func;
+        args = [ _; _ ] as args;
+        ty;
+      }
+    when Variable.name n = "operator+" ->
       let* func = rewrite_exp func in
       let* args = State.list_map rewrite_exp args in
       return (CXXOperatorCallExpr { func; args; ty })
-  | CallExpr { func; args; ty } when J_type.matches C_type.is_void ty ->
+  | CXXOperatorCallExpr { func; args; ty } when Ty.is_void ty ->
+      let* func = rewrite_exp func in
+      let* args = State.list_map rewrite_exp args in
+      return (CXXOperatorCallExpr { func; args; ty })
+  | CXXOperatorCallExpr { func; args; ty } ->
+      let* func = rewrite_exp func in
+      let* args = State.list_map rewrite_exp args in
+      rewrite_call { func; args; ty }
+  | CallExpr { func; args; ty } when Ty.is_void ty ->
       let* func = rewrite_exp func in
       let* args = State.list_map rewrite_exp args in
       return (CallExpr { func; args; ty })
@@ -1332,35 +1695,6 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
   | UnaryOperator { child = ArraySubscriptExpr a; opcode = "&"; ty } ->
       rewrite_exp
         (BinaryOperator { lhs = a.lhs; opcode = "+"; rhs = a.rhs; ty })
-  (* *p — bare-deref read; emit p[0] symmetrically with the bare-deref
-     write at the top of this match. Without this case the read falls
-     through to the UnaryOperator catch-all below and never becomes a
-     memory access. *)
-  | UnaryOperator
-      { opcode = "*"; child = Ident { name = x; ty; _ } as lhs; _ } ->
-      let a : C_lang.Expr.c_array_subscript =
-        { lhs; rhs = IntegerLiteral 0; ty; location = Variable.location x }
-      in
-      rewrite_read a
-  (* *(p + offset) — offset-deref read; emit p[offset] symmetrically
-     with the offset-deref write. *)
-  | UnaryOperator
-      {
-        opcode = "*";
-        child =
-          BinaryOperator
-            {
-              lhs = Ident { name = x; ty; _ } as lhs;
-              rhs;
-              opcode = "+";
-              _;
-            };
-        _;
-      } ->
-      let a : C_lang.Expr.c_array_subscript =
-        { lhs; rhs; ty; location = Variable.location x }
-      in
-      rewrite_read a
   | UnaryOperator { child; opcode; ty } ->
       let* child = rewrite_exp child in
       return (UnaryOperator { child; opcode; ty })
@@ -1368,8 +1702,8 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
       let* base = rewrite_exp base in
       return (MemberExpr { base; name; ty })
   | Ident v -> return (Ident v)
-  | UnresolvedLookupExpr { name = n; tys } ->
-      return (UnresolvedLookupExpr { name = n; tys })
+  | UnresolvedLookupExpr { name = n; lookups } ->
+      return (UnresolvedLookupExpr { name = n; lookups })
   | FloatingLiteral f -> return (FloatingLiteral f)
   | IntegerLiteral i -> return (IntegerLiteral i)
   | CharacterLiteral c -> return (CharacterLiteral c)
@@ -1402,7 +1736,36 @@ let rec rewrite_exp (c : C_lang.Expr.t) : Expr.t state =
          identity. D_lang has no consumer that uses this today, so
          lower to [RecoveryExpr]. Mirror in [D_lang.Expr.t] when a
          downstream stage starts caring. *)
-      return (RecoveryExpr d.ty)
+      return (RecoveryExpr d.ty))
+
+(* The name of a location is its selections and the index is its
+   subscripts, so a member on a subscript chain contributes a name segment
+   and leaves the chain's indices in front of its own. A member reached
+   through a pointer carries the subscript the arrow leaves implicit:
+   [p->f] is [p[0].f]. *)
+and rewrite_member_path (base : C_lang.Expr.t) (field : string) :
+    Expr.t Field_path.t option state =
+  let implied : Expr.t list =
+    if Ty.is_array_or_pointer (C_lang.Expr.to_type base) then
+      [ Expr.IntegerLiteral 0 ]
+    else []
+  in
+  let select ?(index = implied) (p : Expr.t Field_path.t) : Expr.t Field_path.t =
+    Field_path.subscript index p |> Field_path.select field
+  in
+  match base with
+  | Ident b -> return (Some (select (Field_path.root b.name)))
+  | MemberExpr { base = inner; name = outer; ty } -> (
+      let* path = rewrite_member_path inner outer in
+      match path with
+      | Some p ->
+          let p = if Ty.is_pointer ty then Field_path.deref p else p in
+          return (Some (select p))
+      | None -> return None)
+  | ArraySubscriptExpr a ->
+      let* s = rewrite_subscript a in
+      return (Some (select ~index:s.index s.path))
+  | _ -> return None
 
 and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
   let rec rewrite_subscript (c : C_lang.Expr.c_array_subscript)
@@ -1415,23 +1778,98 @@ and rewrite_subscript (c : C_lang.Expr.c_array_subscript) : d_subscript state =
         | None -> c.location)
     in
     let indices = idx :: indices in
+    let plain ~(name : Variable.t) ~(ty : Ty.t) : d_subscript state =
+      return
+        {
+          path = Field_path.root name;
+          index = indices;
+          ty;
+          location = Option.get loc;
+        }
+    in
     match c.lhs with
     | ArraySubscriptExpr a -> rewrite_subscript a indices loc
-    | Ident { name; ty; _ } ->
-        return { name; index = indices; ty; location = Option.get loc }
+    | Ident { name; ty; _ } -> plain ~name ~ty
+    | UnaryOperator { opcode = "*"; child = Ident { name; ty; _ }; ty = pointee }
+      when Ty.is_array pointee ->
+        plain ~name ~ty
+    | MemberExpr { base; name = field; ty } -> (
+        let* path = rewrite_member_path base field in
+        match path with
+        | Some path ->
+            (* A pointer member is an indirection: the subscripts that follow
+               index the region it points at, not the object it sits in, so
+               the object's own index is not part of the address, and the
+               region is named apart from the storage that holds its
+               address. The object's index says which of those regions, so it
+               stays as the selector rather than being discarded. *)
+            if Ty.is_pointer ty then
+              return
+                {
+                  path = Field_path.deref path;
+                  index = indices;
+                  ty;
+                  location = Option.get loc;
+                }
+            else return { path; index = indices; ty; location = Option.get loc }
+        | None ->
+            let ty = C_lang.Expr.to_type c.lhs in
+            let* e = rewrite_exp c.lhs in
+            let* x = AccessState.add_expr e ty in
+            plain ~name:x ~ty)
     | e ->
         let ty = C_lang.Expr.to_type e in
         let* e = rewrite_exp e in
         let* x = AccessState.add_expr e ty in
-        return { name = x; index = indices; ty; location = Option.get loc }
+        plain ~name:x ~ty
   in
   rewrite_subscript c [] None
 
 and rewrite_write (a : C_lang.Expr.c_array_subscript) (src : C_lang.Expr.t) :
     Expr.t state =
-  let* src' = rewrite_exp src in
   let* a = rewrite_subscript a in
-  let payload = match src with IntegerLiteral x -> Some x | _ -> None in
+  rewrite_write_target a src
+
+(* A store whose target is a member selection rather than a subscript: the
+   name comes from the selections and the index from the subscripts that
+   preceded them, so [C[i].key = v] stores to [C.key] at [i]. *)
+and rewrite_member_write (base : C_lang.Expr.t) (field : string) (ty : Ty.t)
+    (src : C_lang.Expr.t) : Expr.t state option state =
+  let* path = rewrite_member_path base field in
+  match path with
+  (* Only a member of something indexed is memory. A member of a plain
+     object is a value, and assigning it is an assignment, which is what
+     [c.b = dim3(256)] on a launch configuration relies on. A pointer
+     member qualifies: the storage holding the address is memory of the
+     object, so [s[i].p = A] is a write to it. *)
+  | Some path when Field_path.subscripts path <> [] ->
+      let target =
+        make_subscript ~path ~index:[] ~ty
+          ~location:(Variable.location (Field_path.base path)) ()
+      in
+      return (Some (rewrite_write_target target src))
+  | Some _ | None -> return None
+
+and rewrite_write_target (a : d_subscript) (src : C_lang.Expr.t) : Expr.t state =
+  let* src' = rewrite_exp src in
+  (* Reach the literal through a conversion, applying each one on the way
+     back out and once more for the element type the store lands in: it is
+     the converted value that reaches the cell, and [char *b; b[i] = 200]
+     leaves [-56] there. A payload left unconverted pairs off two writes
+     that store different values. *)
+  let convert (ty : Ty.t) (n : int) : int option =
+    match Ty.to_scalar ty with
+    | Some s when Scalar.is_int s -> Scalar.reduce n s
+    | _ -> Some n
+  in
+  let rec literal (e : C_lang.Expr.t) : int option =
+    match e with
+    | IntegerLiteral x -> Some x
+    | CXXBoolLiteralExpr b -> Some (if b then 1 else 0)
+    | Convert c -> Option.bind (literal c.arg) (convert c.ty)
+    | _ -> None
+  in
+  let payload = Option.bind (literal src) (convert (Ty.strip_array a.ty)) in
   let* x = AccessState.add_write a src' payload in
   return (Expr.ident ~ty:(C_lang.Expr.to_type src) x)
 
@@ -1766,9 +2204,6 @@ let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
       let rec target_to_subscript (e : C_lang.Expr.t)
           (indices : Expr.t list) : d_subscript state =
         match e with
-        | ArraySubscriptExpr a ->
-            let* idx = rewrite_exp a.rhs in
-            target_to_subscript a.lhs (idx :: indices)
         | UnaryOperator { opcode = "&"; child; _ }
         | UnaryOperator { opcode = "*"; child; _ } ->
             target_to_subscript child indices
@@ -1778,39 +2213,91 @@ let rec rewrite_stmt (s : C_lang.Stmt.t) : Stmt.t =
         | Ident { name; ty; _ } ->
             State.return
               {
-                name;
+                path = Field_path.root name;
                 index = indices;
                 ty;
                 location = Variable.location name;
               }
-        | _ ->
-            failwith
-              ("BarrierOp: unsupported target shape: "
-             ^ C_lang.Expr.to_string e)
+        | e -> (
+            match to_subscript e with
+            | Some a ->
+                let* idx = rewrite_exp a.rhs in
+                target_to_subscript a.lhs (idx :: indices)
+            | None ->
+                failwith
+                  ("BarrierOp: unsupported target shape: "
+                 ^ C_lang.Expr.to_string e))
       in
       run
         (let* target = target_to_subscript target [] in
          let* args = State.list_map rewrite_exp args in
          add (BarrierOp { op; target; args; loc }))
 
+let rec address_of (e : C_lang.Expr.t) : C_lang.Expr.t option =
+  match e with
+  | ArraySubscriptExpr { lhs; rhs; _ } ->
+      let ty =
+        let ty = C_lang.Expr.to_type lhs in
+        match ty.inner with
+        | Ty.Array a -> Ty.make (Ty.Pointer a.base)
+        | _ -> ty
+      in
+      Some (BinaryOperator { opcode = "+"; lhs; rhs; ty })
+  | UnaryOperator { opcode = "*"; child; _ } -> Some child
+  | Convert { arg; _ } -> address_of arg
+  | _ -> None
+
+let returned_lvalues (s : C_lang.Stmt.t) : C_lang.Expr.t list =
+  C_lang.Stmt.Visit.fold
+    (fun (s : C_lang.Expr.t list C_lang.Stmt.Visit.t) ->
+      match s with
+      | Return (Some e) -> [ e ]
+      | Return None -> []
+      | If { then_stmt; else_stmt; _ } -> then_stmt @ else_stmt
+      | While { body; _ } | Do { body; _ } | Switch { body; _ }
+      | Default body | Case { body; _ } -> body
+      | For { inc; body; _ } -> inc @ body
+      | Seq (a, b) -> a @ b
+      | Break | Goto | Continue | Decl _ | SExpr _ | Asm _ | Barrier _ | Skip
+        -> [])
+    s
+
+let address_returns : C_lang.Stmt.t -> C_lang.Stmt.t =
+  C_lang.Stmt.Visit.map (function
+    | ReturnStmt (Some e) ->
+        ReturnStmt (Some (Option.value (address_of e) ~default:e))
+    | s -> s)
+
 let rewrite_kernel (k : C_lang.Kernel.t) : Kernel.t =
+  let returns_location =
+    Ty.is_reference (C_lang.Kernel.return_ty k)
+    && returned_lvalues k.code <> []
+    && List.for_all
+         (fun e -> Option.is_some (address_of e))
+         (returned_lvalues k.code)
+  in
   {
-    ty = k.ty;
-    name = k.name;
-    code = rewrite_stmt k.code;
+    id = C_lang.Kernel.id k;
+    decl_id = C_lang.Kernel.decl_id k;
+    code = rewrite_stmt (if returns_location then address_returns k.code
+                         else k.code);
     params = k.params;
     type_params = k.type_params;
     template_args = k.template_args;
     attribute = k.attribute;
+    returns_location;
   }
 
 let rewrite_def (d : C_lang.Def.t) : Def.t =
   match d with
   | Kernel k -> Kernel (rewrite_kernel k)
+  | Prototype k -> Prototype (rewrite_kernel k)
   | Declaration d ->
       let _, d = run0 (rewrite_decl d) in
       Declaration d
   | Typedef d -> Typedef d
+  | Record r -> Record r
+  | UsingNamespace n -> UsingNamespace n
   | Enum e -> Enum e
   | LaunchParam lp -> LaunchParam lp
 

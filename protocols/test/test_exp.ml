@@ -45,37 +45,147 @@ let precedence_tests =
     ("simple serialization", `Quick, test_simple_serialization);
   ]
 
-let test_definedness_conditions () =
-  let x = var "x" and y = var "y" and z = var "z" in
-  let divide a b = Binary (N_binary.Div Signedness.Signed, a, b) in
-  let modulo a b = Binary (N_binary.Mod Signedness.Unsigned, a, b) in
-  let condition = n_gt (modulo x y) (Num 0) in
-  let expr = NIf (condition, divide x z, NCall ("f", [ divide y x ])) in
-  Alcotest.(check (list string))
-    "nested conditions, branches, and call arguments"
-    (List.map b_to_string [ n_neq y (Num 0); n_neq z (Num 0); n_neq x (Num 0) ])
-    (List.map b_to_string (n_definedness_conditions expr));
-  Alcotest.(check (list string))
-    "boolean expression"
-    [ b_to_string (n_neq y (Num 0)) ]
-    (List.map b_to_string (b_definedness_conditions condition))
+let kept (ty : Scalar.t) (n : int) : nexp = Convert { ty; arg = Num n }
 
-let test_dedup_conditions_preserves_order () =
-  let first = n_gt (var "x") (Num 0) in
-  let second = n_lt (var "y") (Num 32) in
-  Alcotest.(check (list string))
-    "first occurrence order"
-    (List.map b_to_string [ first; second ])
-    (List.map b_to_string (dedup_conditions [ first; second; first; second ]))
+let test_convert (name : string) (ty : Scalar.t) (n : int) (expected : nexp) =
+  ( name,
+    `Quick,
+    fun () -> Alcotest.(check bool) name true (convert ty (Num n) = expected) )
+
+let convert_tests =
+  [
+    test_convert "char lower bound is elided" Scalar.char (-128) (Num (-128));
+    test_convert "char upper bound is elided" Scalar.char 127 (Num 127);
+    test_convert "char below range is kept" Scalar.char (-129)
+      (kept Scalar.char (-129));
+    test_convert "char above range is kept" Scalar.char 128
+      (kept Scalar.char 128);
+    test_convert "unsigned char upper bound is elided" Scalar.unsigned_char 255
+      (Num 255);
+    test_convert "unsigned char rejects a negative" Scalar.unsigned_char (-1)
+      (kept Scalar.unsigned_char (-1));
+  ]
+
+let test_subst_elides () =
+  let x = Variable.from_name "x" in
+  let e = Convert { ty = Scalar.char; arg = Var x } in
+  Alcotest.(check bool) "an in-range literal loses the conversion" true
+    (Subst.ReplacePair.n_subst (x, Num 5) e = Num 5)
+
+let test_subst_keeps () =
+  let x = Variable.from_name "x" in
+  let e = Convert { ty = Scalar.char; arg = Var x } in
+  Alcotest.(check bool) "an out-of-range literal keeps the conversion" true
+    (Subst.ReplacePair.n_subst (x, Num 300) e = kept Scalar.char 300)
+
+let subst_tests =
+  [
+    ("substituting an in-range literal", `Quick, test_subst_elides);
+    ("substituting an out-of-range literal", `Quick, test_subst_keeps);
+  ]
+
+let test_fold (name : string) (o : N_binary.t) (l : nexp) (r : nexp)
+    (expected : nexp) =
+  ( name,
+    `Quick,
+    fun () -> Alcotest.(check bool) name true (n_bin o l r = expected) )
+
+let test_eval (name : string) (o : N_binary.t) (l : int) (r : int)
+    (expected : int) =
+  ( name,
+    `Quick,
+    fun () -> Alcotest.(check int) name expected (N_binary.eval o l r) )
+
+let test_declines (name : string) (o : N_binary.t) (l : int) (r : int)
+    (expected : exn) =
+  ( name,
+    `Quick,
+    fun () ->
+      Alcotest.(check bool)
+        name true
+        (try
+           let (_ : int) = N_binary.eval o l r in
+           false
+         with e -> e = expected) )
+
+let x : nexp = var "x"
+
+let shift_tests =
+  let lsh = N_binary.LeftShift in
+  let rsh_s = N_binary.RightShift Signedness.Signed in
+  let rsh_u = N_binary.RightShift Signedness.Unsigned in
+  [
+    test_eval "an in-range amount is answered" lsh 1 10 1024;
+    test_eval "the last in-range amount is answered" rsh_s (-8) 62 (-1);
+    test_declines "an amount at the word size declines" lsh 1 63
+      N_binary.Shift_amount_out_of_range;
+    test_declines "a signed right shift at the word size declines" rsh_s (-8) 63
+      N_binary.Shift_amount_out_of_range;
+    test_declines "an unsigned right shift at the word size declines" rsh_u 8 63
+      N_binary.Shift_amount_out_of_range;
+    test_declines "an amount past the word size declines" lsh 1 100
+      N_binary.Shift_amount_out_of_range;
+    test_declines "a negative amount declines" lsh 1 (-1)
+      N_binary.Shift_amount_out_of_range;
+    test_declines "a negative operand still declines for want of a width" rsh_u
+      (-1) 4 N_binary.Unknown_width;
+    test_fold "an in-range literal shift is folded" lsh (Num 1) (Num 10)
+      (Num 1024);
+    test_fold "the largest representable power of two is folded" lsh x (Num 61)
+      (Binary (Mult Signedness.Signed, x, Num (1 lsl 61)));
+    test_fold "a multiplier past the largest is left alone" lsh x (Num 62)
+      (Binary (lsh, x, Num 62));
+    test_fold "a literal shift past the word size is left alone" lsh (Num 1)
+      (Num 100) (Binary (lsh, Num 1, Num 100));
+    test_fold "a negative amount over a symbolic operand is left alone" lsh x
+      (Num (-1)) (Binary (lsh, x, Num (-1)));
+    test_fold "a signed right shift past the word size is left alone" rsh_s
+      (Num (-8)) (Num 100) (Binary (rsh_s, Num (-8), Num 100));
+    test_fold "an unsigned right shift past the word size is left alone" rsh_u
+      (Num 8) (Num 100) (Binary (rsh_u, Num 8, Num 100));
+  ]
+
+let test_exact_div (name : string) (e : nexp) (k : int) (expected : nexp option)
+    =
+  ( name,
+    `Quick,
+    fun () ->
+      Alcotest.(check string)
+        name
+        (expected |> Option.map n_to_string |> Option.value ~default:"-")
+        (exact_div e k |> Option.map n_to_string
+       |> Option.value ~default:"-") )
+
+let exact_div_tests =
+  let i = var "i" in
+  [
+    test_exact_div "a literal multiple" (Num 20) 4 (Some (Num 5));
+    test_exact_div "a literal that does not divide" (Num 21) 4 None;
+    test_exact_div "the identity divisor" i 1 (Some i);
+    (* [&y[i]] becomes [4*i] and recovers [i] *)
+    test_exact_div "a scaled variable" (n_mult (Num 4) i) 4 (Some i);
+    (* [&sram[i * 3]] becomes [12*i] and recovers [3*i] *)
+    test_exact_div "a scaled multiple" (n_mult (Num 12) i) 4
+      (Some (n_mult (Num 3) i));
+    test_exact_div "a coefficient that does not divide" (n_mult (Num 6) i) 4
+      None;
+    test_exact_div "a sum of multiples"
+      (n_plus (n_mult (Num 8) i) (Num 4))
+      4
+      (Some (n_plus (n_mult (Num 2) i) (Num 1)));
+    test_exact_div "a sum with one term that does not divide"
+      (n_plus (n_mult (Num 8) i) (Num 2))
+      4 None;
+    test_exact_div "a bare variable" i 4 None;
+  ]
 
 let all_tests =
   [
     ("precedence", precedence_tests);
-    ( "source assumptions",
-      [
-        ("nonzero divisors", `Quick, test_definedness_conditions);
-        ("condition order", `Quick, test_dedup_conditions_preserves_order);
-      ] );
+    ("convert elision", convert_tests);
+    ("convert under substitution", subst_tests);
+    ("shift folding", shift_tests);
+    ("exact division", exact_div_tests);
   ]
 
 (* Run the tests *)

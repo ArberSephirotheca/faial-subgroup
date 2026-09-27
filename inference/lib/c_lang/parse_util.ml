@@ -21,9 +21,41 @@ let parse_variable (j : json) : Variable.t j_result =
            Location.set_length (String.length name) l
          else l
        in
-       Ok (Variable.make ~location:l ~name)
+       Ok (Variable.make ~location:l ~name ())
    | None -> Ok (Variable.from_name name))
   |> Rjson.add_reason "parse_variable" j
+
+(* The object a non-static method reads its members through. C++ reserves
+   the spelling, so no declaration in the source can collide with it. *)
+let this_var : Variable.t = Variable.from_name "this"
+
+(* Clang's identifier for a declaration node, emitted under
+   [cu-to-json --print-id]. The same identifier appears on a
+   [DeclRefExpr]'s [referencedDecl], which is the only thing tying a
+   call site to the instantiation it calls. *)
+let parse_decl_id (o : j_object) : string option =
+  let open Rjson in
+  with_opt_field "id" cast_string o
+  |> Result.value ~default:None
+
+let parse_qualifier (o : j_object) : string list =
+  let open Rjson in
+  with_opt_field "qualifier" (cast_map cast_string) o
+  |> Result.value ~default:None
+  |> Option.value ~default:[]
+
+(* The type that identifies a function. [canonicalType] resolves typedefs
+   and drops the top-level parameter qualifiers a redeclaration may add or
+   omit, so a prototype and the definition it declares reach one string
+   where [type] gives two: a definition writing [int *__restrict__ p] for
+   a prototype's [int *p] declares the same function, and only the parser
+   can tell that qualifier from one below the top level. cu-to-json emits
+   the field beside [type]; a [.cjson] recorded before it existed has
+   only [type]. *)
+let get_signature_type (o : j_object) : json j_result =
+  match List.assoc_opt "canonicalType" o with
+  | Some j -> Ok j
+  | None -> Rjson.get_field "type" o
 
 let is_invalid (o : j_object) : bool =
   let open Rjson in

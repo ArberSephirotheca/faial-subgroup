@@ -9,7 +9,7 @@
 //
 // With launch-arg resolution, the array-subscript collapses into a
 // fresh uniform pseudo-parameter — block-uniform by construction —
-// and the kernel analyses DRF under --all-dims --all-levels
+// and the kernel analyzes DRF under --all-dims --all-levels
 // --assume-launch.
 __global__ void saxpy_complex_arg(int n, float a, float *x, float *y) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;

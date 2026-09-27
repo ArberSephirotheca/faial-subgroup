@@ -1,39 +1,43 @@
 open Stage0
-module StringMap = Common.StringMap
-module StringSet = Common.StringSet
+module IdMap = Function_id.Map
+module IdSet = Function_id.Set
 module K = Kernel
 
 type t = {
-  kernels : Scoped.Kernel.t StringMap.t; (* Kernel name to kernel *)
-  targets : StringSet.t StringMap.t;
+  kernels : Scoped.Kernel.t IdMap.t;
+  targets : IdSet.t IdMap.t;
       (* For each kernel which other kernels it is calling *)
-  visited : StringSet.t;
+  visited : IdSet.t;
 }
 
-let key_set (s : 'a StringMap.t) : StringSet.t =
-  s |> StringMap.bindings |> List.map fst |> StringSet.of_list
+let key_set (s : 'a IdMap.t) : IdSet.t =
+  s |> IdMap.bindings |> List.map fst |> IdSet.of_list
 
 let to_string (s : t) : string =
-  let string_set (s : StringSet.t) =
-    "[" ^ (StringSet.elements s |> String.concat ", ") ^ "]"
+  let id_set (s : IdSet.t) =
+    "["
+    ^ (IdSet.elements s |> List.map Function_id.to_string |> String.concat ", ")
+    ^ "]"
   in
   "{\n" ^ "\tkernels = "
-  ^ (key_set s.kernels |> string_set)
+  ^ (key_set s.kernels |> id_set)
   ^ "\n" ^ "\ttargets = "
   ^ String.concat ", "
-      (s.targets |> StringMap.bindings
-      |> List.map (fun (k, v) -> k ^ "=" ^ string_set v))
-  ^ "\n" ^ "\tvisited = " ^ string_set s.visited ^ "\n" ^ "}"
+      (s.targets |> IdMap.bindings
+      |> List.map (fun (k, v) -> Function_id.to_string k ^ "=" ^ id_set v))
+  ^ "\n" ^ "\tvisited = " ^ id_set s.visited ^ "\n" ^ "}"
 
 module Inline = struct
   module Variable = Protocols.Variable
-  module C_type = Protocols.C_type
+  module Ty = Protocols.Ty
 
-  let apply (vars : Variable.Set.t) (result : (Variable.t * C_type.t) option)
-      (args : Arg.t list) (k : Scoped.Kernel.t) (s : Scoped.Code.t) :
-      Scoped.Code.t =
+  let apply ~(arrays : Protocols.Memory.t Variable.Map.t)
+      (vars : Variable.Set.t) (result : (Variable.t * Ty.t) option)
+      (args : Protocols.Exp.nexp list) (k : Scoped.Kernel.t)
+      (s : Scoped.Code.t) : Scoped.Code.t =
     let open Scoped.Code in
-    let s =
+    let array_set = Variable.MapSetUtil.map_to_set arrays in
+    let bind_result (tail : Scoped.Code.t) : Scoped.Code.t =
       match (result, k.return) with
       | Some (var, ty), Some data ->
           (*
@@ -64,16 +68,32 @@ module Inline = struct
                      else None)
             | _ -> []
           in
-          (match fields with
-           | [] -> decl_set ~ty var data s
-           | _ ->
+          (* A callee handing back a pointer hands back a location, and a
+             value copy of it names nothing the caller can index. The
+             expression is in the callee's terms here, so the base is its
+             own parameter; the argument binding grafts the caller's
+             memory onto it afterwards, which a [Decl]'s initialiser
+             would not receive. *)
+          let pointer =
+            if Ty.is_array_or_pointer ty then
+              Array_use.from_nexp ~arrays:array_set data
+              |> Option.map (fun (u : Array_use.t) ->
+                     Pointer.from_array u.array
+                     |> Pointer.shift
+                          ~offset:(Pointer.Offset.elements u.offset))
+            else None
+          in
+          (match (pointer, fields) with
+           | Some pointer, _ -> PointerBind { var; pointer; body = tail }
+           | None, [] -> decl_set ~ty var data tail
+           | None, _ ->
                List.fold_left
-                 (fun s (m, suffix) ->
+                 (fun tail (m, suffix) ->
                    let dst = Variable.update_name (fun n -> n ^ suffix) var in
-                   decl_set dst (Protocols.Exp.Var m) s)
-                 s fields)
+                   decl_set dst (Protocols.Exp.Var m) tail)
+                 tail fields)
       (* TODO: | Some (var, ty), None -> *)
-      | _, _ -> s
+      | _, _ -> tail
     in
     (* Alpha-rename callee internal binders that clash with the
        caller's variable set BEFORE substituting parameters.
@@ -99,39 +119,103 @@ module Inline = struct
     in
     k.code
     |> Scoped.Code.vars_distinct ~vars
+    (* The result names what the callee returned, which is written in the
+       callee's own terms, so it has to sit where the parameter bindings
+       below can reach it. The caller's continuation goes in afterwards,
+       where those bindings cannot rewrite the names it brought with it. *)
+    |> Scoped.Code.add_inside ~child:(bind_result Skip)
     (* prepend the assignments of arguments to parameters *)
     |> List.fold_right
-         (fun ((x, ty), a) s ->
+         (fun ((x, p_ty), a) s ->
            let open Scoped.Code in
-           let open Arg in
-           match (C_type.vector_lanes ty, a) with
+           let ty = K.Parameter.Type.to_c_type p_ty in
+           match Classify_arg.classify ~arrays:array_set p_ty a with
            (* A vector argument [v] passed to a vector parameter [x]:
               bind each lane [x.axis := v.axis] so the callee's
               per-lane reads resolve to the caller's value. *)
-           | Some axes, Scalar (Protocols.Exp.Var v) ->
+           | Arg.Scalar (Protocols.Exp.Var v)
+             when Ty.vector_lanes ty <> None ->
+               let axes = Option.get (Ty.vector_lanes ty) in
                List.fold_left
                  (fun s axis ->
                    let lane = Variable.update_name (fun n -> n ^ "." ^ axis) in
                    decl_set (lane x) (Protocols.Exp.Var (lane v)) s)
                  s axes
-           | _ -> (
-               match a with
-               | Scalar e ->
-                   let x, s = rename_param vars x s in
-                   decl_set ~ty x e s
-               | Unsupported _ ->
-                   let x, s = rename_param vars x s in
-                   decl_unset ~ty x s
-               | Array u ->
-                   Scoped.Code.loc_subst
-                     { target = x; source = u.array; offset = u.offset }
-                     s))
-         (Common.zip (K.ParameterList.to_c_type k.parameters) args)
+           | Arg.Scalar e ->
+               let x, s = rename_param vars x s in
+               decl_set ~ty x e s
+           | Arg.Unsupported _ ->
+               let x, s = rename_param vars x s in
+               decl_unset ~ty x s
+           | Arg.Array u ->
+               (* The callee indexes in its parameter's step and the caller
+                  supplied an array in its own, which is where a [void]
+                  pointer parameter over an [int] array gets its 1 against
+                  4. *)
+               let param =
+                 match p_ty with
+                 | K.Parameter.Type.Array m -> Some m
+                 | _ -> None
+               in
+               let caller = Variable.Map.find_opt u.array arrays in
+               let view = param |> Option.map Protocols.Memory.step |> Option.join in
+               let elem =
+                 caller |> Option.map Protocols.Memory.step |> Option.join
+               in
+               (* The parameter reads the memory as an object the caller's
+                  array is not shaped like, so the axes it indexes by are
+                  the object's rather than the array's, and they collapse
+                  into the one index the array takes. Divisibility is what
+                  says the two agree on where a cell starts; without it the
+                  binding is left alone and the access goes unnamed. *)
+               let flatten (p : Pointer.t) : Pointer.t option =
+                 let open Protocols in
+                 match (param, caller, elem) with
+                 | Some param, Some caller, Some w
+                   when Option.is_none (Memory.layout caller) ->
+                     Memory.layout param
+                     |> Fun.flip Option.bind (fun (l : Memory.Layout.t) ->
+                            let exact (n : int) : int option =
+                              if w > 0 && n mod w = 0 then Some (n / w) else None
+                            in
+                            let scale = List.map exact l.strides in
+                            if List.for_all Option.is_some scale then
+                              exact l.offset
+                              |> Option.map (fun shift ->
+                                     Pointer.linear
+                                       ~scale:(List.filter_map Fun.id scale)
+                                       ~shift:(Exp.Num shift) p)
+                            else None)
+                 | _ -> None
+               in
+               let offset =
+                 match (view, elem) with
+                 | Some view, Some elem ->
+                     Pointer.Offset.bytes ~amount:u.offset
+                       ~step:(Pointer.Step.make ~view ~elem)
+                 | _ -> Pointer.Offset.elements u.offset
+               in
+               let base = Pointer.from_array u.array in
+               let in_cells =
+                 match elem with
+                 | Some w ->
+                     Pointer.Offset.bytes ~amount:u.offset
+                       ~step:(Pointer.Step.make ~view:w ~elem:w)
+                 | None -> Pointer.Offset.elements u.offset
+               in
+               let pointer =
+                 match flatten (Pointer.shift ~offset:in_cells base) with
+                 | Some pointer -> pointer
+                 | None -> Pointer.shift ~offset base
+               in
+               Scoped.Code.resolve ~arrays ~target:x pointer s)
+         (Common.zip k.parameters args)
     (* then add inside the child, meaning that the free-variables of the
        outer-context are preserved  *)
     |> Scoped.Code.add_inside ~child:s
 
-  let inline_stmt (funcs : Scoped.Kernel.t StringMap.t) :
+  let inline_stmt ~(arrays : Protocols.Memory.t Variable.Map.t)
+      (funcs : Scoped.Kernel.t IdMap.t) :
       Variable.Set.t -> Scoped.Code.t -> Scoped.Code.t =
     let rec inline (vars : Variable.Set.t) : Scoped.Code.t -> Scoped.Code.t =
       function
@@ -147,47 +231,65 @@ module Inline = struct
              recursing into [s] here, only the head call ever gets
              inlined and the tail remains as opaque [Call] nodes. *)
           let s = inline vars s in
-          match StringMap.find_opt (Call.unique_id c) funcs with
-          | Some (k : Scoped.Kernel.t) -> apply vars c.result c.args k s
+          match IdMap.find_opt (Call.unique_id c) funcs with
+          | Some (k : Scoped.Kernel.t)
+            when List.length k.parameters = List.length c.args ->
+              apply ~arrays vars c.result c.args k s
+          | Some k ->
+              (* The two lists are built from one description of the
+                 callee's type, so a difference is a bug here rather than
+                 a program faial cannot analyze. *)
+              failwith
+                (Printf.sprintf
+                   "Inline_calls: %s takes %d parameters and the call passes \
+                    %d arguments."
+                   (Scoped.Kernel.name k)
+                   (List.length k.parameters)
+                   (List.length c.args))
           | None -> Call (c, s))
       | Seq (p, q) -> Seq (inline vars p, inline vars q)
       | If (b, s1, s2) -> If (b, inline vars s1, inline vars s2)
       | For (r, s) -> For (r, inline (Variable.Set.add r.var vars) s)
       | Decl (d, s) -> Decl (d, inline (Variable.Set.add d.var vars) s)
+      | PointerBind p ->
+          PointerBind
+            { p with body = inline (Variable.Set.add p.var vars) p.body }
       | Assign a -> Assign { a with body = inline vars a.body }
       | (Sync _ | Assert _ | Access _ | Skip) as s -> s
     in
     inline
 end
 
-let inline (funcs : Scoped.Kernel.t StringMap.t) (k : Scoped.Kernel.t) :
+let inline (funcs : Scoped.Kernel.t IdMap.t) (k : Scoped.Kernel.t) :
     Scoped.Kernel.t =
   {
     k with
-    code = Inline.inline_stmt funcs (Scoped.Kernel.variable_set k) k.code;
+    code =
+      Inline.inline_stmt ~arrays:(Scoped.Kernel.array_map k) funcs
+        (Scoped.Kernel.variable_set k) k.code;
   }
 
-let inline_kernels (kernels : StringSet.t) (s : t) : t =
+let inline_kernels (kernels : IdSet.t) (s : t) : t =
   (* Get the code of the kernels to call *)
   let leaves =
-    StringMap.filter (fun k _ -> StringSet.mem k kernels) s.kernels
+    IdMap.filter (fun k _ -> IdSet.mem k kernels) s.kernels
   in
   let leaf_set = key_set leaves in
   (* Get the set of all kernels that call `kernel` *)
-  let to_inline : StringSet.t =
+  let to_inline : IdSet.t =
     s.targets
-    |> StringMap.filter (fun _ x ->
+    |> IdMap.filter (fun _ x ->
         (* any kernel that depends on a leaf *)
-        not (StringSet.is_empty (StringSet.inter leaf_set x)))
+        not (IdSet.is_empty (IdSet.inter leaf_set x)))
     |> key_set
   in
   {
     (* inline each call to a leaf *)
     kernels =
-      StringMap.mapi
+      IdMap.mapi
         (fun name k ->
           (* if this kernel calls any of the leaves *)
-          if StringSet.mem name to_inline then
+          if IdSet.mem name to_inline then
             (* Inline leaves in k *)
             inline leaves k
           else
@@ -195,42 +297,143 @@ let inline_kernels (kernels : StringSet.t) (s : t) : t =
             k)
         s.kernels;
     (* remove the leaves from all dependencies *)
-    targets = StringMap.map (fun s -> StringSet.diff s leaf_set) s.targets;
+    targets = IdMap.map (fun s -> IdSet.diff s leaf_set) s.targets;
     (* add leaves to the set of all visited *)
-    visited = StringSet.union leaf_set s.visited;
+    visited = IdSet.union leaf_set s.visited;
   }
 
 (* Calculate the set of next possible kernels to inline *)
-let next (s : t) : StringSet.t =
+let next (s : t) : IdSet.t =
   let possible =
-    s.targets |> StringMap.filter (fun _ ts -> StringSet.is_empty ts) |> key_set
+    s.targets |> IdMap.filter (fun _ ts -> IdSet.is_empty ts) |> key_set
   in
-  StringSet.diff possible s.visited
+  IdSet.diff possible s.visited
+
+let unresolved (s : t) : IdSet.t =
+  s.targets
+  |> IdMap.filter (fun _ ts -> not (IdSet.is_empty ts))
+  |> key_set
+
+(* The path runs from [start] to the kernel that closes the cycle, which is
+   repeated as the last element. *)
+let path_to_cycle (s : t) (start : Function_id.t) : Function_id.t list option =
+  let rec walk (seen : Function_id.t list) (node : Function_id.t) :
+      Function_id.t list option =
+    if List.exists (Function_id.equal node) seen then
+      Some (List.rev (node :: seen))
+    else
+      IdMap.find_opt node s.targets
+      |> Option.value ~default:IdSet.empty
+      |> IdSet.elements
+      |> List.find_map (walk (node :: seen))
+  in
+  walk [] start
+
+(* The path runs from [start] to a callee that is not a kernel we hold,
+   which is repeated as the last element. A call node whose callee has no
+   entry in [kernels] is a call to a function with no visible body: the
+   front end recorded the call precisely so that it would be missing
+   here. *)
+let path_to_undefined (s : t) (start : Function_id.t) :
+    Function_id.t list option =
+  let rec walk (seen : Function_id.t list) (node : Function_id.t) :
+      Function_id.t list option =
+    if not (IdMap.mem node s.kernels) then Some (List.rev (node :: seen))
+    else if List.exists (Function_id.equal node) seen then None
+    else
+      IdMap.find_opt node s.targets
+      |> Option.value ~default:IdSet.empty
+      |> IdSet.elements
+      |> List.find_map (walk (node :: seen))
+  in
+  walk [] start
+
+(* A kernel that inlines an unsupported one takes on its construct, so the
+   reason travels the call edges the way an undefined callee's does. *)
+let path_to_unsupported (s : t) (start : Function_id.t) :
+    Rejected_kernel.Reason.t option =
+  let rec walk (seen : Function_id.t list) (node : Function_id.t) :
+      Rejected_kernel.Reason.t option =
+    match IdMap.find_opt node s.kernels with
+    | None -> None
+    | Some k -> (
+        match k.Scoped.Kernel.unsupported with
+        | Some r -> Some r
+        | None ->
+            if List.exists (Function_id.equal node) seen then None
+            else
+              IdMap.find_opt node s.targets
+              |> Option.value ~default:IdSet.empty
+              |> IdSet.elements
+              |> List.find_map (walk (node :: seen)))
+  in
+  walk [] start
 
 let from_list (ks : Scoped.Kernel.t list) : t =
   {
     targets =
       ks
       |> List.map (fun k -> (Scoped.Kernel.unique_id k, Scoped.Kernel.calls k))
-      |> StringMap.of_list;
+      |> IdMap.of_list;
     kernels =
       ks
       |> List.map (fun k -> (Scoped.Kernel.unique_id k, k))
-      |> StringMap.of_list;
-    visited = StringSet.empty;
+      |> IdMap.of_list;
+    visited = IdSet.empty;
   }
 
 let kernel_list (s : t) : Scoped.Kernel.t list =
-  s.kernels |> StringMap.bindings |> List.map snd
+  s.kernels |> IdMap.bindings |> List.map snd
 
 let rec inline_all (s : t) : t =
   let n = next s in
-  if StringSet.is_empty n then
+  if IdSet.is_empty n then
     (* we are done *)
     s
   else
     (* inline more *)
     inline_all (inline_kernels n s)
 
-let inline_calls (l : Scoped.Kernel.t list) : Scoped.Kernel.t list =
-  l |> from_list |> inline_all |> kernel_list
+(* Every kernel whose calls did not all resolve is discarded, not just the
+   recursive ones. Keeping one would leave a [Call] node in its body, and
+   [Encode_assigns] drops such a node without trace, so the kernel would be
+   analyzed as a strict subset of what was written. *)
+let inline_calls (l : Scoped.Kernel.t list) :
+    Scoped.Kernel.t list * Rejected_kernel.t list =
+  let calls = from_list l in
+  let s = inline_all calls in
+  let discarded = unresolved s in
+  let reason (id : Function_id.t) : Rejected_kernel.Reason.t =
+    let names = List.map Function_id.label in
+    match path_to_cycle s id with
+    | Some path -> RecursiveCall { path = names path }
+    | None -> (
+        match path_to_undefined s id with
+        | Some path -> UndefinedKernel { path = names path }
+        | None -> UndefinedKernel { path = [ Function_id.label id ] })
+  in
+  let unsupported =
+    kernel_list s
+    |> List.filter_map (fun k ->
+        let id = Scoped.Kernel.unique_id k in
+        if IdSet.mem id discarded then None
+        else path_to_unsupported calls id |> Option.map (fun r -> (id, r)))
+  in
+  let dropped =
+    IdSet.union discarded (unsupported |> List.map fst |> IdSet.of_list)
+  in
+  let kernels =
+    kernel_list s
+    |> List.filter (fun k ->
+        not (IdSet.mem (Scoped.Kernel.unique_id k) dropped))
+  in
+  let rejected =
+    (discarded |> IdSet.elements
+     |> List.map (fun id ->
+          Rejected_kernel.make ~kernel:(Function_id.label id)
+            ~reason:(reason id)))
+    @ (unsupported
+       |> List.map (fun (id, reason) ->
+            Rejected_kernel.make ~kernel:(Function_id.label id) ~reason))
+  in
+  (kernels, rejected)

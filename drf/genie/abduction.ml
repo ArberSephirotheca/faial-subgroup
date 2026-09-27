@@ -9,10 +9,14 @@ let rec eval_n (lookup : string -> int option) : nexp -> int option = function
   | Binary (op, a, b) ->
     (match eval_n lookup a, eval_n lookup b with
      | Some va, Some vb ->
-       (try Some (N_binary.eval op va vb) with Division_by_zero -> None)
+       (try Some (N_binary.eval op va vb) with
+        | Division_by_zero | N_binary.Unknown_width
+        | N_binary.Shift_amount_out_of_range ->
+            None)
      | _ -> None)
   | Unary (op, a) -> Option.map (N_unary.eval op) (eval_n lookup a)
-  | NCall _ -> None
+  | NCall _ | ReadResult _ -> None
+  | Convert c -> eval_n lookup c.arg
   | NIf (b, t, f) ->
     (match eval_b lookup b with
      | Some true -> eval_n lookup t
@@ -48,7 +52,7 @@ and eval_b (lookup : string -> int option) : bexp -> bool option = function
       let ints = List.map Option.get vs in
       Some (List.length (List.sort_uniq Int.compare ints) = List.length ints)
   | AtomicResult _ -> None
-  | ThreadUnif _ -> None
+  | IsThreadUnif _ -> None
 
 let launch_config_set : Variable.Set.t =
   let open Variable in
@@ -57,7 +61,7 @@ let launch_config_set : Variable.Set.t =
 let int_params (k : Kernel.t) : Variable.t list =
   Params.to_list (Params.union_left k.global_variables k.local_variables)
   |> List.filter_map (fun (v, ty) ->
-    if C_type.is_int ty && not (Variable.Set.mem v launch_config_set)
+    if Ty.is_int ty && not (Variable.Set.mem v launch_config_set)
     then Some v else None)
   |> List.sort_uniq Variable.compare
 
@@ -70,7 +74,7 @@ let signedness_of (k : Kernel.t) (v : Variable.t) : Signedness.t =
   else
     let p = Params.union_left k.global_variables k.local_variables in
     match Params.find_opt v p with
-    | Some (_, ty) when C_type.is_unsigned ty -> Signedness.Unsigned
+    | Some (_, ty) when Ty.is_unsigned ty -> Signedness.Unsigned
     | _ -> Signedness.Signed
 
 (* Pool combinators. Each step is [bexp list -> bexp list] and prepends

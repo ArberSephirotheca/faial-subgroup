@@ -66,7 +66,7 @@ module Property = struct
      threads of the same group" for Barrier_div; nothing for the others. *)
   let goal_precondition : t -> Exp.bexp = function
     | Well_sync | Missing_participants -> Bool true
-    | Barrier_div -> Exp.thread_distinct Variable.tid_list
+    | Barrier_div -> Exp.is_thread_distinct Variable.tid_list
 end
 
 (* Path-condition state carried as we walk the kernel body.
@@ -173,8 +173,8 @@ module Check = struct
       | If (b, s1, s2) ->
           let p_then, p_else = PathCondition.add_cond b p in
           Seq.append (of_code p_then s1) (of_code p_else s2)
-      | Loop { range; body } ->
-          let cond = Range.to_cond range in
+      | Loop { cond_range = { range; _ }; body } ->
+          let cond = Range.to_bexp range in
           let p =
             if PathCondition.is_uniform p cond then
               p
@@ -245,6 +245,9 @@ module Proj = struct
     | NIf (b, n1, n2) ->
         NIf (bexp locals t b, nexp locals t n1, nexp locals t n2)
     | NCall (x, ns) -> NCall (x, List.map (nexp locals t) ns)
+    | ReadResult r ->
+        ReadResult { r with args = List.map (nexp locals t) r.args }
+    | Convert c -> Exp.convert c.ty (nexp locals t c.arg)
 
   and bexp (locals : Variable.Set.t) (t : task) (b : Exp.bexp) : Exp.bexp =
     let open Exp in
@@ -263,7 +266,7 @@ module Proj = struct
             index = List.map (nexp locals t) index;
             operation = Protocols.Atomic.Operation.map (nexp locals t) operation;
           }
-    | ThreadUnif e ->
+    | IsThreadUnif e ->
         let _ = t in
         NRel (Eq, nexp locals T1 e, nexp locals T2 e)
 end
@@ -281,14 +284,14 @@ module Proof = struct
     preds : Predicates.t list;
     decls : string list;
     labels : (string * string) list;
-    goal : Exp.bexp;
+    formula : Formula.t;
   }
 
   let make ~(property : Property.t) ~(kernel_name : string)
       ~(barrier : Sync.t) ~(id : int) ~(goal : Exp.bexp) : t =
-    let goal = Constfold.b_opt goal in
+    let formula = Formula.make (Constfold.b_opt goal) in
     let fns =
-      Exp.b_free_names goal Variable.Set.empty |> Variable.Set.elements
+      Formula.free_names formula Variable.Set.empty |> Variable.Set.elements
     in
     let decls = List.map Variable.name fns in
     let labels =
@@ -298,7 +301,7 @@ module Proof = struct
         fns
     in
     let preds = Predicates.get_predicates goal in
-    { property; id; preds; decls; goal; kernel_name; labels; barrier }
+    { property; id; preds; decls; formula; kernel_name; labels; barrier }
 
   let to_s (p : t) : Indent.t list =
     let open Indent in
@@ -319,7 +322,7 @@ module Proof = struct
       Line ("predicates: " ^ preds_str ^ ";");
       Line ("decls: " ^ (p.decls |> String.concat ", ") ^ ";");
       Line "goal:";
-      Block (Exp.b_to_s p.goal);
+      Block (Exp.b_to_s (Formula.goal p.formula));
       Line ";";
     ]
 
@@ -385,7 +388,7 @@ module Proof = struct
   let solve ?(solver = (module Gen_z3.Bv64Gen : Gen_z3.Z3_SOLVER)) ?timeout
       (p : t) : (Gen_z3.Solver.t, string) Result.t =
     let module S = (val solver) in
-    S.solve ?timeout (Predicates.b_inline p.goal)
+    S.solve ?timeout p.formula
 
   module Witness = struct
     (* Two witness shapes, mirroring the two obligation frames:

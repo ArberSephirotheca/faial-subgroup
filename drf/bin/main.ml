@@ -38,43 +38,18 @@ let conv_int_list =
   in
   Arg.conv (parse, print)
 
-(* [--assume "BEXP"] or [--assume "KERNEL:BEXP"]. The optional prefix
-   targets either a source kernel or an exact synthesised [name@site] variant;
-   without it, the clause applies to every kernel whose declared params plus
-   the launch-config dims cover the clause's free variables. A [:] inside the
-   BEXP itself never matches because the bexp grammar uses no [:] tokens. *)
+(* [--assume "[<preamble>:] BEXP"]: an optional comma-separated
+   [key=value] preamble ([kernel=], [binder=], [line=]) scopes the clause
+   to a kernel and targets either the precondition or a specific binder,
+   parsed by [Assumption_parser]. *)
 let conv_assume =
-  let looks_like_kernel_name s =
-    s <> ""
-    && String.for_all
-         (fun c ->
-           (c >= 'a' && c <= 'z')
-           || (c >= 'A' && c <= 'Z')
-           || (c >= '0' && c <= '9')
-           || c = '_' || c = '@')
-         s
-  in
-  let parse_bexp s =
-    match Parsers.BExpParser.of_string s with
-    | Ok b -> Ok b
+  let parse s =
+    match Assumption_parser.of_string s with
+    | Ok a -> Ok a
     | Error msg -> Error (`Msg msg)
   in
-  let parse s =
-    match String.index_opt s ':' with
-    | None -> (
-        match parse_bexp s with Ok b -> Ok (None, b) | Error e -> Error e)
-    | Some i -> (
-        let prefix = String.sub s 0 i |> String.trim in
-        let rest = String.sub s (i + 1) (String.length s - i - 1) in
-        if looks_like_kernel_name prefix then
-          match parse_bexp rest with
-          | Ok b -> Ok (Some prefix, b)
-          | Error e -> Error e
-        else match parse_bexp s with Ok b -> Ok (None, b) | Error e -> Error e)
-  in
-  let print ppf = function
-    | Some n, b -> Format.fprintf ppf "%s:%s" n (Exp.b_to_string b)
-    | None, b -> Format.fprintf ppf "%s" (Exp.b_to_string b)
+  let print ppf (a : Assumption.t) =
+    Format.fprintf ppf "%s" (Assumption.to_string a)
   in
   Arg.conv (parse, print)
 
@@ -107,15 +82,26 @@ let conv_subgroup_size =
 
 let main =
   let doc = "Verify if CUDA file is free from data races." in
-  let info = Cmd.info "faial-drf" ~doc in
+  let info =
+    (* [tree] identifies the source that produced this binary; [commit] is
+       only HEAD at build time, which lags whenever a change is built and
+       tested before it is committed. See stage0/lib/gen_build_info.sh. *)
+    Cmd.info "faial-drf" ~doc
+      ~version:(Build_info.commit ^ " (tree " ^ Build_info.tree ^ ")")
+  in
   Cmd.v info
   @@
   let open Cmdliner.Term.Syntax in
-  let+ filename =
+  let+ filenames =
     Arg.(
-      required
-      & pos 0 (some file) None
-      & info [] ~docv:"FILENAME" ~doc:"The path $(docv) of the GPU program.")
+      non_empty & pos_all file []
+      & info [] ~docv:"FILENAME"
+          ~doc:
+            "The path $(docv) of the GPU program. May be repeated: every CUDA \
+             source given is parsed together and analyzed as a single program, \
+             so a kernel in one file resolves its calls against definitions in \
+             another. Only the first file is read for the legacy two-line \
+             launch-shape header.")
   and+ timeout =
     Arg.(
       value
@@ -127,7 +113,16 @@ let main =
       value & flag
       & info [ "show-proofs" ] ~doc:"Show the Z3 proofs being generated.")
   and+ show_proto =
-    Arg.(value & flag & info [ "show-map" ] ~doc:"Show the MAP kernel.")
+    Arg.(
+      value & flag
+      & info [ "show-map" ]
+          ~doc:
+            "Show the MAP kernel. Each memory access is rendered with a \
+             trailing $(b,@N) tag, where N is the access id: a stable \
+             identifier minted once per kernel and preserved unchanged through \
+             every --show-<stage> of the pipeline (map down to symbexp), so \
+             the same access can be tracked from stage to stage, and is the id \
+             the solver uses to name each access in a race proof.")
   and+ show_wf =
     Arg.(
       value & flag
@@ -168,8 +163,25 @@ let main =
           ~doc:
             "Z3 tactic expression for the race-query solver. When omitted, the \
              solver uses Z3's default strategy.")
+  and+ deterministic_sat =
+    Arg.(
+      value & flag
+      & info [ "deterministic-sat" ]
+          ~doc:
+            "Round-trip each proof's SMT query through Z3's serializer before \
+             solving. This canonicalises the in-memory term order, so solve \
+             time no longer depends on how the query was built (notably the \
+             $(b,--delin-algo) choice). Off by default.")
   and+ output_json =
     Arg.(value & flag & info [ "json" ] ~doc:"Output result as JSON.")
+  and+ output_pyz3 =
+    Arg.(
+      value
+      & opt (some string) None
+      & info [ "pyz3" ] ~docv:"FILE"
+          ~doc:
+            "Write each racy proof's Z3 obligation to $(docv) as a Python \
+             module that loads it into z3 (one Proof per racy proof).")
   and+ ignore_parsing_errors =
     Arg.(
       value & flag
@@ -206,11 +218,6 @@ let main =
       & info [ "I"; "include-dir" ] ~docv:"DIR"
           ~doc:
             "Add the specified directory to the search path for include files.")
-  and+ ignore_calls =
-    Arg.(
-      value & flag
-      & info [ "ignore-calls" ]
-          ~doc:"By default we inline kernel calls, this option skips that step.")
   and+ ge_index =
     Arg.(
       value & opt conv_int_list []
@@ -232,9 +239,8 @@ let main =
       value & opt conv_int_list []
       & info [ "index" ] ~docv:"LIST"
           ~doc:
-            "Check that each index is greater-or-equal than the argument. \
-             Expects an integer, or a (JSON) list of integers. Example: 1 or \
-             [1,2]")
+            "Check that each index is exactly equal to the argument. Expects \
+             an integer, or a (JSON) list of integers. Example: 1 or [1,2]")
   and+ only_array =
     Arg.(
       value
@@ -244,7 +250,11 @@ let main =
     Arg.(
       value
       & opt (some string) None
-      & info [ "kernel" ] ~doc:"Only check a specific kernel.")
+      & info [ "kernel" ]
+          ~doc:
+            "Only check a specific kernel. Accepts any name \
+             $(b,--list-kernels) reports, including a kernel that gets \
+             discarded, which answers with that kernel's discard result.")
   and+ only_true_data_races =
     Arg.(
       value & flag
@@ -356,6 +366,19 @@ let main =
              assumed and any resulting vacuity is caught by the \
              $(b,--check-pre-sat) pre-flight, which $(b,--assume-delin) forces \
              on.")
+  and+ opaque_calls =
+    Arg.(
+      last
+      & opt_all (enum App.Opaque_calls.enum) [ App.Opaque_calls.default ]
+      & info [ "opaque-calls" ] ~docv:"POLICY"
+          ~doc:
+            "How to treat a call whose callee is declared but never defined, \
+             so that its accesses are invisible. $(b,skip-all): ignore every \
+             such call, which analyzes the kernel as though it were never \
+             written. $(b,skip-without-arrays): ignore only a callee that \
+             cannot write through a parameter, and discard a kernel that \
+             reaches any other. $(b,skip-none): discard a kernel that reaches \
+             any callee with no visible body.")
   and+ delin_algo =
     Arg.(
       last
@@ -367,12 +390,13 @@ let main =
              sizes pairwise. $(b,ics15): permutation search (Grosser et al.'s \
              optimistic delinearization). $(b,ics15-opt): same results as \
              $(b,ics15) with a pruned search. $(b,cramer): exact integer \
-             linear-algebra solve. $(b,weak): for opaque runtime strides that \
-             cannot be factored (e.g. ggml tensor $(b,nb) strides); reads the \
-             strides straight off the index and assumes they nest, disjoined \
-             over every stride ordering and vacuity-guarded. Unsound in \
-             general, assume-only. Default $(b,ics15-opt). May be repeated; \
-             the last one wins.")
+             linear-algebra solve. $(b,bs): same results as $(b,cramer) via \
+             triangular back-substitution, cheaper at higher dimensions. \
+             $(b,weak): for opaque runtime strides that cannot be factored \
+             (e.g. ggml tensor $(b,nb) strides); reads the strides straight \
+             off the index and assumes they nest, disjoined over every stride \
+             ordering and vacuity-guarded. Unsound in general, assume-only. \
+             Default $(b,ics15-opt). May be repeated; the last one wins.")
   and+ delin_weak_in_range =
     Arg.(
       value & flag
@@ -385,6 +409,20 @@ let main =
              digits by opaque strides and makes Z3 blow up on indices with \
              div/mod coordinates. Enable for the extra assumed soundness at a \
              large solver cost.")
+  and+ delin_weak_in_range_for =
+    Arg.(
+      value & opt_all string []
+      & info
+          [ "delin-weak-in-range-for" ]
+          ~docv:"KERNEL"
+          ~doc:
+            "Force $(b,--delin-weak-in-range) on for a single kernel named \
+             $(docv), leaving it off for the rest. Use to enable the in-range \
+             span for one kernel of a multi-kernel file without paying its \
+             solver cost everywhere. The name is the uniquified kernel name \
+             (see $(b,--list-kernels)), including any $(b,@)-suffixed launch \
+             pseudo-kernel name. May be repeated; unset kernels fall back to \
+             the global $(b,--delin-weak-in-range).")
   and+ no_rewrite_delin =
     Arg.(
       value & flag
@@ -411,19 +449,21 @@ let main =
              forced on, so a delinearisation that would empty the state space \
              is refused. Without this flag the bounds must be proven (sound). \
              Composes with [--no-rewrite-delin].")
-  and+ assumes =
+  and+ assumptions =
     Arg.(
       value & opt_all conv_assume []
-      & info [ "assume" ] ~docv:"[KERNEL:]BEXP"
+      & info [ "assume" ] ~docv:"[PREAMBLE:]BEXP"
           ~doc:
-            "Add a boolean expression as a kernel pre-condition. With no \
-             prefix, the clause is applied to every kernel whose declared \
-             params (plus the launch-config dims) cover the clause's free \
-             variables. With a [KERNEL:] prefix the clause is scoped to a \
-             source kernel or exact synthesised [name@site] variant. Names not \
-             matching any kernel in the file are silently ignored. May be \
-             repeated. Examples: --assume \"blockDim.x == 32 && N > 0\" or \
-             --assume \"ckMedian:blockDim.x == 16\"")
+            "Add a boolean expression as an assumption. Bare BEXP conjoins \
+             onto every kernel's precondition. An optional comma-separated \
+             key=value preamble scopes it: kernel=K restricts to kernel K; \
+             binder=V targets the binder (loop counter or declaration) named \
+             V, which must exist (else an error), instead of the precondition; \
+             line=N disambiguates a binder label reused across scopes. A \
+             clause that leaves any name unbound is rejected. May be repeated. \
+             Examples: --assume \"blockDim.x == 32 && N > 0\", --assume \
+             \"kernel=ckMedian: blockDim.x == 16\", --assume \
+             \"binder=i,line=16: i < N\"")
   and+ assume_dims =
     Arg.(
       value & flag
@@ -454,8 +494,21 @@ let main =
       & info [ "rules" ]
           ~doc:
             "Load additional idiom rewrite rules from FILE (one rule per line, \
-             [pattern => replacement ; assumptions] with named holes). \
+             [pattern => replacement ; assumptions] with $-prefixed holes). \
              Appended to the built-in rules.")
+  and+ infer_cond_bound =
+    Arg.(
+      value
+      & opt int Imp.Encode_assigns.default_infer_cond_bound
+      & info [ "infer-cond-bound" ]
+          ~doc:
+            "Maximum inlined size, in expression nodes, of an inferred scalar \
+             value before it is abstracted to an unconstrained value. Chained \
+             self-referential assignments (a conditional $(b,x = c ? f x : x) \
+             or a multiplicative $(b,s = s*s*v)) otherwise inline to a term \
+             exponential in the chain length; a value over the bound is \
+             replaced by an unknown, which is sound but loses precision. Raise \
+             it to keep more precision at higher cost.")
   and+ check_pre_sat =
     Arg.(
       value & flag
@@ -497,14 +550,17 @@ let main =
       value & flag
       & info [ "list-kernels" ]
           ~doc:
-            "Print one kernel name per line on stdout, taken from the parsed \
-             protocol-level kernel list, then exit. No analysis is run. \
-             Synthesised pseudo-kernels emitted by [--assume-launch] are \
-             included if that flag is also set. Duplicate names in the parsed \
-             list are uniquified with a [_N] suffix so each printed name is a \
-             distinct identifier suitable for [--kernel] / [--assume \
-             KERNEL:...] filters. Combine with [--show-signature] to also \
-             print each kernel's parameter list with C type and signedness.")
+            "Print one kernel name per line on stdout, sorted by name, then \
+             exit. No analysis is run. Every kernel the translation unit names \
+             is reported, including one that gets discarded, so the listing is \
+             the complete set of names [--kernel] accepts. Synthesised \
+             pseudo-kernels emitted by [--assume-launch] are included if that \
+             flag is also set. Duplicate names are uniquified with a [_N] \
+             suffix so each printed name is a distinct identifier suitable for \
+             [--kernel] / [--assume KERNEL:...] filters. Combine with \
+             [--show-signature] to also print each kernel's parameter list \
+             with C type and signedness; a discarded kernel has no protocol, \
+             so it prints as a bare name.")
   and+ show_signature =
     Arg.(
       value & flag
@@ -544,32 +600,49 @@ let main =
       else if grid_level then [ Architecture.Grid ]
       else [ Architecture.Block ]
     in
+    let filename = List.hd filenames in
+    let extra_files = List.tl filenames in
     let app =
-      App.parse ~filename ~timeout ~show_proofs ~show_proto ~show_wf ~show_align
-        ~show_delin ~show_phase_split ~show_loc_split ~show_flat_acc
-        ~show_symbexp ~logic ~solve_tactic ~ge_index ~le_index ~eq_index
-        ~only_array ~thread_idx_1 ~thread_idx_2 ~block_idx_1 ~block_idx_2 ~archs
-        ~inline_calls:(not ignore_calls) ~ignore_parsing_errors ~includes
+      App.parse ~extra_files ~filename ~timeout ~show_proofs ~show_proto
+        ~show_wf ~show_align ~show_delin ~show_phase_split ~show_loc_split
+        ~show_flat_acc ~show_symbexp ~logic ~solve_tactic ~deterministic_sat
+        ~ge_index ~le_index ~eq_index ~only_array ~thread_idx_1 ~thread_idx_2
+        ~block_idx_1 ~block_idx_2 ~archs ~ignore_parsing_errors ~includes
         ~block_dim ~grid_dim ~params ~only_kernel ~only_true_data_races ~macros
-        ~cu_to_json ~all_dims ~ignore_asserts ~assume_delin
-        ~rewrite_delin:(not no_rewrite_delin) ~delin_elide:(not no_delin_elide)
-        ~delin_algo ~delin_check_vacuosity ~delin_weak_in_range ~assumes
-        ~assume_dims ~assume_launch ~check_pre_sat
+        ~subgroup_size ~launch_contract ~cu_to_json ~all_dims ~ignore_asserts
+        ~opaque_calls ~assume_delin ~rewrite_delin:(not no_rewrite_delin)
+        ~delin_elide:(not no_delin_elide) ~delin_algo ~delin_check_vacuosity
+        ~delin_weak_in_range ~delin_weak_in_range_for ~assumptions ~assume_dims
+        ~assume_launch ~check_pre_sat
         ~memory_model:{ Memory_model.warp_synchronous = assume_warp_synch }
-        ~cbor ~stop_at ~subgroup_size ~launch_contract ~rules_file
+        ~cbor ~stop_at ~infer_cond_bound ~rules_file
     in
-    let ui = if output_json then Jui.render else Tui.render in
+    let ui =
+      match output_pyz3 with
+      | Some file ->
+          fun ~rejected results ->
+            let ordinary =
+              List.map
+                (function
+                  | Analysis.Ordinary result -> result
+                  | Analysis.Subgroup _ ->
+                      raise
+                        (App.Assumption_error
+                           "Python/Z3 export is not supported for subgroup \
+                            analysis"))
+                results
+            in
+            Pyz3.render file ~rejected ordinary
+      | None -> if output_json then Jui.render else Tui.render
+    in
     let run () =
       if list_kernels then
-        app.kernels
-        |> List.iter (fun k ->
-            match k with
-            | App.Ordinary_kernel kernel ->
-                if show_signature then
-                  print_endline (Protocols.Kernel.signature_string kernel)
-                else print_endline (Protocols.Kernel.name kernel)
-            | App.Subgroup_kernel kernel ->
-                print_endline kernel.subgroup.matrix_kernel.name)
+        App.Listing.of_app app
+        |> List.iter (fun (e : App.Listing.entry) ->
+            match e with
+            | App.Listing.Analysable k when show_signature ->
+                print_endline (App.kernel_signature k)
+            | e -> print_endline (App.Listing.name e))
       else if Option.is_some stop_at then
         (* Run the pipeline for its printing side effects (each
            [show_or_stop] dumps the IR at its stage when matched), but
@@ -579,12 +652,14 @@ let main =
            actually ran. *)
         let _ = App.run app in
         ()
-      else App.run app |> ui
+      else App.run app |> ui ~rejected:(App.only_rejected app)
     in
     try
       run ();
       Ok ()
-    with App.Kernel_not_found name ->
-      Error (Printf.sprintf "kernel '%s' not found!" name)
+    with
+    | App.Assumption_error message -> Error message
+    | App.Kernel_not_found name ->
+        Error (Printf.sprintf "kernel '%s' not found!" name)
 
 let () = exit (Cmd.eval_result main)

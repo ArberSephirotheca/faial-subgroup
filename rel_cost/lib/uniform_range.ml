@@ -28,7 +28,7 @@ let optimize ?(timeout = 100) (strategy : t) (block_dim : Dim3.t)
   let restrict tid tid_count =
     let lhs = n_ge (Var tid) (Num 0) in
     let rhs = n_lt (Var tid) (Num tid_count) in
-    b_to_expr (b_and lhs rhs)
+    b_to_expr (Formula.make (b_and lhs rhs))
   in
   let opt = Optimize.mk_opt ctx in
   Optimize.add opt
@@ -40,9 +40,9 @@ let optimize ?(timeout = 100) (strategy : t) (block_dim : Dim3.t)
 
         https://stackoverflow.com/questions/64484347/
       *)
-      b_to_expr (n_ge x (Num 0));
-      b_to_expr (n_eq x n);
-      b_to_expr pre;
+      b_to_expr (Formula.make (n_ge x (Num 0)));
+      b_to_expr (Formula.make (n_eq x n));
+      b_to_expr (Formula.make pre);
       restrict Variable.tid_x block_dim.x;
       restrict Variable.tid_y block_dim.y;
       restrict Variable.tid_z block_dim.z;

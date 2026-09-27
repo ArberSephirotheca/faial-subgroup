@@ -63,8 +63,8 @@ module Gen = struct
   let access_id (t : Task.t) : nexp = Ids.access_id t |> var
 
   (* assign identifier of the conditional access *)
-  let assign_access_id (t : Task.t) (aid : int) : bexp =
-    n_eq (access_id t) (Num aid)
+  let assign_access_id (t : Task.t) (aid : Access.Id.t) : bexp =
+    n_eq (access_id t) (Num (Access.Id.to_int aid))
 
   let assign_index (op : N_rel.t) (t : Task.t) (idx : int) (n : nexp) : bexp =
     n_rel op (index t idx) n
@@ -127,6 +127,9 @@ let rec project_n (locals : Variable.Set.t) (t : Task.t) (n : nexp) : nexp =
   | NIf (b, n1, n2) ->
       NIf (project_b locals t b, project_n locals t n1, project_n locals t n2)
   | NCall (x, ns) -> NCall (x, List.map (project_n locals t) ns)
+  | ReadResult r ->
+      ReadResult { r with args = List.map (project_n locals t) r.args }
+  | Convert c -> convert c.ty (project_n locals t c.arg)
 and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
   match b with
   | CastBool e -> CastBool (project_n locals t e)
@@ -147,7 +150,7 @@ and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
       let index = List.map (project_n locals t) index in
       let operation = Atomic.Operation.map (project_n locals t) operation in
       AtomicResult { target; array; index; operation }
-  | ThreadUnif e ->
+  | IsThreadUnif e ->
       (* Expand to [e_T1 = e_T2]; the equality is symmetric so the
          active task [t] doesn't affect the encoding. *)
       let _ = t in
@@ -156,10 +159,6 @@ and project_b (locals : Variable.Set.t) (t : Task.t) (b : bexp) : bexp =
 let project_access (locals : Variable.Set.t) (t : Task.t) (ca : CondAccess.t) :
     CondAccess.t =
   let inline_acc (a : Access.t) = Access.map (project_n locals t) a in
-  (* Inline cross-thread predicates ([__uniform_int] etc.) in the
-     access condition before projection so [project_b]'s
-     [ThreadUnif] case expands them to the per-pair equality. See
-     the analogous comment on [project_pre]. *)
   let cond = Predicates.b_inline ca.cond in
   { access = inline_acc ca.access; cond = project_b locals t cond }
 
@@ -168,16 +167,7 @@ let project_access (locals : Variable.Set.t) (t : Task.t) (ca : CondAccess.t) :
    copy rather than a single shared variable. Without this, the
    accesses' [linearIndex$T1]/[$T2] are free in the SMT while only
    a shared [linearIndex] from [pre] is constrained, and Z3 finds
-   spurious same-address witnesses.
-
-   Inline cross-thread predicates ([__uniform_int] /
-   [__distinct_int]) before projecting, so [project_b]'s
-   [ThreadUnif] case expands them to the per-pair equality
-   [e$T1 == e$T2] (or its negation). Leaving the predicate as
-   [Pred] until after projection would let [Predicates.b_inline]
-   re-introduce a [ThreadUnif] downstream of [strip_cross_thread]
-   with already-projected inner [Var]s; the bit-vector codegen
-   rejects bare [ThreadUnif] nodes via [Gen_z3.b_to_expr]. *)
+   spurious same-address witnesses. *)
 let project_pre (locals : Variable.Set.t) (pre : bexp) : bexp =
   let pre = Predicates.b_inline pre in
   b_and (project_b locals Task1 pre) (project_b locals Task2 pre)
@@ -227,7 +217,7 @@ module AtomicAxioms = struct
     | Pred (_, ns) -> List.fold_left collect_n acc ns
     | CastBool n -> collect_n acc n
     | Distinct ns -> List.fold_left collect_n acc ns
-    | ThreadUnif n -> collect_n acc n
+    | IsThreadUnif n -> collect_n acc n
 
   and collect_n (acc : marker list) (n : nexp) : marker list =
     match n with
@@ -237,6 +227,8 @@ module AtomicAxioms = struct
     | Binary (_, n1, n2) -> collect_n (collect_n acc n1) n2
     | NIf (b, n1, n2) -> collect_n (collect_n (collect_b acc b) n1) n2
     | NCall (_, args) -> List.fold_left collect_n acc args
+    | ReadResult r -> List.fold_left collect_n acc r.args
+    | Convert c -> collect_n acc c.arg
 
   let collect (k : Flatacc.Kernel.t) : marker list =
     let pre_markers = collect_b [] k.pre in
@@ -398,10 +390,10 @@ module SymAccess = struct
   ...
   assign index n
   *)
-  type t = { id : int; condition : bexp; access : Access.t }
+  type t = { id : Access.Id.t; condition : bexp; access : Access.t }
 
   let to_string (a : t) : string =
-    "{ access_id = " ^ string_of_int a.id ^ " condition = "
+    "{ access_id = " ^ Access.Id.to_string a.id ^ " condition = "
     ^ Exp.b_to_string a.condition
     ^ " access = " ^ Access.to_string a.access ^ " }"
 
@@ -424,10 +416,10 @@ module SymAccess = struct
   (* When we lower the representation, we do not want to have source code
     locations, just an id. *)
 
-  let from_cond_access (locals : Variable.Set.t) (t : Task.t) (idx : int)
+  let from_cond_access (locals : Variable.Set.t) (t : Task.t)
       (ca : CondAccess.t) : t =
     let ca = project_access locals t ca in
-    { id = idx; access = ca.access; condition = ca.cond }
+    { id = Access.id ca.access; access = ca.access; condition = ca.cond }
 end
 
 let cond_access_to_bexp (locals : Variable.Set.t) (t : Task.t)
@@ -465,11 +457,12 @@ module Proof = struct
     preds : Predicates.t list;
     decls : string list;
     labels : (string * string) list;
-    goal : bexp;
+    formula : Formula.t;
     accesses : AccessSummary.t list;
   }
 
-  let add_goal (b : bexp) (p : t) : t = { p with goal = b_and p.goal b }
+  let add_goal (b : bexp) (p : t) : t =
+    { p with formula = Formula.map_goal (fun g -> b_and g b) p.formula }
 
   let add_rel_index (o : N_rel.t) (idx : int list) (p : t) : t =
     let idx_eq =
@@ -513,7 +506,10 @@ module Proof = struct
         ("array_name", `String p.array_name);
       ]
 
-  let get ~access_id (p : t) : AccessSummary.t = List.nth p.accesses access_id
+  let get ~access_id (p : t) : AccessSummary.t =
+    List.find
+      (fun (a : AccessSummary.t) -> Access.Id.to_int a.access.id = access_id)
+      p.accesses
 
   (* Union of free variables across this fragment's access summaries.
      Each summary's [variables] covers the access expression, its path
@@ -533,12 +529,9 @@ module Proof = struct
       goal:bexp ->
       t =
    fun ~kernel_name ~array_name ~id ~accesses ~goal ->
-    let goal =
-      Constfold.b_opt goal
-      (* Optimize the output expression *)
-    in
+    let formula = Formula.make (Constfold.b_opt goal) in
     let fns =
-      Exp.b_free_names goal Variable.Set.empty |> Variable.Set.elements
+      Formula.free_names formula Variable.Set.empty |> Variable.Set.elements
     in
     let decls = List.map Variable.name fns in
     let labels =
@@ -548,7 +541,7 @@ module Proof = struct
         fns
     in
     let preds = Predicates.get_predicates goal in
-    { id; preds; decls; goal; array_name; kernel_name; labels; accesses }
+    { id; preds; decls; formula; array_name; kernel_name; labels; accesses }
 
   let to_s (p : t) : Indent.t list =
     let open Indent in
@@ -566,7 +559,7 @@ module Proof = struct
         ("accesses: "
         ^ (List.map AccessSummary.to_string p.accesses |> String.concat ", "));
       Line "goal:";
-      Block (b_to_s p.goal);
+      Block (b_to_s (Formula.goal p.formula));
       Line ";";
     ]
 
@@ -584,7 +577,7 @@ module Proof = struct
     let assign_accesses (t : Task.t) : bexp =
       code |> Flatacc.Code.to_list (* get conditional accesses *)
       |> List.map (Flatacc.CondAccess.add_cond runtime)
-      |> List.mapi (SymAccess.from_cond_access locals t)
+      |> List.map (SymAccess.from_cond_access locals t)
          (* get symbolic access *)
       |> List.map (SymAccess.to_bexp ~assign_index t) (* generate code *)
       |> b_or_ex
@@ -644,16 +637,16 @@ module Proof = struct
     let assign_accesses (t : Task.t) : bexp =
       code |> Flatacc.Code.to_list
       |> List.map (Flatacc.CondAccess.add_cond runtime)
-      |> List.mapi (SymAccess.from_cond_access locals t)
+      |> List.map (SymAccess.from_cond_access locals t)
       |> List.map (SymAccess.to_bexp ~assign_index:false t)
       |> b_or_ex
     in
-    (* No explicit [thread_distinct] term: [Kernel.apply_arch]
+    (* No explicit [is_thread_distinct] term: [Kernel.apply_arch]
        folds the arch's [distinct] clause into [k.pre] upstream,
        which [Phasesplit] then wraps as [Cond (pre, u)] over the
        kernel's unsynced code. Each [Flatacc.CondAccess.cond]
-       therefore already carries [thread_distinct], and
-       [SymAccess.from_cond_access] expands its [ThreadUnif]
+       therefore already carries [is_thread_distinct], and
+       [SymAccess.from_cond_access] expands its [IsThreadUnif]
        primitives per task — so [assign_accesses Task1] and
        [assign_accesses Task2] each carry a properly-projected
        distinct constraint without an additional explicit term. *)
@@ -715,7 +708,7 @@ module Proof = struct
     let assign_accesses (t : Task.t) : bexp =
       code |> Flatacc.Code.to_list
       |> List.map (Flatacc.CondAccess.add_cond runtime)
-      |> List.mapi (SymAccess.from_cond_access locals t)
+      |> List.map (SymAccess.from_cond_access locals t)
       |> List.map (SymAccess.to_bexp ~assign_index:false t)
       |> b_or_ex
     in

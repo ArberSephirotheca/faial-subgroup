@@ -15,18 +15,18 @@ module Kernel = struct
     (* The internal variables are used in the code of the kernel.  *)
     local_variables : Params.t;
     (* Global ranges *)
-    ranges : Range.t list;
+    ranges : Cond_range.t list;
     (* The code of a kernel performs the actual memory accesses. *)
     code : Unsynced.t;
   }
 
   let free_names (k : t) : Variable.Set.t =
     Variable.Set.empty |> Unsynced.free_names k.code
-    |> List.fold_right Range.free_names k.ranges
+    |> List.fold_right Cond_range.free_names k.ranges
 
   let to_s (k : t) : Indent.t list =
     let open Indent in
-    let ranges = List.map Range.to_string k.ranges |> String.concat "; " in
+    let ranges = List.map Cond_range.to_string k.ranges |> String.concat "; " in
     [
       Line ("array: " ^ k.array_name ^ ";");
       Line ("globals: " ^ Params.to_string k.global_variables ^ ";");

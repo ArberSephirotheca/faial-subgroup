@@ -21,7 +21,8 @@ let rec inst_to_vars : Code.t -> Variable.t list = function
   | Sync _ -> []
   | Seq (p, q) -> inst_to_vars p @ inst_to_vars q
   | If (b, p, q) -> b_to_vars b @ inst_to_vars p @ inst_to_vars q
-  | Loop { range = r; body = p } -> r_to_vars r @ inst_to_vars p
+  | Loop { cond_range = { range = r; _ }; body = p } ->
+      r_to_vars r @ inst_to_vars p
 
 and n_to_vars : nexp -> Variable.t list = function
   | Var x -> [ x ]
@@ -29,6 +30,8 @@ and n_to_vars : nexp -> Variable.t list = function
   | Binary (_, e1, e2) -> n_to_vars e1 @ n_to_vars e2
   | Unary (_, e) -> n_to_vars e
   | NCall (_, es) -> List.concat_map n_to_vars es
+  | ReadResult r -> List.concat_map n_to_vars r.args
+  | Convert c -> n_to_vars c.arg
   | NIf (b, e1, e2) -> b_to_vars b @ n_to_vars e1 @ n_to_vars e2
   | CastInt e -> b_to_vars e
 
@@ -46,7 +49,7 @@ and b_to_vars : bexp -> Variable.t list = function
         Atomic.Operation.fold (fun e acc -> n_to_vars e @ acc) operation []
       in
       target :: array :: from_index @ from_op
-  | ThreadUnif e -> n_to_vars e
+  | IsThreadUnif e -> n_to_vars e
 
 and r_to_vars (r : Range.t) : Variable.t list =
   let step_variables =

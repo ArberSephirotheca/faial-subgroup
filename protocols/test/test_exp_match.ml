@@ -61,17 +61,13 @@ let check_apply (name : string) (rule : Exp_match.rule) (subj : nexp)
   | None -> Alcotest.failf "%s: expected the rule to fire" name
   | Some (rhs, emits) ->
       Alcotest.check nexp_t (name ^ " rhs") expected_rhs rhs;
-      Alcotest.check (Alcotest.list bexp_t) (name ^ " emits") expected_emits
-        emits
+      Alcotest.check (Alcotest.list bexp_t) (name ^ " emits") expected_emits emits
 
-let check_no_apply (name : string) (rule : Exp_match.rule) (subj : nexp) : unit
-    =
+let check_no_apply (name : string) (rule : Exp_match.rule) (subj : nexp) : unit =
   Alcotest.(check bool) name true (Exp_match.apply_rule rule subj = None)
 
 let is_num (name : string) (s : Exp_match.subst) : bool =
-  match Variable.Map.find_opt (v name) s with
-  | Some (Num _) -> true
-  | _ -> false
+  match Variable.Map.find_opt (v name) s with Some (Num _) -> true | _ -> false
 
 let literal_first : Exp_match.rule =
   {
@@ -82,12 +78,7 @@ let literal_first : Exp_match.rule =
   }
 
 let never : Exp_match.rule =
-  {
-    lhs = var "?a" +@ var "?b";
-    fire = (fun _ -> None);
-    rhs = num 0;
-    emits = [];
-  }
+  { lhs = var "?a" +@ var "?b"; fire = (fun _ -> None); rhs = num 0; emits = [] }
 
 let third_field : Exp_match.rule =
   {
@@ -98,12 +89,7 @@ let third_field : Exp_match.rule =
   }
 
 let const_rule (n : int) : Exp_match.rule =
-  {
-    lhs = var "?a" +@ var "?b";
-    fire = (fun s -> Some s);
-    rhs = num n;
-    emits = [];
-  }
+  { lhs = var "?a" +@ var "?b"; fire = (fun s -> Some s); rhs = num n; emits = [] }
 
 let instantiation_tests =
   [
@@ -133,8 +119,7 @@ let instantiation_tests =
     ( "instantiate raises on an unbound hole",
       `Quick,
       fun () ->
-        Alcotest.(check bool)
-          "raises" true
+        Alcotest.(check bool) "raises" true
           (raises (fun () -> Exp_match.instantiate Exp_match.empty (var "?zz")))
     );
   ]
@@ -165,14 +150,12 @@ let apply_tests =
         | Some (rhs, _) -> Alcotest.check nexp_t "first wins" (num 1) rhs
         | None -> Alcotest.fail "expected a match");
         match Exp_match.apply_rules [ const_rule 2; const_rule 1 ] subj with
-        | Some (rhs, _) ->
-            Alcotest.check nexp_t "order flips winner" (num 2) rhs
+        | Some (rhs, _) -> Alcotest.check nexp_t "order flips winner" (num 2) rhs
         | None -> Alcotest.fail "expected a match" );
     ( "apply_rules on an empty list returns None",
       `Quick,
       fun () ->
-        Alcotest.(check bool)
-          "empty" true
+        Alcotest.(check bool) "empty" true
           (Exp_match.apply_rules [] (var "x") = None) );
   ]
 
@@ -184,9 +167,7 @@ let plain_hole_tests =
     ( "hole binds a compound subterm",
       `Quick,
       fun () ->
-        check_binding "bind ?a" (var "?a")
-          (var "x" +@ num 1)
-          "?a"
+        check_binding "bind ?a" (var "?a") (var "x" +@ num 1) "?a"
           (var "x" +@ num 1) );
     ( "literal variable matches itself",
       `Quick,
@@ -207,10 +188,8 @@ let nonlinear_tests =
     ( "repeated hole accepts equal subterms",
       `Quick,
       fun () ->
-        check_binding "?a + ?a"
-          (var "?a" +@ var "?a")
-          (var "x" +@ var "x")
-          "?a" (var "x") );
+        check_binding "?a + ?a" (var "?a" +@ var "?a") (var "x" +@ var "x") "?a"
+          (var "x") );
     ( "repeated hole rejects unequal subterms",
       `Quick,
       fun () ->
@@ -222,16 +201,12 @@ let commutativity_tests =
     ( "plus matches swapped operands",
       `Quick,
       fun () ->
-        check_binding "?a + b"
-          (var "?a" +@ var "b")
-          (var "b" +@ var "x")
-          "?a" (var "x") );
+        check_binding "?a + b" (var "?a" +@ var "b") (var "b" +@ var "x") "?a"
+          (var "x") );
     ( "bitand matches swapped operands",
       `Quick,
       fun () ->
-        check_binding "?x & 1"
-          (band (var "?x") (num 1))
-          (band (num 1) (var "a"))
+        check_binding "?x & 1" (band (var "?x") (num 1)) (band (num 1) (var "a"))
           "?x" (var "a") );
     ( "minus does not match swapped operands",
       `Quick,
@@ -269,9 +244,7 @@ let shift_tests =
     ( "shift-left binds base and amount",
       `Quick,
       fun () ->
-        check_binding "?k"
-          (shl (var "?a") (var "?k"))
-          (shl (var "x") (num 2))
+        check_binding "?k" (shl (var "?a") (var "?k")) (shl (var "x") (num 2))
           "?k" (num 2) );
   ]
 
@@ -280,27 +253,21 @@ let bitwise_idiom_tests =
     ( "x & 1 matches",
       `Quick,
       fun () ->
-        check_binding "?x"
-          (band (var "?x") (num 1))
-          (band (var "a") (num 1))
+        check_binding "?x" (band (var "?x") (num 1)) (band (var "a") (num 1))
           "?x" (var "a") );
     ( "x & 1 rejects x & 2",
       `Quick,
       fun () ->
-        check_no_match "& 2" (band (var "?x") (num 1)) (band (var "a") (num 2))
-    );
+        check_no_match "& 2" (band (var "?x") (num 1)) (band (var "a") (num 2)) );
     ( "x & 1 rejects x | 1",
       `Quick,
       fun () ->
-        check_no_match "| 1" (band (var "?x") (num 1)) (bor (var "a") (num 1))
-    );
+        check_no_match "| 1" (band (var "?x") (num 1)) (bor (var "a") (num 1)) );
     ( "n & (n-1) matches with the same n",
       `Quick,
       fun () ->
         let pat = band (var "?n") (var "?n" -@ num 1) in
-        check_binding "?n" pat
-          (band (var "k") (var "k" -@ num 1))
-          "?n" (var "k") );
+        check_binding "?n" pat (band (var "k") (var "k" -@ num 1)) "?n" (var "k") );
     ( "n & (n-1) matches swapped (commutative &)",
       `Quick,
       fun () ->
@@ -322,8 +289,7 @@ let field_tests =
   [
     ( "field hole binds the base",
       `Quick,
-      fun () -> check_binding "?X.x" (var "?X.x") (var "fd.x") "?X" (var "fd")
-    );
+      fun () -> check_binding "?X.x" (var "?X.x") (var "fd.x") "?X" (var "fd") );
     ( "field hole rejects a different field",
       `Quick,
       fun () -> check_no_match "?X.x ~ fd.y" (var "?X.x") (var "fd.y") );
@@ -389,9 +355,7 @@ let fastdiv_tests =
         let pat =
           ushr (umulhi (var "?N") (var "?FD.x") +@ var "?N") (var "?FD.y")
         in
-        let subj =
-          ushr (umulhi (var "n") (var "fd.x") +@ var "n") (var "fd.y")
-        in
+        let subj = ushr (umulhi (var "n") (var "fd.x") +@ var "n") (var "fd.y") in
         check_binding "?N" pat subj "?N" (var "n");
         check_binding "?FD" pat subj "?FD" (var "fd") );
     ( "fastdiv rejects fields from different structs",
@@ -400,9 +364,7 @@ let fastdiv_tests =
         let pat =
           ushr (umulhi (var "?N") (var "?FD.x") +@ var "?N") (var "?FD.y")
         in
-        let subj =
-          ushr (umulhi (var "n") (var "fd.x") +@ var "n") (var "gd.y")
-        in
+        let subj = ushr (umulhi (var "n") (var "fd.x") +@ var "n") (var "gd.y") in
         check_no_match "fd vs gd" pat subj );
     ( "fastdiv without the correction term matches",
       `Quick,

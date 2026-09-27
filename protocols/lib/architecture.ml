@@ -63,9 +63,9 @@ module Defaults = struct
         |> Variable.Set.union Variable.bid_set
         |> Variable.Set.union Variable.bdim_set
         |> Variable.Set.union Variable.gdim_set
-        |> Params.from_set C_type.unsigned_int;
-      locals = Variable.tid_set |> Params.from_set C_type.unsigned_int;
-      distinct : bexp = thread_distinct Variable.tid_list;
+        |> Params.from_set Ty.unsigned_int;
+      locals = Variable.tid_set |> Params.from_set Ty.unsigned_int;
+      distinct : bexp = is_thread_distinct Variable.tid_list;
     }
 
   let grid : t =
@@ -74,12 +74,12 @@ module Defaults = struct
         Variable.Set.empty
         |> Variable.Set.union Variable.bdim_set
         |> Variable.Set.union Variable.gdim_set
-        |> Params.from_set C_type.unsigned_int;
+        |> Params.from_set Ty.unsigned_int;
       locals =
         Variable.bid_set
         |> Variable.Set.union Variable.tid_set
-        |> Params.from_set C_type.unsigned_int;
-      distinct : bexp = thread_distinct Variable.bid_list;
+        |> Params.from_set Ty.unsigned_int;
+      distinct : bexp = is_thread_distinct Variable.bid_list;
     }
 
   let to_bexp (e : t) : bexp = b_and e.distinct base
@@ -88,3 +88,9 @@ end
 let to_defaults : t -> Defaults.t = function
   | Grid -> Defaults.grid
   | Block -> Defaults.block
+
+let is_visible : t -> Mem_hierarchy.t -> bool = function
+  | Block -> (
+      function SharedMemory | GlobalMemory | ConstantMemory -> true)
+  | Grid -> (
+      function GlobalMemory | ConstantMemory -> true | SharedMemory -> false)

@@ -138,6 +138,7 @@ module TaskState = struct
         ("locals", Environ.to_json x.locals);
         ("mode", `String (Access.Mode.to_string x.access.mode));
         ("location", Access.location x.access |> Location.to_json);
+        ("access_id", `Int (Access.id x.access |> Access.Id.to_int));
       ]
 
   let to_string (v : t) : string =
@@ -330,20 +331,23 @@ end
    [check_bexp_sat] share one selection / fallback rule. *)
 module Encoder = struct
   type t = {
-    b_to_expr : Z3.context -> Exp.bexp -> Z3.Expr.expr;
+    b_to_expr : Z3.context -> Formula.t -> Z3.Expr.expr;
     parse_num : string -> string;
     logic     : string option;
+    is_bv     : bool;
   }
 
   let intgen ~(logic : string option) : t =
     { b_to_expr = IntGen.b_to_expr;
       parse_num = IntGen.parse_num;
-      logic }
+      logic;
+      is_bv     = false }
 
   let bv64 () : t =
     { b_to_expr = Bv64Gen.b_to_expr;
       parse_num = Bv64Gen.parse_num;
-      logic     = None }
+      logic     = None;
+      is_bv     = true }
 
   (* Starting encoder. Respect a user-requested BV logic; otherwise
      default to the arithmetic encoder. *)
@@ -384,6 +388,7 @@ module Solution = struct
     proof : Symbexp.Proof.t;
     outcome : Outcome.t;
     logic : string option;
+    is_bv : bool;
   }
 
   let is_safe (x : t) : bool = Outcome.is_safe x.outcome
@@ -402,9 +407,8 @@ module Solution = struct
     *)
   let solve ?(timeout = None) ?(show_proofs = false) ?(logic = None)
       ?(solve_tactic : Gen_z3.Tactic.t option = None)
-      ?(extras : (int * bexp) list = [])
-      ?(pre_solver = false)
-      ?block_dim
+      ?(extras : (int * bexp) list = []) ?(deterministic = false)
+      ?(pre_solver = false) ?block_dim
       (ps : Symbexp.Proof.t Streamutil.stream) : t Streamutil.stream =
     (* User-requested BV logic warning fires once, not once per proof. *)
     (match logic with
@@ -413,123 +417,144 @@ module Solution = struct
      | _ -> ());
     Streamutil.map
       (fun (p : Symbexp.Proof.t) ->
-        match
-          if pre_solver then
-            Ordinary_solver.pre_solver_classification ?block_dim p
-          else None
-        with
+        Gc.full_major ();
+        match (if pre_solver then Ordinary_solver.pre_solver_classification ?block_dim p else None) with
         | Some (Ordinary_solver.Pre_solver_unsat _) ->
-            { proof = p; outcome = Outcome.Drf; logic }
+            { proof = p; outcome = Outcome.Drf; logic; is_bv = false }
         | None ->
-            let want_core = extras <> [] in
-            let options =
-              [ ("model", "true"); ("proof", "false") ]
-              @ (if want_core then [ ("unsat_core", "true") ] else [])
-              @
-              match timeout with
-              | Some timeout -> [ ("timeout", string_of_int timeout) ]
-              | None -> []
-            in
-            (* When [want_core] is true the tactic-built solver is bypassed.
-               Tactic solvers nominally accept unsat_core (the OCaml
-               binding's probe confirms cores come back), but in the full
-               genie pipeline they end up either spinning the abductive
-               loop or running per-query slower than [mk_simple_solver].
-               Until we have a reproducer, prefer the simple solver for
-               the core path. *)
-            let mk_solver_for (enc : Encoder.t) ctx =
-              if want_core then
-                (match enc.logic with
-                 | None -> Solver.mk_simple_solver ctx
-                 | Some logic -> Solver.mk_solver_s ctx logic)
-              else
-                match solve_tactic with
-                | Some t -> Solver.mk_solver_t ctx (Gen_z3.Tactic.to_z3 ctx t)
-                | None ->
-                  (match enc.logic with
-                   | None -> Solver.mk_simple_solver ctx
-                   | Some logic -> Solver.mk_solver_s ctx logic)
-            in
-            let trackers : (int * Z3.Expr.expr) list ref = ref [] in
-            let solve_with (enc : Encoder.t) : Solver.solver =
-              (* Create a solver under [enc] and add the proof's goal plus
-                 any tracked [extras]. May raise [Not_implemented] when
-                 [enc] is [intgen] and the goal needs BV-only operators.
-                 The tracker is named [extra_<id>] only because Z3 requires
-                 a [Symbol]; the [id] is what flows back through the
-                 unsat-core. *)
+        let want_core = extras <> [] in
+        let options =
+          [ ("model", "true"); ("proof", "false") ]
+          @ (if want_core then [ ("unsat_core", "true") ] else [])
+          @
+          match timeout with
+          | Some timeout -> [ ("timeout", string_of_int timeout) ]
+          | None -> []
+        in
+        (* When [want_core] is true the tactic-built solver is bypassed.
+           Tactic solvers nominally accept unsat_core (the OCaml
+           binding's probe confirms cores come back), but in the full
+           genie pipeline they end up either spinning the abductive
+           loop or running per-query slower than [mk_simple_solver].
+           Until we have a reproducer, prefer the simple solver for
+           the core path. *)
+        let mk_solver_for (enc : Encoder.t) ctx =
+          if want_core then
+            (match enc.logic with
+             | None -> Solver.mk_simple_solver ctx
+             | Some logic -> Solver.mk_solver_s ctx logic)
+          else
+            match solve_tactic with
+            | Some t -> Solver.mk_solver_t ctx (Gen_z3.Tactic.to_z3 ctx t)
+            | None ->
+              (match enc.logic with
+               | None -> Solver.mk_simple_solver ctx
+               | Some logic -> Solver.mk_solver_s ctx logic)
+        in
+        let trackers : (int * Z3.Expr.expr) list ref = ref [] in
+        let solve_with (enc : Encoder.t) : Solver.solver =
+          (* Create a solver under [enc] and add the proof's goal plus
+             any tracked [extras]. May raise [Not_implemented] when
+             [enc] is [intgen] and the goal needs BV-only operators.
+             The tracker is named [extra_<id>] only because Z3 requires
+             a [Symbol]; the [id] is what flows back through the
+             unsat-core. *)
+          let ctx = Z3.mk_context options in
+          let s = mk_solver_for enc ctx in
+          Solver.add s [ enc.b_to_expr ctx p.formula ];
+          let s =
+            if deterministic && not want_core then (
+              let text = Solver.to_string s in
               let ctx = Z3.mk_context options in
+              let asserts = Z3.SMT.parse_smtlib2_string ctx text [] [] [] [] in
               let s = mk_solver_for enc ctx in
-              Solver.add s [ enc.b_to_expr ctx (Predicates.b_inline p.goal) ];
-              trackers :=
-                List.map
-                  (fun (id, b) ->
-                    let track =
-                      Z3.Boolean.mk_const_s ctx ("extra_" ^ string_of_int id)
-                    in
-                    let expr = enc.b_to_expr ctx (Predicates.b_inline b) in
-                    Solver.assert_and_track s expr track;
-                    (id, track))
-                  extras;
-              s
-            in
-            let enc, s =
-              let initial = Encoder.initial ~logic in
-              try (initial, solve_with initial)
-              with Not_implemented x ->
-                prerr_endline
-                  ("WARNING: arithmetic solver cannot handle operator '" ^ x
-                 ^ "', falling back to bit-vector arithmetic for this proof.");
-                let bv = Encoder.bv64 () in
-                (bv, solve_with bv)
-            in
-            (if show_proofs then
-              let title = "proof #" ^ string_of_int p.id in
-              let body = Solver.to_string s ^ "(check-sat)\n(get-model)\n" in
-              prerr_endline ("=== " ^ title ^ " ===");
-              prerr_endline body
-            );
-            let r =
-              let open Outcome in
-              let stats_detail () =
-                Printf.sprintf "  proof=%d\n%s"
-                  p.id (Solver.get_statistics s |> Z3.Statistics.to_string)
-              in
-              match
-                Phase_timer.measure "z3-check" ~detail:stats_detail (fun () ->
-                  Solver.check s [])
-              with
-              | UNSATISFIABLE when want_core ->
-                (* Parse [extra_<id>] tracker names back to the [id]
-                   we handed in. The unsat-core enumeration order is
-                   Z3-internal; sorting by integer makes the result
-                   deterministic for a given Z3 run. *)
-                let core = Solver.get_unsat_core s in
-                let core_ids =
-                  List.filter_map
-                    (fun ce ->
-                      let str = Z3.Expr.to_string ce in
-                      if String.starts_with ~prefix:"extra_" str then
-                        int_of_string_opt
-                          (String.sub str 6 (String.length str - 6))
-                      else None)
-                    core
-                  |> List.sort_uniq Int.compare
+              Solver.add s (Z3.AST.ASTVector.to_expr_list asserts);
+              s)
+            else s
+          in
+          trackers :=
+            List.map
+              (fun (id, b) ->
+                let track =
+                  Z3.Boolean.mk_const_s ctx ("extra_" ^ string_of_int id)
                 in
-                let _ = !trackers in
-                Drf_with_core core_ids
-              | UNSATISFIABLE -> Drf
-              | SATISFIABLE -> (
-                  match Solver.get_model s with
-                  | Some m ->
-                      let w = Witness.parse enc.parse_num ~proof:p m in
-                      (* The race goal excludes benign same-value writes, so any
-                         satisfying model is a genuine conflict. *)
-                      assert (Witness.can_conflict w);
-                      Racy w
-                  | None -> failwith "INVALID")
-              | UNKNOWN -> Unknown
+                let expr = enc.b_to_expr ctx (Formula.make b) in
+                Solver.assert_and_track s expr track;
+                (id, track))
+              extras;
+          s
+        in
+        let rec attempt tries =
+        try
+        let enc, s =
+          let initial = Encoder.initial ~logic in
+          try (initial, solve_with initial)
+          with Not_implemented x ->
+            prerr_endline
+              ("WARNING: arithmetic solver cannot handle operator '" ^ x
+             ^ "', falling back to bit-vector arithmetic for this proof.");
+            let bv = Encoder.bv64 () in
+            (bv, solve_with bv)
+        in
+        (if show_proofs then
+          let title = "proof #" ^ string_of_int p.id in
+          let body = Solver.to_string s ^ "(check-sat)\n(get-model)\n" in
+          prerr_endline ("=== " ^ title ^ " ===");
+          prerr_endline body
+        );
+        let r =
+          let open Outcome in
+          let stats_detail () =
+            Printf.sprintf "  proof=%d\n%s"
+              p.id (Solver.get_statistics s |> Z3.Statistics.to_string)
+          in
+          match
+            Phase_timer.measure "z3-check" ~detail:stats_detail (fun () ->
+              Solver.check s [])
+          with
+          | UNSATISFIABLE when want_core ->
+            (* Parse [extra_<id>] tracker names back to the [id]
+               we handed in. The unsat-core enumeration order is
+               Z3-internal; sorting by integer makes the result
+               deterministic for a given Z3 run. *)
+            let core = Solver.get_unsat_core s in
+            let core_ids =
+              List.filter_map
+                (fun ce ->
+                  let str = Z3.Expr.to_string ce in
+                  if String.starts_with ~prefix:"extra_" str then
+                    int_of_string_opt
+                      (String.sub str 6 (String.length str - 6))
+                  else None)
+                core
+              |> List.sort_uniq Int.compare
             in
-            { proof = p; outcome = r; logic = enc.logic })
+            let _ = !trackers in
+            Drf_with_core core_ids
+          | UNSATISFIABLE -> Drf
+          | SATISFIABLE -> (
+              match Solver.get_model s with
+              | Some m ->
+                  let w = Witness.parse enc.parse_num ~proof:p m in
+                  (* The race goal excludes benign same-value writes, so any
+                     satisfying model is a genuine conflict. *)
+                  assert (Witness.can_conflict w);
+                  Racy w
+              | None -> failwith "INVALID")
+          | UNKNOWN -> Unknown
+        in
+        { proof = p; outcome = r; logic = enc.logic; is_bv = enc.is_bv }
+        with Z3.Error msg ->
+          if tries > 0 then (
+            Gc.full_major ();
+            attempt (tries - 1))
+          else (
+            prerr_endline
+              (Printf.sprintf
+                 "WARNING: Z3 error on proof %d (%s); treating as unknown" p.id
+                 msg);
+            { proof = p; outcome = Outcome.Unknown; logic = None; is_bv = false })
+        in
+        attempt 1)
       ps
 end

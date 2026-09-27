@@ -179,20 +179,20 @@ let rec inst_to_s (g : Generator.t) : Code.t -> Indent.t list = function
         Line "}";
       ]
   | Skip -> []
-  | Decl { var; ty; body = p } ->
+  | Decl { var; ty; body = p; _ } ->
       (* Synthesised Decls are uninitialised scaffold variables — strip
          [const] so the emitted C++ doesn't fail "default initialisation
          of an object of const type". Clang dependent-type placeholders
          (e.g. "<dependent type>" inside templated bodies) leak through
          as type strings; substitute [int] so the file remains parseable. *)
-      let ty_s = C_type.to_string (C_type.strip_const ty) in
+      let ty_s = Ty.to_string (Ty.strip_const ty) in
       let ty_s =
         if String.length ty_s > 0 && ty_s.[0] = '<' then "int" else ty_s
       in
       Line (ty_s ^ " " ^ Variable.name var ^ ";")
       :: inst_to_s g p
   | Seq (p, q) -> inst_to_s g p @ inst_to_s g q
-  | Loop { range = r; body = p } ->
+  | Loop { cond_range = { range = r; _ }; body = p } ->
       let x = Variable.name r.var in
       let r = if g.div_to_mult then div_to_mult r else r in
       let lb, ub, op =
@@ -266,9 +266,9 @@ let arr_to_shared (vm : Memory.t VarMap.t) : Indent.t list =
   VarMap.bindings vm
   |> List.map (fun (k, v) ->
       Indent.Line
-        ((if v.Memory.size = [] then "extern " else "")
+        ((if Memory.known_size v = [] then "extern " else "")
         ^ "__shared__ " ^ arr_type v ^ " " ^ Variable.name k
-        ^ idx_to_s string_of_int v.Memory.size
+        ^ idx_to_s string_of_int (Memory.known_size v)
         ^ ";"))
 
 let local_var_to_l (vs : VarSet.t) (g : Generator.t) : Indent.t list =

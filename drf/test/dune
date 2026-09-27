@@ -1,15 +1,10 @@
 (tests
-  (names
-   test_memory_event
-   test_subgroup_delinearize
-   test_launch_contract
-   test_subgroup_obligation
-   test_subgroup_uniformity
-   test_subgroup_memory_ordering
-   test_subgroup_solver)
-  (libraries stage0 protocols inference drf alcotest yojson))
+ (names test_norm_range test_access_id test_goal_predicates
+  test_memory_event test_subgroup_delinearize test_launch_contract
+  test_subgroup_obligation test_subgroup_uniformity
+  test_subgroup_memory_ordering test_subgroup_solver)
+ (libraries stage0 protocols inference drf alcotest yojson))
 
-; These integration tests also need the external agent_results archive.
 (executable
  (name test_launch_contract_manifest)
  (modules test_launch_contract_manifest)

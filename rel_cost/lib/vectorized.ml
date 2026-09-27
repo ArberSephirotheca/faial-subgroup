@@ -60,7 +60,8 @@ let rec n_eval_res (n : Exp.nexp) (ctx : t) : (NMap.t, string) Result.t =
       | Some x -> Ok x
       | None -> Error ("undefined variable: " ^ Variable.name x))
   | Num n -> Ok (NMap.constant ~count:ctx.config.threads_per_warp ~value:n)
-  | CastInt (CastBool n) -> n_eval_res n ctx
+  | CastInt (CastBool _) ->
+      Error ("unsupported boolean-to-integer conversion: " ^ Exp.n_to_string n)
   | CastInt e ->
       let* e = b_eval_res e ctx in
       Ok
@@ -74,14 +75,20 @@ let rec n_eval_res (n : Exp.nexp) (ctx : t) : (NMap.t, string) Result.t =
       let o = N_binary.eval o in
       let* n1 = n_eval_res n1 ctx in
       let* n2 = n_eval_res n2 ctx in
-      try Ok (NMap.pointwise o n1 n2)
-      with Division_by_zero -> Error ("division by zero: " ^ Exp.n_to_string n))
+      try Ok (NMap.pointwise o n1 n2) with
+      | Division_by_zero -> Error ("division by zero: " ^ Exp.n_to_string n)
+      | N_binary.Unknown_width ->
+          Error ("shift of a negative value: " ^ Exp.n_to_string n)
+      | N_binary.Shift_amount_out_of_range ->
+          Error ("shift amount out of range: " ^ Exp.n_to_string n))
   | NIf (b, n1, n2) ->
       let* b = b_eval_res b ctx in
       let* n1 = n_eval_res n1 ctx in
       let* n2 = n_eval_res n2 ctx in
       Ok (n_map3 (fun b x1 x2 -> if b then x1 else x2) b n1 n2)
   | NCall (x, _) -> Error ("unknown function call: " ^ x)
+  | ReadResult r -> Error ("unknown read: " ^ Variable.name r.array)
+  | Convert c -> n_eval_res c.arg ctx
 
 and b_eval_res (b : Exp.bexp) (ctx : t) : (BMap.t, string) Result.t =
   match b with
@@ -106,7 +113,7 @@ and b_eval_res (b : Exp.bexp) (ctx : t) : (BMap.t, string) Result.t =
   | Pred (x, _) -> Error ("cannot evaluate predicate: " ^ x)
   | Distinct _ -> Error "cannot evaluate distinct"
   | AtomicResult _ -> Error "cannot evaluate atomic_result"
-  | ThreadUnif _ -> Error "cannot evaluate thread_unif"
+  | IsThreadUnif _ -> Error "cannot evaluate thread_unif"
 
 let n_eval (e : Exp.nexp) (ctx : t) : NMap.t = n_eval_res e ctx |> Result.get_ok
 let b_eval (e : Exp.bexp) (ctx : t) : BMap.t = b_eval_res e ctx |> Result.get_ok
@@ -199,12 +206,14 @@ let eval ?(verbose = false) (m : Metric.t)
     | If (b, p, q) ->
         let cost = restrict b ctx |> try_eval cost p in
         restrict (Exp.b_not b) ctx |> try_eval cost q
-    | Loop { range = r; body } -> (
-        match iter r ctx with
+    | Loop { cond_range; body } -> (
+        match iter cond_range.range ctx with
         | Next (r, ctx') ->
             let cost = eval cost body ctx' in
             (* run the rest of the loop *)
-            eval cost (Loop { range = r; body }) ctx
+            eval cost
+              (Loop { cond_range = Cond_range.make r cond_range.cond; body })
+              ctx
         | End ->
             (* Loop is done *)
             cost)

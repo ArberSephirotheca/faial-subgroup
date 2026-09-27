@@ -64,18 +64,32 @@ let assign_globals (kvs : (string * int) list) (k : t) : t =
     let global_set = global_set k in
     let non_global_keys = Variable.Set.diff keys global_set in
     if not (Variable.Set.is_empty non_global_keys) then
-      let local_kvs =
-        List.filter
-          (fun (k, _) ->
-            Variable.Set.mem (Variable.from_name k) non_global_keys)
-          kvs
-        |> kvs_to_string
+      let is_local =
+        let local_set = local_set k in
+        fun (x : string) -> Variable.Set.mem (Variable.from_name x) local_set
       in
-      let global_set = Variable.set_to_string global_set in
+      let rejected (p : string -> bool) : (string * int) list =
+        List.filter
+          (fun (x, _) ->
+            Variable.Set.mem (Variable.from_name x) non_global_keys && p x)
+          kvs
+      in
+      let describe (label : string) (kvs : (string * int) list) : string list =
+        if Common.list_is_empty kvs then []
+        else [ label ^ ": " ^ kvs_to_string kvs ]
+      in
+      let reasons =
+        describe "thread-local, so not assignable as a thread-global"
+          (rejected is_local)
+        @ describe "not a parameter of the kernel"
+            (rejected (fun x -> not (is_local x)))
+      in
       raise
         (invalid_arg
-           ("The following keys are not thread-global parameters: locals="
-          ^ local_kvs ^ " globals={" ^ global_set ^ "}"))
+           ("Cannot assign thread-globals of kernel '" ^ k.name ^ "': "
+           ^ String.concat "; " reasons
+           ^ ". The kernel's thread-globals are {"
+           ^ Variable.set_to_string global_set ^ "}"))
     else ();
     let kvs = List.map (fun (x, n) -> (Variable.from_name x, Num n)) kvs in
     subst_vars kvs k
@@ -112,10 +126,14 @@ let apply_arch_binders (d : Architecture.Defaults.t) (k : t) : t =
 
 let apply_arch (a : Architecture.t) (k : t) : t =
   let d = Architecture.to_defaults a in
-  let arrays = Variable.Map.filter (fun _ a -> Memory.is_global a) k.arrays in
+  let arrays =
+    Variable.Map.filter
+      (fun _ m -> Architecture.is_visible a (Memory.hierarchy m))
+      k.arrays
+  in
   {
     k with
-    arrays = (match a with Grid -> arrays | Block -> k.arrays);
+    arrays;
     code = Code.apply_arch (Variable.MapSetUtil.map_to_set arrays) a k.code;
     pre = b_and (Architecture.Defaults.to_bexp d) k.pre;
   }
@@ -140,16 +158,21 @@ let global_arrays (k : t) : Variable.Set.t =
 let used_arrays (k : t) : Variable.Set.t =
   Code.used_arrays k.code Variable.Set.empty
 
+let has_accesses (k : t) : bool =
+  Code.exists (function Code.Access _ -> true | _ -> false) k.code
+
 let constants (k : t) =
   let rec constants (b : bexp) (kvs : (string * int) list) : (string * int) list
       =
     match b with
     | CastBool (CastInt b) -> constants b kvs
-    | NRel (Eq, Var x, Num n) | NRel (Eq, Num n, Var x) ->
-        (Variable.name x, n) :: kvs
+    | NRel (Eq, e1, e2) -> (
+        match (Exp.strip_convert e1, Exp.strip_convert e2) with
+        | Var x, Num n | Num n, Var x -> (Variable.name x, n) :: kvs
+        | _ -> kvs)
     | BRel (BAnd, b1, b2) -> constants b1 kvs |> constants b2
     | Bool _ | CastBool _ | BNot _ | Pred _ | NRel _ | BRel _ | Distinct _
-    | AtomicResult _ | ThreadUnif _ ->
+    | AtomicResult _ | IsThreadUnif _ ->
         kvs
   in
   constants k.pre []
@@ -197,26 +220,10 @@ let vars_distinct (k : t) : t =
    duplicates skip suffixes that would collide with another kernel's
    existing name. *)
 let uniquify_names (ks : t list) : t list =
-  let module SS = Stage0.Common.StringSet in
-  let initial =
-    List.fold_left (fun acc (k : t) -> SS.add k.name acc) SS.empty ks
-  in
-  let used = ref SS.empty in
-  List.map (fun (k : t) ->
-    if not (SS.mem k.name !used) then begin
-      used := SS.add k.name !used;
-      k
-    end else
-      let rec fresh n =
-        let candidate = Printf.sprintf "%s_%d" k.name n in
-        if SS.mem candidate !used || SS.mem candidate initial
-        then fresh (n + 1)
-        else candidate
-      in
-      let new_name = fresh 2 in
-      used := SS.add new_name !used;
-      { k with name = new_name })
-    ks
+  Stage0.Common.uniquify
+    ~name:(fun (k : t) -> k.name)
+    ~rename:(fun (k : t) (name : string) -> { k with name })
+    ~taken:Stage0.Common.StringSet.empty ks
 
 (* One-line-per-param signature; useful for the [--list-kernels
    --show-signature] CLI path. Signed types render bare (the C
@@ -227,12 +234,12 @@ let uniquify_names (ks : t list) : t list =
    not already contain the [unsigned] keyword. *)
 let signature_string (k : t) : string =
   let format_param (v, ty) =
-    let s = C_type.to_string ty in
+    let s = Ty.to_string ty in
     let has_unsigned_keyword =
       Stage0.Common.contains ~substring:"unsigned" s
     in
     let display =
-      if C_type.is_unsigned ty && not has_unsigned_keyword
+      if Ty.is_unsigned ty && not has_unsigned_keyword
       then "unsigned " ^ s
       else s
     in
@@ -249,44 +256,60 @@ let signature_string (k : t) : string =
     (k.name :: section "globals" globals @ section "locals" locals)
 
 (*
-  Makes all variables distinct and hoists declarations as
-  thread-locals. Per-declaration [pre] constraints (e.g. the atomicAdd
-  unique-return distinctness on the target) are conjoined into the
-  kernel-level [pre] so they become global hypotheses on every
-  subsequent access.
+  Makes all variables distinct, then routes binder constraints and hoists
+  declarations as thread-locals. Each declaration's [cond] and each loop's
+  [cond] is split over conjunction, and every conjunct floats up to the
+  innermost enclosing loop whose counter it references; a conjunct that
+  mentions no loop counter is conjoined into the kernel-level [pre]. A
+  declaration is eliminated (its variable becomes a thread-local), so it
+  never stops a conjunct. This is loop-invariant code motion applied to
+  constraints (see [../claude-docs/faial/binder-constraints.md]).
 *)
 let hoist_decls : t -> t =
-  let rec inline (vars : Params.t) (pre : Exp.bexp) (p : Code.t) :
-      Params.t * Exp.bexp * Code.t =
+  let references (x : Variable.t) (c : Exp.bexp) : bool =
+    Variable.Set.mem x (Exp.b_free_names c Variable.Set.empty)
+  in
+  let rec inline (p : Code.t) : Params.t * Code.t * Exp.bexp list =
     match p with
-    | Decl { var = x; body = p; ty } ->
-        inline (Params.add x ty vars) pre p
-    | Access _ | Skip | Sync _ -> (vars, pre, p)
+    | Decl { var = x; body = p; ty; cond } ->
+        let vars, p, rising = inline p in
+        (Params.add x ty vars, p, Exp.b_and_split cond @ rising)
+    | Access _ | Skip | Sync _ -> (Params.empty, p, [])
     | If (b, p, q) ->
-        let vars, pre, p = inline vars pre p in
-        let vars, pre, q = inline vars pre q in
-        (vars, pre, If (b, p, q))
-    | Loop { range = r; body = p } ->
-        let vars, pre, p = inline vars pre p in
-        (vars, pre, Loop { range = r; body = p })
+        let vars_p, p, rising_p = inline p in
+        let vars_q, q, rising_q = inline q in
+        (Params.union_left vars_p vars_q, If (b, p, q), rising_p @ rising_q)
+    | Loop { cond_range; body = p } ->
+        let vars, p, rising = inline p in
+        let stay, rise =
+          List.partition
+            (references (Cond_range.var cond_range))
+            (Exp.b_and_split cond_range.cond @ rising)
+        in
+        let cond_range =
+          Cond_range.make cond_range.range (Exp.b_and_ex stay)
+        in
+        (vars, Loop { cond_range; body = p }, rise)
     | Seq (p, q) ->
-        let vars, pre, p = inline vars pre p in
-        let vars, pre, q = inline vars pre q in
-        (vars, pre, Seq (p, q))
+        let vars_p, p, rising_p = inline p in
+        let vars_q, q, rising_q = inline q in
+        (Params.union_left vars_p vars_q, Seq (p, q), rising_p @ rising_q)
   in
   fun k ->
     let k = vars_distinct k in
-    let locals, pre, p = inline Params.empty (Exp.Bool true) k.code in
+    let locals, p, rising = inline k.code in
     {
       k with
       code = p;
       local_variables = Params.union_left locals k.local_variables;
-      pre = Exp.b_and k.pre pre;
+      pre = Exp.b_and k.pre (Exp.b_and_ex rising);
     }
 
 let inline_dims (dims : (string * Dim3.t) list) (k : t) : t =
   let key_vals =
     List.concat_map (fun (name, d) -> Dim3.to_assoc ~prefix:(name ^ ".") d) dims
+    |> List.filter (fun (x, _) ->
+        Params.mem (Variable.from_name x) k.global_variables)
   in
   assign_globals key_vals k
 
@@ -371,8 +394,21 @@ let free_names (k : t) : Variable.Set.t =
 Given a protocol with free names, add those as thread-locals.
   *)
 let add_missing_binders (k : t) : t =
-  let locals = Params.from_set C_type.int (free_names k) in
+  let locals = Params.from_set Ty.int (free_names k) in
   { k with local_variables = Params.union_left k.local_variables locals }
+
+let reset_variable_kind (k : t) : t =
+  let params = parameter_set k in
+  let reset_binders = Params.reset_kind ~kernel_parameters:params in
+  {
+    k with
+    global_variables = reset_binders k.global_variables;
+    local_variables = reset_binders k.local_variables;
+    pre =
+      Exp.reset_variable_kind_b ~kernel_parameters:params
+        ~loop_variables:Variable.Set.empty k.pre;
+    code = Code.reset_variable_kind params k.code;
+  }
 
 let to_ci_di (k : t) : t =
   let approx = k.local_variables |> Params.to_set in

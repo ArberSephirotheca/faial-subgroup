@@ -84,6 +84,9 @@ let from_encode_assigns : Encode_assigns.t -> Code.t =
   let rec from : Encode_assigns.t -> Code.t * AssertionTree.t = function
     | Skip -> (Skip, AssertionTree.true_)
     | Access a -> (Access a, AssertionTree.true_)
+    (* Idiom rewrites can prepend bounds to a local guard. Normalize the
+       sequence so the guard still applies to the following accesses. *)
+    | Seq (Seq (p, q), r) -> from (Seq (p, Seq (q, r)))
     | Seq (Assert { cond = e; visibility = Local }, p) ->
         let p, a = from p in
         let a = AssertionTree.implies e a in
@@ -104,14 +107,14 @@ let from_encode_assigns : Encode_assigns.t -> Code.t =
         let p, a = from p in
         let guard = AssertionTree.retain (Range.var r) a in
         let a = AssertionTree.remove (Range.var r) a in
-        ( Loop { range = r; body = if_ guard p },
+        ( Loop { cond_range = Cond_range.make r guard; body = p },
           AssertionTree.implies (Range.has_next r) a )
     | Sync e -> (Sync e, AssertionTree.true_)
     | Decl { var; ty; body = p } ->
         let p, a = from p in
         let guard = AssertionTree.retain var a in
         let a = AssertionTree.remove var a in
-        (Decl { var; ty; body = if_ guard p }, a)
+        (Decl { var; ty; cond = guard; body = p }, a)
   in
   fun e ->
     let p, a = from e in

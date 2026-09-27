@@ -91,6 +91,28 @@ let flatten_opt : 'a option list -> 'a list =
 let either_split (l : ('a, 'b) Either.t list) : 'a list * 'b list =
   List.partition_map (fun a -> a) l
 
+let uniquify ~(name : 'a -> string) ~(rename : 'a -> string -> 'a)
+    ~(taken : StringSet.t) (l : 'a list) : 'a list =
+  let initial =
+    List.fold_left (fun acc x -> StringSet.add (name x) acc) taken l
+  in
+  l
+  |> List.fold_left
+       (fun (used, acc) x ->
+         let n = name x in
+         if not (StringSet.mem n used) then (StringSet.add n used, x :: acc)
+         else
+           let rec fresh (i : int) : string =
+             let candidate = Printf.sprintf "%s_%d" n i in
+             if StringSet.mem candidate used || StringSet.mem candidate initial
+             then fresh (i + 1)
+             else candidate
+           in
+           let n = fresh 2 in
+           (StringSet.add n used, rename x n :: acc))
+       (taken, [])
+  |> snd |> List.rev
+
 let contains ~substring:(needle : string) (s : string) : bool =
   let n_len = String.length needle in
   let s_len = String.length s in

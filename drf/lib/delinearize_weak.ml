@@ -61,15 +61,16 @@ let rec rewrite_aligned
   let open Aligned.Code in
   function
   | Sync c -> Sync (rewrite_unsync ~globals ~in_range ~loop_scope ~check ~rewrite_access c)
-  | Loop { range; body } ->
+  | Loop { cond_range; body } ->
+    let range = cond_range.range in
     let globals =
       if Variable.Set.subset (Range.free_names range Variable.Set.empty) globals
       then Variable.Set.add range.var globals
       else globals
     in
-    let loop_scope = Range.to_cond range :: loop_scope in
+    let loop_scope = Range.to_bexp range :: loop_scope in
     Loop
-      { range; body = rewrite_aligned ~globals ~in_range ~loop_scope ~check ~rewrite_access body }
+      { cond_range; body = rewrite_aligned ~globals ~in_range ~loop_scope ~check ~rewrite_access body }
   | Seq (a, b) ->
     Seq
       ( rewrite_aligned ~globals ~in_range ~loop_scope ~check ~rewrite_access a,

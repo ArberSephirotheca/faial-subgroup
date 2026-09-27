@@ -4,6 +4,7 @@ module BarrierOp = Barrier_op
 module Parser = Parsers
 module Parse_util = Parse_util
 module Expr = Expr
+module Lookup = Lookup
 module Init = Init
 module Decl = Decl
 module ForInit = For_init

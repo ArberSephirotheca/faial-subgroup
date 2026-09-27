@@ -3,88 +3,65 @@ open Protocols
 open Ast
 
 type t = c_expr =
-  | SizeOfExpr of J_type.t
-  | CXXNewExpr of { arg : t; ty : J_type.t }
-  | CXXDeleteExpr of { arg : t; ty : J_type.t }
-  | RecoveryExpr of J_type.t
+  | SizeOfExpr of Ty.t
+  | Convert of { arg : t; ty : Ty.t }
+  | CXXNewExpr of { arg : t; ty : Ty.t }
+  | CXXDeleteExpr of { arg : t; ty : Ty.t }
+  | RecoveryExpr of Ty.t
   | CharacterLiteral of int
   | ArraySubscriptExpr of c_array_subscript
   | BinaryOperator of c_binary
-  | CallExpr of { func : t; args : t list; ty : J_type.t }
+  | CallExpr of { func : t; args : t list; ty : Ty.t }
   | ConditionalOperator of {
       cond : t;
       then_expr : t;
       else_expr : t;
-      ty : J_type.t;
+      ty : Ty.t;
     }
-  | CXXConstructExpr of { args : t list; ty : J_type.t }
+  | CXXConstructExpr of { args : t list; ty : Ty.t }
   | CXXBoolLiteralExpr of bool
   | Ident of Decl_expr.t
-  | CXXOperatorCallExpr of { func : t; args : t list; ty : J_type.t }
+  | CXXOperatorCallExpr of { func : t; args : t list; ty : Ty.t }
   | FloatingLiteral of float
   | IntegerLiteral of int
-  | MemberExpr of { name : string; base : t; ty : J_type.t }
-  | UnaryOperator of { opcode : string; child : t; ty : J_type.t }
-  | UnresolvedLookupExpr of { name : Variable.t; tys : J_type.t list }
-  | StmtExpr of { body : c_stmt; result : t; ty : J_type.t }
+  | MemberExpr of { name : string; base : t; ty : Ty.t }
+  | UnaryOperator of { opcode : string; child : t; ty : Ty.t }
+  | UnresolvedLookupExpr of { name : Variable.t; lookups : Lookup.t list }
+  | StmtExpr of { body : c_stmt; result : t; ty : Ty.t }
   | LambdaExpr of {
       captures : (Variable.t * t) list;
       params : Param.t list;
       body : c_stmt;
-      ret_ty : J_type.t;
+      ret_ty : Ty.t;
     }
   | PackExpansion of t
   | DependentScopeRef of {
       name : string;
       nested_name_specifier : string option;
-      ty : J_type.t;
+      ty : Ty.t;
     }
 
 type nonrec c_binary = c_binary = {
   opcode : string;
   lhs : t;
   rhs : t;
-  ty : J_type.t;
+  ty : Ty.t;
 }
 
 type nonrec c_array_subscript = c_array_subscript = {
   lhs : t;
   rhs : t;
-  ty : J_type.t;
+  ty : Ty.t;
   location : Location.t;
 }
 
-let rec to_type : t -> J_type.t = function
-  | SizeOfExpr _ -> J_type.int
-  | CXXNewExpr c -> c.ty
-  | CXXDeleteExpr c -> c.ty
-  | CXXConstructExpr c -> c.ty
-  | CharacterLiteral _ -> J_type.char
-  | ArraySubscriptExpr a -> a.ty
-  | BinaryOperator a -> a.ty
-  | ConditionalOperator c -> to_type c.then_expr
-  | CXXBoolLiteralExpr _ -> J_type.bool
-  | FloatingLiteral _ -> J_type.float
-  | Ident a -> a.ty
-  | IntegerLiteral _ -> J_type.int
-  | UnaryOperator a -> a.ty
-  | CallExpr c -> c.ty
-  | CXXOperatorCallExpr a -> a.ty
-  | MemberExpr a -> a.ty
-  | UnresolvedLookupExpr _ -> J_type.unknown
-  | RecoveryExpr ty -> ty
-  | StmtExpr e -> e.ty
-  | LambdaExpr _ ->
-      (* Closure type — opaque from the analyser's POV before lifting. *)
-      J_type.unknown
-  | PackExpansion e -> to_type e
-  | DependentScopeRef d -> d.ty
+let to_type : t -> Ty.t = c_expr_to_type
 
 let to_string ?(modifier : bool = false) ?(provenance : bool = false)
     ?(types : bool = false) : t -> string =
   let attr (s : string) : string = if modifier then "@" ^ s ^ " " else "" in
-  let opcode (o : string) (j : J_type.t) : string =
-    if types then "(" ^ o ^ "." ^ J_type.to_string j ^ ")" else o
+  let opcode (o : string) (j : Ty.t) : string =
+    if types then "(" ^ o ^ "." ^ Ty.to_string j ^ ")" else o
   in
   let var_name : Variable.t -> string =
     if provenance then Variable.name_line else Variable.name
@@ -93,6 +70,7 @@ let to_string ?(modifier : bool = false) ?(provenance : bool = false)
     let par (e : t) : string =
       match e with
       | BinaryOperator _ | ConditionalOperator _ -> "(" ^ exp_to_s e ^ ")"
+      | Convert _ -> "(" ^ exp_to_s e ^ ")"
       | UnaryOperator _ | CXXNewExpr _ | CXXDeleteExpr _ | Ident _
       | UnresolvedLookupExpr _ | CallExpr _ | CXXOperatorCallExpr _
       | CXXConstructExpr _ | CXXBoolLiteralExpr _ | ArraySubscriptExpr _
@@ -102,9 +80,10 @@ let to_string ?(modifier : bool = false) ?(provenance : bool = false)
           exp_to_s e
     in
     function
-    | SizeOfExpr ty -> "sizeof(" ^ J_type.to_string ty ^ ")"
+    | SizeOfExpr ty -> "sizeof(" ^ Ty.to_string ty ^ ")"
+    | Convert c -> "(" ^ Ty.to_string c.ty ^ ")" ^ par c.arg
     | CXXNewExpr c ->
-        "new " ^ J_type.to_string c.ty ^ "(" ^ exp_to_s c.arg ^ ")"
+        "new " ^ Ty.to_string c.ty ^ "(" ^ exp_to_s c.arg ^ ")"
     | CXXDeleteExpr c -> "del " ^ par c.arg
     | RecoveryExpr _ -> "?"
     | FloatingLiteral f -> string_of_float f
@@ -117,7 +96,7 @@ let to_string ?(modifier : bool = false) ?(provenance : bool = false)
     | ArraySubscriptExpr b -> par b.lhs ^ "[" ^ exp_to_s b.rhs ^ "]"
     | CXXBoolLiteralExpr b -> if b then "true" else "false"
     | CXXConstructExpr c ->
-        attr "ctor" ^ J_type.to_string c.ty ^ "(" ^ list_to_s exp_to_s c.args
+        attr "ctor" ^ Ty.to_string c.ty ^ "(" ^ list_to_s exp_to_s c.args
         ^ ")"
     | CXXOperatorCallExpr c ->
         exp_to_s c.func ^ "[" ^ list_to_s exp_to_s c.args ^ "]"
@@ -169,6 +148,7 @@ let rec shallow_free_vars : t -> Decl_expr.Set.t =
   | CXXBoolLiteralExpr _ | FloatingLiteral _ | IntegerLiteral _
   | UnresolvedLookupExpr _ | DependentScopeRef _ ->
       Decl_expr.Set.empty
+  | Convert { arg; _ }
   | CXXNewExpr { arg; _ } | CXXDeleteExpr { arg; _ }
   | UnaryOperator { child = arg; _ } | MemberExpr { base = arg; _ }
   | PackExpansion arg ->
@@ -200,50 +180,52 @@ module Visit = struct
   type expr_t = t
 
   type 'a t =
-    | SizeOf of J_type.t
-    | CXXNew of { arg : 'a; ty : J_type.t }
-    | CXXDelete of { arg : 'a; ty : J_type.t }
-    | Recovery of J_type.t
+    | SizeOf of Ty.t
+    | Convert of { arg : 'a; ty : Ty.t }
+    | CXXNew of { arg : 'a; ty : Ty.t }
+    | CXXDelete of { arg : 'a; ty : Ty.t }
+    | Recovery of Ty.t
     | CharacterLiteral of int
     | ArraySubscript of {
         lhs : 'a;
         rhs : 'a;
-        ty : J_type.t;
+        ty : Ty.t;
         location : Location.t;
       }
-    | BinaryOperator of { opcode : string; lhs : 'a; rhs : 'a; ty : J_type.t }
-    | Call of { func : 'a; args : 'a list; ty : J_type.t }
+    | BinaryOperator of { opcode : string; lhs : 'a; rhs : 'a; ty : Ty.t }
+    | Call of { func : 'a; args : 'a list; ty : Ty.t }
     | ConditionalOperator of {
         cond : 'a;
         then_expr : 'a;
         else_expr : 'a;
-        ty : J_type.t;
+        ty : Ty.t;
       }
-    | CXXConstruct of { args : 'a list; ty : J_type.t }
+    | CXXConstruct of { args : 'a list; ty : Ty.t }
     | CXXBoolLiteral of bool
     | Ident of Decl_expr.t
-    | CXXOperatorCall of { func : 'a; args : 'a list; ty : J_type.t }
+    | CXXOperatorCall of { func : 'a; args : 'a list; ty : Ty.t }
     | FloatingLiteral of float
     | IntegerLiteral of int
-    | Member of { name : string; base : 'a; ty : J_type.t }
-    | UnaryOperator of { opcode : string; child : 'a; ty : J_type.t }
-    | UnresolvedLookup of { name : Variable.t; tys : J_type.t list }
-    | StmtExpr of { body : c_stmt; result : 'a; ty : J_type.t }
+    | Member of { name : string; base : 'a; ty : Ty.t }
+    | UnaryOperator of { opcode : string; child : 'a; ty : Ty.t }
+    | UnresolvedLookup of { name : Variable.t; lookups : Lookup.t list }
+    | StmtExpr of { body : c_stmt; result : 'a; ty : Ty.t }
     | LambdaExpr of {
         captures : (Variable.t * 'a) list;
         params : Param.t list;
         body : c_stmt;
-        ret_ty : J_type.t;
+        ret_ty : Ty.t;
       }
     | PackExpansion of 'a
     | DependentScopeRef of {
         name : string;
         nested_name_specifier : string option;
-        ty : J_type.t;
+        ty : Ty.t;
       }
 
   let rec fold (f : 'a t -> 'a) : expr_t -> 'a = function
     | SizeOfExpr e -> f (SizeOf e)
+    | Convert e -> f (Convert { arg = fold f e.arg; ty = e.ty })
     | CXXNewExpr e -> f (CXXNew { arg = fold f e.arg; ty = e.ty })
     | CXXDeleteExpr e -> f (CXXDelete { arg = fold f e.arg; ty = e.ty })
     | RecoveryExpr e -> f (Recovery e)
@@ -304,7 +286,7 @@ module Visit = struct
           (UnaryOperator
              { opcode = e.opcode; child = fold f e.child; ty = e.ty })
     | UnresolvedLookupExpr e ->
-        f (UnresolvedLookup { name = e.name; tys = e.tys })
+        f (UnresolvedLookup { name = e.name; lookups = e.lookups })
     | StmtExpr e ->
         f (StmtExpr { body = e.body; result = fold f e.result; ty = e.ty })
     | LambdaExpr e ->
@@ -334,6 +316,7 @@ module Visit = struct
     | RecoveryExpr _ | SizeOfExpr _ | UnresolvedLookupExpr _
     | CXXBoolLiteralExpr _ | DependentScopeRef _ ->
         f e
+    | Convert { arg = a; ty } -> f (Convert { arg = ret a; ty })
     | CXXNewExpr { arg = a; ty } -> f (CXXNewExpr { arg = ret a; ty })
     | CXXDeleteExpr { arg = a; ty } -> f (CXXDeleteExpr { arg = ret a; ty })
     | ArraySubscriptExpr { lhs = e1; rhs = e2; ty; location = l } ->
@@ -342,11 +325,11 @@ module Visit = struct
     | BinaryOperator { opcode = o; lhs = e1; rhs = e2; ty } ->
         f (BinaryOperator { opcode = o; lhs = ret e1; rhs = ret e2; ty })
     | CallExpr { func = e; args = l; ty } ->
-        f (CallExpr { func = f e; args = List.map ret l; ty })
+        f (CallExpr { func = ret e; args = List.map ret l; ty })
     | ConditionalOperator { cond = e1; then_expr = e2; else_expr = e3; ty } ->
         f
           (ConditionalOperator
-             { cond = f e1; then_expr = ret e2; else_expr = ret e3; ty })
+             { cond = ret e1; then_expr = ret e2; else_expr = ret e3; ty })
     | CXXConstructExpr { args = l; ty } ->
         f (CXXConstructExpr { args = List.map ret l; ty })
     | CXXOperatorCallExpr { func = e; args = l; ty } ->
@@ -378,6 +361,7 @@ let rec remove_comma : t -> t = function
   | BinaryOperator { opcode = ","; rhs; _ } ->
       (* we discard the previous elements *)
       rhs
+  | Convert { arg; ty } -> Convert { arg = remove_comma arg; ty }
   | CXXNewExpr { arg; ty } -> CXXNewExpr { arg = remove_comma arg; ty }
   | CXXDeleteExpr { arg; ty } -> CXXDeleteExpr { arg = remove_comma arg; ty }
   | ArraySubscriptExpr { lhs; rhs; ty; location } ->
@@ -444,6 +428,9 @@ let rewrite_comma : t -> t list * t =
         let* () = add lhs in
         return rhs
     | SizeOfExpr j -> return (SizeOfExpr j)
+    | Convert { arg; ty } ->
+        let* arg = rw arg in
+        return (Convert { arg; ty })
     | CXXNewExpr { arg; ty } ->
         let* arg = rw arg in
         return (CXXNewExpr { arg; ty })
@@ -486,8 +473,8 @@ let rewrite_comma : t -> t list * t =
     | UnaryOperator { opcode; child; ty } ->
         let* child = rw child in
         return (UnaryOperator { opcode; child; ty })
-    | UnresolvedLookupExpr { name; tys } ->
-        return (UnresolvedLookupExpr { name; tys })
+    | UnresolvedLookupExpr { name; lookups } ->
+        return (UnresolvedLookupExpr { name; lookups })
     | StmtExpr { body; result; ty } ->
         let* result = rw result in
         return (StmtExpr { body; result; ty })
@@ -509,7 +496,7 @@ let rewrite_comma : t -> t list * t =
     let st, e = State.run (rw e) [] in
     (List.rev st, e)
 
-let compound (ty : J_type.t) (lhs : t) (opcode : string) (rhs : t) : t =
+let compound (ty : Ty.t) (lhs : t) (opcode : string) (rhs : t) : t =
   BinaryOperator
     { ty; opcode = "="; lhs; rhs = BinaryOperator { ty; opcode; lhs; rhs } }
 

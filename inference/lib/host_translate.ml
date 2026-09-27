@@ -11,13 +11,9 @@ open Protocols
     opaque sub-expressions behind fresh variables (deduped per
     launch). *)
 
-(* TODO: replace the string-keyed dedup with an E-graph so equivalence
-   classes are captured structurally rather than by stringifying every
-   expression we look up. *)
-
-(** Translator state: a per-launch dedup cache keyed by canonical
-    (location-stripped) stringification, plus the running list of
-    fresh params minted for this launch, newest-first. *)
+(** Translator state: a per-launch dedup cache keyed structurally by
+    [D_lang.Expr.compare], plus the running list of fresh params minted
+    for this launch, newest-first. *)
 type t = {
   cache : Variable.t D_lang.Expr.Map.t;
   fresh : Ty_variable.t list;
@@ -39,11 +35,13 @@ let fresh_params (st : t) : C_lang.Param.t list =
 
 (** Build a [$read_<arr>(idx...)] call from a read. *)
 let read_to_call (r : D_lang.d_read) : D_lang.Expr.t =
-  let read_name = Variable.update_name (fun x -> "$read_" ^ x) r.source.name in
+  let read_name =
+    Variable.update_name (fun x -> "$read_" ^ x) (D_lang.subscript_name r.source)
+  in
   CallExpr {
     func = D_lang.Expr.ident read_name;
-    args = r.source.index;
-    ty = J_type.from_c_type r.ty;
+    args = D_lang.subscript_index r.source;
+    ty = r.ty;
   }
 
 (** A simplistic substitution function for statements that is only
@@ -52,7 +50,8 @@ let rec subst_in_stmt (var : Variable.t) (e_new : D_lang.Expr.t)
     (stmt : D_lang.Stmt.t) : D_lang.Stmt.t =
   let subst = D_lang.Expr.subst var e_new in
   let subst_subscript (s : D_lang.d_subscript) : D_lang.d_subscript =
-    { s with index = List.map subst s.index }
+    { s with path = Field_path.map subst s.path;
+             index = List.map subst s.index }
   in
   let subst_decl : D_lang.Decl.t -> D_lang.Decl.t = D_lang.Decl.map subst in
   match stmt with
@@ -98,8 +97,9 @@ let rec inline_reads ((stmt, e) : D_lang.Stmt.t * D_lang.Expr.t) : D_lang.Expr.t
 
 let make_var ?label ?location (st : t) : Variable.t =
   let count = D_lang.Expr.Map.cardinal st.cache in
-  let name : string = "@Launch" ^ string_of_int count in
-  { name; label; location }
+  Variable.make
+    ~name:("@Launch" ^ string_of_int count)
+    ?label ?location ~kind:LaunchParameter ()
 
 let abstract (e : D_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
   let ty = D_lang.Expr.to_type e in
@@ -118,42 +118,63 @@ let abstract (e : D_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
   )
 
 
+(** A pointer-valued launch argument spelled [arr[i]], where [arr] is a
+    host-side array, names one of the pointers stored in [arr]. Reading
+    that element would abstract the argument into an opaque scalar, and
+    a kernel parameter bound to a scalar has no location for its
+    accesses to land on, so every access through the parameter would be
+    dropped. The argument aliases [arr] itself instead. This conflates
+    the elements of [arr]: two arguments taken from the same array are
+    seen as one location, so their accesses are compared rather than
+    ignored. *)
+let pointer_array_base (e : C_lang.Expr.t) : Decl_expr.t option =
+  let rec base : C_lang.Expr.t -> Decl_expr.t option = function
+    | ArraySubscriptExpr { lhs = Ident d; _ } when Ty.is_array d.ty -> Some d
+    | ArraySubscriptExpr { lhs; _ } -> base lhs
+    | _ -> None
+  in
+  if Ty.is_array_or_pointer (C_lang.Expr.to_type e) then base e else None
+
 let rewrite_expr (e : C_lang.Expr.t) : (t, D_lang.Expr.t) State.t =
-  e
-  (* convert from C_lang.Expr.t to D_lang.Expr.t *)
-  |> D_lang.rewrite_exp
-  (* unpack from the monadic result *)
-  |> D_lang.run0
-  (* apply rewrites of reads *)
-  |> inline_reads
-  (* abstract these following operations *)
-  |> D_lang.Expr.st_map (fun e ->
-      match e with
-      (* Calls to whitelisted pure functions / predicates survive into
-         [D_lang.Expr] so [d_to_imp] can lift them to [NCall] / [Pred].
-         The Z3 encoder then treats matching names as the same UF
-         symbol across launches, preserving cross-call-site sharing
-         that an opaque [@LaunchN] abstraction would lose. *)
-      | CallExpr { func = Ident { name = f; _ }; _ }
-        when Functions.supported (Variable.name f)
-             || Predicates.supported (Variable.name f) ->
+  match pointer_array_base e with
+  | Some d -> State.return (D_lang.Expr.Ident d)
+  | None ->
+      e
+      (* convert from C_lang.Expr.t to D_lang.Expr.t *)
+      |> D_lang.rewrite_exp
+      (* unpack from the monadic result *)
+      |> D_lang.run0
+      (* apply rewrites of reads *)
+      |> inline_reads
+      (* abstract these following operations *)
+      |> D_lang.Expr.st_map (fun e ->
+          match e with
+          (* Calls to whitelisted pure functions / predicates survive into
+             [D_lang.Expr] so [d_to_imp] can lift them to [NCall] / [Pred].
+             The Z3 encoder then treats matching names as the same UF
+             symbol across launches, preserving cross-call-site sharing
+             that an opaque [@LaunchN] abstraction would lose. *)
+          | CallExpr { func = Ident { name = f; _ }; _ }
+            when Functions.supported (Variable.name f)
+                 || Predicates.supported (Variable.name f)
+                 || Exp.is_uniformity_intrinsic (Variable.name f) ->
+              State.return e
+          | CXXNewExpr _
+          | CXXDeleteExpr _
+          | CallExpr _
+          | CXXConstructExpr _
+          | MemberExpr _ -> abstract e
+          | _ ->
+          (* Otherwise, leave intact *)
           State.return e
-      | CXXNewExpr _
-      | CXXDeleteExpr _
-      | CallExpr _
-      | CXXConstructExpr _
-      | MemberExpr _ -> abstract e
-      | _ ->
-      (* Otherwise, leave intact *)
-      State.return e
-    )
+        )
 
 
 let unpack_dim3 (e : C_lang.Expr.t) :
     C_lang.Expr.t option * C_lang.Expr.t option * C_lang.Expr.t option =
   let one : C_lang.Expr.t = IntegerLiteral 1 in
   let is_int_arg (a : C_lang.Expr.t) : bool =
-    J_type.matches C_type.is_int (C_lang.Expr.to_type a)
+    Ty.is_int (Ty.strip_reference (C_lang.Expr.to_type a))
   in
   match e with
   | CXXConstructExpr { args = [ x; y; z ]; _ }

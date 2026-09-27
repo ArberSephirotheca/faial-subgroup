@@ -5,40 +5,6 @@
 open Stage0
 open Protocols
 open State.Syntax
-module O_Array_use = Array_use (* Refer to the root Array_use *)
-
-module Array_use = struct
-  type t = { array : Variable.t; offset : Infer_exp.t }
-
-  let make ?(offset = Infer_exp.num 0) (array : Variable.t) : t =
-    { array; offset }
-
-  let add (e : Infer_exp.t) (u : t) : t =
-    { u with offset = NExp (Infer_exp.plus u.offset e) }
-
-  let infer : t -> O_Array_use.t Infer_exp.state = function
-    | { array; offset } ->
-        let* offset = Infer_exp.to_nexp offset in
-        return { O_Array_use.array; O_Array_use.offset }
-end
-
-module O_Arg = Arg (* Refer to the root Arg *)
-
-module Arg = struct
-  type t =
-    | Scalar of Infer_exp.t
-    | Array of Array_use.t
-    | Unsupported of C_type.t
-
-  let infer : t -> O_Arg.t Infer_exp.state = function
-    | Scalar e ->
-        let* e = Infer_exp.to_nexp e in
-        return (O_Arg.Scalar e)
-    | Array { array; offset } ->
-        let* offset = Infer_exp.to_nexp offset in
-        return (O_Arg.Array { array; offset })
-    | Unsupported ty -> return (O_Arg.Unsupported ty)
-end
 
 type t =
   | Skip
@@ -52,38 +18,34 @@ type t =
     }
   | Assert of Infer_exp.t
   | Read of {
-      target : (C_type.t * Variable.t) option;
-      array : Variable.t;
+      target : (Ty.t * Variable.t) option;
+      path : Infer_exp.t Field_path.t;
       index : Infer_exp.t list;
       guard : Infer_exp.t option;
     }
   | Atomic of {
       target : Variable.t;
-      ty : C_type.t;
+      ty : Ty.t;
       atomic : Infer_exp.t Atomic.t;
-      array : Variable.t;
+      path : Infer_exp.t Field_path.t;
       index : Infer_exp.t list;
       guard : Infer_exp.t option;
     }
   | Write of {
-      array : Variable.t;
+      path : Infer_exp.t Field_path.t;
       index : Infer_exp.t list;
       payload : int option;
       guard : Infer_exp.t option;
     }
-  | LocationAlias of {
-      source : Variable.t;
-      target : Variable.t;
-      offset : Infer_exp.t;
-    }
-  | Decl of { var : Variable.t; ty : C_type.t; init : Infer_exp.t option }
-  | Assign of { var : Variable.t; data : Infer_exp.t; ty : C_type.t }
+  | Foreach of { var : Variable.t; last : Infer_exp.t; body : t }
+  | LocationAlias of { target : Variable.t; pointer : Infer_pointer.t }
+  | Decl of { var : Variable.t; ty : Ty.t; init : Infer_exp.t option }
+  | Assign of { var : Variable.t; data : Infer_exp.t; ty : Ty.t }
   | If of (Infer_exp.t * t * t)
   | Call of {
-      result : (Variable.t * C_type.t) option;
-      kernel : string;
-      ty : string;
-      args : Arg.t list;
+      result : (Variable.t * Ty.t) option;
+      id : Function_id.t;
+      args : Infer_exp.t list;
     }
   | Break
   | Continue
@@ -92,10 +54,10 @@ type t =
   | DoWhile of (Infer_exp.t * t)
   | For of { init : t; cond : Infer_exp.t; inc : t; body : t }
 
-let decl_set ?(ty = C_type.int) (var : Variable.t) (init : Infer_exp.t) : t =
+let decl_set ?(ty = Ty.int) (var : Variable.t) (init : Infer_exp.t) : t =
   Decl { init = Some init; ty; var }
 
-let decl_unset ?(ty = C_type.int) (var : Variable.t) : t =
+let decl_unset ?(ty = Ty.int) (var : Variable.t) : t =
   Decl { init = None; ty; var }
 
 let for_ ~init ~cond ~inc ~body : t = For { init; cond; inc; body }
@@ -128,26 +90,33 @@ let rec to_stmt : t -> Stmt.t =
          let id = List.fold_left Exp.n_plus (Exp.Var array) index in
          return (Stmt.Sync { mode; id; participants = None; loc }))
   | Assert e -> ret_assert e Global
-  | Read { array; target; index; guard } ->
+  | Read { path; target; index; guard } ->
       Infer_exp.unknowns
-        (let* index = State.list_map to_nexp index in
+        (let* path = Field_path.map_state to_nexp path in
+         let* index = State.list_map to_nexp index in
          let* guard = State.option_map to_bexp guard in
-         return (Stmt.Read { target; array; index; guard }))
-  | Atomic { target; ty; atomic; array; index; guard } ->
+         return (Stmt.Read { target; path; index; guard }))
+  | Atomic { target; ty; atomic; path; index; guard } ->
       Infer_exp.unknowns
-        (let* index = State.list_map to_nexp index in
+        (let* path = Field_path.map_state to_nexp path in
+         let* index = State.list_map to_nexp index in
          let* atomic = Atomic.map_state to_nexp atomic in
          let* guard = State.option_map to_bexp guard in
-         return (Stmt.Atomic { target; atomic; array; index; ty; guard }))
-  | Write { array; index; payload; guard } ->
+         return (Stmt.Atomic { target; atomic; path; index; ty; guard }))
+  | Write { path; index; payload; guard } ->
       Infer_exp.unknowns
-        (let* index = State.list_map to_nexp index in
+        (let* path = Field_path.map_state to_nexp path in
+         let* index = State.list_map to_nexp index in
          let* guard = State.option_map to_bexp guard in
-         return (Stmt.Write { array; index; payload; guard }))
-  | LocationAlias { source; target; offset } ->
+         return (Stmt.Write { path; index; payload; guard }))
+  | Foreach { var; last; body } ->
       Infer_exp.unknowns
-        (let* offset = to_nexp offset in
-         return (Stmt.LocationAlias { target; source; offset }))
+        (let* last = to_nexp last in
+         return (Stmt.For (Range.make var last, to_stmt body)))
+  | LocationAlias { target; pointer } ->
+      Infer_exp.unknowns
+        (let* pointer = Infer_pointer.to_pointer pointer in
+         return (Stmt.LocationAlias { target; pointer }))
   | Decl { var; ty; init } ->
       Infer_exp.unknowns
         (let* init = State.option_map Infer_exp.to_nexp init in
@@ -176,17 +145,177 @@ let rec to_stmt : t -> Stmt.t =
            (For.to_stmt
               { init = to_stmt init; cond; inc = to_stmt inc }
               (to_stmt body)))
-  | Call { result; kernel; ty; args } ->
+  | Call { result; id; args } ->
       Infer_exp.unknowns
-        (let* args = State.list_map Arg.infer args in
-         return (Stmt.Call { result; kernel; ty; args }))
+        (let* args = State.list_map Infer_exp.to_nexp args in
+         return (Stmt.Call { result; id; args }))
   | Break -> Skip
   | Continue -> Skip
   | Return _ -> Skip
 
+(** If-conversion of conditional assignments: a scalar reassigned inside a
+    straight-line [If] branch is lifted to a single [NIf]-valued assignment after
+    the branch, so its value is preserved on both paths. Memory effects stay
+    guarded in place; only [If] whose arms have no nested control flow are
+    converted, everything else is left untouched. *)
+module Convert_assigns = struct
+  module IE = Infer_exp
+
+  type arm = {
+    residual : t;
+    env : IE.t Variable.Map.t;
+    local : Variable.Set.t;
+    reads : Ty.t Variable.Map.t;
+    assigned : Ty.t Variable.Map.t;
+  }
+
+  let empty : arm =
+    {
+      residual = Skip;
+      env = Variable.Map.empty;
+      local = Variable.Set.empty;
+      reads = Variable.Map.empty;
+      assigned = Variable.Map.empty;
+    }
+
+  let subst (env : IE.t Variable.Map.t) (e : IE.t) : IE.t =
+    if Variable.Map.is_empty env then e
+    else IE.subst (fun x -> Variable.Map.find_opt x env) e
+
+  let keep (a : arm) (s : t) : arm = { a with residual = seq a.residual s }
+
+  let bind_target (a : arm) : (Ty.t * Variable.t) option -> arm = function
+    | Some (ty, x) ->
+        { a with
+          reads = Variable.Map.add x ty a.reads;
+          env = Variable.Map.remove x a.env }
+    | None -> a
+
+  let rec fold (a : arm) (s : t) : arm option =
+    let ( let* ) = Option.bind in
+    match s with
+    | Skip -> Some a
+    | Seq (p, q) ->
+        let* a = fold a p in
+        fold a q
+    | Assign { var; data; ty } ->
+        let data = subst a.env data in
+        let assigned =
+          if Variable.Set.mem var a.local then a.assigned
+          else Variable.Map.add var ty a.assigned
+        in
+        Some { a with env = Variable.Map.add var data a.env; assigned }
+    | Decl { var; ty = _; init = Some e } ->
+        Some
+          { a with
+            env = Variable.Map.add var (subst a.env e) a.env;
+            local = Variable.Set.add var a.local }
+    | Decl { var; ty; init = None } ->
+        Some
+          (keep
+             { a with
+               local = Variable.Set.add var a.local;
+               env = Variable.Map.remove var a.env }
+             (Decl { var; ty; init = None }))
+    | Assert e -> Some (keep a (Assert (subst a.env e)))
+    | Sync _ -> Some (keep a s)
+    | SyncOp { mode; array; index; loc } ->
+        Some
+          (keep a
+             (SyncOp { mode; array; index = List.map (subst a.env) index; loc }))
+    | LocationAlias { target; pointer } ->
+        Some
+          (keep a
+             (LocationAlias
+                { target; pointer = Infer_pointer.map (subst a.env) pointer }))
+    | Read { target; path; index; guard } ->
+        let path = Field_path.map (subst a.env) path in
+        let index = List.map (subst a.env) index in
+        let guard = Option.map (subst a.env) guard in
+        Some
+          (keep (bind_target a target) (Read { target; path; index; guard }))
+    | Write { path; index; payload; guard } ->
+        let path = Field_path.map (subst a.env) path in
+        let index = List.map (subst a.env) index in
+        let guard = Option.map (subst a.env) guard in
+        Some (keep a (Write { path; index; payload; guard }))
+    | Atomic { target; ty; atomic; path; index; guard } ->
+        let path = Field_path.map (subst a.env) path in
+        let index = List.map (subst a.env) index in
+        let guard = Option.map (subst a.env) guard in
+        let atomic = Atomic.map (subst a.env) atomic in
+        Some
+          (keep
+             (bind_target a (Some (ty, target)))
+             (Atomic { target; ty; atomic; path; index; guard }))
+    | Call { result; id; args } ->
+        let args = List.map (subst a.env) args in
+        let a = bind_target a (Option.map (fun (x, ty) -> (ty, x)) result) in
+        Some (keep a (Call { result; id; args }))
+    | If _ | While _ | DoWhile _ | For _ | Foreach _ | Break | Continue
+    | Return _ ->
+        None
+
+  let convert (cond : IE.t) (p : t) (q : t) : t =
+    match (fold empty p, fold empty q) with
+    | Some ap, Some aq ->
+        let merge_vars =
+          Variable.Map.union (fun _ ty _ -> Some ty) ap.assigned aq.assigned
+        in
+        if Variable.Map.is_empty merge_vars then If (cond, p, q)
+        else
+          let value (a : arm) (v : Variable.t) : IE.t =
+            match Variable.Map.find_opt v a.env with
+            | Some e -> e
+            | None -> IE.NExp (IE.Var v)
+          in
+          let merges =
+            Variable.Map.fold
+              (fun v ty acc ->
+                let data = IE.NExp (IE.NIf (cond, value ap v, value aq v)) in
+                Assign { var = v; ty; data } :: acc)
+              merge_vars []
+          in
+          let merge_free =
+            List.fold_left
+              (fun acc -> function
+                | Assign { data; _ } -> IE.free_names data acc
+                | _ -> acc)
+              Variable.Set.empty merges
+          in
+          let reads =
+            Variable.Map.union (fun _ ty _ -> Some ty) ap.reads aq.reads
+          in
+          let hoisted =
+            Variable.Map.fold
+              (fun x ty acc ->
+                if Variable.Set.mem x merge_free then
+                  Decl { var = x; ty; init = None } :: acc
+                else acc)
+              reads []
+          in
+          from_list (hoisted @ (If (cond, ap.residual, aq.residual) :: merges))
+    | _ -> If (cond, p, q)
+
+  let rec rewrite (s : t) : t =
+    match s with
+    | Seq (a, b) -> seq (rewrite a) (rewrite b)
+    | If (c, p, q) -> convert c (rewrite p) (rewrite q)
+    | While (c, s) -> While (c, rewrite s)
+    | DoWhile (c, s) -> DoWhile (c, rewrite s)
+    | For { init; cond; inc; body } ->
+        For { init = rewrite init; cond; inc = rewrite inc; body = rewrite body }
+    | Foreach f -> Foreach { f with body = rewrite f.body }
+    | Skip | Sync _ | SyncOp _ | Assert _ | Read _ | Atomic _ | Write _
+    | LocationAlias _ | Decl _ | Assign _ | Call _ | Break | Continue | Return _
+      ->
+        s
+end
+
 (** The infer function generates the Stmt.t code as well the value being
     returned if any. *)
 let infer (s : t) : Stmt.t * Exp.nexp option =
+  let s = Convert_assigns.rewrite s in
   let code = skip_last s in
   let post, ret =
     match last s with
@@ -197,6 +326,11 @@ let infer (s : t) : Stmt.t * Exp.nexp option =
   in
   (Stmt.seq (to_stmt code) post, ret)
 
+let path_to_string (p : Infer_exp.t Field_path.t) : string =
+  Field_path.to_name
+    (fun (e : Infer_exp.t) -> Some ("[" ^ Infer_exp.to_string e ^ "]"))
+    p
+
 (*
 let to_s: t -> Indent.t list =
   let rec stmt_to_s : t -> Indent.t list =
@@ -204,15 +338,15 @@ let to_s: t -> Indent.t list =
     | Call c -> [Line (Call.to_string c)]
     | Sync _ -> [Line "sync;"]
     | Assert b -> [Line (Assert.to_string b ^ ";")]
-    | Atomic r -> [Line (C_type.to_string r.ty ^ " " ^ Variable.name r.target ^ " = atomic " ^ Variable.name r.array ^ Access.index_to_string r.index ^ ";")]
+    | Atomic r -> [Line (Ty.to_string r.ty ^ " " ^ Variable.name r.target ^ " = atomic " ^ path_to_string r.path ^ Access.index_to_string r.index ^ ";")]
     | Read r ->
-      let a = Variable.name r.array in
+      let a = path_to_string r.path in
       let idx = Access.index_to_string r.index in
       let prefix =
         match r.target with
         | Some (ty, target) ->
           let x = Variable.name target in
-          let ty = C_type.to_string ty in
+          let ty = Ty.to_string ty in
           ty ^ " " ^ x ^ " = "
         | None ->
           ""
@@ -225,11 +359,12 @@ let to_s: t -> Indent.t list =
         | None -> ""
         | Some x -> " = " ^ string_of_int x
       in
-      [Line ("wr " ^ Variable.name w.array ^ Access.index_to_string w.index ^ payload ^ ";")]
+      [Line ("wr " ^ path_to_string w.path ^ Access.index_to_string w.index ^ payload ^ ";")]
     | Skip -> [Line "skip;"]
     | Assign a -> [Line (Variable.name a.var ^ " = " ^ Exp.n_to_string a.data ^ ";")]
     | LocationAlias l ->
-      [Line ("alias " ^ Alias.to_string l)]
+      [Line ("alias " ^ Variable.name l.target ^ " = "
+             ^ Infer_pointer.to_string l.pointer ^ ";")]
     | Decl [] -> []
     | Decl l ->
       let entries = String.concat ", " (List.map Decl.to_string l) in

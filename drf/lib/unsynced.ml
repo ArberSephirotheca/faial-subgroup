@@ -17,8 +17,8 @@ module Opt = struct
   let seq (u1 : t) (u2 : t) : t =
     if u1 = Skip then u2 else if u2 = Skip then u1 else Seq (u1, u2)
 
-  let loop (r : Range.t) (u : t) : t =
-    if u = Skip then Skip else Loop (Norm_range.Plain r, u)
+  let loop (cr : Cond_range.t) (u : t) : t =
+    if u = Skip then Skip else Loop (Norm_range.Plain cr, u)
 end
 
 let rec to_s : t -> Indent.t list = function
@@ -27,9 +27,9 @@ let rec to_s : t -> Indent.t list = function
   | Access e -> [ Line (Access.to_string e) ]
   | Cond (b, p1) ->
       [ Line ("if (" ^ Exp.b_to_string b ^ ") {"); Block (to_s p1); Line "}" ]
-  | Loop (r, p) ->
+  | Loop (nr, p) ->
       [
-        Line ("foreach (" ^ Norm_range.to_string r ^ ") {");
+        Line ("foreach (" ^ Norm_range.to_string nr ^ ") {");
         Block (to_s p);
         Line "}";
       ]
@@ -48,11 +48,10 @@ module Make (S : SUBST) = struct
     | Assert b -> Assert (M.b_subst s b)
     | Access e -> Access (M.a_subst s e)
     | Cond (b, p) -> Cond (M.b_subst s b, subst s p)
-    | Loop (r, p) ->
-        let p =
-          M.add s (Norm_range.var r) (function Some s -> subst s p | None -> p)
-        in
-        Loop (Norm_range.map (M.n_subst s) r, p)
+    | Loop (nr, p) ->
+        M.add s (Norm_range.var nr) (function
+          | Some s -> Loop (Norm_range.map (M.n_subst s) nr, subst s p)
+          | None -> Loop (nr, p))
     | Seq (p, q) -> Seq (subst s p, subst s q)
 end
 
@@ -77,10 +76,7 @@ let rec free_names (p : t) (fns : Variable.Set.t) : Variable.Set.t =
   | Skip -> fns
   | Assert b -> Exp.b_free_names b fns
   | Access e -> Access.free_names e fns
-  | Loop (r, l) ->
-      free_names l fns
-      |> Variable.Set.remove (Norm_range.var r)
-      |> Norm_range.free_names r
+  | Loop (nr, l) -> free_names l fns |> Norm_range.free_names nr
   | Cond (b, l) -> Exp.b_free_names b fns |> free_names l
   | Seq (p, q) -> free_names p fns |> free_names q
 
@@ -88,11 +84,11 @@ let rec unsafe_binders (i : t) (vars : Variable.Set.t) : Variable.Set.t =
   match i with
   | Skip | Assert _ | Access _ -> vars
   | Cond (_, p) -> unsafe_binders p vars
-  | Loop (r, p) ->
+  | Loop (nr, p) ->
       let vars =
-        let r_vars = Norm_range.free_names r Variable.Set.empty in
+        let r_vars = Norm_range.free_names nr Variable.Set.empty in
         if Variable.Set.is_empty (Variable.Set.inter r_vars vars) then vars
-        else Variable.Set.add (Norm_range.var r) vars
+        else Variable.Set.add (Norm_range.var nr) vars
       in
       unsafe_binders p vars
   | Seq (p, q) -> unsafe_binders p vars |> unsafe_binders q
@@ -101,7 +97,7 @@ let rec binders (i : t) (vars : Variable.Set.t) : Variable.Set.t =
   match i with
   | Skip | Assert _ | Access _ -> vars
   | Cond (_, p) -> binders p vars
-  | Loop (r, p) -> binders p (Variable.Set.add (Norm_range.var r) vars)
+  | Loop (nr, p) -> binders p (Variable.Set.add (Norm_range.var nr) vars)
   | Seq (p, q) -> binders p vars |> binders q
 
 (* Pre-flatacc pass: every code-level [Loop] over a strided additive
@@ -114,12 +110,14 @@ let rec normalize_loops : t -> t = function
   | Access a -> Access a
   | Cond (b, p) -> Cond (b, normalize_loops p)
   | Seq (p, q) -> Seq (normalize_loops p, normalize_loops q)
-  | Loop (Norm_range.Plain range, body) -> (
+  | Loop (Norm_range.Plain cr, body) -> (
       let body = normalize_loops body in
-      match Norm_range.normalize range with
-      | Norm_range.Index ix as r -> Loop (r, subst (Norm_range.substitution ix) body)
-      | Norm_range.Plain _ as r -> Loop (r, body))
-  | Loop ((Norm_range.Index _ as r), body) -> Loop (r, normalize_loops body)
+      match Norm_range.normalize cr with
+      | Norm_range.Index ix as nr ->
+          Loop (nr, subst (Norm_range.substitution ix) body)
+      | Norm_range.Plain _ as nr -> Loop (nr, body))
+  | Loop ((Norm_range.Index _ as nr), body) ->
+      Loop (nr, normalize_loops body)
 
 let inline_asserts : t -> t =
   let rec has_asserts : t -> bool = function
@@ -139,7 +137,8 @@ let inline_asserts : t -> t =
     | Assert _ -> Skip
     | Access a -> Access a
     | Cond (b, p) -> cond (conditions p b) (remove_asserts p)
-    | Loop (r, p) -> Loop (r, cond (conditions p (Bool true)) (remove_asserts p))
+    | Loop (nr, p) ->
+        Loop (nr, cond (conditions p (Bool true)) (remove_asserts p))
     | Seq (p, q) -> Seq (remove_asserts p, remove_asserts q)
   in
   fun p ->
@@ -173,7 +172,7 @@ let filter_by_location (x : Variable.t) : t -> t option =
     | Access { array = y; _ } as i ->
         if Variable.equal x y then Has i else Might Skip
     | Cond (b, p) -> filter p |> Perhaps.map (fun p -> Cond (b, p))
-    | Loop (r, p) -> filter p |> Perhaps.map (fun p -> Loop (r, p))
+    | Loop (nr, p) -> filter p |> Perhaps.map (fun p -> Loop (nr, p))
     | Seq (p, q) -> Perhaps.merge (fun p q -> Seq (p, q)) (filter p) (filter q)
   in
   fun i -> filter i |> Perhaps.to_option

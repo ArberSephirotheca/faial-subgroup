@@ -10,7 +10,7 @@
 // With pass-through, the call inlines as [stride_write(d_y,
 // 256)]; the formal [stride] becomes the literal [256] throughout
 // the kernel body, the index expression resolves to [blockIdx.x *
-// 256 + threadIdx.x], and the kernel analyses DRF (each
+// 256 + threadIdx.x], and the kernel analyzes DRF (each
 // (blockIdx.x, threadIdx.x) pair maps to a distinct address in
 // [0, 4 * 256)).
 __global__ void stride_write(int stride, float *y) {

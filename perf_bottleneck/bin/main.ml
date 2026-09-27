@@ -179,6 +179,7 @@ module Solver = struct
             Kernel.filter_array (fun x -> Variable.Set.mem x vs) k
           in
           k |> set_block_dim s.block_dim |> set_grid_dim s.grid_dim
+          |> apply_arch_binders Architecture.Defaults.block
           |> inline_globals s.params |> opt)
     in
     List.map (pair (sliced_cost s)) ks
@@ -360,6 +361,7 @@ module JUI = struct
         ("executable_name", `String Sys.executable_name);
         ("z3_version", `String Z3.Version.to_string);
         ("commit", `String Build_info.commit);
+        ("tree", `String Build_info.tree);
       ]
 
   let run (s : Solver.t) : unit = s |> to_json |> to_string |> print_endline

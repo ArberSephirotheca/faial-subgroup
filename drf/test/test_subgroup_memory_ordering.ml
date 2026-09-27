@@ -18,9 +18,9 @@ let call name args : D_lang.Expr.t =
 let num n = D_lang.Expr.IntegerLiteral n
 
 let address =
-  D_lang.make_subscript ~name:(var "x")
+  D_lang.make_subscript ~path:(Field_path.root (var "x"))
     ~index:[ num 0 ]
-    ~ty:J_type.int ~location:Stage0.Location.empty
+    ~ty:J_type.int ~location:Stage0.Location.empty ()
 
 let write : D_lang.Stmt.t =
   IfStmt
@@ -41,7 +41,7 @@ let write : D_lang.Stmt.t =
 
 let read : D_lang.Stmt.t =
   ReadAccessStmt
-    { target = var "tmp"; source = address; ty = C_type.int; guard = None }
+    { target = var "tmp"; source = address; ty = Ty.int; guard = None }
 
 let result_call name args : D_lang.Stmt.t =
   SExpr
@@ -61,7 +61,7 @@ let block_barrier = D_lang.Stmt.SExpr (call "__syncthreads" [])
 let fragment =
   D_lang.Expr.ident (var "frag")
     ~ty:
-      (J_type.from_string
+      (Ty.of_c_string
          "nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, float>")
 
 let matrix =
@@ -70,8 +70,9 @@ let matrix =
 let check_memory ?(threads = 32) expected statements () =
   let kernel : D_lang.Kernel.t =
     {
-      name = "memory_ordering";
-      ty = "void ()";
+      id = Imp.Function_id.make ~name:"memory_ordering" ~ty:"void ()" ();
+      decl_id = None;
+      returns_location = false;
       code = D_lang.Stmt.from_list statements;
       type_params = [];
       template_args = [];
@@ -94,7 +95,7 @@ let check_memory ?(threads = 32) expected statements () =
           ~site_controls:subgroup.site_controls
           ~ordinary_memory_effects:subgroup.ordinary_memory_effects
           subgroup.matrix_kernel
-        |> Solver.solve_obligation_result ~kernel_name:kernel.name
+        |> Solver.solve_obligation_result ~kernel_name:(D_lang.Kernel.name kernel)
              ~globals:subgroup.memory_globals ~block_dim
       in
       Alcotest.(check string)

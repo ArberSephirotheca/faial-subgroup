@@ -8,7 +8,7 @@ let v (name : string) : Variable.t = Variable.from_name name
 let var (name : string) : nexp = Var (v name)
 
 let access : Code.t =
-  Code.Access { array = v "a"; index = [ Num 0 ]; mode = Access.Mode.Read }
+  Code.Access (Access.read (v "a") [ Num 0 ])
 
 let sync_at ?(mode = Sync.Mode.ArriveAndWait) (label : string) : Sync.t =
   { Sync.mode; id = Var (v label); participants = None;
@@ -48,7 +48,7 @@ let test_head_decl_not_transparent () =
   (* Unlike Thread.head_of, head_split treats Decl as a head so we can
      extend Σ. *)
   let proto =
-    Code.Decl { var = v "x"; ty = C_type.int; body = access }
+    Code.Decl { var = v "x"; ty = Ty.int; cond = Exp.Bool true; body = access }
   in
   match Tier1.head_split proto with
   | Some (Code.Decl _, Code.Skip) -> ()
@@ -110,11 +110,11 @@ let test_reduce_loop_forks () =
   let k = var "K" in
   let i = v "i" in
   let r = Range.{
-    var = i; ty = C_type.int;
+    var = i; ty = Scalar.int;
     lower_bound = Num 0; upper_bound = k;
     step = Plus (Num 1); dir = Increase;
   } in
-  let proto = Code.Loop { range = r; body = Code.Skip } in
+  let proto = Code.Loop { cond_range = Cond_range.of_range r; body = Code.Skip } in
   let s = Tier1.reduce (task_of proto) in
   Alcotest.(check bool) "loop with empty body drains" true (State.is_empty s)
 
@@ -122,7 +122,7 @@ let test_reduce_decl_extends_sigma () =
   (* decl x; sync s1   →   parked task has x ↦ Local in its sigma *)
   let proto =
     Code.Decl
-      { var = v "x"; ty = C_type.int; body = mk_sync "s1" }
+      { var = v "x"; ty = Ty.int; cond = Exp.Bool true; body = mk_sync "s1" }
   in
   let s = Tier1.reduce (task_of proto) in
   match s.parked with

@@ -201,14 +201,19 @@ module Subgroup_event = struct
           kind;
           site;
           source_order = site_source_order builder.site_controls site;
-          control_conditions = site_control_conditions builder.site_controls site;
+          control_conditions =
+            site_control_conditions builder.site_controls site;
           uniform_vars = site_uniform_vars builder.site_controls site;
           phase_before = builder.phase;
           phase_after;
           target_config = builder.target_config;
         }
     in
-    { builder with phase = phase_after; events_rev = event :: builder.events_rev }
+    {
+      builder with
+      phase = phase_after;
+      events_rev = event :: builder.events_rev;
+    }
 
   let add_stmt (builder : builder) (stmt : SM.Stmt.t) : builder =
     match stmt with
@@ -717,6 +722,10 @@ module Subgroup_obligation = struct
       | Unary (op, expr) -> Unary (op, project_n expr)
       | Binary (op, left, right) -> Binary (op, project_n left, project_n right)
       | NCall (name, exprs) -> NCall (name, List.map project_n exprs)
+      | ReadResult read ->
+          ReadResult { read with args = List.map project_n read.args }
+      | Convert conversion ->
+          Convert { conversion with arg = project_n conversion.arg }
       | NIf (cond, left, right) ->
           NIf (project_b cond, project_n left, project_n right)
       | CastInt cond -> CastInt (project_b cond)
@@ -737,7 +746,7 @@ module Subgroup_obligation = struct
               index = List.map project_n index;
               operation = Atomic.Operation.map project_n operation;
             }
-      | ThreadUnif expr -> ThreadUnif (project_n expr)
+      | IsThreadUnif expr -> IsThreadUnif (project_n expr)
     in
     project_n expr
 

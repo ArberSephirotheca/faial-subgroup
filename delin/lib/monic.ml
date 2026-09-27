@@ -1,5 +1,7 @@
 type t = int Indet.Map.t
 
+let empty = Indet.Map.empty
+
 let compare = Indet.Map.compare Int.compare
 
 let normalize = Indet.Map.filter (fun _ v -> v != 0)
@@ -29,6 +31,7 @@ let to_list = Indet.Map.bindings
 let nfactors t = t
   |> Indet.Map.to_list
   |> List.length
+let degree (t : t) : int = fold (fun _ e acc -> e + acc) 0 t
 let is_const t = nfactors t = 0
 
 module OT = struct

@@ -6,19 +6,24 @@ open Subst
 *)
 module PreCode = struct
   type t = Sync of Unsynced.t | SeqLoop of t * loop | Seq of t * t
-  and loop = { range : Range.t; body : t }
+  and loop = { cond_range : Cond_range.t; body : t }
 
   module Make (S : SUBST) = struct
     module M = Subst.Make (S)
     module U = Unsynced.Make (S)
+    module CR = Cond_range.Make (S)
 
     let rec subst (s : S.t) (i : t) : t =
       match i with
       | Seq (p, q) -> Seq (subst s p, subst s q)
       | Sync c -> Sync (U.subst s c)
-      | SeqLoop (p, { range = r; body = q }) ->
-          let q = M.add s r.var (function Some s -> subst s q | None -> q) in
-          SeqLoop (subst s p, { range = M.r_subst s r; body = q })
+      | SeqLoop (p, { cond_range; body = q }) ->
+          let cond_range, q =
+            M.add s (Cond_range.var cond_range) (function
+              | Some s -> (CR.subst s cond_range, subst s q)
+              | None -> (cond_range, q))
+          in
+          SeqLoop (subst s p, { cond_range; body = q })
   end
 
   module S1 = Make (SubstPair)
@@ -32,7 +37,15 @@ module PreCode = struct
 
   let rec align : Synced.t -> t * Unsynced.t = function
     | Sync c -> (Sync c, Skip)
-    | SeqLoop (before_loop, { range = r; body = s_body, u_body_post }) ->
+    | SeqLoop (before_loop, { cond_range; body = s_body, u_body_post }) ->
+        let r = cond_range.range in
+        let cond = cond_range.cond in
+        let s_body = Synced.inline_cond cond s_body in
+        let u_body_post =
+          match cond with
+          | Exp.Bool true -> u_body_post
+          | _ -> Unsynced.Seq (Unsynced.Assert cond, u_body_post)
+        in
         (* Rec yields the aligned body and leak *)
         let a_body, u_body_pre = align s_body in
         (* The unsynchronized body *)
@@ -43,7 +56,8 @@ module PreCode = struct
         in
         (* the leak of the previous iteration followed by the aligned *)
         let body = seq (Unsynced.subst (r.var, Range.prev r) u_body) a_body in
-        ( SeqLoop (first_iter, { range = Range.next r; body }),
+        ( SeqLoop
+            (first_iter, { cond_range = Cond_range.of_range (Range.next r); body }),
           (* leaks the last iteration *)
           Unsynced.subst (r.var, Range.lossy_last r) u_body )
     | Seq (i, p) ->
@@ -58,7 +72,7 @@ end
 module Code : sig
   type t =
     | Sync of Unsynced.t
-    | Loop of { range : Range.t; body : t }
+    | Loop of { cond_range : Cond_range.t; body : t }
     | Seq of t * t
 
   val to_s : t -> Indent.t list
@@ -66,23 +80,23 @@ module Code : sig
 end = struct
   type t =
     | Sync of Unsynced.t
-    | Loop of { range : Range.t; body : t }
+    | Loop of { cond_range : Cond_range.t; body : t }
     | Seq of t * t
 
   let rec to_s : t -> Indent.t list = function
     | Seq (p, q) -> to_s p @ to_s q
     | Sync e -> Unsynced.to_s e @ [ Line "sync;" ]
-    | Loop { range = r; body = q } ->
+    | Loop { cond_range; body = q } ->
         [
-          Line ("foreach* (" ^ Range.to_string r ^ ") {");
+          Line ("foreach* (" ^ Cond_range.to_string cond_range ^ ") {");
           Block (to_s q);
           Line "}";
         ]
 
   let rec from_pre : PreCode.t -> t = function
     | Sync u -> Sync u
-    | SeqLoop (p, { range; body }) ->
-        Seq (from_pre p, Loop { range; body = from_pre body })
+    | SeqLoop (p, { cond_range; body }) ->
+        Seq (from_pre p, Loop { cond_range; body = from_pre body })
     | Seq (p, q) -> Seq (from_pre p, from_pre q)
 
   (* Load a protocol without side effects *)
@@ -90,9 +104,9 @@ end = struct
     let ( let* ) = Option.bind in
     function
     | Sync u -> Some (Sync u)
-    | SeqLoop (Skip, { range; body = body, Skip }) ->
+    | SeqLoop (Skip, { cond_range; body = body, Skip }) ->
         let* body = from_pure body in
-        Some (Loop { range; body })
+        Some (Loop { cond_range; body })
     | SeqLoop _ -> None
     | Seq (p, q) ->
         let* p = from_pure p in

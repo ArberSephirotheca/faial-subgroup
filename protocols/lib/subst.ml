@@ -35,6 +35,8 @@ module Make (S : SUBST) = struct
     | Binary (o, n1, n2) -> Binary (o, n_subst s n1, n_subst s n2)
     | NIf (b, n1, n2) -> NIf (b_subst s b, n_subst s n1, n_subst s n2)
     | NCall (x, args) -> NCall (x, List.map (n_subst s) args)
+    | ReadResult r -> ReadResult { r with args = List.map (n_subst s) r.args }
+    | Convert c -> convert c.ty (n_subst s c.arg)
 
   and b_subst (s : S.t) (b : bexp) : bexp =
     match b with
@@ -56,7 +58,7 @@ module Make (S : SUBST) = struct
             index = List.map (n_subst s) index;
             operation = Atomic.Operation.map (n_subst s) operation;
           }
-    | ThreadUnif e -> ThreadUnif (n_subst s e)
+    | IsThreadUnif e -> IsThreadUnif (n_subst s e)
 
   let a_subst (s : S.t) (a : Access.t) : Access.t =
     { a with index = List.map (n_subst s) a.index }

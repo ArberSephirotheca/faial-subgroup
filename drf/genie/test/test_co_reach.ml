@@ -50,7 +50,7 @@ let lt (a : Exp.nexp) (b : Exp.nexp) : Exp.bexp =
 
 let array_a : Variable.t = Variable.from_name "A"
 let shared_int : Memory.t =
-  Memory.from_type Mem_hierarchy.SharedMemory C_type.int
+  Memory.from_type Mem_hierarchy.SharedMemory Ty.int
 
 let access_w (idx : Exp.nexp) : Code.t =
   Code.Access (Access.write array_a [ idx ] None)
@@ -98,7 +98,7 @@ let pairs_of (proofs : Symbexp.Proof.t list) : Co_reach.pair list =
 
    The Tier 2 co-reach query asks for two *distinct* threads both
    under that guard, both writing to the same array. With distinct
-   tids forced by [thread_distinct] and both pinned to [(0,0,0)],
+   tids forced by [is_thread_distinct] and both pinned to [(0,0,0)],
    the goal is UNSAT — [Co_reach.candidates] drops the fragment. *)
 let test_co_reach_narrower_than_single_thread () =
   let guard =
@@ -160,7 +160,7 @@ let test_co_reach_gate_catches_trivialisation () =
       (Code.seq (access_w (var "threadIdx.x")) (access_r (var "threadIdx.x")))
       Code.Skip
   in
-  let k_baseline = mk_kernel ~globals:[ (n, C_type.int) ] [ ("A", shared_int) ] body in
+  let k_baseline = mk_kernel ~globals:[ (n, Ty.int) ] [ ("A", shared_int) ] body in
   let k_phi =
     let pre' = eq (var n) (Exp.Num 0) in
     { k_baseline with pre = Exp.b_and k_baseline.pre pre' }
@@ -286,17 +286,19 @@ let test_pair_keys_subset_of_proof_keys () =
      stable variable-name patterns ($T1$mode, $T1$idx$N, $T1$id).
 
    - [bexp_has_thread_unif], [nexp_has_thread_unif] walk the
-     bexp/nexp tree and return [true] iff any [ThreadUnif _] node
-     appears. The [thread_distinct] clause is the only source of
-     [ThreadUnif] nodes in a co-reach goal (it expands to
-     [BNot (ThreadUnif (Var x))] over tid/bid variables), so
+     bexp/nexp tree and return [true] iff any [IsThreadUnif _] node
+     appears. The [is_thread_distinct] clause is the only source of
+     [IsThreadUnif] nodes in a co-reach goal (it expands to
+     [BNot (IsThreadUnif (Var x))] over tid/bid variables), so
      [bexp_has_thread_unif goal] is a structural probe for
-     "thread_distinct present somewhere in the bexp". *)
+     "is_thread_distinct present somewhere in the bexp". *)
 let rec nexp_has_thread_unif (n : Exp.nexp) : bool =
   match n with
   | Exp.Num _ | Exp.Var _ -> false
   | Exp.Unary (_, e) -> nexp_has_thread_unif e
   | Exp.NCall (_, es) -> List.exists nexp_has_thread_unif es
+  | Exp.ReadResult r -> List.exists nexp_has_thread_unif r.args
+  | Exp.Convert c -> nexp_has_thread_unif c.arg
   | Exp.CastInt b -> bexp_has_thread_unif b
   | Exp.Binary (_, n1, n2) ->
       nexp_has_thread_unif n1 || nexp_has_thread_unif n2
@@ -316,7 +318,7 @@ and bexp_has_thread_unif (b : Exp.bexp) : bool =
   | Exp.AtomicResult { operation; index; _ } ->
       List.exists nexp_has_thread_unif index
       || Protocols.Atomic.Operation.exists nexp_has_thread_unif operation
-  | Exp.ThreadUnif _ -> true
+  | Exp.IsThreadUnif _ -> true
 
 let str_contains (hay : string) (needle : string) : bool =
   let h = String.length hay and n = String.length needle in
@@ -361,12 +363,12 @@ let _count_substr (hay : string) (needle : string) : int =
      $T2$id] in textual form.
 
    - carries the kernel's [pre] — for an [Architecture.Block]
-     kernel, [Kernel.apply_arch] folds [thread_distinct] into
+     kernel, [Kernel.apply_arch] folds [is_thread_distinct] into
      [k.pre]. After [SymAccess.from_cond_access]'s [project_b]
-     runs, each [ThreadUnif (Var x)] expands to [NRel (Eq, x$T1,
+     runs, each [IsThreadUnif (Var x)] expands to [NRel (Eq, x$T1,
      x$T2)], so the goal carries the projected
-     [thread_distinct] disjunction (e.g. [threadIdx.x$T1 !=
-     threadIdx.x$T2]) and no raw [ThreadUnif _] node.
+     [is_thread_distinct] disjunction (e.g. [threadIdx.x$T1 !=
+     threadIdx.x$T2]) and no raw [IsThreadUnif _] node.
 
    The race translator [Symbexp.translate] is used as a control:
    its goal must contain the [mode_spec] / [assign_dim] forms
@@ -388,8 +390,8 @@ let test_translate_coreach_output_shape () =
     true (List.length race = 1);
   let cp = List.hd coreach in
   let rp = List.hd race in
-  let cg = Exp.b_to_string cp.goal in
-  let rg = Exp.b_to_string rp.goal in
+  let cg = Exp.b_to_string (Formula.goal cp.formula) in
+  let rg = Exp.b_to_string (Formula.goal rp.formula) in
   (* mode_spec conflict pattern: race goal contains [$T2$mode !=]
      from the [b_and (n_eq mode1 mode_read) (n_neq mode2 mode_read)]
      clause of [Gen.mode_spec]. Co-reach goal does not. *)
@@ -435,19 +437,19 @@ let test_translate_coreach_output_shape () =
      printed as [$T1$id <= $T2$id]. *)
   Alcotest.(check bool) "co-reach goal has $T1$id <= $T2$id (id_le)"
     true (str_contains cg "$T1$id <= $T2$id");
-  (* [Kernel.apply_arch] folds [thread_distinct] (built via
-     [thread_eq], i.e. [ThreadUnif e]) into [k.pre]. By the time
+  (* [Kernel.apply_arch] folds [is_thread_distinct] (built via
+     [is_thread_unif], i.e. [IsThreadUnif e]) into [k.pre]. By the time
      the goal is assembled, [SymAccess.from_cond_access]'s
-     [project_b] has expanded each [ThreadUnif (Var x)] to
+     [project_b] has expanded each [IsThreadUnif (Var x)] to
      [NRel (Eq, x$T1, x$T2)], so the projected goal carries the
-     [thread_distinct]'s [b_or_ex] of inequalities like
+     [is_thread_distinct]'s [b_or_ex] of inequalities like
      [threadIdx.x$T1 != threadIdx.x$T2] and contains no raw
-     [ThreadUnif _] node. *)
+     [IsThreadUnif _] node. *)
   Alcotest.(check bool)
-    "co-reach goal has no raw ThreadUnif _ node (projection eliminated it)"
-    false (bexp_has_thread_unif cp.goal);
+    "co-reach goal has no raw IsThreadUnif _ node (projection eliminated it)"
+    false (bexp_has_thread_unif (Formula.goal cp.formula));
   Alcotest.(check bool)
-    "co-reach goal has projected thread_distinct (threadIdx.x$T1 != threadIdx.x$T2)"
+    "co-reach goal has projected is_thread_distinct (threadIdx.x$T1 != threadIdx.x$T2)"
     true (str_contains cg "threadIdx.x$T1 != threadIdx.x$T2"
           || str_contains cg "threadIdx.x$T2 != threadIdx.x$T1")
 
@@ -460,7 +462,7 @@ let test_translate_coreach_output_shape () =
    with non-overlapping cells), which is exactly what
    [translate_coreach] is built to drop. Constructing a small
    kernel where this signal is observable end-to-end and not
-   masked by [Architecture.Block]'s default [thread_distinct] is
+   masked by [Architecture.Block]'s default [is_thread_distinct] is
    awkward without extra fixture machinery, so we settle for the
    degenerate version: a 1-access kernel whose co-reach proof is
    SAT under [Bv64Gen].
@@ -489,7 +491,7 @@ let test_translate_coreach_round_trip_sat () =
     true
     (status = Z3.Solver.SATISFIABLE || status = Z3.Solver.UNKNOWN)
 
-(* Test (7). [Kernel.apply_arch] folds the [thread_distinct] clause
+(* Test (7). [Kernel.apply_arch] folds the [is_thread_distinct] clause
    into [k.pre].
 
    Scoped down from the brief's "two variants through the pipeline":
@@ -500,26 +502,26 @@ let test_translate_coreach_round_trip_sat () =
    asserts the narrower-but-cleaner claim directly:
 
    For a hand-built [Kernel.t]:
-   - before [apply_arch]: [k.pre] contains no [ThreadUnif _]
+   - before [apply_arch]: [k.pre] contains no [IsThreadUnif _]
      nodes.
    - after [apply_arch] (Block arch): [k.pre] contains
-     [ThreadUnif _] nodes — specifically, the [thread_distinct]
-     clause's [thread_eq (Var tid.x|y|z)] expansions, each of
-     which is [ThreadUnif (Var tid.X)].
+     [IsThreadUnif _] nodes — specifically, the [is_thread_distinct]
+     clause's [is_thread_unif (Var tid.x|y|z)] expansions, each of
+     which is [IsThreadUnif (Var tid.X)].
 
    This pins the architectural design point referenced in
    [from_code_coreach]'s comment: the co-reach goal does not need
-   to conjoin [thread_distinct] explicitly because [apply_arch]
+   to conjoin [is_thread_distinct] explicitly because [apply_arch]
    has already put it in [k.pre]. *)
-let test_apply_arch_adds_thread_distinct_to_pre () =
+let test_apply_arch_adds_is_thread_distinct_to_pre () =
   let body = access_w (Exp.Num 0) in
   let k_raw = mk_kernel [ ("A", shared_int) ] body in
   Alcotest.(check bool)
-    "raw kernel pre has no ThreadUnif _ (no thread_distinct yet)"
+    "raw kernel pre has no IsThreadUnif _ (no is_thread_distinct yet)"
     false (bexp_has_thread_unif k_raw.pre);
   let k_arch = Kernel.apply_arch arch k_raw in
   Alcotest.(check bool)
-    "after apply_arch, pre contains ThreadUnif _ (thread_distinct present)"
+    "after apply_arch, pre contains IsThreadUnif _ (is_thread_distinct present)"
     true (bexp_has_thread_unif k_arch.pre)
 
 (* T1-only proof stream, mirrors [coreach_proofs] but goes through
@@ -579,13 +581,13 @@ let test_t1_baseline_restricted_to_pair_relevant () =
       (access_w_arr array_b (var "threadIdx.x"))
   in
   let k_baseline =
-    mk_kernel ~globals:[ (n, C_type.int) ]
+    mk_kernel ~globals:[ (n, Ty.int) ]
       [ ("A", shared_int); ("B", shared_int) ]
       body
   in
   (* Baseline pairs: should include the B fragment only — the A
      fragment is single-thread-only (tid.x == 0 admits one thread,
-     thread_distinct forces UNSAT for the co-reach pair). *)
+     is_thread_distinct forces UNSAT for the co-reach pair). *)
   let baseline_pairs = pairs_of (coreach_proofs k_baseline) in
   let baseline_array_names =
     baseline_pairs
@@ -659,8 +661,8 @@ let tests = [
     `Quick, test_translate_coreach_output_shape);
   ("(5) translate_coreach round-trip: SAT-solvable for satisfiable kernel",
     `Quick, test_translate_coreach_round_trip_sat);
-  ("(7) apply_arch folds thread_distinct into k.pre",
-    `Quick, test_apply_arch_adds_thread_distinct_to_pre);
+  ("(7) apply_arch folds is_thread_distinct into k.pre",
+    `Quick, test_apply_arch_adds_is_thread_distinct_to_pre);
   ("(8) pad-cuda regression: Tier 1 baseline restricted to pair-relevant",
     `Quick, test_t1_baseline_restricted_to_pair_relevant);
 ]

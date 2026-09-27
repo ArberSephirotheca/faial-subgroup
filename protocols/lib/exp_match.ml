@@ -3,6 +3,7 @@ open Exp
 type subst = nexp Variable.Map.t
 
 let empty : subst = Variable.Map.empty
+
 let ( let* ) (x : 'a Seq.t) (f : 'a -> 'b Seq.t) : 'b Seq.t = Seq.concat_map f x
 
 let is_hole_name (name : string) : bool =
@@ -34,6 +35,7 @@ let rec n_equal (a : nexp) (b : nexp) : bool =
   | NIf (c1, a1, a2), NIf (c2, b1, b2) ->
       b_equal c1 c2 && n_equal a1 b1 && n_equal a2 b2
   | CastInt c1, CastInt c2 -> b_equal c1 c2
+  | Convert c1, Convert c2 -> Scalar.equal c1.ty c2.ty && n_equal c1.arg c2.arg
   | _, _ -> false
 
 and b_equal (a : bexp) (b : bexp) : bool =
@@ -51,10 +53,13 @@ and b_equal (a : bexp) (b : bexp) : bool =
   | CastBool a1, CastBool b1 -> n_equal a1 b1
   | Distinct xs, Distinct ys ->
       List.length xs = List.length ys && List.for_all2 n_equal xs ys
-  | ThreadUnif a1, ThreadUnif b1 -> n_equal a1 b1
+  | IsThreadUnif a1, IsThreadUnif b1 -> n_equal a1 b1
   | _, _ -> false
 
-type hole = Plain of Variable.t | Field of Variable.t * string | Literal
+type hole =
+  | Plain of Variable.t
+  | Field of Variable.t * string
+  | Literal
 
 let classify (v : Variable.t) : hole =
   let name = Variable.name v in
@@ -119,6 +124,16 @@ let rec match_nexp (pat : nexp) (subject : nexp) (s : subst) : subst Seq.t =
           let* s = match_nexp p1 s1 s in
           match_nexp p2 s2 s
       | _ -> Seq.empty)
+  | ReadResult pr -> (
+      match subject with
+      | ReadResult sr
+        when Variable.equal pr.array sr.array && pr.version = sr.version ->
+          match_list pr.args sr.args s
+      | _ -> Seq.empty)
+  | Convert pc -> (
+      match subject with
+      | Convert sc when Scalar.equal pc.ty sc.ty -> match_nexp pc.arg sc.arg s
+      | _ -> Seq.empty)
   | CastInt pb -> (
       match subject with
       | CastInt sb when b_equal pb sb -> Seq.return s
@@ -157,6 +172,8 @@ let rec instantiate (s : subst) (template : nexp) : nexp =
   | Binary (op, a, b) -> Binary (op, instantiate s a, instantiate s b)
   | Unary (op, a) -> Unary (op, instantiate s a)
   | NCall (name, args) -> NCall (name, List.map (instantiate s) args)
+  | ReadResult r -> ReadResult { r with args = List.map (instantiate s) r.args }
+  | Convert c -> convert c.ty (instantiate s c.arg)
   | NIf (b, a1, a2) ->
       NIf (instantiate_b s b, instantiate s a1, instantiate s a2)
   | CastInt b -> CastInt (instantiate_b s b)
@@ -170,7 +187,7 @@ and instantiate_b (s : subst) (template : bexp) : bexp =
   | Pred (name, args) -> Pred (name, List.map (instantiate s) args)
   | CastBool a -> CastBool (instantiate s a)
   | Distinct args -> Distinct (List.map (instantiate s) args)
-  | ThreadUnif a -> ThreadUnif (instantiate s a)
+  | IsThreadUnif a -> IsThreadUnif (instantiate s a)
   | AtomicResult _ -> template
 
 type rule = {
@@ -181,10 +198,12 @@ type rule = {
 }
 
 let apply_rule (r : rule) (subject : nexp) : (nexp * bexp list) option =
-  matches r.lhs subject |> Seq.filter_map r.fire |> Seq.uncons
+  matches r.lhs subject
+  |> Seq.filter_map r.fire
+  |> Seq.uncons
   |> Option.map (fun (s, _) ->
-      (instantiate s r.rhs, List.map (instantiate_b s) r.emits))
+         (instantiate s r.rhs, List.map (instantiate_b s) r.emits))
 
-let apply_rules (rules : rule list) (subject : nexp) : (nexp * bexp list) option
-    =
+let apply_rules (rules : rule list) (subject : nexp) :
+    (nexp * bexp list) option =
   List.find_map (fun r -> apply_rule r subject) rules

@@ -5,6 +5,8 @@ explain analysis intent and formal boundaries rather than command-line usage.
 
 Current notes:
 
+- `upstream-port-verification.md` records the upstream API port, test results,
+  corpus comparisons, and remaining toolchain and manifest limitations.
 - `ggml-cuda-alarm-investigation.md` classifies the remaining subgroup
   campaign alarms, gives concrete source-level counterexamples, proves the
   false alarms, and distinguishes the subgroup ordering assumption from the

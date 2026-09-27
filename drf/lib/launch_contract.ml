@@ -201,7 +201,7 @@ let allows_subgroup_route (contract : t) ~(subgroup_size : int option) : bool =
 let add_global_ints (names : string list) (kernel : Kernel.t) : Kernel.t =
   let globals =
     names
-    |> List.map (fun name -> (Variable.from_name name, C_type.int))
+    |> List.map (fun name -> (Variable.from_name name, Ty.int))
     |> Params.from_list
   in
   {

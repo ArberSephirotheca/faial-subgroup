@@ -30,6 +30,9 @@ type t = {
 
 let syncthreads_id : Exp.nexp = Exp.Num 0
 
+let map (f : Exp.nexp -> Exp.nexp) (s : t) : t =
+  { s with id = f s.id; participants = Option.map f s.participants }
+
 let syncthreads ?loc () : t =
   { mode = Mode.ArriveAndWait; id = syncthreads_id; participants = None; loc }
 

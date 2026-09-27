@@ -24,10 +24,13 @@ let main (fname : string) : unit =
   let scoped = List.map Imp.Scoped.Kernel.from_imp imp in
   section "Scoped";
   List.iter Imp.Scoped.Kernel.print scoped;
-  let inlined = Imp.Inline_calls.inline_calls scoped in
+  let inlined, rejected = Imp.Inline_calls.inline_calls scoped in
   section "Scoped, calls inlined";
   List.iter Imp.Scoped.Kernel.print inlined;
-  let proto = List.map Imp.Compiler.compile inlined in
+  List.iter
+    (fun r -> print_endline (Imp.Rejected_kernel.to_string r))
+    rejected;
+  let proto = List.filter_map (fun k -> Imp.Compiler.compile k |> Result.to_option) inlined in
   section "Protocols";
   List.iter Protocols.Kernel.print proto;
   ()

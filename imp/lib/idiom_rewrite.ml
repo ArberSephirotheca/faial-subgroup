@@ -2,15 +2,13 @@ open Protocols
 open Exp
 module EA = Encode_assigns
 
-let rec rewrite_nexp (rules : Exp_match.rule list) (e : nexp) : nexp * bexp list
-    =
+let rec rewrite_nexp (rules : Exp_match.rule list) (e : nexp) : nexp * bexp list =
   let e', es = rewrite_children rules e in
   match Exp_match.apply_rules rules e' with
   | Some (e2, es2) -> (e2, es @ es2)
   | None -> (e', es)
 
-and rewrite_children (rules : Exp_match.rule list) (e : nexp) : nexp * bexp list
-    =
+and rewrite_children (rules : Exp_match.rule list) (e : nexp) : nexp * bexp list =
   match e with
   | Var _ | Num _ -> (e, [])
   | Binary (op, a, b) ->
@@ -23,6 +21,12 @@ and rewrite_children (rules : Exp_match.rule list) (e : nexp) : nexp * bexp list
   | NCall (f, args) ->
       let args', es = rewrite_nexp_list rules args in
       ((if args' == args then e else NCall (f, args')), es)
+  | ReadResult r ->
+      let args', es = rewrite_nexp_list rules r.args in
+      ((if args' == r.args then e else ReadResult { r with args = args' }), es)
+  | Convert c ->
+      let arg', es = rewrite_nexp rules c.arg in
+      ((if arg' == c.arg then e else convert c.ty arg'), es)
   | NIf (b, a1, a2) ->
       let b', esb = rewrite_bexp rules b in
       let a1', es1 = rewrite_nexp rules a1 in
@@ -56,9 +60,9 @@ and rewrite_bexp (rules : Exp_match.rule list) (b : bexp) : bexp * bexp list =
   | Distinct args ->
       let args', es = rewrite_nexp_list rules args in
       ((if args' == args then b else Distinct args'), es)
-  | ThreadUnif a ->
+  | IsThreadUnif a ->
       let a', es = rewrite_nexp rules a in
-      ((if a' == a then b else ThreadUnif a'), es)
+      ((if a' == a then b else IsThreadUnif a'), es)
   | AtomicResult _ -> (b, [])
 
 and rewrite_nexp_list (rules : Exp_match.rule list) (xs : nexp list) :
@@ -72,8 +76,7 @@ and rewrite_nexp_list (rules : Exp_match.rule list) (xs : nexp list) :
 
 let dedup (es : bexp list) : bexp list =
   List.fold_left
-    (fun acc e ->
-      if List.exists (Exp_match.b_equal e) acc then acc else e :: acc)
+    (fun acc e -> if List.exists (Exp_match.b_equal e) acc then acc else e :: acc)
     [] es
   |> List.rev
 
@@ -135,9 +138,7 @@ let rec rewrite_code (rules : Exp_match.rule list) (s : EA.t) : EA.t =
       let b', es = rewrite_bexp rules b in
       let p' = rewrite_code rules p in
       let q' = rewrite_code rules q in
-      let s' =
-        if b' == b && p' == p && q' == q then s else EA.If (b', p', q')
-      in
+      let s' = if b' == b && p' == p && q' == q then s else EA.If (b', p', q') in
       prepend es s'
   | EA.For (r, body) ->
       let r', es = rewrite_range rules r in
@@ -166,11 +167,12 @@ let un_dollar (name : string) : string option =
   else None
 
 let rename_subst (vars : Variable.Set.t) : Subst.SubstAssoc.t =
-  vars |> Variable.Set.elements
+  vars
+  |> Variable.Set.elements
   |> List.filter_map (fun v ->
-      match un_dollar (Variable.name v) with
-      | Some q -> Some (Variable.name v, Exp.Var (Variable.from_name q))
-      | None -> None)
+         match un_dollar (Variable.name v) with
+         | Some q -> Some (Variable.name v, Exp.Var (Variable.from_name q))
+         | None -> None)
   |> Subst.SubstAssoc.make
 
 let rename_n (n : Exp.nexp) : Exp.nexp =
@@ -180,11 +182,12 @@ let rename_b (b : Exp.bexp) : Exp.bexp =
   SA.b_subst (rename_subst (Exp.b_free_names b Variable.Set.empty)) b
 
 let hole_keys (vars : Variable.Set.t) : Variable.Set.t =
-  vars |> Variable.Set.elements
+  vars
+  |> Variable.Set.elements
   |> List.filter_map (fun v ->
-      match Exp_match.classify v with
-      | Exp_match.Plain k | Exp_match.Field (k, _) -> Some k
-      | Exp_match.Literal -> None)
+         match Exp_match.classify v with
+         | Exp_match.Plain k | Exp_match.Field (k, _) -> Some k
+         | Exp_match.Literal -> None)
   |> Variable.Set.of_list
 
 let split2 (sep : string) (s : string) : (string * string) option =
@@ -244,8 +247,8 @@ let parse_rule (line : string) : (Exp_match.rule, string) result =
       else
         Error
           ("rule references holes not bound by the pattern: "
-          ^ (Variable.Set.elements unbound
-            |> List.map Variable.name |> String.concat ", "))
+          ^ (Variable.Set.elements unbound |> List.map Variable.name
+           |> String.concat ", "))
 
 let is_comment (l : string) : bool =
   String.length l = 0
@@ -253,7 +256,9 @@ let is_comment (l : string) : bool =
   || String.starts_with ~prefix:"//" l
 
 let parse (text : string) : (Exp_match.rule list, string) result =
-  text |> String.split_on_char '\n' |> List.map String.trim
+  text
+  |> String.split_on_char '\n'
+  |> List.map String.trim
   |> List.filter (fun l -> not (is_comment l))
   |> List.fold_left
        (fun acc line ->

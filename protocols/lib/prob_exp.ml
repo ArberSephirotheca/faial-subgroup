@@ -44,6 +44,8 @@ let rec n_eval_res ?(env = default_env) (n : Exp.nexp) :
       let* n2 = n_eval_res ~env n2 in
       Ok (eval_nbin o n1 n2)
   | NCall (x, _) -> Error ("n_eval: call " ^ x)
+  | ReadResult r -> Error ("n_eval: read " ^ Variable.name r.array)
+  | Convert c -> n_eval_res ~env c.arg
   | NIf (b, n1, n2) ->
       let* b = b_eval_res ~env b in
       if b then n_eval_res ~env n1 else n_eval_res ~env n2
@@ -69,7 +71,7 @@ and b_eval_res ?(env = default_env) (b : Exp.bexp) : (bool, string) Result.t =
   | Pred (x, _) -> Error ("b_eval: pred " ^ x)
   | Distinct _ -> Error "Distinct evaluation not implemented yet"
   | AtomicResult _ -> Error "b_eval: atomic_result"
-  | ThreadUnif _ -> Error "b_eval: thread_unif"
+  | IsThreadUnif _ -> Error "b_eval: thread_unif"
 
 (* Standard int32 bounds *)
 let int32_range : Int32.t * Int32.t = (Int32.min_int, Int32.max_int)
@@ -149,7 +151,7 @@ let infer_dom ?(timeout = 100) (x : Variable.t) (goal : Exp.bexp) :
     let b_to_expr = Gen_z3.SignedBv32Gen.b_to_expr ctx in
     let n_to_expr = Gen_z3.SignedBv32Gen.n_to_expr ctx in
     let opt = Optimize.mk_opt ctx in
-    Optimize.add opt [ b_to_expr goal ];
+    Optimize.add opt [ b_to_expr (Formula.make goal) ];
     (* Optimize the given variable *)
     let _ = op opt (n_to_expr (Var x)) in
     match Optimize.check opt with

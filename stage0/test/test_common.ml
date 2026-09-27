@@ -191,8 +191,35 @@ let highest_power_tests =
         Alcotest.(check int) "highest power of 2 <= 10" 8 actual );
   ]
 
+let test_uniquify (name : string) (taken : string list) (l : string list)
+    (expected : string list) =
+  ( name,
+    `Quick,
+    fun () ->
+      let actual =
+        uniquify
+          ~name:(fun (x : string) -> x)
+          ~rename:(fun (_ : string) (x : string) -> x)
+          ~taken:(StringSet.of_list taken) l
+      in
+      Alcotest.(check (list string)) name expected actual )
+
+let uniquify_tests =
+  [
+    test_uniquify "distinct names are kept" [] [ "a"; "b" ] [ "a"; "b" ];
+    test_uniquify "a duplicate is suffixed" [] [ "a"; "a"; "a" ]
+      [ "a"; "a_2"; "a_3" ];
+    test_uniquify "a name already taken is suffixed" [ "a" ] [ "a"; "b" ]
+      [ "a_2"; "b" ];
+    test_uniquify "a suffix colliding with a taken name is skipped" [ "a_2" ]
+      [ "a"; "a" ] [ "a"; "a_3" ];
+    test_uniquify "a suffix colliding with a later name is skipped" []
+      [ "a"; "a"; "a_2" ] [ "a"; "a_3"; "a_2" ];
+  ]
+
 let all_tests =
   [
+    ("uniquify", uniquify_tests);
     ("append_rev1", append_rev1_tests);
     ("append_tr", append_tr_tests);
     ("contains", contains_tests);

@@ -108,9 +108,13 @@ let bound_of ~(in_range : bool) (frame : Poly.t list) (rows : Poly.t list list) 
       divisibility @ spans @ bound_for_order rest
     | _ -> []
   in
-  Stage0.Common.permutations strides
-  |> List.map (fun order -> Exp.b_and_ex (bound_for_order (units @ order)))
-  |> Exp.b_or_ex
+  let pvs_ge_one = List.map (fun pv -> Exp.n_ge (n pv) (Exp.Num 1)) frame in
+  let orders =
+    Stage0.Common.permutations strides
+    |> List.map (fun order -> Exp.b_and_ex (bound_for_order (units @ order)))
+    |> Exp.b_or_ex
+  in
+  Exp.b_and_ex (orders :: pvs_ge_one)
 
 type frame = Poly.t list
 

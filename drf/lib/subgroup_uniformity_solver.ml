@@ -125,7 +125,7 @@ let proves_control_uniform ?checked_block_dim ?block_dim
             disagreement_condition ~globals control;
           ]
       in
-      try Gen_z3.is_unsat ~timeout ~logic goal
+      try Gen_z3.is_unsat ~timeout ~logic (Formula.make goal)
       with
       | Gen_z3.Not_implemented _ | Gen_z3.Preprocessing_error _ | Z3.Error _ ->
         false)

@@ -43,9 +43,10 @@ configured warp.
 
 For repeated memory-ordering barrier sites, the CLI uses the original
 loop-aware protocol analysis instead of identifying all iterations with one
-static barrier site. The current fallback replaces the primary memory result
-for that kernel. It retains block-barrier alignment but does not add aligned
-warp-barrier ordering, so repeated warp barriers can lead to extra alarms.
+static barrier site. Per-site memory events remain in the primary analysis;
+the loop-aware result supplements it for accesses crossing repeated barriers.
+It retains block-barrier alignment but does not add aligned warp-barrier
+ordering, so repeated warp barriers can lead to extra alarms.
 `--find-true-dr` does not filter this fallback's memory protocol.
 
 ## Verdicts and assumptions
@@ -65,6 +66,20 @@ Unsupported constructs, unknown solver results, and timeouts are not passes.
 With `--check-pre-sat`, inconsistent launch assumptions produce a
 `vacuous` result rather than a DRF proof. `--assume-delin` also enables this
 precondition check.
+
+The upstream assumption syntax is `--assume 'kernel=NAME: CONDITION'` for
+kernel-specific preconditions, or `--assume 'CONDITION'` for all selected
+kernels. The previous `NAME: CONDITION` spelling is no longer accepted.
+Upstream binder-scoped assumptions are supported for ordinary kernels. They
+are explicitly rejected for subgroup kernels: a loop-local fact cannot be
+treated as a global source-event precondition.
+
+Upstream also reports rejected kernels separately from analyzed kernels in
+JSON. An empty `kernels` list with a nonempty `rejected` list is not a DRF
+result. Kernel labels include namespaces and template arguments, and launch
+deduplication may change names relative to an older generated manifest.
+The ordinary pipeline's `--stop-at` stages and Python/Z3 export are not
+available for subgroup kernels; these combinations report an explicit error.
 
 `--assume-launch` links host launch wrappers before routing. Exact block
 dimensions and assertions constrain both analyses. A symbolic launch tuple

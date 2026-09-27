@@ -155,12 +155,12 @@ let site_of_stmt : SM.Stmt.t -> (SM.Site.t * operation) option = function
 let subgroup_result_variables (kernel : SM.Kernel.t) : Variable.Set.t =
   List.fold_left
     (fun vars -> function
-      | SM.Stmt.Subgroup_collective collective ->
-          begin match SM.Collective.kind collective with
+      | SM.Stmt.Subgroup_collective collective -> begin
+          match SM.Collective.kind collective with
           | SM.Collective.Gather _ ->
               Variable.Set.add (SM.Collective.result collective) vars
           | Ballot | Operation _ -> vars
-          end
+        end
       | Workgroup_barrier _ | Subgroup_barrier _ | Matrix_collective _ -> vars)
     Variable.Set.empty kernel.body
 
@@ -244,7 +244,10 @@ let rec nexp_is_subgroup_uniform ~(config : SM.Target_config.t)
         bexp_is_subgroup_uniform ~config ~uniform_vars ~varying_vars cond
       in
       if not cond then Ok false else both left right
-  | NCall _ -> Ok false
+  | NCall _ | ReadResult _ -> Ok false
+  | Convert conversion ->
+      nexp_is_subgroup_uniform ~config ~uniform_vars ~varying_vars
+        conversion.arg
   | CastInt cond ->
       bexp_is_subgroup_uniform ~config ~uniform_vars ~varying_vars cond
 
@@ -282,7 +285,7 @@ and bexp_is_subgroup_uniform ~(config : SM.Target_config.t)
              else
                nexp_is_subgroup_uniform ~config ~uniform_vars ~varying_vars expr)
            (Ok true)
-  | AtomicResult _ | ThreadUnif _ -> Ok false
+  | AtomicResult _ | IsThreadUnif _ -> Ok false
 
 let control_is_subgroup_uniform ~(config : SM.Target_config.t)
     ~(uniform_vars : Variable.Set.t) ~(varying_vars : Variable.Set.t)
